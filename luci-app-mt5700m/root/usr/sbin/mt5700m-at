@@ -601,6 +601,9 @@ print_system_info() {
 
 case "${1:-status}" in
 	status)
+		# Keep the LuCI status request below the rpcd execution timeout even
+		# when an optional modem query does not return a final result promptly.
+		[ "${timeout_s}" -le 2 ] || timeout_s=2
 		echo "enabled=${enabled}"
 		echo "mode=${mode}"
 		detected_at_port="$(detect_qmodem_at_port || true)"

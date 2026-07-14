@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-mt5700m
 PKG_VERSION:=1.2.0
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 LUCI_TITLE:=MT5700M modem management
 LUCI_DEPENDS:=+luci-base +rpcd-mod-file +busybox +netcat
