@@ -122,6 +122,34 @@ at_network_cmd() {
 	return 127
 }
 
+at_ubus_cmd() {
+	local command="$1"
+	local device="$2"
+	local payload result status response
+
+	command -v ubus >/dev/null 2>&1 || return 127
+	command -v jsonfilter >/dev/null 2>&1 || return 127
+	[ -r /usr/share/libubox/jshn.sh ] || return 127
+	ubus list at-daemon >/dev/null 2>&1 || return 127
+
+	# ubus-at-daemon owns the serial descriptor and serializes access shared
+	# with QModem. Its default end flags cover OK and the standard AT errors.
+	. /usr/share/libubox/jshn.sh
+	json_init
+	json_add_string at_port "${device}"
+	json_add_int timeout "${timeout_s}"
+	json_add_string at_cmd "${command}"
+	payload="$(json_dump)"
+
+	result="$(ubus call at-daemon sendat "${payload}" 2>/dev/null)" || return 1
+	status="$(printf '%s' "${result}" | jsonfilter -e '@.status' 2>/dev/null)"
+	[ "${status}" = "success" ] || return 1
+
+	response="$(printf '%s' "${result}" | jsonfilter -e '@.response' 2>/dev/null)"
+	[ -n "${response}" ] && printf '%s\n' "${response}"
+	return 0
+}
+
 at_serial_cmd() {
 	local command="$1"
 	local device="$2"
@@ -181,6 +209,7 @@ at_cmd() {
 				echo "AT serial port not found" >&2
 				return 1
 			}
+			at_ubus_cmd "${command}" "${device}" && return 0
 			at_serial_cmd "${command}" "${device}"
 			return $?
 			;;
@@ -193,6 +222,7 @@ at_cmd() {
 		auto)
 			device="$(detect_qmodem_at_port)"
 			if [ -n "${device}" ]; then
+				at_ubus_cmd "${command}" "${device}" && return 0
 				serial_output="$(at_serial_cmd "${command}" "${device}")"
 				serial_rc=$?
 				if [ "${serial_rc}" -eq 0 ]; then
