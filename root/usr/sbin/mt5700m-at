@@ -1,0 +1,726 @@
+#!/bin/sh
+
+CONFIG='mt5700m.settings'
+
+if command -v uci >/dev/null 2>&1; then
+	enabled="$(uci -q get ${CONFIG}.enabled || echo 1)"
+	mode="$(uci -q get ${CONFIG}.mode || echo auto)"
+	at_port="$(uci -q get ${CONFIG}.at_port || echo '')"
+	host="$(uci -q get ${CONFIG}.host || echo 192.168.8.1)"
+	port="$(uci -q get ${CONFIG}.port || echo 20249)"
+	timeout_s="$(uci -q get ${CONFIG}.timeout || echo 8)"
+else
+	enabled=1
+	mode=auto
+	at_port=
+	host=192.168.8.1
+	port=20249
+	timeout_s=8
+fi
+
+case "${timeout_s}" in
+	''|*[!0-9]*)
+		timeout_s=8
+		;;
+esac
+
+case "${mode}" in
+	auto|serial|network)
+		;;
+	*)
+		mode=auto
+		;;
+esac
+
+run_with_timeout() {
+	local seconds="$1"
+	shift
+
+	if command -v timeout >/dev/null 2>&1; then
+		timeout "${seconds}" "$@"
+	else
+		"$@"
+	fi
+}
+
+detect_modem_gateway() {
+	local gateway
+
+	command -v ip >/dev/null 2>&1 || return 1
+
+	gateway="$(ip -4 route show default 2>/dev/null | awk '
+		$0 ~ / dev (eth2|usb|wwan|wwan0|qmimux|rmnet|mhi|USB)/ {
+			for (i = 1; i <= NF; i++) {
+				if ($i == "via") {
+					print $(i + 1)
+					exit
+				}
+			}
+		}
+	')"
+
+	[ -n "${gateway}" ] || gateway="$(ip -4 route show 10.0.0.0/8 2>/dev/null | awk '
+		$0 ~ / dev (eth2|usb|wwan|wwan0|qmimux|rmnet|mhi|USB)/ {
+			print "10.0.0.1"
+			exit
+		}
+	')"
+
+	[ -n "${gateway}" ] || return 1
+	printf '%s\n' "${gateway}"
+}
+
+network_hosts() {
+	local gateway
+
+	gateway="$(detect_modem_gateway || true)"
+
+	if [ -n "${gateway}" ]; then
+		printf '%s\n' "${gateway}"
+	fi
+
+	if [ -n "${host}" ] && [ "${host}" != "${gateway}" ]; then
+		printf '%s\n' "${host}"
+	fi
+
+	if [ "${host}" != "192.168.8.1" ] && [ "${gateway}" != "192.168.8.1" ]; then
+		printf '%s\n' "192.168.8.1"
+	fi
+
+	if [ "${host}" != "10.0.0.1" ] && [ "${gateway}" != "10.0.0.1" ]; then
+		printf '%s\n' "10.0.0.1"
+	fi
+}
+
+detect_qmodem_at_port() {
+	local candidate
+
+	[ -n "${at_port}" ] && [ -e "${at_port}" ] && {
+		printf '%s\n' "${at_port}"
+		return 0
+	}
+
+	command -v uci >/dev/null 2>&1 || return 1
+
+	uci -q show qmodem 2>/dev/null | sed -n "s/.*\.at_port='\([^']*\)'.*/\1/p;s/.*\.at_port=\([^ ]*\).*/\1/p" | while read -r candidate; do
+		[ -e "${candidate}" ] || continue
+		printf '%s\n' "${candidate}"
+		break
+	done
+}
+
+at_network_cmd() {
+	local command="$1"
+	local target_host="${2:-${host}}"
+
+	if command -v nc >/dev/null 2>&1; then
+		printf '%s\r' "${command}" | run_with_timeout "${timeout_s}" nc "${target_host}" "${port}" 2>/dev/null
+		return $?
+	fi
+
+	echo "nc command not found" >&2
+	return 127
+}
+
+at_serial_cmd() {
+	local command="$1"
+	local device="$2"
+	local tmp reader elapsed output
+
+	[ -e "${device}" ] || return 1
+
+	if command -v stty >/dev/null 2>&1; then
+		stty -F "${device}" 115200 raw -echo -echoe -echok -echoctl -echoke -ixon -ixoff min 0 time 5 2>/dev/null || true
+	fi
+
+	run_with_timeout 1 cat "${device}" >/dev/null 2>&1 || true
+
+	tmp="$(mktemp /tmp/mt5700m-at.XXXXXX)" || return 1
+	cat "${device}" > "${tmp}" 2>/dev/null &
+	reader="$!"
+
+	printf '%s\r' "${command}" > "${device}"
+
+	elapsed=0
+	while [ "${elapsed}" -lt "${timeout_s}" ]; do
+		output="$(tr -d '\r' < "${tmp}" 2>/dev/null || true)"
+		if printf '%s\n' "${output}" | grep -Eq '(^|\n)(OK|ERROR|\+CME ERROR|\+CMS ERROR)(\n|$)'; then
+			printf '%s\n' "${output}"
+			kill "${reader}" 2>/dev/null || true
+			wait "${reader}" 2>/dev/null || true
+			rm -f "${tmp}"
+			return 0
+		fi
+		sleep 1
+		elapsed=$((elapsed + 1))
+	done
+
+	kill "${reader}" 2>/dev/null || true
+	wait "${reader}" 2>/dev/null || true
+	output="$(tr -d '\r' < "${tmp}" 2>/dev/null || true)"
+	rm -f "${tmp}"
+
+	[ -n "${output}" ] && printf '%s\n' "${output}"
+	# A serial timeout is a transport failure, not a modem ERROR response.
+	# Let auto mode try the network AT endpoint in this case.
+	return 124
+}
+
+at_cmd() {
+	local command="$1"
+	local device target serial_output serial_rc
+
+	[ "${enabled}" = "1" ] || return 2
+	command="$(printf '%s' "${command}" | tr -d '\000\r\n')"
+	[ -n "${command}" ] || return 1
+
+	case "${mode}" in
+		serial)
+			device="$(detect_qmodem_at_port)"
+			[ -n "${device}" ] || {
+				echo "AT serial port not found" >&2
+				return 1
+			}
+			at_serial_cmd "${command}" "${device}"
+			return $?
+			;;
+		network)
+			for target in $(network_hosts); do
+				at_network_cmd "${command}" "${target}" && return 0
+			done
+			return 1
+			;;
+		auto)
+			device="$(detect_qmodem_at_port)"
+			if [ -n "${device}" ]; then
+				serial_output="$(at_serial_cmd "${command}" "${device}")"
+				serial_rc=$?
+				if [ "${serial_rc}" -eq 0 ]; then
+					[ -n "${serial_output}" ] && printf '%s\n' "${serial_output}"
+					return 0
+				fi
+			fi
+
+			for target in $(network_hosts); do
+				at_network_cmd "${command}" "${target}" && return 0
+			done
+
+			return 1
+			;;
+	esac
+}
+
+at_sms_send() {
+	local number="$1"
+	local text="$2"
+	local device
+
+	[ "${enabled}" = "1" ] || return 2
+	number="$(printf '%s' "${number}" | tr -cd '0-9+')"
+	text="$(printf '%s' "${text}" | tr -d '\000')"
+	[ -n "${number}" ] && [ -n "${text}" ] || return 1
+
+	case "${mode}" in
+		serial|auto)
+			device="$(detect_qmodem_at_port)"
+			if [ -n "${device}" ]; then
+				if command -v stty >/dev/null 2>&1; then
+					stty -F "${device}" 115200 raw -echo -echoe -echok -echoctl -echoke -ixon -ixoff min 0 time 5 2>/dev/null || true
+				fi
+				(
+					printf 'AT+CMGF=1\r' > "${device}"
+					sleep 1
+					printf 'AT+CMGS="%s"\r' "${number}" > "${device}"
+					sleep 1
+					printf '%s\032' "${text}" > "${device}"
+				) &
+				run_with_timeout "$((timeout_s + 20))" cat "${device}" 2>/dev/null | awk '
+					{
+						gsub(/\r/, "")
+						print
+					}
+					/^OK$/ || /^ERROR$/ || /^\+CME ERROR/ || /^\+CMS ERROR/ {
+						exit
+					}
+				'
+				return $?
+			fi
+			[ "${mode}" = "serial" ] && {
+				echo "AT serial port not found" >&2
+				return 1
+			}
+			;;
+	esac
+
+	if command -v nc >/dev/null 2>&1; then
+		{
+			printf 'AT+CMGF=1\r'
+			sleep 1
+			printf 'AT+CMGS="%s"\r' "${number}"
+			sleep 1
+			printf '%s\032' "${text}"
+		} | run_with_timeout "$((timeout_s + 20))" nc "${host}" "${port}" 2>/dev/null
+		return $?
+	fi
+
+	echo "nc command not found" >&2
+	return 127
+}
+
+first_match() {
+	sed -n "$1" | head -n 1 | tr -d '\r'
+}
+
+clean_value() {
+	sed "s/^[[:space:]]*//;s/[[:space:]]*$//;s/^\"//;s/\"$//"
+}
+
+clean_line_value() {
+	printf '%s' "$1" | sed "s/^[[:space:]]*//;s/[[:space:]]*$//;s/^\"//;s/\"$//"
+}
+
+extract_cops_operator() {
+	local raw line name
+
+	raw="$1"
+	line="$(printf '%s\n' "${raw}" | first_match 's/^+COPS:[[:space:]]*//p')"
+	line="$(printf '%s' "${line}" | tr -d '\r')"
+	[ -n "${line}" ] || return 1
+
+	name="$(printf '%s' "${line}" | awk -F\" 'NF >= 2 { print $2; exit }')"
+	if [ -n "${name}" ]; then
+		clean_line_value "${name}"
+		return 0
+	fi
+
+	name="$(printf '%s' "${line}" | awk -F, '{ print $3 }')"
+	name="$(clean_line_value "${name}")"
+	[ -n "${name}" ] && {
+		printf '%s\n' "${name}"
+		return 0
+	}
+
+	clean_line_value "${line}"
+}
+
+normalize_rat() {
+	case "$1" in
+		0) echo "GSM" ;;
+		2) echo "UTRAN" ;;
+		3) echo "GSM EDGE" ;;
+		4) echo "HSDPA" ;;
+		5) echo "HSUPA" ;;
+		6) echo "HSDPA/HSUPA" ;;
+		7) echo "LTE" ;;
+		9) echo "NR" ;;
+		10) echo "LTE-M" ;;
+		11) echo "NB-IoT" ;;
+		13) echo "LTE" ;;
+		20) echo "NR" ;;
+		*) clean_line_value "$1" ;;
+	esac
+}
+
+extract_cops_rat() {
+	local raw line rat
+
+	raw="$1"
+	line="$(printf '%s\n' "${raw}" | first_match 's/^+COPS:[[:space:]]*//p')"
+	line="$(printf '%s' "${line}" | tr -d ' "\r')"
+	[ -n "${line}" ] || return 1
+	rat="$(printf '%s' "${line}" | awk -F, '{ print $4 }')"
+	[ -n "${rat}" ] || return 1
+	normalize_rat "${rat}"
+}
+
+extract_sysinfo_mode() {
+	local raw line mode
+
+	raw="$1"
+	line="$(printf '%s\n' "${raw}" | first_match 's/^\^SYSINFOEX:[[:space:]]*//p')"
+	line="$(printf '%s' "${line}" | tr -d '\r')"
+	[ -n "${line}" ] || return 1
+
+	mode="$(printf '%s' "${line}" | awk -F\" 'NF >= 2 { print $2; exit }')"
+	if [ -n "${mode}" ]; then
+		clean_line_value "${mode}"
+		return 0
+	fi
+
+	clean_line_value "${line}"
+}
+
+csv_count() {
+	local value="$1"
+
+	value="$(printf '%s' "${value}" | tr -d ' ')"
+	[ -n "${value}" ] || {
+		echo 0
+		return
+	}
+
+	awk -F, '{ print NF }' <<EOF
+${value}
+EOF
+}
+
+clean_csv() {
+	printf '%s' "$1" | tr -d ' ' | sed 's/^,*//;s/,*$//;s/,,*/,/g'
+}
+
+build_lte_lock_command() {
+	local lock_type bands arfcns pcis count
+
+	lock_type="${1:-0}"
+	bands="$(clean_csv "${2:-}")"
+	arfcns="$(clean_csv "${3:-}")"
+	pcis="$(clean_csv "${4:-}")"
+
+	case "${lock_type}" in
+		0)
+			printf '%s\n' 'AT^LTEFREQLOCK=0'
+			;;
+		3)
+			count="$(csv_count "${bands}")"
+			[ "${count}" -gt 0 ] || {
+				printf '%s\n' 'AT^LTEFREQLOCK=0'
+				return
+			}
+			printf 'AT^LTEFREQLOCK=3,0,%s,"%s"\n' "${count}" "${bands}"
+			;;
+		1)
+			count="$(csv_count "${bands}")"
+			[ "${count}" -gt 0 ] && [ "${count}" = "$(csv_count "${arfcns}")" ] || {
+				printf '%s\n' 'AT^LTEFREQLOCK=0'
+				return
+			}
+			printf 'AT^LTEFREQLOCK=1,0,%s,"%s","%s"\n' "${count}" "${bands}" "${arfcns}"
+			;;
+		2)
+			count="$(csv_count "${bands}")"
+			[ "${count}" -gt 0 ] && [ "${count}" = "$(csv_count "${arfcns}")" ] && [ "${count}" = "$(csv_count "${pcis}")" ] || {
+				printf '%s\n' 'AT^LTEFREQLOCK=0'
+				return
+			}
+			printf 'AT^LTEFREQLOCK=2,0,%s,"%s","%s","%s"\n' "${count}" "${bands}" "${arfcns}" "${pcis}"
+			;;
+		*)
+			printf '%s\n' 'AT^LTEFREQLOCK=0'
+			;;
+	esac
+}
+
+build_nr_lock_command() {
+	local lock_type bands arfcns scs pcis count
+
+	lock_type="${1:-0}"
+	bands="$(clean_csv "${2:-}")"
+	arfcns="$(clean_csv "${3:-}")"
+	scs="$(clean_csv "${4:-}")"
+	pcis="$(clean_csv "${5:-}")"
+
+	case "${lock_type}" in
+		0)
+			printf '%s\n' 'AT^NRFREQLOCK=0'
+			;;
+		3)
+			count="$(csv_count "${bands}")"
+			[ "${count}" -gt 0 ] || {
+				printf '%s\n' 'AT^NRFREQLOCK=0'
+				return
+			}
+			printf 'AT^NRFREQLOCK=3,0,%s,"%s"\n' "${count}" "${bands}"
+			;;
+		1)
+			count="$(csv_count "${bands}")"
+			[ "${count}" -gt 0 ] && [ "${count}" = "$(csv_count "${arfcns}")" ] && [ "${count}" = "$(csv_count "${scs}")" ] || {
+				printf '%s\n' 'AT^NRFREQLOCK=0'
+				return
+			}
+			printf 'AT^NRFREQLOCK=1,0,%s,"%s","%s","%s"\n' "${count}" "${bands}" "${arfcns}" "${scs}"
+			;;
+		2)
+			count="$(csv_count "${bands}")"
+			[ "${count}" -gt 0 ] && [ "${count}" = "$(csv_count "${arfcns}")" ] && [ "${count}" = "$(csv_count "${scs}")" ] && [ "${count}" = "$(csv_count "${pcis}")" ] || {
+				printf '%s\n' 'AT^NRFREQLOCK=0'
+				return
+			}
+			printf 'AT^NRFREQLOCK=2,0,%s,"%s","%s","%s","%s"\n' "${count}" "${bands}" "${arfcns}" "${scs}" "${pcis}"
+			;;
+		*)
+			printf '%s\n' 'AT^NRFREQLOCK=0'
+			;;
+	esac
+}
+
+print_signal() {
+	local raw line fields sys rsrp sinr rsrq
+
+	raw="$(at_cmd 'AT^HCSQ?' || true)"
+	line="$(printf '%s\n' "${raw}" | first_match 's/^\^HCSQ:[[:space:]]*//p')"
+	line="$(printf '%s' "${line}" | tr -d '"' | tr -d ' ')"
+	[ -n "${line}" ] || return 0
+
+	IFS=,
+	set -- ${line}
+	IFS=' '
+	sys="$1"
+	rsrp="$2"
+	sinr="$3"
+	rsrq="$4"
+
+	[ -n "${sys}" ] && echo "sysmode=${sys}"
+	if printf '%s' "${rsrp:-}" | grep -Eq '^[0-9]+$'; then
+		[ "${rsrp}" = "255" ] && echo "rsrp=" || echo "rsrp=$((rsrp - 140))"
+	fi
+	if printf '%s' "${sinr:-}" | grep -Eq '^[0-9]+$'; then
+		case "${sinr}" in
+			255)
+				echo "sinr="
+				;;
+			251)
+				echo "sinr=>=30.0"
+				;;
+			*)
+				awk -v v="${sinr}" 'BEGIN { printf "sinr=%.1f\n", -20 + v * 0.2 }'
+				;;
+		esac
+	fi
+	if printf '%s' "${rsrq:-}" | grep -Eq '^[0-9]+$'; then
+		case "${rsrq}" in
+			255)
+				echo "rsrq="
+				;;
+			34)
+				echo "rsrq=>=-3"
+				;;
+			*)
+				awk -v v="${rsrq}" 'BEGIN { printf "rsrq=%.1f\n", -19.5 + v * 0.5 }'
+				;;
+		esac
+	fi
+}
+
+print_identity() {
+	local raw
+
+	raw="$(at_cmd 'ATI' || true)"
+	printf '%s\n' "${raw}" | first_match 's/^Manufacturer:[[:space:]]*//p' | clean_value | sed 's/^/manufacturer=/'
+	printf '%s\n' "${raw}" | first_match 's/^Model:[[:space:]]*//p' | clean_value | sed 's/^/model=/'
+	printf '%s\n' "${raw}" | first_match 's/^Revision:[[:space:]]*//p' | clean_value | sed 's/^/revision=/'
+	printf '%s\n' "${raw}" | first_match 's/^IMEI:[[:space:]]*//p' | clean_value | sed 's/^/imei=/'
+}
+
+print_sim_operator() {
+	local sim cops operator rat sysinfo sysmode
+
+	sim="$(at_cmd 'AT+CPIN?' || true)"
+	printf '%s\n' "${sim}" | first_match 's/^+CPIN:[[:space:]]*//p' | clean_value | sed 's/^/sim=/'
+
+	cops="$(at_cmd 'AT+COPS?' || true)"
+	operator="$(extract_cops_operator "${cops}" || true)"
+	[ -n "${operator}" ] && echo "operator=${operator}"
+	rat="$(extract_cops_rat "${cops}" || true)"
+	[ -n "${rat}" ] && echo "sysmode=${rat}"
+
+	sysinfo="$(at_cmd 'AT^SYSINFOEX' || true)"
+	sysmode="$(extract_sysinfo_mode "${sysinfo}" || true)"
+	[ -n "${sysmode}" ] && echo "sysmode_detail=${sysmode}"
+}
+
+print_temperature() {
+	local raw value
+
+	raw="$(at_cmd 'AT^CHIPTEMP?' || true)"
+	value="$(printf '%s\n' "${raw}" | first_match 's/^\^CHIPTEMP:[[:space:]]*//p' | awk -F, '{print $1}' | grep -Eo -- '-?[0-9]+' | head -n 1)"
+	[ -n "${value}" ] || return 0
+	awk -v v="${value}" 'BEGIN { printf "temperature=%.1f\n", v / 10 }'
+}
+
+print_lock_status() {
+	local raw
+
+	raw="$(at_cmd 'AT^NRFREQLOCK?' || true)"
+	printf '%s\n' "${raw}" | first_match 's/^\^NRFREQLOCK:[[:space:]]*//p' | clean_value | sed 's/^/nr_lock=/'
+
+	raw="$(at_cmd 'AT^LTEFREQLOCK?' || true)"
+	printf '%s\n' "${raw}" | first_match 's/^\^LTEFREQLOCK:[[:space:]]*//p' | clean_value | sed 's/^/lte_lock=/'
+}
+
+print_network_info() {
+	local label command raw
+
+	for item in \
+		"Signal|AT^HCSQ?" \
+		"Serving cell|AT^MONSC" \
+		"Frequency info|AT^HFREQINFO?" \
+		"Network registration|AT+CEREG?" \
+		"Operator|AT+COPS?" \
+		"LTE lock|AT^LTEFREQLOCK?" \
+		"NR lock|AT^NRFREQLOCK?"
+	do
+		label="${item%%|*}"
+		command="${item#*|}"
+		echo "===== ${label}: ${command} ====="
+		raw="$(at_cmd "${command}" || true)"
+		printf '%s\n\n' "${raw}"
+	done
+}
+
+print_sms_list() {
+	echo "===== SMS storage ====="
+	at_cmd 'AT+CPMS?' || true
+	echo
+	echo "===== SMS messages ====="
+	at_cmd 'AT+CMGF=1' >/dev/null 2>&1 || true
+	at_cmd 'AT+CMGL="ALL"' || true
+}
+
+print_system_info() {
+	local label command raw
+
+	for item in \
+		"Identity|ATI" \
+		"IMEI|AT+CGSN" \
+		"Revision|AT+CGMR" \
+		"Version|AT^VERSION?" \
+		"SIM|AT+CPIN?" \
+		"Operator|AT+COPS?" \
+		"FOTA mode|AT^FOTAMODE?" \
+		"FOTA state|AT^FOTASTATE?" \
+		"FOTA progress|AT^FOTADLQ" \
+		"Temperature|AT^CHIPTEMP?"
+	do
+		label="${item%%|*}"
+		command="${item#*|}"
+		echo "===== ${label}: ${command} ====="
+		raw="$(at_cmd "${command}" || true)"
+		printf '%s\n\n' "${raw}"
+	done
+}
+
+case "${1:-status}" in
+	status)
+		echo "enabled=${enabled}"
+		echo "mode=${mode}"
+		detected_at_port="$(detect_qmodem_at_port || true)"
+		echo "at_port=${detected_at_port:-${at_port}}"
+		echo "host=${host}"
+		echo "port=${port}"
+		detected_gateway="$(detect_modem_gateway || true)"
+		echo "detected_gateway=${detected_gateway}"
+		if [ "${mode}" = "network" ]; then
+			echo "channel=network"
+		elif [ -n "${detected_at_port}" ]; then
+			echo "channel=serial"
+		else
+			echo "channel=network"
+		fi
+		if at_cmd 'AT' | grep -q 'OK'; then
+			echo "connected=1"
+		else
+			echo "connected=0"
+		fi
+		print_identity
+		print_sim_operator
+		print_signal
+		print_temperature
+		print_lock_status
+		;;
+	command)
+		shift
+		at_cmd "$*"
+		;;
+	network)
+		print_network_info
+		;;
+	cellscan)
+		at_cmd 'AT^CELLSCAN=3'
+		;;
+	sms-list)
+		print_sms_list
+		;;
+	sms-send)
+		shift
+		at_sms_send "${1:-}" "${2:-}"
+		;;
+	sms-delete)
+		shift
+		index="$(printf '%s' "${1:-}" | tr -cd '0-9')"
+		[ -n "${index}" ] || exit 1
+		at_cmd "AT+CMGD=${index}"
+		;;
+	system)
+		print_system_info
+		;;
+	fota-init)
+		at_cmd 'AT^FOTAMODE=0,1,0,1'
+		;;
+	fota-state)
+		at_cmd 'AT^FOTASTATE?'
+		;;
+	fota-progress)
+		at_cmd 'AT^FOTADLQ'
+		;;
+	fota-download)
+		shift
+		url="$(printf '%s' "${1:-}" | tr -d '\000\r\n"')"
+		[ -n "${url}" ] || exit 1
+		at_cmd "AT^FOTAOEMDL=\"${url}\""
+		;;
+	fota-resume)
+		at_cmd 'AT^FOTADL=1'
+		;;
+	fota-upgrade)
+		at_cmd 'AT^FWUP'
+		;;
+	preview-lock)
+		shift
+		case "${1:-}" in
+			lte)
+				shift
+				build_lte_lock_command "$@"
+				;;
+			nr)
+				shift
+				build_nr_lock_command "$@"
+				;;
+			*)
+				echo "Usage: $0 preview-lock {lte|nr} <type> <bands> [arfcns] [scs] [pcis]" >&2
+				exit 1
+				;;
+		esac
+		;;
+	lock)
+		shift
+		case "${1:-}" in
+			lte)
+				shift
+				at_cmd "$(build_lte_lock_command "$@")"
+				;;
+			nr)
+				shift
+				at_cmd "$(build_nr_lock_command "$@")"
+				;;
+			*)
+				echo "Usage: $0 lock {lte|nr} <type> <bands> [arfcns] [scs] [pcis]" >&2
+				exit 1
+				;;
+		esac
+		;;
+	restart)
+		at_cmd 'AT+CFUN=1,1'
+		;;
+	unlock)
+		echo "Unlock LTE:"
+		at_cmd 'AT^LTEFREQLOCK=0'
+		echo "Unlock NR:"
+		at_cmd 'AT^NRFREQLOCK=0'
+		;;
+	*)
+		echo "Usage: $0 {status|command <AT>|restart|unlock}" >&2
+		exit 1
+		;;
+esac
+
+exit 0
