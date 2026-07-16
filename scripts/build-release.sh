@@ -41,20 +41,6 @@ CONFIG_PACKAGE_luci-app-mt5700m=m
 CONFIG_LUCI_LANG_zh_Hans=y
 CONFIG_PACKAGE_ubus-at-daemon=m
 CONFIG_PACKAGE_sms-tool_q=m
-CONFIG_PACKAGE_kmod-mii=m
-CONFIG_PACKAGE_kmod-usb-common=m
-CONFIG_PACKAGE_kmod-usb-core=m
-CONFIG_PACKAGE_kmod-usb-ehci=m
-CONFIG_PACKAGE_kmod-usb-net=m
-CONFIG_PACKAGE_kmod-usb-net-cdc-ether=m
-CONFIG_PACKAGE_kmod-usb-net-cdc-ncm=m
-CONFIG_PACKAGE_kmod-usb-serial=m
-CONFIG_PACKAGE_kmod-usb-serial-option=m
-CONFIG_PACKAGE_kmod-usb-serial-wwan=m
-CONFIG_PACKAGE_kmod-usb-xhci-hcd=m
-CONFIG_PACKAGE_kmod-usb-xhci-mtk=m
-CONFIG_PACKAGE_kmod-usb2=m
-CONFIG_PACKAGE_kmod-usb3=m
 # CONFIG_PACKAGE_luci-app-qmodem is not set
 # CONFIG_PACKAGE_luci-app-qmodem-next is not set
 # CONFIG_PACKAGE_qmodem is not set
@@ -63,12 +49,7 @@ CONFIG_PACKAGE_kmod-usb3=m
 EOF
 make defconfig
 make package/feeds/qmodem/ubus_at_daemon/compile package/feeds/qmodem/sms-tool_q/compile -j"$(nproc)" V=s
-# The official SDK is package-oriented and does not always carry a complete
-# kernel module packaging graph for its moving SNAPSHOT kernel. Build the LuCI
-# package while tolerating module-only dependency packaging failures; the APK
-# keeps its kmod dependencies and users obtain those ABI-matched packages from
-# the OpenWrt repository for their firmware.
-make package/h5000m-custom/luci-app-mt5700m/compile -j"$(nproc)" V=s IGNORE_ERRORS=m
+make package/h5000m-custom/luci-app-mt5700m/compile -j"$(nproc)" V=s
 
 find bin -type f \( -name 'luci-app-mt5700m-*.apk' -o -name 'luci-app-mt5700m_*.ipk' -o -name 'luci-i18n-mt5700m-zh-cn-*.apk' -o -name 'luci-i18n-mt5700m-zh-cn_*.ipk' -o -name 'ubus-at-daemon-*.apk' -o -name 'ubus-at-daemon_*.ipk' -o -name 'sms-tool_q-*.apk' -o -name 'sms-tool_q_*.ipk' \) -exec cp -f {} "${output_dir}/" \;
 test "$(find "${output_dir}" -type f \( -name '*.apk' -o -name '*.ipk' \) | wc -l)" -ge 4
