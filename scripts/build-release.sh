@@ -23,7 +23,6 @@ cd "${sdk_dir}"
 printf '\nsrc-git qmodem https://github.com/FUjr/QModem.git^%s\n' "${qmodem_commit}" >> feeds.conf.default
 ./scripts/feeds update -a
 ./scripts/feeds install luci-base
-./scripts/feeds install -p base busybox
 ./scripts/feeds install -p qmodem ubus-at-daemon sms-tool_q
 
 perl -0pi -e 's/(config ALL\n\s+bool "Select all userspace packages by default"\n\s+default )y/${1}n/' Config.in
@@ -42,6 +41,20 @@ CONFIG_PACKAGE_luci-app-mt5700m=m
 CONFIG_LUCI_LANG_zh_Hans=y
 CONFIG_PACKAGE_ubus-at-daemon=m
 CONFIG_PACKAGE_sms-tool_q=m
+CONFIG_PACKAGE_kmod-mii=m
+CONFIG_PACKAGE_kmod-usb-common=m
+CONFIG_PACKAGE_kmod-usb-core=m
+CONFIG_PACKAGE_kmod-usb-ehci=m
+CONFIG_PACKAGE_kmod-usb-net=m
+CONFIG_PACKAGE_kmod-usb-net-cdc-ether=m
+CONFIG_PACKAGE_kmod-usb-net-cdc-ncm=m
+CONFIG_PACKAGE_kmod-usb-serial=m
+CONFIG_PACKAGE_kmod-usb-serial-option=m
+CONFIG_PACKAGE_kmod-usb-serial-wwan=m
+CONFIG_PACKAGE_kmod-usb-xhci-hcd=m
+CONFIG_PACKAGE_kmod-usb-xhci-mtk=m
+CONFIG_PACKAGE_kmod-usb2=m
+CONFIG_PACKAGE_kmod-usb3=m
 # CONFIG_PACKAGE_luci-app-qmodem is not set
 # CONFIG_PACKAGE_luci-app-qmodem-next is not set
 # CONFIG_PACKAGE_qmodem is not set
