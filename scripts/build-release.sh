@@ -23,6 +23,7 @@ cd "${sdk_dir}"
 printf '\nsrc-git qmodem https://github.com/FUjr/QModem.git^%s\n' "${qmodem_commit}" >> feeds.conf.default
 ./scripts/feeds update -a
 ./scripts/feeds install luci-base
+./scripts/feeds install -p base busybox
 ./scripts/feeds install -p qmodem ubus-at-daemon sms-tool_q
 
 perl -0pi -e 's/(config ALL\n\s+bool "Select all userspace packages by default"\n\s+default )y/${1}n/' Config.in
@@ -48,7 +49,7 @@ CONFIG_PACKAGE_sms-tool_q=m
 # CONFIG_PACKAGE_tom_modem is not set
 EOF
 make defconfig
-make package/ubus-at-daemon/compile package/sms-tool_q/compile package/luci-app-mt5700m/compile -j"$(nproc)" V=s
+make package/feeds/qmodem/ubus_at_daemon/compile package/feeds/qmodem/sms-tool_q/compile package/h5000m-custom/luci-app-mt5700m/compile -j"$(nproc)" V=s
 
 find bin -type f \( -name 'luci-app-mt5700m-*.apk' -o -name 'luci-app-mt5700m_*.ipk' -o -name 'luci-i18n-mt5700m-zh-cn-*.apk' -o -name 'luci-i18n-mt5700m-zh-cn_*.ipk' -o -name 'ubus-at-daemon-*.apk' -o -name 'ubus-at-daemon_*.ipk' -o -name 'sms-tool_q-*.apk' -o -name 'sms-tool_q_*.ipk' \) -exec cp -f {} "${output_dir}/" \;
 test "$(find "${output_dir}" -type f \( -name '*.apk' -o -name '*.ipk' \) | wc -l)" -ge 4
