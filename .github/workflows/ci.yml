@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  static-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install validation tools
+        run: sudo apt-get update && sudo apt-get install -y gettext
+      - name: Check shell syntax and USB detection
+        run: |
+          sh -n luci-app-mt5700m/root/etc/hotplug.d/usb/60-mt5700m
+          sh -n luci-app-mt5700m/root/etc/init.d/mt5700m-manager
+          sh -n luci-app-mt5700m/root/etc/uci-defaults/90-mt5700m
+          sh -n luci-app-mt5700m/root/usr/libexec/rpcd/mt5700m
+          sh -n luci-app-mt5700m/root/usr/sbin/mt5700m-at
+          sh -n luci-app-mt5700m/root/usr/sbin/mt5700m-manager
+          sh -n luci-app-mt5700m/root/usr/share/mt5700m/usb.sh
+          sh luci-app-mt5700m/tests/test-usb-detection.sh
+      - name: Check LuCI JavaScript syntax
+        run: find luci-app-mt5700m/htdocs -type f -name '*.js' -print0 | xargs -0 -n1 node --check
+      - name: Validate JSON metadata
+        run: |
+          jq empty luci-app-mt5700m/root/usr/share/luci/menu.d/luci-app-mt5700m.json
+          jq empty luci-app-mt5700m/root/usr/share/rpcd/acl.d/luci-app-mt5700m.json
+      - name: Validate translations
+        run: msgfmt --check --check-format -o /dev/null luci-app-mt5700m/po/zh_Hans/mt5700m.po
