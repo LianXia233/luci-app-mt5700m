@@ -4,6 +4,7 @@
 		"read": {
 			"uci": [ "mt5700m" ],
 			"ubus": {
+				"mt5700m-traffic": [ "summary" ],
 				"file": [ "exec" ],
 				"mt5700m": [ "status", "log" ],
 				"network.device": [ "status" ]

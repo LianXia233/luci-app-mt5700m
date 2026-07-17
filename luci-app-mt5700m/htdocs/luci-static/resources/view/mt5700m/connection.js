@@ -44,46 +44,6 @@ var callRedial = rpc.declare({
 	expect: { }
 });
 
-function csvValues(text, prefix) {
-	var line = (text || '').split(/\n/).filter(function(item) { return item.indexOf(prefix) === 0; })[0] || '';
-	return line.substring(prefix.length).replace(/^[ :]+/, '').replace(/"/g, '').split(',').map(function(value) { return value.trim(); });
-}
-
-function hexIPv4(value) {
-	if (!/^[0-9a-f]{8}$/i.test(value || ''))
-		return '';
-	return [ 6, 4, 2, 0 ].map(function(offset) { return parseInt(value.substr(offset, 2), 16); }).join('.');
-}
-
-function hexNumber(value) {
-	value = String(value || '').replace(/^0x/i, '');
-	if (!/^[0-9a-f]+$/i.test(value))
-		return 0;
-	if (value.length <= 8)
-		return parseInt(value, 16);
-	return parseInt(value.slice(0, -8), 16) * 4294967296 + parseInt(value.slice(-8), 16);
-}
-
-function formatBytes(value) {
-	var units = [ 'B', 'KiB', 'MiB', 'GiB', 'TiB' ], index = 0;
-	value = Number(value) || 0;
-	while (value >= 1024 && index < units.length - 1) { value /= 1024; index++; }
-	return (index ? value.toFixed(value >= 10 ? 1 : 2) : String(Math.floor(value))) + ' ' + units[index];
-}
-
-function formatDuration(seconds) {
-	seconds = Math.max(0, Number(seconds) || 0);
-	var days = Math.floor(seconds / 86400), hours = Math.floor(seconds % 86400 / 3600), minutes = Math.floor(seconds % 3600 / 60);
-	return (days ? days + _('d') + ' ' : '') + (hours ? hours + _('h') + ' ' : '') + minutes + _('min');
-}
-
-function formatRate(value) {
-	value = Number(value) || 0;
-	if (value >= 1000000000) return (value / 1000000000).toFixed(2) + ' Gbps';
-	if (value >= 1000000) return (value / 1000000).toFixed(1) + ' Mbps';
-	return value ? Math.round(value / 1000) + ' Kbps' : '--';
-}
-
 function parseContexts(raw, activationRaw) {
 	var active = {};
 	(activationRaw || '').split(/\n/).forEach(function(line) {
@@ -96,13 +56,6 @@ function parseContexts(raw, activationRaw) {
 	}).filter(Boolean);
 }
 
-function parseDetailedSessions(raw) {
-	return (raw || '').split(/\n/).map(function(line) {
-		var match = line.match(/^\^DCONNSTAT:\s*(\d+)(?:[,，]["“”]?([^,"“”]*)["“”]?[,，](\d+)[,，](\d+)[,，](\d+)(?:[,，](\d+))?)?/);
-		return match ? { cid:match[1], apn:match[2] || '', ipv4:match[3] === '1', ipv6:match[4] === '1', type:match[5] || '', ethernet:match[6] === '1' } : null;
-	}).filter(function(item) { return item && item.apn; });
-}
-
 return view.extend({
 	load: function() {
 		return uci.load('mt5700m').then(L.bind(function() {
@@ -111,7 +64,7 @@ return view.extend({
 				return Promise.all([
 					Promise.resolve(this.manager),
 					callDeviceStatus(this.manager.network || '').catch(function() { return {}; }),
-					fs.exec('/usr/sbin/mt5700m-at', [ 'advanced', 'connection' ]).catch(function(err) { return { stdout: '', stderr: err.message || String(err) }; })
+					fs.exec('/usr/sbin/mt5700m-at', [ 'advanced', 'connection-settings' ]).catch(function(err) { return { stdout: '', stderr: err.message || String(err) }; })
 				]);
 			}, this));
 		}, this));
@@ -132,14 +85,13 @@ return view.extend({
 			'.mtconn-value{font-size:14px;font-weight:650;word-break:break-word}',
 			'.mtconn-actions{display:flex;flex-wrap:wrap;gap:9px;margin:0 0 18px}',
 			'.mtconn-actions .btn{border-radius:9px}',
-			'.mtconn-session{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:16px 0}.mtconn-panel{padding:16px;border:1px solid var(--border-color-medium,#d9dde4);border-radius:13px;background:var(--background-color-high,#fff)}.mtconn-panel h3{margin:0 0 5px;font-size:15px}.mtconn-panel-desc{margin:0 0 11px;color:var(--text-color-medium,#69717d);font-size:11px;line-height:1.45}.mtconn-panel-row{display:flex;justify-content:space-between;gap:14px;padding:8px 0;border-bottom:1px solid var(--border-color-low,#edf0f4);font-size:12px}.mtconn-panel-row:last-child{border-bottom:0}.mtconn-panel-row span{color:var(--text-color-medium,#69717d)}.mtconn-panel-row strong{text-align:right;word-break:break-all}.mtconn-panel-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}',
 			'.mtconn-pdp{margin:16px 0;padding:16px;border:1px solid var(--border-color-medium,#d9dde4);border-radius:13px;background:var(--background-color-high,#fff)}.mtconn-pdp-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px}.mtconn-pdp-head h3{font-size:15px;margin:0 0 4px}.mtconn-pdp-head p{font-size:11px;color:var(--text-color-medium,#69717d);margin:0;line-height:1.45}.mtconn-pdp-row{display:grid;grid-template-columns:58px 100px 1fr 90px auto;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--border-color-low,#edf0f4);font-size:12px}.mtconn-pdp-state{font-weight:650;color:#7b8794}.mtconn-pdp-state.on{color:#08775d}.mtconn-pdp-actions{display:flex;gap:6px;justify-content:flex-end}',
 			'.mtconn-config{margin:16px 0;padding:18px 20px;border:1px solid var(--border-color-medium,#d9dde4);border-radius:13px;background:var(--background-color-high,#fff)}.mtconn-config-head{margin-bottom:10px}.mtconn-config-head h3{margin:0 0 5px;font-size:16px}.mtconn-config-head p{margin:0;color:var(--text-color-medium,#69717d);font-size:12px;line-height:1.5}.mtconn-config .cbi-map>h2,.mtconn-config .cbi-map-descr,.mtconn-config .cbi-section>h3{display:none}.mtconn-config .cbi-section{margin:0;padding:0;border:0;box-shadow:none}.mtconn-config .cbi-section-node{padding:0}.mtconn-config .cbi-value{padding:9px 0;border-bottom:1px solid var(--border-color-low,#edf0f4)}.mtconn-config .cbi-value:last-child{border-bottom:0}',
 			'.mtconn-advanced-body{padding:0 18px 18px}.mtconn-advanced-body .mtconn-pdp{border:0;padding:0;margin:18px 0 0;box-shadow:none}.mtconn-advanced-body .mt-control-section{margin-top:18px}',
 			'.mtconn-log{margin-top:16px;border:1px solid var(--border-color-medium,#d9dde4);border-radius:11px;background:var(--background-color-high,#fff)}',
 			'.mtconn-log summary{cursor:pointer;padding:13px 15px;font-weight:650}',
 			'.mtconn-log pre{max-height:260px;overflow:auto;margin:0;padding:14px 15px;border-top:1px solid var(--border-color-low,#edf0f4);font-size:11px;white-space:pre-wrap}',
-			'@media(max-width:720px){.mtconn-hero{display:block}.mtconn-state{margin-top:14px}.mtconn-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.mtconn-session{grid-template-columns:1fr}.mtconn-pdp-row{grid-template-columns:48px 80px 1fr}.mtconn-pdp-row .mtconn-pdp-state,.mtconn-pdp-actions{grid-column:3}.mtconn-config{padding:16px}}',
+			'@media(max-width:720px){.mtconn-hero{display:block}.mtconn-state{margin-top:14px}.mtconn-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.mtconn-pdp-row{grid-template-columns:48px 80px 1fr}.mtconn-pdp-row .mtconn-pdp-state,.mtconn-pdp-actions{grid-column:3}.mtconn-config{padding:16px}}',
 			'@media(max-width:420px){.mtconn-facts{grid-template-columns:1fr}}'
 		].join(''));
 	},
@@ -149,10 +101,6 @@ return view.extend({
 			E('div', { 'class': 'mtconn-label' }, label),
 			E('div', { 'class': 'mtconn-value' }, value || '--')
 		]);
-	},
-
-	panelRow: function(label, value) {
-		return E('div', { 'class': 'mtconn-panel-row' }, [ E('span', {}, label), E('strong', {}, value || '--') ]);
 	},
 
 	editPdp: function(context) {
@@ -289,60 +237,19 @@ return view.extend({
 		var moduleAuth = controls.select([['0',_('None')],['1','PAP'],['2','CHAP']], autoMatch ? autoMatch[7] : '0');
 		var postRouteValue = controls.pick(interfaceRaw, /PostRoute:\s*(\d+)/, '');
 		var dmzValue = controls.pick(interfaceRaw, /Dmz:\s*([^\n]+)/, '').trim();
-		var postRoute = controls.select([['2',_('Disabled')],['1',_('Enabled')]], postRouteValue === '1' ? '1' : '2');
+		var postRouteKnown = postRouteValue === '1' || postRouteValue === '2';
+		var postRouteOptions = [['2',_('Disabled')],['1',_('Enabled')]];
+		if (!postRouteKnown)
+			postRouteOptions.unshift(['', postRouteValue ? _('Unsupported value: %s').format(postRouteValue) : _('Unavailable')]);
+		var postRoute = controls.select(postRouteOptions, postRouteKnown ? postRouteValue : '');
+		postRoute.disabled = !postRouteKnown;
 		var dmz = E('input', { 'class':'cbi-input-text', 'placeholder':'192.168.8.100', 'value':dmzValue.indexOf('not cfg') < 0 ? dmzValue : '' });
-		var ndis = csvValues(controls.section(moduleRaw, 'Data session'), '^NDISSTATQRY');
-		var detailedSessions = parseDetailedSessions(controls.section(moduleRaw, 'Detailed sessions'));
-		var directIpValue = controls.pick(controls.section(moduleRaw, 'Direct IP'), /\^SETDIRECTIP:\s*(\d+)/, '0');
-		var directIp = controls.select([['0',_('Disabled')],['1',_('Enabled')]], directIpValue);
-		var dhcp4 = csvValues(controls.section(moduleRaw, 'IPv4 lease'), '^DHCP');
-		var dhcp6 = csvValues(controls.section(moduleRaw, 'IPv6 lease'), '^DHCPV6');
-		var capability = controls.pick(controls.section(moduleRaw, 'IP capability'), /\^IPV6CAP:\s*(\w+)/, '');
-		var flow = csvValues(controls.section(moduleRaw, 'Data flow'), '^DSFLOWQRY');
-		var mtu = csvValues(controls.section(moduleRaw, 'MTU'), '^CGMTU');
-		var pdpAddress = csvValues(controls.section(moduleRaw, 'PDP address'), '+CGPADDR');
+		var directIpValue = controls.pick(controls.section(moduleRaw, 'Direct IP'), /\^SETDIRECTIP:\s*(\d+)/, '');
+		var directIpKnown = directIpValue === '0' || directIpValue === '1';
+		var directIpOptions = directIpKnown ? [['0',_('Disabled')],['1',_('Enabled')]] : [['',_('Unavailable')]];
+		var directIp = controls.select(directIpOptions, directIpKnown ? directIpValue : '');
+		directIp.disabled = !directIpKnown;
 		var contexts = parseContexts(controls.section(moduleRaw, 'PDP contexts'), controls.section(moduleRaw, 'PDP activation'));
-		var ipv4Connected = ndis[0] === '1' && ndis[4] === 'IPV4';
-		var ipv6Connected = ndis[5] === '1' && ndis[8] === 'IPV6';
-		var capabilityNames = { '1':_('IPv4 only'), '2':_('IPv6 only'), '7':_('IPv4 / IPv6 · same APN'), '0B':_('IPv4 / IPv6 · separate APNs'), '0b':_('IPv4 / IPv6 · separate APNs') };
-		var sessionPanels = E('div', { 'class':'mtconn-session' }, [
-			E('section', { 'class':'mtconn-panel mt-ui-card' }, [
-				E('h3', {}, _('Network session')),
-				E('p', { 'class':'mtconn-panel-desc' }, _('Addresses and DNS supplied directly by the MT5700M mobile network session.')),
-				self.panelRow('IPv4', ipv4Connected ? _('Connected') : _('Disconnected')),
-				self.panelRow(_('IPv4 address'), hexIPv4(dhcp4[0]) || pdpAddress[1]),
-				self.panelRow(_('IPv4 gateway'), hexIPv4(dhcp4[2])),
-				self.panelRow(_('IPv4 DNS'), [ hexIPv4(dhcp4[4]), hexIPv4(dhcp4[5]) ].filter(Boolean).join(' · ')),
-				self.panelRow('IPv6', ipv6Connected ? _('Connected') : _('Disconnected')),
-				self.panelRow(_('IPv6 address'), dhcp6[0]),
-				self.panelRow(_('IPv6 DNS'), [ dhcp6[4], dhcp6[5] ].filter(function(value) { return value && value !== '::'; }).join(' · ')),
-				self.panelRow(_('IP capability'), capabilityNames[capability] || capability),
-				self.panelRow('MTU', mtu[1] && mtu[1] !== '0' ? mtu[1] : _('Network default'))
-			]),
-			E('section', { 'class':'mtconn-panel mt-ui-card' }, [
-				E('h3', {}, _('Session usage')),
-				E('p', { 'class':'mtconn-panel-desc' }, _('Counters are maintained by the module and are independent of OpenWrt interface statistics.')),
-				self.panelRow(_('Current session duration'), formatDuration(hexNumber(flow[0]))),
-				self.panelRow(_('Current transmitted'), formatBytes(hexNumber(flow[1]))),
-				self.panelRow(_('Current received'), formatBytes(hexNumber(flow[2]))),
-				self.panelRow(_('Total duration'), formatDuration(hexNumber(flow[3]))),
-				self.panelRow(_('Total transmitted'), formatBytes(hexNumber(flow[4]))),
-				self.panelRow(_('Total received'), formatBytes(hexNumber(flow[5]))),
-				self.panelRow(_('Network maximum downlink'), formatRate(dhcp4[6] || dhcp6[6])),
-				self.panelRow(_('Network maximum uplink'), formatRate(dhcp4[7] || dhcp6[7])),
-				E('div', { 'class':'mtconn-panel-actions' }, E('button', { 'class':'btn', 'click':function() {
-					controls.confirmRun(_('Clear module traffic counters'), _('This permanently clears current and accumulated MT5700M data-flow counters.'), [ 'flow-clear' ]);
-				} }, _('Clear counters')))
-			])
-		]);
-		if (detailedSessions.length)
-			sessionPanels.appendChild(E('section', { 'class':'mtconn-panel mt-ui-card', 'style':'grid-column:1/-1' }, [
-				E('h3', {}, _('Module data sessions')),
-				E('p', { 'class':'mtconn-panel-desc' }, _('Active PDP sessions reported by the MT5700M firmware.'))
-			].concat(detailedSessions.map(function(item) {
-				var type = item.type === '1' ? _('Module application') : item.type === '2' ? _('Host NDIS') : _('Other');
-				return self.panelRow('CID ' + item.cid + ' · ' + (item.apn || _('Carrier default')), [item.ipv4 ? 'IPv4' : '', item.ipv6 ? 'IPv6' : '', item.ethernet ? _('Ethernet') : '', type].filter(Boolean).join(' · '));
-			}))));
 		var pdpPanel = E('section', { 'class':'mtconn-pdp mt-ui-card' }, [
 			E('div', { 'class':'mtconn-pdp-head' }, [
 				E('div', {}, [ E('h3', {}, _('Module PDP contexts')), E('p', {}, _('Advanced module-native profiles. IMS contexts are protected from editing; normal OpenWrt users should configure APN in the dialing profile above.')) ]),
@@ -382,15 +289,15 @@ return view.extend({
 				]),
 				controls.card(_('Inbound routing'), _('Optional module-side forwarding for devices connected behind the MT5700M data path.'), [
 					controls.row(_('IP passthrough'), directIp),
-					E('div', { 'class':'mt-control-note' }, _('IP passthrough is an original-manager compatibility feature. Keep it disabled when OpenWrt owns the mobile connection.')),
-					controls.action(_('Apply IP passthrough'), function() {
+					E('div', { 'class':'mt-control-note' }, directIpKnown ? _('IP passthrough is an original-manager compatibility feature. Keep it disabled when OpenWrt owns the mobile connection.') : _('This MT5700M firmware does not expose a readable IP passthrough setting. The control is disabled to prevent false success reports.')),
+					directIpKnown ? controls.action(_('Apply IP passthrough'), function() {
 						controls.confirmRun(_('Change IP passthrough'), _('Changing passthrough can remove the module management address and interrupt connectivity.'), [ 'advanced-set', 'direct-ip', directIp.value ], true);
-					}),
+					}) : null,
 					controls.row(_('Post-routing'), postRoute),
 					E('div', { 'class':'mt-control-note' }, _('Post-routing and DMZ are mutually exclusive. Leave both disabled unless the module itself is providing the downstream LAN.')),
-					controls.action(_('Apply post-routing'), function() {
+					postRouteKnown ? controls.action(_('Apply post-routing'), function() {
 						controls.confirmRun(_('Change post-routing'), _('The module must restart or cycle airplane mode before the new routing path is used.'), [ 'advanced-set', 'postroute', postRoute.value ], true);
-					}),
+					}) : E('div', { 'class':'mt-control-note' }, _('The modem reported a post-routing value that this firmware cannot safely change.')),
 					controls.row(_('DMZ address'), dmz),
 					controls.action(_('Apply DMZ'), function() {
 						controls.confirmRun(_('Change DMZ host'), _('The selected IPv4 host may be exposed to unsolicited traffic from the mobile network.'), [ 'advanced-set', 'dmz', dmz.value.trim() || '0' ]);
@@ -417,8 +324,8 @@ return view.extend({
 				E('div', { 'class': 'mtconn-facts' }, [
 					self.fact(_('Automatic dialing'), uci.get('mt5700m', 'connection', 'enabled') === '0' ? _('Disabled') : _('Enabled')),
 					self.fact(_('Network interface'), manager.network),
-					self.fact('IPv4', ipv4Connected ? _('Connected') : _('Disconnected')),
-					self.fact('IPv6', ipv6Connected ? _('Connected') : _('Disconnected'))
+					self.fact(_('IP protocol'), uci.get('mt5700m', 'connection', 'pdp_type') || 'ipv4v6'),
+					self.fact(_('Route metric'), uci.get('mt5700m', 'connection', 'metric') || '50')
 				]),
 				E('div', { 'class': 'mtconn-actions' }, online ? [
 					E('button', { 'class': 'btn cbi-button-action', 'click': function() { return self.runAction(callRedial, _('Redial started.'), _('The 5G connection will be interrupted briefly while the modem redials.')); } }, _('Redial')),
@@ -433,7 +340,6 @@ return view.extend({
 					]),
 					formNode
 				]),
-				sessionPanels,
 				E('details', { 'class':'mtconn-advanced mt-ui-details' }, [
 					E('summary', {}, [
 						E('span', { 'class':'mt-ui-summary-copy' }, [

@@ -197,9 +197,10 @@ return view.extend({
 		]);
 	},
 
-	lockPanel: function(title, rat) {
+	lockPanel: function(title, rat, currentType) {
 		var self = this;
 		var type = E('select', { 'class':'cbi-input-select' }, [E('option',{'value':'3'},_('Band Lock')),E('option',{'value':'1'},_('ARFCN Lock')),E('option',{'value':'2'},_('Cell Lock')),E('option',{'value':'0'},_('Remove Lock'))]);
+		type.value = /^(0|1|2|3)$/.test(currentType || '') ? currentType : '0';
 		var bands = E('input', { 'class':'cbi-input-text','placeholder':rat==='nr'?'78,41':'3,8','inputmode':'numeric' });
 		var arfcns = E('input', { 'class':'cbi-input-text','placeholder':rat==='nr'?'630000,520000':'1850,3450','inputmode':'numeric' });
 		var scs = E('input', { 'class':'cbi-input-text','placeholder':'1,1','inputmode':'numeric' });
@@ -217,7 +218,7 @@ return view.extend({
 				if(rat==='nr'&&(t==='1'||t==='2')&&!csvInRange(values[2],0,4))return ui.addNotification(null,E('p',{},_('NR SCS type must be between 0 and 4.')),'warning');
 				if(t==='2'&&!csvInRange(values[3],0,rat==='nr'?1007:503))return ui.addNotification(null,E('p',{},_('PCI is outside the valid range for the selected radio technology.')),'warning');
 				var args=rat==='nr'?['lock',rat,t,values[0],values[1],values[2],values[3]]:['lock',rat,t,values[0],values[1],values[3]];
-				ui.showModal(_('Confirm frequency change'),[E('p',{},t==='0'?_('Remove the current %s frequency lock? The change takes effect after an airplane-mode cycle or module restart.').format(rat.toUpperCase()):_('Apply this %s frequency lock? The change takes effect after an airplane-mode cycle or module restart.').format(rat.toUpperCase())),E('div',{'class':'right'},[E('button',{'type':'button','class':'btn','click':ui.hideModal},_('Cancel')),' ',E('button',{'type':'button','class':'btn cbi-button-negative','click':function(){ui.hideModal();fs.exec('/usr/sbin/mt5700m-at',args).then(function(){ui.addNotification(null,E('p',{},_('Frequency lock saved. Restart the module or cycle airplane mode to apply it.')));window.setTimeout(function(){window.location.reload();},900);},function(err){ui.addNotification(null,E('p',{},err.message||_('The modem rejected this setting.')),'danger');});}},t==='0'?_('Remove Lock'):_('Apply Lock'))])]);
+				ui.showModal(_('Confirm frequency change'),[E('p',{},[t==='0'?_('Remove the current %s frequency lock?').format(rat.toUpperCase()):_('Apply this %s frequency lock? Mobile connectivity may reconnect.').format(rat.toUpperCase()),' ',_('Mobile service will disconnect briefly while the module enters airplane mode.')]),E('div',{'class':'right'},[E('button',{'type':'button','class':'btn','click':ui.hideModal},_('Cancel')),' ',E('button',{'type':'button','class':'btn cbi-button-negative','click':function(){ui.hideModal();fs.exec('/usr/sbin/mt5700m-at',args).then(function(){ui.addNotification(null,E('p',{},_('Frequency lock updated.')));window.setTimeout(function(){window.location.reload();},2500);},function(err){ui.addNotification(null,E('p',{},err.message||_('The modem rejected this setting.')),'danger');});}},t==='0'?_('Remove Lock'):_('Apply Lock'))])]);
 		}
 		type.addEventListener('change',update);
 		var body=[field('type',_('Lock Type'),type,_('Choose the least restrictive mode that meets your need.')),field('bands',_('Bands'),bands,_('Use numbers separated by commas.')),field('arfcns',_('ARFCNs'),arfcns,_('One ARFCN for each band.'))];
@@ -427,7 +428,7 @@ return view.extend({
 			]),
 			radioControls,
 			E('section', { 'class':'mt-freq-head mt-ui-card' }, [E('h3',{},_('Frequency and cell selection')),E('p',{},_('Advanced controls for limiting LTE or 5G NR bands, frequencies and cells. Leave these unlocked for normal automatic network selection.'))]),
-			E('div', { 'class':'mt-freq-grid' }, [this.lockPanel(_('LTE network'),'lte'),this.lockPanel(_('5G NR network'),'nr')])
+			E('div', { 'class':'mt-freq-grid' }, [this.lockPanel(_('LTE network'),'lte',lteLock[0]),this.lockPanel(_('5G NR network'),'nr',nrLock[0])])
 		]);
 	},
 

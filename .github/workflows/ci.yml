@@ -18,10 +18,15 @@ jobs:
         run: |
           sh -n luci-app-mt5700m/root/etc/hotplug.d/usb/60-mt5700m
           sh -n luci-app-mt5700m/root/etc/init.d/mt5700m-manager
+          sh -n luci-app-mt5700m/root/etc/init.d/mt5700m-traffic
+          sh -n luci-app-mt5700m/root/etc/hotplug.d/net/95-mt5700m-traffic
           sh -n luci-app-mt5700m/root/etc/uci-defaults/90-mt5700m
+          sh -n luci-app-mt5700m/root/etc/uci-defaults/92-mt5700m-traffic
           sh -n luci-app-mt5700m/root/usr/libexec/rpcd/mt5700m
+          sh -n luci-app-mt5700m/root/usr/libexec/rpcd/mt5700m-traffic
           sh -n luci-app-mt5700m/root/usr/sbin/mt5700m-at
           sh -n luci-app-mt5700m/root/usr/sbin/mt5700m-manager
+          sh -n luci-app-mt5700m/root/usr/sbin/mt5700m-traffic
           sh -n luci-app-mt5700m/root/usr/share/mt5700m/usb.sh
           sh luci-app-mt5700m/tests/test-usb-detection.sh
       - name: Check LuCI JavaScript syntax

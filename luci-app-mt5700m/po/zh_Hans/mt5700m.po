@@ -2371,3 +2371,78 @@ msgstr "WCDMA 和 LTE 均需至少选择一个频段。"
 
 msgid "Apply network and band settings"
 msgstr "应用网络与频段设置"
+
+msgid "Connection and usage"
+msgstr "连接与用量"
+
+msgid "Traffic Statistics"
+msgstr "流量统计"
+
+msgid "Module traffic counters"
+msgstr "模组流量计数"
+
+msgid "Session counters reported by MT5700M firmware, independent of the local history below."
+msgstr "由 MT5700M 固件报告的会话计数，与下方本机历史统计相互独立。"
+
+msgid "Current duration"
+msgstr "本次连接时长"
+
+msgid "Current total"
+msgstr "本次连接用量"
+
+msgid "Accumulated duration"
+msgstr "模组累计时长"
+
+msgid "Accumulated total"
+msgstr "模组累计用量"
+
+msgid "Today"
+msgstr "今日流量"
+
+msgid "This month"
+msgstr "本月流量"
+
+msgid "All-time total"
+msgstr "本机累计"
+
+msgid "Last updated"
+msgstr "最后更新"
+
+msgid "Download"
+msgstr "下载"
+
+msgid "Upload"
+msgstr "上传"
+
+msgid "Download %s · Upload %s"
+msgstr "下载 %s · 上传 %s"
+
+msgid "Waiting for data"
+msgstr "等待数据"
+
+msgid "Tracked interface: %s"
+msgstr "采集接口：%s"
+
+msgid "Recent 7 days"
+msgstr "最近 7 天"
+
+msgid "Local history"
+msgstr "本机历史"
+
+msgid "Download and upload recorded on the MT5700M data interface."
+msgstr "记录 MT5700M 数据接口的下载与上传流量。"
+
+msgid "Monthly usage"
+msgstr "月度用量"
+
+msgid "Recent monthly totals retained automatically."
+msgstr "自动保留最近各月的流量汇总。"
+
+msgid "No monthly history yet"
+msgstr "暂无月度记录"
+
+msgid "Statistics appear after the MT5700M data interface has carried traffic for a few minutes."
+msgstr "MT5700M 数据接口产生流量数分钟后，这里将显示统计记录。"
+
+msgid "Traffic is counted on the MT5700M physical data interface, includes IPv4 and IPv6, and stays only on this router."
+msgstr "流量按 MT5700M 物理数据接口统计，包含 IPv4 与 IPv6；全部记录仅保存在本路由器。"

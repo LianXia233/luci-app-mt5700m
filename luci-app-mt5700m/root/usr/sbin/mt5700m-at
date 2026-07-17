@@ -115,14 +115,28 @@ detect_mt5700m_at_port() {
 at_network_cmd() {
 	local command="$1"
 	local target_host="${2:-${host}}"
+	local response rc
 
 	if command -v nc >/dev/null 2>&1; then
-		printf '%s\r' "${command}" | run_with_timeout "${timeout_s}" nc "${target_host}" "${port}" 2>/dev/null
+		response="$(printf '%s\r' "${command}" | run_with_timeout "${timeout_s}" nc "${target_host}" "${port}" 2>/dev/null)"
+		rc=$?
+		[ -n "${response}" ] && printf '%s\n' "${response}"
+		[ "${rc}" -eq 0 ] || return "${rc}"
+		at_response_ok "${response}"
 		return $?
 	fi
 
 	echo "nc command not found" >&2
 	return 127
+}
+
+at_response_ok() {
+	# A completed transport request is not necessarily an accepted AT command.
+	# Propagate final modem errors so LuCI never reports a rejected setting as
+	# successfully applied. Some ubus-at-daemon versions preserve escaped line
+	# endings, so do not require the final result token to start on a clean line.
+	printf '%s\n' "$1" | grep -Fq 'ERROR' && return 1
+	return 0
 }
 
 at_ubus_cmd() {
@@ -150,7 +164,8 @@ at_ubus_cmd() {
 
 	response="$(printf '%s' "${result}" | jsonfilter -e '@.response' 2>/dev/null)"
 	[ -n "${response}" ] && printf '%s\n' "${response}"
-	return 0
+	at_response_ok "${response}"
+	return $?
 }
 
 at_serial_cmd() {
@@ -180,7 +195,8 @@ at_serial_cmd() {
 			kill "${reader}" 2>/dev/null || true
 			wait "${reader}" 2>/dev/null || true
 			rm -f "${tmp}"
-			return 0
+			at_response_ok "${output}"
+			return $?
 		fi
 		sleep 1
 		elapsed=$((elapsed + 1))
@@ -499,6 +515,58 @@ build_nr_lock_command() {
 			return 64
 			;;
 	esac
+}
+
+apply_frequency_lock() {
+	local rat="$1" lock_type="$2" lock_cmd="$3"
+	local query prefix raw current previous restore attempt
+
+	case "${rat}" in
+		lte)
+			query='AT^LTEFREQLOCK?'
+			prefix='\^LTEFREQLOCK'
+			;;
+		nr)
+			query='AT^NRFREQLOCK?'
+			prefix='\^NRFREQLOCK'
+			;;
+		*)
+			return 64
+			;;
+	esac
+
+	raw="$(at_cmd 'AT+CFUN?' || true)"
+	previous="$(printf '%s\n' "${raw}" | first_match 's/^+CFUN:[[:space:]]*//p' | clean_value)"
+	case "${previous}" in 0|1) ;; *) previous=1 ;; esac
+
+	at_cmd "${lock_cmd}" >/dev/null || return 1
+
+	# MT5700M stores a frequency-lock change immediately but does not expose
+	# the new active state until the radio function level has been cycled.
+	# Keep an existing airplane-mode session offline; otherwise briefly cycle
+	# the radio and wait for the AT service to become responsive again.
+	if [ "${previous}" = '1' ]; then
+		at_cmd 'AT+CFUN=0' >/dev/null || return 1
+		sleep 1
+		at_cmd 'AT+CFUN=1' >/dev/null || return 1
+	fi
+
+	restore="${previous}"
+	attempt=0
+	while [ "${attempt}" -lt 8 ]; do
+		raw="$(at_cmd "${query}" || true)"
+		current="$(printf '%s\n' "${raw}" | first_match "s/^${prefix}:[[:space:]]*//p" | clean_value | cut -d, -f1)"
+		[ "${current}" = "${lock_type}" ] && {
+			printf '%s\n' "${raw}"
+			return 0
+		}
+		[ "${restore}" = '0' ] && break
+		sleep 2
+		attempt=$((attempt + 1))
+	done
+
+	echo "MT5700M frequency lock verification failed: expected ${lock_type}, got ${current:-no response}" >&2
+	return 1
 }
 
 print_signal() {
@@ -867,7 +935,7 @@ print_advanced_info() {
 	local group="${1:-all}" items label command raw
 
 	case "${group}" in
-	connection)
+		connection)
 			items='Auto dial|AT^SETAUTODIAL?
 Interface mode|AT^TDCFG?
 PDP contexts|AT+CGDCONT?
@@ -875,6 +943,23 @@ PDP activation|AT+CGACT?
 Data session|AT^NDISSTATQRY?
 Detailed sessions|AT^DCONNSTAT?
 Direct IP|AT^SETDIRECTIP?
+IPv4 lease|AT^DHCP?
+IPv6 lease|AT^DHCPV6?
+IP capability|AT^IPV6CAP?
+Data flow|AT^DSFLOWQRY
+MTU|AT^CGMTU=1
+PDP address|AT+CGPADDR=1'
+			;;
+		connection-settings)
+			items='Auto dial|AT^SETAUTODIAL?
+Interface mode|AT^TDCFG?
+PDP contexts|AT+CGDCONT?
+PDP activation|AT+CGACT?
+Direct IP|AT^SETDIRECTIP?'
+			;;
+		session)
+			items='Data session|AT^NDISSTATQRY?
+Detailed sessions|AT^DCONNSTAT?
 IPv4 lease|AT^DHCP?
 IPv6 lease|AT^DHCPV6?
 IP capability|AT^IPV6CAP?
@@ -1405,14 +1490,20 @@ case "${1:-status}" in
 		;;
 	lock)
 		lock_cmd=''
+		lock_rat=''
+		lock_type=''
 		shift
 		case "${1:-}" in
 			lte)
+				lock_rat='lte'
 				shift
+				lock_type="${1:-0}"
 				lock_cmd="$(build_lte_lock_command "$@")" || exit 64
 				;;
 			nr)
+				lock_rat='nr'
 				shift
+				lock_type="${1:-0}"
 				lock_cmd="$(build_nr_lock_command "$@")" || exit 64
 				;;
 			*)
@@ -1421,7 +1512,7 @@ case "${1:-status}" in
 				;;
 		esac
 		[ -n "${lock_cmd}" ] || exit 64
-		at_cmd "${lock_cmd}"
+		apply_frequency_lock "${lock_rat}" "${lock_type}" "${lock_cmd}"
 		;;
 	restart)
 		at_cmd 'AT^RESET'
@@ -1438,4 +1529,4 @@ case "${1:-status}" in
 		;;
 esac
 
-exit 0
+exit $?

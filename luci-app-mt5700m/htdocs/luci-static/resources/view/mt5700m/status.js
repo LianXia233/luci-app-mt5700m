@@ -6,13 +6,90 @@
 'require mt5700m.controls as controls';
 
 var callManagerStatus = rpc.declare({ object: 'mt5700m', method: 'status', expect: { } });
+var callTraffic = rpc.declare({ object: 'mt5700m-traffic', method: 'summary', expect: { } });
+
+function csvValues(text, prefix) {
+	var line = (text || '').split(/\n/).filter(function(item) { return item.indexOf(prefix) === 0; })[0] || '';
+	return line.substring(prefix.length).replace(/^[ :]+/, '').replace(/"/g, '').split(',').map(function(value) { return value.trim(); });
+}
+
+function hexIPv4(value) {
+	if (!/^[0-9a-f]{8}$/i.test(value || ''))
+		return '';
+	return [ 6, 4, 2, 0 ].map(function(offset) { return parseInt(value.substr(offset, 2), 16); }).join('.');
+}
+
+function hexNumber(value) {
+	value = String(value || '').replace(/^0x/i, '');
+	if (!/^[0-9a-f]+$/i.test(value))
+		return 0;
+	if (value.length <= 8)
+		return parseInt(value, 16);
+	return parseInt(value.slice(0, -8), 16) * 4294967296 + parseInt(value.slice(-8), 16);
+}
+
+function formatBytes(value) {
+	var units = [ 'B', 'KiB', 'MiB', 'GiB', 'TiB' ], index = 0;
+	value = Math.max(0, Number(value) || 0);
+	while (value >= 1024 && index < units.length - 1) { value /= 1024; index++; }
+	return (index ? value.toFixed(value >= 10 ? 1 : 2) : String(Math.round(value))) + ' ' + units[index];
+}
+
+function formatDuration(seconds) {
+	seconds = Math.max(0, Number(seconds) || 0);
+	var days = Math.floor(seconds / 86400), hours = Math.floor(seconds % 86400 / 3600), minutes = Math.floor(seconds % 3600 / 60);
+	return (days ? days + _('d') + ' ' : '') + (hours ? hours + _('h') + ' ' : '') + minutes + _('min');
+}
+
+function formatRate(value) {
+	value = Number(value) || 0;
+	if (value >= 1000000000) return (value / 1000000000).toFixed(2) + ' Gbps';
+	if (value >= 1000000) return (value / 1000000).toFixed(1) + ' Mbps';
+	return value ? Math.round(value / 1000) + ' Kbps' : '--';
+}
+
+function trafficTotal(item) {
+	return (Number(item && item.rx) || 0) + (Number(item && item.tx) || 0);
+}
+
+function trafficDateKey(item, monthly) {
+	var date = item && item.date || {};
+	var month = String(date.month || 0).padStart(2, '0');
+	var day = String(date.day || 0).padStart(2, '0');
+	return monthly ? [ date.year || 0, month ].join('-') : [ date.year || 0, month, day ].join('-');
+}
+
+function sortedTraffic(items, monthly) {
+	return (items || []).slice().sort(function(a, b) { return trafficDateKey(a, monthly).localeCompare(trafficDateKey(b, monthly)); });
+}
+
+function currentTraffic(items, monthly) {
+	var now = new Date();
+	var key = monthly
+		? [ now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0') ].join('-')
+		: [ now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0') ].join('-');
+	return (items || []).filter(function(item) { return trafficDateKey(item, monthly) === key; })[0] || {};
+}
+
+function trafficUpdated(iface) {
+	var value = iface && iface.updated;
+	if (!value || !value.date || value.date.year < 2024)
+		return _('Waiting for data');
+	return '%04d-%02d-%02d %02d:%02d'.format(value.date.year || 0, value.date.month || 0,
+		value.date.day || 0, value.time && value.time.hour || 0, value.time && value.time.minute || 0);
+}
 
 return view.extend({
 	load: function() {
-		return Promise.all([
-			fs.exec('/usr/sbin/mt5700m-at', [ 'status' ]).catch(function(err) { return { stdout:'', stderr:err.message || String(err) }; }),
-			callManagerStatus().catch(function() { return {}; })
-		]).then(function(results) { return { native:results[0], manager:results[1] }; });
+		return callManagerStatus().catch(function() { return {}; }).then(function(manager) {
+			return Promise.all([
+				fs.exec('/usr/sbin/mt5700m-at', [ 'status' ]).catch(function(err) { return { stdout:'', stderr:err.message || String(err) }; }),
+				fs.exec('/usr/sbin/mt5700m-at', [ 'advanced', 'session' ]).catch(function(err) { return { stdout:'', stderr:err.message || String(err) }; }),
+				callTraffic().catch(function() { return { interfaces:[] }; })
+			]).then(function(results) {
+				return { native:results[0], session:results[1], traffic:results[2], manager:manager };
+			});
+		});
 	},
 
 	parseStatus: function(res) {
@@ -105,8 +182,14 @@ return view.extend({
 			'.mt5700m-actions{display:flex;flex-wrap:wrap;align-items:center;gap:9px;margin-top:16px}',
 			'.mt5700m-actions .btn{border-radius:9px;padding:7px 14px}',
 			'.mt5700m-alert{margin:0 0 14px}',
-			'@media(max-width:760px){.mt5700m-hero{padding:20px}.mt5700m-title{font-size:23px}.mt5700m-hero-top{display:block}.mt5700m-status{margin-top:14px}.mt5700m-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.mt5700m-ambr{display:block}.mt5700m-ambr-data{grid-template-columns:repeat(2,minmax(0,1fr));max-width:none;margin-top:13px}.mt5700m-content-grid{grid-template-columns:1fr}}',
-			'@media(max-width:430px){.mt5700m-metrics{grid-template-columns:1fr}.mt5700m-ambr-data{gap:12px}.mt5700m-ca-stats{grid-template-columns:1fr}.mt5700m-carrier{display:block}.mt5700m-carrier-detail{text-align:left;margin-top:5px}.mt5700m-detail-grid{grid-template-columns:1fr}.mt5700m-detail:nth-child(odd){padding-right:0}.mt5700m-detail:nth-last-child(2){border-bottom:1px solid var(--border-color-low,#edf0f4)}}'
+			'.mt5700m-session-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}.mt5700m-overview-card{padding:17px;border:1px solid var(--border-color-medium,#d9dde4);border-radius:13px;background:var(--background-color-high,#fff);box-shadow:0 3px 12px rgba(20,32,50,.04)}',
+			'.mt5700m-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:11px}.mt5700m-card-head h3{margin:0 0 4px;font-size:15px}.mt5700m-card-head p{margin:0;color:var(--text-color-medium,#69717d);font-size:11px;line-height:1.45}.mt5700m-card-badge{padding:4px 8px;border-radius:999px;background:#eef2f6;color:#6b7480;font-size:10px;font-weight:700;white-space:nowrap}.mt5700m-card-badge.on{background:#e8f8f1;color:#087c60}',
+			'.mt5700m-session-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 18px}.mt5700m-session-row{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:8px 0;border-bottom:1px solid var(--border-color-low,#edf0f4);font-size:11px}.mt5700m-session-row span{color:var(--text-color-medium,#69717d)}.mt5700m-session-row strong{text-align:right;word-break:break-all}.mt5700m-session-actions{display:flex;justify-content:flex-end;margin-top:11px}',
+			'.mt5700m-traffic-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:12px}.mt5700m-traffic-stat{position:relative;overflow:hidden;padding:14px 15px;border:1px solid var(--border-color-medium,#d9dde4);border-radius:12px;background:var(--background-color-high,#fff)}.mt5700m-traffic-stat:before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:#0fa17d}.mt5700m-traffic-stat.blue:before{background:#337de8}.mt5700m-traffic-stat.violet:before{background:#7b68d9}.mt5700m-traffic-stat.slate:before{background:#738091}.mt5700m-traffic-label{font-size:10px;color:var(--text-color-medium,#69717d);margin-bottom:6px}.mt5700m-traffic-value{font-size:19px;font-weight:740;letter-spacing:-.02em}.mt5700m-traffic-meta{margin-top:5px;font-size:9px;line-height:1.45;color:var(--text-color-medium,#7b8490)}',
+			'.mt5700m-traffic-grid{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(270px,.75fr);gap:12px}.mt5700m-traffic-days{display:flex;flex-direction:column;gap:8px}.mt5700m-traffic-day{display:grid;grid-template-columns:56px minmax(80px,1fr) 132px;align-items:center;gap:10px;font-size:10px}.mt5700m-traffic-date{font-weight:650;color:var(--text-color-medium,#66717e)}.mt5700m-traffic-bars{display:flex;flex-direction:column;gap:3px}.mt5700m-traffic-bar{height:5px;border-radius:999px;background:var(--background-color-low,#eef1f5);overflow:hidden}.mt5700m-traffic-bar i{display:block;height:100%;min-width:2px;border-radius:inherit;background:#337de8}.mt5700m-traffic-bar.tx i{background:#16a085}.mt5700m-traffic-values{display:flex;justify-content:flex-end;gap:8px;font-variant-numeric:tabular-nums}.mt5700m-traffic-values span:first-child{color:#2f75d5}.mt5700m-traffic-values span:last-child{color:#0c9478}',
+			'.mt5700m-month-row{display:grid;grid-template-columns:62px 1fr auto;gap:8px;padding:8px 0;border-bottom:1px solid var(--border-color-low,#edf0f4);font-size:10px}.mt5700m-month-row:last-child{border-bottom:0}.mt5700m-month-row strong{text-align:right}.mt5700m-month-row small{display:block;margin-top:2px;color:var(--text-color-medium,#79828e)}.mt5700m-empty{padding:25px 14px;text-align:center;border:1px dashed var(--border-color-medium,#d6dce4);border-radius:10px;color:var(--text-color-medium,#727b87);font-size:11px}.mt5700m-privacy-note{margin:10px 0 0;color:var(--text-color-medium,#727b87);font-size:10px;line-height:1.5}',
+			'@media(max-width:760px){.mt5700m-hero{padding:20px}.mt5700m-title{font-size:23px}.mt5700m-hero-top{display:block}.mt5700m-status{margin-top:14px}.mt5700m-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.mt5700m-ambr{display:block}.mt5700m-ambr-data{grid-template-columns:repeat(2,minmax(0,1fr));max-width:none;margin-top:13px}.mt5700m-content-grid,.mt5700m-session-grid,.mt5700m-traffic-grid{grid-template-columns:1fr}.mt5700m-traffic-summary{grid-template-columns:repeat(2,minmax(0,1fr))}}',
+			'@media(max-width:430px){.mt5700m-metrics{grid-template-columns:1fr}.mt5700m-ambr-data{gap:12px}.mt5700m-ca-stats,.mt5700m-session-columns{grid-template-columns:1fr}.mt5700m-carrier{display:block}.mt5700m-carrier-detail{text-align:left;margin-top:5px}.mt5700m-detail-grid{grid-template-columns:1fr}.mt5700m-detail:nth-child(odd){padding-right:0}.mt5700m-detail:nth-last-child(2){border-bottom:1px solid var(--border-color-low,#edf0f4)}.mt5700m-traffic-day{grid-template-columns:48px 1fr}.mt5700m-traffic-values{grid-column:2;justify-content:flex-start}.mt5700m-traffic-value{font-size:16px}}'
 		].join(''));
 	},
 
@@ -275,6 +358,129 @@ return view.extend({
 		]);
 	},
 
+	parseSession: function(raw) {
+		var ndis = csvValues(controls.section(raw, 'Data session'), '^NDISSTATQRY');
+		var dhcp4 = csvValues(controls.section(raw, 'IPv4 lease'), '^DHCP');
+		var dhcp6 = csvValues(controls.section(raw, 'IPv6 lease'), '^DHCPV6');
+		var flow = csvValues(controls.section(raw, 'Data flow'), '^DSFLOWQRY');
+		var mtu = csvValues(controls.section(raw, 'MTU'), '^CGMTU');
+		var pdpAddress = csvValues(controls.section(raw, 'PDP address'), '+CGPADDR');
+		var capability = controls.pick(controls.section(raw, 'IP capability'), /\^IPV6CAP:\s*(\w+)/, '');
+		var capabilityNames = { '1':_('IPv4 only'), '2':_('IPv6 only'), '7':_('IPv4 / IPv6 · same APN'), '0B':_('IPv4 / IPv6 · separate APNs'), '0b':_('IPv4 / IPv6 · separate APNs') };
+		var detailed = (controls.section(raw, 'Detailed sessions') || '').split(/\n/).map(function(line) {
+			var match = line.match(/^\^DCONNSTAT:\s*(\d+)(?:[,，]["“”]?([^,"“”]*)["“”]?[,，](\d+)[,，](\d+)[,，](\d+)(?:[,，](\d+))?)?/);
+			return match ? { cid:match[1], apn:match[2] || '', ipv4:match[3] === '1', ipv6:match[4] === '1', type:match[5] || '', ethernet:match[6] === '1' } : null;
+		}).filter(function(item) { return item && item.apn; });
+
+		return {
+			ipv4Connected:ndis[0] === '1' && ndis[4] === 'IPV4',
+			ipv6Connected:ndis[5] === '1' && ndis[8] === 'IPV6',
+			ipv4Address:hexIPv4(dhcp4[0]) || pdpAddress[1] || '',
+			ipv4Gateway:hexIPv4(dhcp4[2]),
+			ipv4Dns:[ hexIPv4(dhcp4[4]), hexIPv4(dhcp4[5]) ].filter(Boolean).join(' · '),
+			ipv6Address:dhcp6[0] && dhcp6[0] !== '::' ? dhcp6[0] : '',
+			ipv6Dns:[ dhcp6[4], dhcp6[5] ].filter(function(value) { return value && value !== '::'; }).join(' · '),
+			capability:capabilityNames[capability] || capability,
+			mtu:mtu[1] && mtu[1] !== '0' ? mtu[1] : _('Network default'),
+			currentDuration:hexNumber(flow[0]), currentTx:hexNumber(flow[1]), currentRx:hexNumber(flow[2]),
+			totalDuration:hexNumber(flow[3]), totalTx:hexNumber(flow[4]), totalRx:hexNumber(flow[5]),
+			maximumDown:dhcp4[6] || dhcp6[6], maximumUp:dhcp4[7] || dhcp6[7], detailed:detailed
+		};
+	},
+
+	sessionRow: function(label, value) {
+		return E('div', { 'class':'mt5700m-session-row' }, [ E('span', {}, label), E('strong', {}, value || '--') ]);
+	},
+
+	connectionOverview: function(session) {
+		var self = this;
+		var rows = [
+			self.sessionRow('IPv4', session.ipv4Connected ? _('Connected') : _('Disconnected')),
+			self.sessionRow(_('IPv4 address'), session.ipv4Address),
+			self.sessionRow(_('IPv4 gateway'), session.ipv4Gateway),
+			self.sessionRow(_('IPv4 DNS'), session.ipv4Dns),
+			self.sessionRow('IPv6', session.ipv6Connected ? _('Connected') : _('Disconnected')),
+			self.sessionRow(_('IPv6 address'), session.ipv6Address),
+			self.sessionRow(_('IPv6 DNS'), session.ipv6Dns),
+			self.sessionRow(_('IP capability'), session.capability),
+			self.sessionRow('MTU', session.mtu)
+		];
+
+		if (session.detailed.length)
+			session.detailed.forEach(function(item) {
+				var type = item.type === '1' ? _('Module application') : item.type === '2' ? _('Host NDIS') : _('Other');
+				rows.push(self.sessionRow('CID ' + item.cid + ' · ' + (item.apn || _('Carrier default')), [ item.ipv4 ? 'IPv4' : '', item.ipv6 ? 'IPv6' : '', item.ethernet ? _('Ethernet') : '', type ].filter(Boolean).join(' · ')));
+			});
+
+		return E('div', { 'class':'mt5700m-session-grid' }, [
+			E('section', { 'class':'mt5700m-overview-card mt-ui-card' }, [
+				E('div', { 'class':'mt5700m-card-head' }, [
+					E('div', {}, [ E('h3', {}, _('Network session')), E('p', {}, _('Addresses and DNS supplied directly by the MT5700M mobile network session.')) ]),
+					E('span', { 'class':'mt5700m-card-badge' + (session.ipv4Connected || session.ipv6Connected ? ' on' : '') }, session.ipv4Connected || session.ipv6Connected ? _('Active') : _('Disconnected'))
+				]),
+				E('div', { 'class':'mt5700m-session-columns' }, rows)
+			]),
+			E('section', { 'class':'mt5700m-overview-card mt-ui-card' }, [
+				E('div', { 'class':'mt5700m-card-head' }, [ E('div', {}, [ E('h3', {}, _('Module traffic counters')), E('p', {}, _('Session counters reported by MT5700M firmware, independent of the local history below.')) ]), E('span', { 'class':'mt5700m-card-badge' }, _('Module')) ]),
+				E('div', { 'class':'mt5700m-session-columns' }, [
+					self.sessionRow(_('Current duration'), formatDuration(session.currentDuration)),
+					self.sessionRow(_('Current total'), formatBytes(session.currentRx + session.currentTx)),
+					self.sessionRow(_('Current received'), formatBytes(session.currentRx)),
+					self.sessionRow(_('Current transmitted'), formatBytes(session.currentTx)),
+					self.sessionRow(_('Accumulated duration'), formatDuration(session.totalDuration)),
+					self.sessionRow(_('Accumulated total'), formatBytes(session.totalRx + session.totalTx)),
+					self.sessionRow(_('Network maximum downlink'), formatRate(session.maximumDown)),
+					self.sessionRow(_('Network maximum uplink'), formatRate(session.maximumUp))
+				]),
+				E('div', { 'class':'mt5700m-session-actions' }, E('button', { 'class':'btn', 'click':function() { controls.confirmRun(_('Clear module traffic counters'), _('This permanently clears current and accumulated MT5700M data-flow counters.'), [ 'flow-clear' ]); } }, _('Clear counters')))
+			])
+		]);
+	},
+
+	trafficStat: function(label, value, meta, style) {
+		return E('div', { 'class':'mt5700m-traffic-stat ' + (style || '') }, [
+			E('div', { 'class':'mt5700m-traffic-label' }, label),
+			E('div', { 'class':'mt5700m-traffic-value' }, value),
+			E('div', { 'class':'mt5700m-traffic-meta' }, meta)
+		]);
+	},
+
+	trafficPanel: function(report, interfaceName) {
+		var iface = (report.interfaces || []).filter(function(item) { return item.name === interfaceName; })[0] ||
+			(report.interfaces || []).filter(function(item) { return item.name === 'eth2'; })[0] || { traffic:{} };
+		var traffic = iface.traffic || {};
+		var days = sortedTraffic(traffic.day, false), months = sortedTraffic(traffic.month, true);
+		var today = currentTraffic(days, false), month = currentTraffic(months, true), lifetime = traffic.total || {};
+		var recentDays = days.slice(-7).reverse(), recentMonths = months.slice(-6).reverse();
+		var maximum = Math.max.apply(Math, recentDays.map(trafficTotal).concat([ 1 ]));
+		var empty = !days.length && !months.length && !trafficTotal(lifetime);
+		var dayContent = empty ? E('div', { 'class':'mt5700m-empty' }, _('Statistics appear after the MT5700M data interface has carried traffic for a few minutes.')) : E('div', { 'class':'mt5700m-traffic-days' }, recentDays.map(function(item) {
+			var rx = Number(item.rx) || 0, tx = Number(item.tx) || 0;
+			return E('div', { 'class':'mt5700m-traffic-day' }, [
+				E('span', { 'class':'mt5700m-traffic-date' }, trafficDateKey(item, false).substring(5)),
+				E('div', { 'class':'mt5700m-traffic-bars' }, [ E('div', { 'class':'mt5700m-traffic-bar' }, E('i', { 'style':'width:' + Math.max(1, rx / maximum * 100).toFixed(1) + '%' })), E('div', { 'class':'mt5700m-traffic-bar tx' }, E('i', { 'style':'width:' + Math.max(1, tx / maximum * 100).toFixed(1) + '%' })) ]),
+				E('div', { 'class':'mt5700m-traffic-values' }, [ E('span', {}, formatBytes(rx)), E('span', {}, formatBytes(tx)) ])
+			]);
+		}));
+		var monthContent = recentMonths.length ? E('div', {}, recentMonths.map(function(item) {
+			return E('div', { 'class':'mt5700m-month-row' }, [ E('span', {}, trafficDateKey(item, true)), E('span', {}, [ _('Download') + ' ' + formatBytes(item.rx), E('small', {}, _('Upload') + ' ' + formatBytes(item.tx)) ]), E('strong', {}, formatBytes(trafficTotal(item))) ]);
+		})) : E('div', { 'class':'mt5700m-empty' }, _('No monthly history yet'));
+
+		return [
+			E('div', { 'class':'mt5700m-traffic-summary' }, [
+				this.trafficStat(_('Today'), formatBytes(trafficTotal(today)), _('Download %s · Upload %s').format(formatBytes(today.rx), formatBytes(today.tx)), ''),
+				this.trafficStat(_('This month'), formatBytes(trafficTotal(month)), _('Download %s · Upload %s').format(formatBytes(month.rx), formatBytes(month.tx)), 'blue'),
+				this.trafficStat(_('All-time total'), formatBytes(trafficTotal(lifetime)), _('Download %s · Upload %s').format(formatBytes(lifetime.rx), formatBytes(lifetime.tx)), 'violet'),
+				this.trafficStat(_('Last updated'), trafficUpdated(iface), _('Tracked interface: %s').format(iface.name || interfaceName || 'eth2'), 'slate')
+			]),
+			E('div', { 'class':'mt5700m-traffic-grid' }, [
+				E('section', { 'class':'mt5700m-overview-card mt-ui-card' }, [ E('div', { 'class':'mt5700m-card-head' }, [ E('div', {}, [ E('h3', {}, _('Recent 7 days')), E('p', {}, _('Download and upload recorded on the MT5700M data interface.')) ]), E('span', { 'class':'mt5700m-card-badge' }, _('Local history')) ]), dayContent ]),
+				E('section', { 'class':'mt5700m-overview-card mt-ui-card' }, [ E('div', { 'class':'mt5700m-card-head' }, E('div', {}, [ E('h3', {}, _('Monthly usage')), E('p', {}, _('Recent monthly totals retained automatically.')) ])), monthContent ])
+			]),
+			E('p', { 'class':'mt5700m-privacy-note' }, _('Traffic is counted on the MT5700M physical data interface, includes IPv4 and IPv6, and stays only on this router.'))
+		];
+	},
+
 	detail: function(label, value) {
 		return E('div', { 'class': 'mt5700m-detail' }, [
 			E('div', { 'class': 'mt5700m-detail-label' }, label),
@@ -329,6 +535,7 @@ return view.extend({
 
 	render: function(res) {
 		var data = this.parseStatus(res);
+		var session = this.parseSession(res.session && res.session.stdout || '');
 		var reachable = data.reachable === '1';
 		var connected = data.connected === '1';
 		var rsrp = parseFloat(data.rsrp);
@@ -350,6 +557,7 @@ return view.extend({
 			this.styleNode(),
 			controls.styleNode(),
 			data.error ? E('div', { 'class': 'alert-message warning mt5700m-alert' }, data.error) : null,
+			res.session && res.session.stderr ? E('div', { 'class':'alert-message warning mt5700m-alert' }, res.session.stderr) : null,
 			abnormalUsb ? E('div', { 'class': 'alert-message warning mt5700m-alert' }, _('The MT5700M is in %s (USB PID %s). Mobile data and AT management remain unavailable until normal mode returns.').format(usbState, data.usb_pid || '--')) : null,
 			E('section', { 'class': 'mt5700m-hero mt-ui-hero' }, [
 				E('div', { 'class': 'mt5700m-hero-top' }, [
@@ -382,6 +590,10 @@ return view.extend({
 				this.metric('SINR', data.sinr, 'dB', this.signalQuality('sinr', sinr)),
 				this.metric(_('Peak sensor temperature'), data.temperature, '°C', this.temperatureQuality(temp))
 			]),
+			E('div', { 'class':'mt5700m-section-title' }, _('Connection and usage')),
+			this.connectionOverview(session),
+			E('div', { 'class':'mt5700m-section-title' }, _('Traffic Statistics')),
+			E('div', {}, this.trafficPanel(res.traffic || {}, data.network_interface || 'eth2')),
 			E('div', { 'class': 'mt5700m-section-title' }, _('Radio link')),
 			this.subscriptionPanel(data),
 			this.carrierPanel(carrierInfo),

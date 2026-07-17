@@ -1,0 +1,18 @@
+#!/bin/sh
+
+mkdir -p /etc/mt5700m
+chmod 700 /etc/mt5700m
+
+# Preserve history from the former standalone package during an in-place upgrade.
+if [ ! -s /etc/mt5700m/traffic-history ] && [ -s /etc/h5000m-traffic/history ]; then
+	cp /etc/h5000m-traffic/history /etc/mt5700m/traffic-history
+	chmod 600 /etc/mt5700m/traffic-history
+fi
+
+if [ -z "${IPKG_INSTROOT:-}" ] && [ -x /etc/init.d/mt5700m-traffic ]; then
+	/etc/init.d/mt5700m-traffic enable >/dev/null 2>&1 || true
+	(sleep 2; /etc/init.d/mt5700m-traffic restart) >/dev/null 2>&1 &
+fi
+
+rm -f /tmp/luci-indexcache /tmp/luci-modulecache/* 2>/dev/null || true
+exit 0
