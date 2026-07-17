@@ -64,7 +64,8 @@ return view.extend({
 				return Promise.all([
 					Promise.resolve(this.manager),
 					callDeviceStatus(this.manager.network || '').catch(function() { return {}; }),
-					fs.exec('/usr/sbin/mt5700m-at', [ 'advanced', 'connection-settings' ]).catch(function(err) { return { stdout: '', stderr: err.message || String(err) }; })
+					fs.exec('/usr/sbin/mt5700m-at', [ 'advanced', 'connection-settings' ]).catch(function(err) { return { stdout: '', stderr:err.message || String(err) }; }),
+					fs.exec('/usr/sbin/mt5700m-at', [ 'advanced', 'session' ]).catch(function(err) { return { stdout: '', stderr:err.message || String(err) }; })
 				]);
 			}, this));
 		}, this));
@@ -85,13 +86,15 @@ return view.extend({
 			'.mtconn-value{font-size:14px;font-weight:650;word-break:break-word}',
 			'.mtconn-actions{display:flex;flex-wrap:wrap;gap:9px;margin:0 0 18px}',
 			'.mtconn-actions .btn{border-radius:9px}',
+			'.mtconn-session{display:grid;grid-template-columns:1.25fr .9fr;align-items:start;gap:12px;margin-bottom:16px}.mtconn-session-card{padding:16px 18px}.mtconn-session-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:9px}.mtconn-session-head h3{margin:0 0 4px;font-size:14px}.mtconn-session-head p{margin:0;color:var(--mt-ui-muted);font-size:10px;line-height:1.45}.mtconn-session-badge{padding:4px 8px;border-radius:999px;background:#eef2f6;color:#6b7480;font-size:10px;font-weight:700;white-space:nowrap}.mtconn-session-badge.on{background:#e8f8f1;color:#087c60}',
+			'.mtconn-session-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 18px}.mtconn-session-row{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:8px 0;border-bottom:1px solid var(--mt-ui-border-soft);font-size:10px}.mtconn-session-row span{color:var(--mt-ui-muted)}.mtconn-session-row strong{text-align:right;word-break:break-all}.mtconn-session-actions{display:flex;justify-content:flex-end;margin-top:11px}',
 			'.mtconn-pdp{margin:16px 0;padding:16px;border:1px solid var(--border-color-medium,#d9dde4);border-radius:13px;background:var(--background-color-high,#fff)}.mtconn-pdp-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px}.mtconn-pdp-head h3{font-size:15px;margin:0 0 4px}.mtconn-pdp-head p{font-size:11px;color:var(--text-color-medium,#69717d);margin:0;line-height:1.45}.mtconn-pdp-row{display:grid;grid-template-columns:58px 100px 1fr 90px auto;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--border-color-low,#edf0f4);font-size:12px}.mtconn-pdp-state{font-weight:650;color:#7b8794}.mtconn-pdp-state.on{color:#08775d}.mtconn-pdp-actions{display:flex;gap:6px;justify-content:flex-end}',
 			'.mtconn-config{margin:16px 0;padding:18px 20px;border:1px solid var(--border-color-medium,#d9dde4);border-radius:13px;background:var(--background-color-high,#fff)}.mtconn-config-head{margin-bottom:10px}.mtconn-config-head h3{margin:0 0 5px;font-size:16px}.mtconn-config-head p{margin:0;color:var(--text-color-medium,#69717d);font-size:12px;line-height:1.5}.mtconn-config .cbi-map>h2,.mtconn-config .cbi-map-descr,.mtconn-config .cbi-section>h3{display:none}.mtconn-config .cbi-section{margin:0;padding:0;border:0;box-shadow:none}.mtconn-config .cbi-section-node{padding:0}.mtconn-config .cbi-value{padding:9px 0;border-bottom:1px solid var(--border-color-low,#edf0f4)}.mtconn-config .cbi-value:last-child{border-bottom:0}',
 			'.mtconn-advanced-body{padding:0 18px 18px}.mtconn-advanced-body .mtconn-pdp{border:0;padding:0;margin:18px 0 0;box-shadow:none}.mtconn-advanced-body .mt-control-section{margin-top:18px}',
 			'.mtconn-log{margin-top:16px;border:1px solid var(--border-color-medium,#d9dde4);border-radius:11px;background:var(--background-color-high,#fff)}',
 			'.mtconn-log summary{cursor:pointer;padding:13px 15px;font-weight:650}',
 			'.mtconn-log pre{max-height:260px;overflow:auto;margin:0;padding:14px 15px;border-top:1px solid var(--border-color-low,#edf0f4);font-size:11px;white-space:pre-wrap}',
-			'@media(max-width:720px){.mtconn-hero{display:block}.mtconn-state{margin-top:14px}.mtconn-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.mtconn-pdp-row{grid-template-columns:48px 80px 1fr}.mtconn-pdp-row .mtconn-pdp-state,.mtconn-pdp-actions{grid-column:3}.mtconn-config{padding:16px}}',
+			'@media(max-width:720px){.mtconn-hero{display:block}.mtconn-state{margin-top:14px}.mtconn-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.mtconn-session{grid-template-columns:1fr}.mtconn-pdp-row{grid-template-columns:48px 80px 1fr}.mtconn-pdp-row .mtconn-pdp-state,.mtconn-pdp-actions{grid-column:3}.mtconn-config{padding:16px}}',
 			'@media(max-width:420px){.mtconn-facts{grid-template-columns:1fr}}'
 		].join(''));
 	},
@@ -100,6 +103,42 @@ return view.extend({
 		return E('div', { 'class': 'mtconn-fact mt-ui-card' }, [
 			E('div', { 'class': 'mtconn-label' }, label),
 			E('div', { 'class': 'mtconn-value' }, value || '--')
+		]);
+	},
+
+	sessionRow: function(label, value) {
+		return E('div', { 'class':'mtconn-session-row' }, [ E('span', {}, label), E('strong', {}, value || '--') ]);
+	},
+
+	sessionPanel: function(session, error) {
+		var self = this;
+		var active = session.ipv4Connected || session.ipv6Connected;
+		var addressRows = [
+			self.sessionRow(_('IPv4 address'), session.ipv4Address), self.sessionRow(_('IPv4 gateway'), session.ipv4Gateway),
+			self.sessionRow(_('IPv4 DNS'), session.ipv4Dns), self.sessionRow(_('IPv6 address'), session.ipv6Address),
+			self.sessionRow(_('IPv6 DNS'), session.ipv6Dns), self.sessionRow(_('IP capability'), session.capability),
+			self.sessionRow('MTU', session.mtu)
+		];
+		if (session.detailed.length)
+			session.detailed.forEach(function(item) {
+				addressRows.push(self.sessionRow('CID ' + item.cid + ' · ' + (item.apn || _('Carrier default')), [ item.ipv4 ? 'IPv4' : '', item.ipv6 ? 'IPv6' : '', item.ethernet ? _('Ethernet') : '' ].filter(Boolean).join(' · ')));
+			});
+		return E('div', { 'class':'mtconn-session' }, [
+			E('section', { 'class':'mtconn-session-card mt-ui-card' }, [
+				E('div', { 'class':'mtconn-session-head' }, [ E('div', {}, [ E('h3', {}, _('Assigned addresses')), E('p', {}, _('Gateway, DNS and PDP session details reported by the MT5700M.')) ]), E('span', { 'class':'mtconn-session-badge' + (active ? ' on' : '') }, active ? _('Active') : _('Disconnected')) ]),
+				error ? E('div', { 'class':'alert-message warning' }, error) : null,
+				E('div', { 'class':'mtconn-session-columns' }, addressRows)
+			]),
+			E('section', { 'class':'mtconn-session-card mt-ui-card' }, [
+				E('div', { 'class':'mtconn-session-head' }, [ E('div', {}, [ E('h3', {}, _('Module traffic counters')), E('p', {}, _('Counters maintained by the modem firmware for the current and accumulated sessions.')) ]), E('span', { 'class':'mtconn-session-badge' }, _('Module')) ]),
+				self.sessionRow(_('Current duration'), controls.formatDuration(session.currentDuration)),
+				self.sessionRow(_('Current total'), controls.formatBytes(session.currentRx + session.currentTx)),
+				self.sessionRow(_('Accumulated duration'), controls.formatDuration(session.totalDuration)),
+				self.sessionRow(_('Accumulated total'), controls.formatBytes(session.totalRx + session.totalTx)),
+				self.sessionRow(_('Network maximum downlink'), controls.formatRate(session.maximumDown)),
+				self.sessionRow(_('Network maximum uplink'), controls.formatRate(session.maximumUp)),
+				E('div', { 'class':'mtconn-session-actions' }, E('button', { 'class':'btn', 'click':function() { controls.confirmRun(_('Clear module traffic counters'), _('This permanently clears current and accumulated MT5700M data-flow counters.'), [ 'flow-clear' ]); } }, _('Clear counters')))
+			])
 		]);
 	},
 
@@ -167,8 +206,12 @@ return view.extend({
 		var dial = results[0] || {};
 		var device = results[1] || {};
 		var moduleSettings = results[2] || {};
+		var sessionResult = results[3] || {};
+		var session = controls.parseSession(sessionResult.stdout || '');
 		var moduleRaw = moduleSettings.stdout || '';
 		var online = dial.connected === true && device.up === true && device.carrier !== false;
+		var configuredApn = uci.get('mt5700m', 'connection', 'apn') || _('Automatic');
+		var configuredProtocol = { ip:'IPv4', ipv6:'IPv6', ipv4v6:'IPv4 / IPv6' }[uci.get('mt5700m', 'connection', 'pdp_type')] || 'IPv4 / IPv6';
 		var m = new form.Map('mt5700m');
 		var s, o;
 		var logOutput = E('pre', { 'class':'mt-ui-details-body' }, _('Expand to load the dialing log.'));
@@ -324,9 +367,10 @@ return view.extend({
 				E('div', { 'class': 'mtconn-facts' }, [
 					self.fact(_('Automatic dialing'), uci.get('mt5700m', 'connection', 'enabled') === '0' ? _('Disabled') : _('Enabled')),
 					self.fact(_('Network interface'), manager.network),
-					self.fact(_('IP protocol'), uci.get('mt5700m', 'connection', 'pdp_type') || 'ipv4v6'),
-					self.fact(_('Route metric'), uci.get('mt5700m', 'connection', 'metric') || '50')
+					self.fact('APN', configuredApn),
+					self.fact(_('IP protocol'), configuredProtocol)
 				]),
+				self.sessionPanel(session, sessionResult.stderr),
 				E('div', { 'class': 'mtconn-actions' }, online ? [
 					E('button', { 'class': 'btn cbi-button-action', 'click': function() { return self.runAction(callRedial, _('Redial started.'), _('The 5G connection will be interrupted briefly while the modem redials.')); } }, _('Redial')),
 					E('button', { 'class': 'btn cbi-button-negative', 'click': function() { return self.runAction(callHang, _('Connection stopped.'), _('Disconnect the mobile data connection now?')); } }, _('Disconnect'))

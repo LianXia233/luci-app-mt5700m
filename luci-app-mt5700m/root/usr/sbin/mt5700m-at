@@ -909,6 +909,8 @@ print_system_info() {
 		"SIM|AT+CPIN?" \
 		"ICCID|AT^ICCID?" \
 		"IMSI|AT+CIMI" \
+		"Subscriber number|AT+CNUM" \
+		"Subscription rate|AT^DSAMBR=1" \
 		"Operator|AT+COPS?" \
 		"Network time|AT^NWTIME?" \
 		"Function level|AT+CFUN?" \

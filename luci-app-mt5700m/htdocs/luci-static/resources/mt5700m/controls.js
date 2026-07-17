@@ -21,6 +21,76 @@ function pick(text, expression, fallback) {
 	return match ? match[1] : fallback;
 }
 
+function csvValues(text, prefix) {
+	var line = (text || '').split(/\n/).filter(function(item) { return item.indexOf(prefix) === 0; })[0] || '';
+	return line.substring(prefix.length).replace(/^[ :]+/, '').replace(/"/g, '').split(',').map(function(value) { return value.trim(); });
+}
+
+function hexIPv4(value) {
+	if (!/^[0-9a-f]{8}$/i.test(value || ''))
+		return '';
+	return [ 6, 4, 2, 0 ].map(function(offset) { return parseInt(value.substr(offset, 2), 16); }).join('.');
+}
+
+function hexNumber(value) {
+	value = String(value || '').replace(/^0x/i, '');
+	if (!/^[0-9a-f]+$/i.test(value))
+		return 0;
+	if (value.length <= 8)
+		return parseInt(value, 16);
+	return parseInt(value.slice(0, -8), 16) * 4294967296 + parseInt(value.slice(-8), 16);
+}
+
+function formatBytes(value) {
+	var units = [ 'B', 'KiB', 'MiB', 'GiB', 'TiB' ], index = 0;
+	value = Math.max(0, Number(value) || 0);
+	while (value >= 1024 && index < units.length - 1) { value /= 1024; index++; }
+	return (index ? value.toFixed(value >= 10 ? 1 : 2) : String(Math.round(value))) + ' ' + units[index];
+}
+
+function formatDuration(seconds) {
+	seconds = Math.max(0, Number(seconds) || 0);
+	var days = Math.floor(seconds / 86400), hours = Math.floor(seconds % 86400 / 3600), minutes = Math.floor(seconds % 3600 / 60);
+	return (days ? days + _('d') + ' ' : '') + (hours ? hours + _('h') + ' ' : '') + minutes + _('min');
+}
+
+function formatRate(value) {
+	value = Number(value) || 0;
+	if (value >= 1000000000) return (value / 1000000000).toFixed(2) + ' Gbps';
+	if (value >= 1000000) return (value / 1000000).toFixed(1) + ' Mbps';
+	return value ? Math.round(value / 1000) + ' Kbps' : '--';
+}
+
+function parseSession(raw) {
+	var ndis = csvValues(section(raw, 'Data session'), '^NDISSTATQRY');
+	var dhcp4 = csvValues(section(raw, 'IPv4 lease'), '^DHCP');
+	var dhcp6 = csvValues(section(raw, 'IPv6 lease'), '^DHCPV6');
+	var flow = csvValues(section(raw, 'Data flow'), '^DSFLOWQRY');
+	var mtu = csvValues(section(raw, 'MTU'), '^CGMTU');
+	var pdpAddress = csvValues(section(raw, 'PDP address'), '+CGPADDR');
+	var capability = pick(section(raw, 'IP capability'), /\^IPV6CAP:\s*(\w+)/, '');
+	var capabilityNames = { '1':_('IPv4 only'), '2':_('IPv6 only'), '7':_('IPv4 / IPv6 · same APN'), '0B':_('IPv4 / IPv6 · separate APNs'), '0b':_('IPv4 / IPv6 · separate APNs') };
+	var detailed = (section(raw, 'Detailed sessions') || '').split(/\n/).map(function(line) {
+		var match = line.match(/^\^DCONNSTAT:\s*(\d+)(?:[,，]["“”]?([^,"“”]*)["“”]?[,，](\d+)[,，](\d+)[,，](\d+)(?:[,，](\d+))?)?/);
+		return match ? { cid:match[1], apn:match[2] || '', ipv4:match[3] === '1', ipv6:match[4] === '1', type:match[5] || '', ethernet:match[6] === '1' } : null;
+	}).filter(function(item) { return item && item.apn; });
+
+	return {
+		ipv4Connected:ndis[0] === '1' && ndis[4] === 'IPV4',
+		ipv6Connected:ndis[5] === '1' && ndis[8] === 'IPV6',
+		ipv4Address:hexIPv4(dhcp4[0]) || pdpAddress[1] || '',
+		ipv4Gateway:hexIPv4(dhcp4[2]),
+		ipv4Dns:[ hexIPv4(dhcp4[4]), hexIPv4(dhcp4[5]) ].filter(Boolean).join(' · '),
+		ipv6Address:dhcp6[0] && dhcp6[0] !== '::' ? dhcp6[0] : '',
+		ipv6Dns:[ dhcp6[4], dhcp6[5] ].filter(function(value) { return value && value !== '::'; }).join(' · '),
+		capability:capabilityNames[capability] || capability,
+		mtu:mtu[1] && mtu[1] !== '0' ? mtu[1] : _('Network default'),
+		currentDuration:hexNumber(flow[0]), currentTx:hexNumber(flow[1]), currentRx:hexNumber(flow[2]),
+		totalDuration:hexNumber(flow[3]), totalTx:hexNumber(flow[4]), totalRx:hexNumber(flow[5]),
+		maximumDown:dhcp4[6] || dhcp6[6], maximumUp:dhcp4[7] || dhcp6[7], detailed:detailed
+	};
+}
+
 function select(options, value) {
 	var node = E('select', { 'class': 'cbi-input-select' }, options.map(function(item) {
 		return E('option', { 'value': item[0] }, item[1]);
@@ -95,6 +165,13 @@ function styleNode() {
 return baseclass.extend({
 	section: section,
 	pick: pick,
+	csvValues: csvValues,
+	hexIPv4: hexIPv4,
+	hexNumber: hexNumber,
+	formatBytes: formatBytes,
+	formatDuration: formatDuration,
+	formatRate: formatRate,
+	parseSession: parseSession,
 	select: select,
 	confirmRun: confirmRun,
 	row: row,

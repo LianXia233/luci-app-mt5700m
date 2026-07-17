@@ -24,6 +24,11 @@ function lineValue(text, prefix) {
 	return line.substring(prefix.length).replace(/^[ :]+/, '').trim();
 }
 
+function subscriptionRate(value) {
+	value = Number(value) || 0;
+	return value > 0 ? (value / 1000).toFixed(value % 1000 ? 1 : 0) + ' Mbps' : '--';
+}
+
 return view.extend({
 	load: function() {
 		return fs.exec('/usr/sbin/mt5700m-at', [ 'system' ]).catch(function(err) { return { stdout: '', stderr: err.message || String(err) }; });
@@ -35,7 +40,7 @@ return view.extend({
 			'.mt-system-hero{display:flex;justify-content:space-between;align-items:center;gap:18px;padding:22px 24px;border-radius:15px;background:linear-gradient(135deg,#304667,#3b587d);color:#fff;margin-bottom:15px}',
 			'.mt-system-kicker{font-size:12px;font-weight:700;opacity:.72;margin-bottom:5px}.mt-system-title{font-size:25px;font-weight:720;margin:0 0 6px;color:#fff}.mt-system-sub{font-size:13px;opacity:.8}',
 			'.mt-system-temp{min-width:92px;text-align:center;padding:11px 14px;border-radius:12px;background:rgba(255,255,255,.12)}.mt-system-temp strong{display:block;font-size:24px}.mt-system-temp span{font-size:11px;opacity:.75}',
-			'.mt-system-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.mt-system-card{padding:16px;border:1px solid var(--border-color-medium,#d9dde4);border-radius:13px;background:var(--background-color-high,#fff);box-shadow:0 3px 12px rgba(20,32,50,.04)}',
+			'.mt-system-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.mt-system-card{padding:16px;border:1px solid var(--border-color-medium,#d9dde4);border-radius:13px;background:var(--background-color-high,#fff);box-shadow:0 3px 12px rgba(20,32,50,.04)}.mt-system-card.wide{grid-column:1/-1}',
 			'.mt-system-card h3{font-size:14px;margin:0 0 11px}.mt-system-row{display:flex;justify-content:space-between;gap:16px;padding:9px 0;border-bottom:1px solid var(--border-color-low,#edf0f4);font-size:12px}.mt-system-row:last-child{border-bottom:0}.mt-system-row span{color:var(--text-color-medium,#6e7783)}.mt-system-row strong{text-align:right;word-break:break-word}',
 			'.mt-system-fota{margin-top:14px;padding:18px;border:1px solid #ead7b2;border-radius:13px;background:linear-gradient(135deg,#fffdf8,#fff9ec)}.mt-system-fota-head{display:flex;justify-content:space-between;align-items:flex-start;gap:15px}.mt-system-fota h3{font-size:16px;margin:0 0 5px}.mt-system-fota p{font-size:12px;color:#74664c;margin:0;line-height:1.5}',
 			'.mt-system-state{padding:5px 10px;border-radius:999px;background:#edf1f7;color:#4e5d73;font-size:11px;font-weight:700;white-space:nowrap}.mt-system-state.active{background:#e0f5ed;color:#08775d}.mt-system-state.error{background:#fde7e3;color:#a43e2c}',
@@ -43,7 +48,7 @@ return view.extend({
 			'.mt-system-url{display:grid;grid-template-columns:1fr auto;gap:9px;margin-top:14px}.mt-system-url input{width:100%;box-sizing:border-box}.mt-system-url .btn,.mt-system-actions .btn{border-radius:9px}',
 			'.mt-system-actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:14px}.mt-system-details{margin-top:14px;border:1px solid var(--border-color-medium,#d9dde4);border-radius:11px;overflow:hidden}.mt-system-details summary{cursor:pointer;padding:12px 14px;font-size:12px;font-weight:650}.mt-system-raw{margin:0;padding:14px;background:#17202a;color:#dce6ef;white-space:pre-wrap;word-break:break-word;font:11px/1.55 monospace;max-height:420px;overflow:auto}',
 			'.mt-system-maintenance{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-top:14px;padding:16px 18px;border:1px solid var(--border-color-medium,#d9dde4);border-radius:13px;background:var(--background-color-high,#fff)}.mt-system-maintenance h3{margin:0 0 4px;font-size:15px}.mt-system-maintenance p{margin:0;color:var(--text-color-medium,#6e7783);font-size:11px}.mt-system-maintenance .mt-system-actions{margin:0;justify-content:flex-end}.mt-system-thermal-form{display:grid;grid-template-columns:1fr 1fr;gap:0 14px;max-height:46vh;overflow:auto}',
-			'@media(max-width:720px){.mt-system-hero{align-items:flex-start}.mt-system-grid{grid-template-columns:1fr}.mt-system-url{grid-template-columns:1fr}.mt-system-url .btn{width:100%}.mt-system-maintenance{display:block}.mt-system-maintenance .mt-system-actions{margin-top:12px;justify-content:flex-start}.mt-system-thermal-form{grid-template-columns:1fr}}'
+			'@media(max-width:720px){.mt-system-hero{align-items:flex-start}.mt-system-grid{grid-template-columns:1fr}.mt-system-card.wide{grid-column:auto}.mt-system-url{grid-template-columns:1fr}.mt-system-url .btn{width:100%}.mt-system-maintenance{display:block}.mt-system-maintenance .mt-system-actions{margin-top:12px;justify-content:flex-start}.mt-system-thermal-form{grid-template-columns:1fr}}'
 		].join(''));
 	},
 
@@ -159,6 +164,8 @@ return view.extend({
 		var sim = lineValue(section(raw, 'SIM'), '+CPIN');
 		var iccid = lineValue(section(raw, 'ICCID'), '^ICCID');
 		var imsi = (section(raw, 'IMSI').match(/(?:^|\n)(\d{10,18})(?:\n|$)/) || [,''])[1];
+		var phone = lineValue(section(raw, 'Subscriber number'), '+CNUM').replace(/"/g, '').split(',').map(function(value) { return value.trim(); }).filter(function(value) { return /^\+?\d{5,20}$/.test(value); })[0] || _('Not stored on SIM');
+		var subscription = lineValue(section(raw, 'Subscription rate'), '^DSAMBR').replace(/"/g, '').split(',').map(function(value) { return value.trim(); });
 		var operatorValues = lineValue(section(raw, 'Operator'), '+COPS').replace(/"/g, '').split(',');
 		var networkTime = lineValue(section(raw, 'Network time'), '^NWTIME').replace(/"/g, '');
 		var functionLevel = lineValue(section(raw, 'Function level'), '+CFUN');
@@ -203,10 +210,11 @@ return view.extend({
 				E('div', { 'class': 'mt-system-temp' }, [ E('strong', {}, temperature ? temperature + '°' : '--'), E('span', {}, _('Peak sensor temperature')) ])
 			]),
 			E('div', { 'class': 'mt-system-grid' }, [
-				E('section', { 'class': 'mt-system-card mt-ui-card' }, [ E('h3', {}, _('Device identity')), this.row(_('Model'), model), this.row(_('Firmware version'), software || revision), this.row(_('Hardware version'), hardware), this.row('IMEI', imei), this.row('ICCID', iccid), this.row('IMSI', imsi), E('div', { 'class':'mt-control-note' }, _('Device and SIM identifiers are displayed only in this local management page.')) ]),
-				E('section', { 'class': 'mt-system-card mt-ui-card' }, [ E('h3', {}, _('Runtime status')), this.row(_('SIM Status'), sim), this.row(_('Operator'), operatorValues[2] || '--'), this.row(_('Network time'), networkTime), this.row(_('Radio function'), functionLevel === '0' ? _('Airplane mode') : functionLevel === '1' ? _('Online') : functionLevel), this.row(_('SIM power path'), simActivation[1] === '1' ? _('Active') : simActivation.length > 1 ? _('Inactive') : ''), this.row(_('Build date'), buildDate), this.row(_('FOTA mode'), fotaModeName) ]),
+				E('section', { 'class': 'mt-system-card mt-ui-card' }, [ E('h3', {}, _('Module information')), this.row(_('Model'), model), this.row(_('Firmware version'), software || revision), this.row(_('Hardware version'), hardware), this.row('IMEI', imei), this.row(_('Build date'), buildDate) ]),
+				E('section', { 'class': 'mt-system-card mt-ui-card' }, [ E('h3', {}, _('SIM and subscription')), this.row(_('Phone Number'), phone), this.row('ICCID', iccid), this.row('IMSI', imsi), this.row(_('Subscription downlink'), subscriptionRate(subscription[1])), this.row(_('Subscription uplink'), subscriptionRate(subscription[2])), E('div', { 'class':'mt-control-note' }, _('Device and SIM identifiers are displayed only in this local management page.')) ]),
+				E('section', { 'class': 'mt-system-card mt-ui-card' }, [ E('h3', {}, _('Runtime status')), this.row(_('SIM Status'), sim), this.row(_('Operator'), operatorValues[2] || '--'), this.row(_('Network time'), networkTime), this.row(_('Radio function'), functionLevel === '0' ? _('Airplane mode') : functionLevel === '1' ? _('Online') : functionLevel), this.row(_('SIM power path'), simActivation[1] === '1' ? _('Active') : simActivation.length > 1 ? _('Inactive') : ''), this.row(_('FOTA mode'), fotaModeName) ]),
 				E('section', { 'class': 'mt-system-card mt-ui-card' }, [ E('h3', {}, _('Thermal protection status')), this.row(_('Protection level'), thermalValues.length ? (thermalLevel === 0 ? _('Normal') : _('Level %d').format(thermalLevel)) : ''), this.row(_('First power reduction'), thermalThresholds[1] ? thermalThresholds[1] + '°C / ' + thermalThresholds[2] + '°C' : ''), this.row(_('Second power reduction'), thermalThresholds[3] ? thermalThresholds[3] + '°C / ' + thermalThresholds[4] + '°C' : ''), this.row(_('Continuous power limit'), thermalThresholds[5] ? thermalThresholds[5] + '°C / ' + thermalThresholds[6] + '°C' : ''), this.row(_('Emergency airplane mode'), thermalThresholds[7] ? thermalThresholds[7] + '°C / ' + thermalThresholds[8] + '°C' : ''), this.row(_('Thermal logging'), thermalLog[0] === '1' || thermalLog[1] === '1' ? _('Enabled') : thermalLog.length > 1 ? _('Disabled') : '') ]),
-				E('section', { 'class': 'mt-system-card mt-ui-card' }, [
+				E('section', { 'class': 'mt-system-card wide mt-ui-card' }, [
 					E('h3', {}, _('SIM and radio')),
 					E('div', { 'class':'mt-control-desc' }, _('Daily SIM and radio controls defined by the MT5700M AT command manual.')),
 					controls.state(_('Current radio state'), functionLevel === '0' ? _('Airplane mode') : _('Online')),

@@ -14,7 +14,8 @@ return view.extend({
 		return E('style', {}, [
 			'.mt-hardware{max-width:1120px;margin:0 auto}.mt-hardware-head{padding:22px 24px;border-radius:15px;background:linear-gradient(135deg,#263b59,#354d70);color:#fff;margin-bottom:16px}.mt-hardware-head h2{color:#fff;margin:0 0 7px;font-size:24px}.mt-hardware-head p{margin:0;opacity:.84;font-size:13px;line-height:1.55}',
 			'.mt-hardware-warning{margin-bottom:14px}.mt-hardware-details{margin-top:14px;border:1px solid var(--border-color-medium,#d9dde4);border-radius:11px;overflow:hidden}.mt-hardware-details summary{cursor:pointer;padding:12px 14px;font-size:12px;font-weight:650}.mt-hardware-raw{margin:0;padding:14px;background:#17202a;color:#dce6ef;white-space:pre-wrap;word-break:break-word;font:11px/1.55 monospace;max-height:420px;overflow:auto}',
-			'@media(max-width:760px){.mt-hardware-head{padding:20px}}'
+			'.mt-hardware-tools{display:flex;justify-content:space-between;align-items:center;gap:18px;margin-top:18px;padding:16px 18px}.mt-hardware-tools h3{margin:0 0 4px;font-size:14px}.mt-hardware-tools p{margin:0;color:var(--mt-ui-muted);font-size:10px;line-height:1.45}.mt-hardware-tool-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}',
+			'@media(max-width:760px){.mt-hardware-head{padding:20px}.mt-hardware-tools{display:block}.mt-hardware-tool-actions{justify-content:flex-start;margin-top:12px}}'
 		].join(''));
 	},
 
@@ -48,8 +49,8 @@ return view.extend({
 			this.styleNode(),
 			controls.styleNode(),
 			E('section', { 'class':'mt-hardware-head mt-ui-hero' }, [
-				E('h2', {}, _('Hardware and interfaces')),
-				E('p', {}, _('Low-level USB, PCIe, SIM and thermal controls for the MT5700M. Normal operation does not require changes on this page.'))
+				E('h2', {}, _('Advanced Settings')),
+				E('p', {}, _('Hardware interfaces, safeguards and diagnostic tools for experienced users. Normal operation does not require changes on this page.'))
 			]),
 			res.stderr ? E('div', { 'class':'alert-message warning mt-hardware-warning' }, res.stderr) : null,
 			E('div', { 'class':'alert-message warning mt-hardware-warning' }, _('Changing an interface profile can interrupt both mobile data and module management. Record the current value before applying a change.')),
@@ -105,6 +106,13 @@ return view.extend({
 							controls.confirmRun(_('Thermal protection'), _('Apply these thermal-protection settings?'), [ 'advanced-set', 'thermal', thermalEnabled.value, thermalInterval.value ]);
 						})
 					])
+				])
+			]),
+			E('section', { 'class':'mt-hardware-tools mt-ui-card' }, [
+				E('div', {}, [ E('h3', {}, _('Diagnostics and developer tools')), E('p', {}, _('Open low-level communication settings or send AT commands directly to the module.')) ]),
+				E('div', { 'class':'mt-hardware-tool-actions' }, [
+					E('a', { 'class':'btn', 'href':L.url('admin/modem/mt5700m/settings') }, _('Communication diagnostics')),
+					E('a', { 'class':'btn cbi-button-action', 'href':L.url('admin/modem/mt5700m/terminal') }, _('AT Console'))
 				])
 			]),
 			E('details', { 'class':'mt-hardware-details mt-ui-details' }, [
