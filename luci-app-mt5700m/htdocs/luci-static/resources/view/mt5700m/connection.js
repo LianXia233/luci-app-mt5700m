@@ -95,7 +95,7 @@ return view.extend({
 			'.mtconn-log summary{cursor:pointer;padding:13px 15px;font-weight:650}',
 			'.mtconn-log pre{max-height:260px;overflow:auto;margin:0;padding:14px 15px;border-top:1px solid var(--border-color-low,#edf0f4);font-size:11px;white-space:pre-wrap}',
 			'@media(max-width:720px){.mtconn-hero{display:block}.mtconn-state{margin-top:14px}.mtconn-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.mtconn-session{grid-template-columns:1fr}.mtconn-pdp-row{grid-template-columns:48px 80px 1fr}.mtconn-pdp-row .mtconn-pdp-state,.mtconn-pdp-actions{grid-column:3}.mtconn-config{padding:16px}}',
-			'@media(max-width:420px){.mtconn-facts{grid-template-columns:1fr}}'
+			'@media(max-width:420px){.mtconn-facts,.mtconn-session-columns{grid-template-columns:1fr}}'
 		].join(''));
 	},
 
