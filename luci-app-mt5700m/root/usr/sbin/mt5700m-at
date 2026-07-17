@@ -1176,6 +1176,9 @@ case "${1:-status}" in
 		print_temperature
 		print_lock_status
 		;;
+	temperature)
+		print_temperature
+		;;
 	command)
 		shift
 		at_cmd "$*"
