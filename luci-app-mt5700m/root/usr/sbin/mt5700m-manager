@@ -5,6 +5,8 @@ LOCK_DIR="${MT5700M_MANAGER_LOCK:-/var/lock/mt5700m-manager.lock}"
 STATE_DIR="${MT5700M_MANAGER_STATE:-/var/run/mt5700m}"
 LOG_FILE="${MT5700M_MANAGER_LOG:-/tmp/mt5700m-manager.log}"
 USB_HELPER="${MT5700M_USB_HELPER:-/usr/share/mt5700m/usb.sh}"
+AT_HELPER="${MT5700M_AT_HELPER:-/usr/sbin/mt5700m-at}"
+TEMP_CACHE="${STATE_DIR}/temperature"
 INTERFACE='MT5700M'
 INTERFACE6='MT5700Mv6'
 
@@ -53,6 +55,35 @@ bool_value() {
 
 config_value() {
 	uci -q get "mt5700m.connection.$1" 2>/dev/null || printf '%s\n' "$2"
+}
+
+run_temperature_query() {
+	if command -v timeout >/dev/null 2>&1; then
+		timeout 5 "${AT_HELPER}" temperature
+	else
+		"${AT_HELPER}" temperature
+	fi
+}
+
+refresh_temperature_cache() {
+	local output value tmp
+
+	[ -x "${AT_HELPER}" ] || return 1
+	output="$(run_temperature_query 2>/dev/null || true)"
+	value="$(printf '%s\n' "${output}" | sed -n 's/^temperature=//p' | head -n 1)"
+	awk -v value="${value}" 'BEGIN {
+		if (value !~ /^-?[0-9]+([.][0-9]+)?$/ || value < -40 || value > 150)
+			exit 1
+	}' || return 1
+
+	mkdir -p "${STATE_DIR}" || return 1
+	tmp="${TEMP_CACHE}.$$"
+	{
+		printf '%s\n' "${output}" | grep -E '^(temp_[a-z0-9_]+|temperature)=-?[0-9]+([.][0-9]+)?$|^temperature_sensor=[a-z0-9_]+$' || true
+		printf 'updated=%s\n' "$(date +%s)"
+	} > "${tmp}" || return 1
+	mv "${tmp}" "${TEMP_CACHE}" || return 1
+	chmod 0644 "${TEMP_CACHE}" 2>/dev/null || true
 }
 
 set_if_changed() {
@@ -307,6 +338,7 @@ monitor_manager() {
 			sync_manager >/dev/null 2>&1 || true
 			release_lock
 		fi
+		refresh_temperature_cache >/dev/null 2>&1 || true
 		sleep 15
 	done
 }
@@ -315,6 +347,7 @@ action="${1:-status-json}"
 case "${action}" in
 	monitor) monitor_manager ;;
 	status|status-json) status_json ;;
+	refresh-temperature) refresh_temperature_cache ;;
 	log) tail -n 120 "${LOG_FILE}" 2>/dev/null || true ;;
 	*)
 		acquire_lock_wait || { echo 'manager is busy' >&2; exit 2; }
@@ -325,7 +358,7 @@ case "${action}" in
 			disconnect) disconnect_manager ;;
 			redial) redial_manager ;;
 			down) bring_down ;;
-			*) echo "Usage: $0 {status-json|sync|connect|disconnect|redial|log|monitor}" >&2; exit 64 ;;
+			*) echo "Usage: $0 {status-json|sync|connect|disconnect|redial|refresh-temperature|log|monitor}" >&2; exit 64 ;;
 		esac
 		;;
 esac
