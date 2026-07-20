@@ -5,10 +5,14 @@ PKG_VERSION:=2.2.1
 PKG_RELEASE:=1
 PKG_LICENSE:=Apache-2.0
 
-LUCI_TITLE:=MT5700M module management
-LUCI_DEPENDS:=+luci-base +ubus-at-daemon +sms-tool_q
-LUCI_EXTRA_DEPENDS:=kmod-usb2 (>=0), kmod-usb3 (>=0), kmod-usb-serial (>=0), kmod-usb-serial-option (>=0), kmod-usb-net (>=0), kmod-usb-net-cdc-ether (>=0), kmod-usb-net-cdc-ncm (>=0)
+LUCI_TITLE:=MT5700M Module Management
 LUCI_PKGARCH:=all
+
+# 编译依赖
+LUCI_DEPENDS:= \
+	+luci-base \
+	+ubus-at-daemon \
+	+sms-tool_q
 
 define Package/luci-app-mt5700m/conffiles
 /etc/mt5700m/traffic-history
