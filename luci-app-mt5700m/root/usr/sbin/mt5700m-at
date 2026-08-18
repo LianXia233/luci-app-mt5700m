@@ -1343,7 +1343,19 @@ case "${1:-status}" in
 				case "${auth_type}" in 0|1|2) ;; *) exit 64 ;; esac
 				safe_at_field "${apn}" && safe_at_field "${username}" && safe_at_field "${password}" || exit 64
 				[ "${#apn}" -le 99 ] && [ "${#username}" -le 31 ] && [ "${#password}" -le 31 ] || exit 64
-				at_cmd "AT^SETAUTODIAL=${enable},${dial_mode},\"${protocol}\",\"${apn}\",\"${username}\",\"${password}\",${auth_type}"
+				if [ -z "${apn}" ]; then
+					# MT5700M rejects trailing empty fields, e.g.
+					# AT^SETAUTODIAL=1,1,"IPV4V6","","","",0 returns ERROR and
+					# silently keeps the previous dial_mode (dial_mode=2 Ethernet
+					# data on USB NCM setups leaves eth2 with no carrier -> "signal
+					# but no network").  Omit every optional field when empty so the
+					# modem accepts the command and applies dial_mode.
+					at_cmd "AT^SETAUTODIAL=${enable},${dial_mode},\"${protocol}\""
+				elif [ -z "${username}" ] && [ -z "${password}" ]; then
+					at_cmd "AT^SETAUTODIAL=${enable},${dial_mode},\"${protocol}\",\"${apn}\""
+				else
+					at_cmd "AT^SETAUTODIAL=${enable},${dial_mode},\"${protocol}\",\"${apn}\",\"${username}\",\"${password}\",${auth_type}"
+				fi
 				;;
 			nic-speed)
 				shift
