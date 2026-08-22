@@ -11,6 +11,21 @@
 使用路径重构了信息架构；当前开发版本为 `v2.2.1`，OpenWrt 安装包为
 `2.2.1-r1`。
 
+
+## 界面预览
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/preview/01-overview.png" alt="MT5700M 概览页：信号强度、载波聚合、IPv4/IPv6 地址与模组 / SIM 信息"><br><b>概览页</b><br>首页集中展示 RSRP / RSRQ / SINR / 温度、NR-n41 载波状态、IPv4/IPv6 双栈地址、模组固件、IMEI 与 SIM 签约速率。</td>
+    <td width="50%"><img src="docs/preview/02-mobile-data.png" alt="移动数据：APN、IPv4/IPv6、MTU 与模组流量计数"><br><b>移动数据</b><br>配置自动拨号 / 网络接口 / APN / IP 协议，查看已分配地址、IPv4 DNS、IPv6 PD / DNS 以及模组原生流量计数。</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/preview/03-network-cell.png" alt="网络与小区：RSRP / RSRQ / SINR / 温度、服务小区、无线状态"><br><b>网络与小区</b><br>服务小区、接入制式、MCC/MNC、ARFCN、PCI 与无线链路详情 (NR-MCS、上下行调制、QoS)；5G 波束数与 NSA 辅连接可视化。</td>
+    <td width="50%"><img src="docs/preview/04-ssb-beams.png" alt="SSB 波束与 NR 邻区：服务 SSB、波束 RSRP/SINR、NR 邻区锁定与小区扫描"><br><b>SSB 波束与 NR 邻区</b><br>可视化 7 路 SSB 波束的 RSRP / SINR 强度；支持 NR 邻区的入驻、锁定、刷新状态与小区扫描控制。</td>
+  </tr>
+</table>
+
+
 ## 主要功能
 
 - 首页优先展示信号质量、载波聚合、IPv4/IPv6 与移动流量
