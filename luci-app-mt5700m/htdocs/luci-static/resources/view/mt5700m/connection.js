@@ -100,6 +100,9 @@ return view.extend({
 	},
 
 	fact: function(label, value) {
+		// A literal '--' from the modem means "empty / carrier default", not a real value
+		if (value === '--')
+			value = '';
 		return E('div', { 'class': 'mtconn-fact mt-ui-card' }, [
 			E('div', { 'class': 'mtconn-label' }, label),
 			E('div', { 'class': 'mtconn-value' }, value || '--')
@@ -121,7 +124,7 @@ return view.extend({
 		];
 		if (session.detailed.length)
 			session.detailed.forEach(function(item) {
-				addressRows.push(self.sessionRow('CID ' + item.cid + ' · ' + (item.apn || _('Carrier default')), [ item.ipv4 ? 'IPv4' : '', item.ipv6 ? 'IPv6' : '', item.ethernet ? _('Ethernet') : '' ].filter(Boolean).join(' · ')));
+				addressRows.push(self.sessionRow('CID ' + item.cid + ' · ' + ((item.apn && item.apn !== '--') ? item.apn : _('Carrier default')), [ item.ipv4 ? 'IPv4' : '', item.ipv6 ? 'IPv6' : '', item.ethernet ? _('Ethernet') : '' ].filter(Boolean).join(' · ')));
 			});
 		return E('div', { 'class':'mtconn-session' }, [
 			E('section', { 'class':'mtconn-session-card mt-ui-card' }, [
@@ -145,7 +148,7 @@ return view.extend({
 	editPdp: function(context) {
 		var cid = E('input', { 'class':'cbi-input-text', 'type':'number', 'min':'1', 'max':'11', 'value':context ? context.cid : '1' });
 		var type = controls.select([['IPV4V6','IPv4 / IPv6'],['IP','IPv4'],['IPV6','IPv6']], context ? context.type : 'IPV4V6');
-		var apn = E('input', { 'class':'cbi-input-text', 'maxlength':'99', 'placeholder':_('Carrier default'), 'value':context ? context.apn : '' });
+		var apn = E('input', { 'class':'cbi-input-text', 'maxlength':'99', 'placeholder':_('Carrier default'), 'value':(context && context.apn !== '--') ? context.apn : '' });
 		return ui.showModal(context ? _('Edit PDP context') : _('Add PDP context'), [
 			E('p', {}, _('This changes a module-native PDP profile. The OpenWrt dialing profile above remains the normal place to configure APN.')),
 			controls.row('CID', cid), controls.row(_('IP protocol'), type), controls.row('APN', apn),
