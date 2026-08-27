@@ -163,7 +163,9 @@ return view.extend({
 		var version = section(raw, 'Version');
 		var sim = lineValue(section(raw, 'SIM'), '+CPIN');
 		var iccid = lineValue(section(raw, 'ICCID'), '^ICCID');
-		var imsi = (section(raw, 'IMSI').match(/(?:^|\n)(\d{10,18})(?:\n|$)/) || [,''])[1];
+		// Modem answers terminate lines with CRLF; allow an optional CR
+		// between the IMSI digits and the newline or parsing fails.
+		var imsi = (section(raw, 'IMSI').match(/(?:^|\n)(\d{10,18})(?:\r?\n|$)/) || [,''])[1];
 		var phone = lineValue(section(raw, 'Subscriber number'), '+CNUM').replace(/"/g, '').split(',').map(function(value) { return value.trim(); }).filter(function(value) { return /^\+?\d{5,20}$/.test(value); })[0] || _('Not stored on SIM');
 		var subscription = lineValue(section(raw, 'Subscription rate'), '^DSAMBR').replace(/"/g, '').split(',').map(function(value) { return value.trim(); });
 		var operatorValues = lineValue(section(raw, 'Operator'), '+COPS').replace(/"/g, '').split(',');
