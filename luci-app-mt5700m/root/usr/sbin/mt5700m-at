@@ -691,8 +691,10 @@ print_qos() {
 
 # Active APN from PDP context.  AT+CGDCONT? lists all contexts; the first
 # non-empty APN on CID 1 is usually the active Internet data context.
+# When the module uses the carrier-default profile (empty APN), fall back
+# to the OpenWrt dialing profile or report the carrier default.
 print_active_apn() {
-	local raw apn
+	local raw apn uci_apn
 	raw="$(at_cmd 'AT+CGDCONT?' || true)"
 	# Format: +CGDCONT: <cid>,"<type>","<apn>",...
 	apn="$(printf '%s\n' "${raw}" | awk -F, '
@@ -701,7 +703,15 @@ print_active_apn() {
 			gsub(/^[[:space:]]*"|"[[:space:]]*$/, "", apn)
 			if (length(apn) > 0) { print apn; exit }
 		}')"
-	[ -n "${apn}" ] && echo "active_apn=${apn}"
+	if [ -z "${apn}" ] && command -v uci >/dev/null 2>&1; then
+		uci_apn="$(uci -q get mt5700m.connection.apn 2>/dev/null || true)"
+		[ -n "${uci_apn}" ] && apn="${uci_apn}"
+	fi
+	if [ -n "${apn}" ]; then
+		echo "active_apn=${apn}"
+	else
+		echo "active_apn="
+	fi
 }
 
 print_subscriber_number() {

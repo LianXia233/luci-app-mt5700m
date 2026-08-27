@@ -275,7 +275,7 @@ return view.extend({
 			E('div', { 'class':'mt5700m-info-list' }, [
 				this.infoRow(_('Operator'), data.operator),
 				this.infoRow(_('Access technology'), data.sysmode_detail || data.sysmode),
-				this.infoRow(_('APN'), data.active_apn),
+				this.infoRow(_('APN'), data.active_apn || _('Carrier default')),
 				this.infoRow(_('QCI'), data.qci ? 'QCI ' + data.qci : ''),
 				this.infoRow('ICCID', data.iccid),
 				this.infoRow('IMSI', data.imsi),
