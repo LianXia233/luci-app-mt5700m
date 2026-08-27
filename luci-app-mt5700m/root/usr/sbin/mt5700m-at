@@ -670,13 +670,14 @@ print_sim_operator() {
 	[ -n "${sysmode}" ] && echo "sysmode_detail=${sysmode}"
 }
 
-# Emit SIM card identifiers (ICCID / IMSI) as key=value lines so the homepage
-# overview can surface them without a separate modem query.
+# AT+CIMI answers with "<IMSI>\r\n" and at_cmd strips CR only for the final
+# assembled output — intermediate lines can still carry a trailing CR. Strip
+# CR before matching so the strict digit regex actually sees the IMSI.
 print_sim_details() {
 	local iccid imsi
 	iccid="$(at_cmd 'AT^ICCID?' 2>/dev/null | first_match 's/^\^ICCID:[[:space:]]*//p' | clean_value)"
 	[ -n "${iccid}" ] && echo "iccid=${iccid}"
-	imsi="$(at_cmd 'AT+CIMI' 2>/dev/null | grep -E '^[0-9]+$' | head -n 1 | tr -d '\r')"
+	imsi="$(at_cmd 'AT+CIMI' 2>/dev/null | tr -d '\r' | grep -E '^[0-9]+$' | head -n 1)"
 	[ -n "${imsi}" ] && echo "imsi=${imsi}"
 }
 
