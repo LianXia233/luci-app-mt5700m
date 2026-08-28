@@ -19,6 +19,7 @@ config recovery 'recovery'
 	option dns_host 'www.baidu.com'
 	option v6_cooldown '300'
 	option halt_notify '600'
+	option radio_settle '45'
 
 config connection 'connection'
 	option enabled '1'

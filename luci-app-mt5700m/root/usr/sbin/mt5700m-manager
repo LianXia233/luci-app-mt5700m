@@ -22,6 +22,7 @@ HEALTH_PING_HOST6='2400:3200::1'
 HEALTH_DNS_HOST='www.baidu.com'
 HEALTH_V6_COOLDOWN=300    # min. spacing between MT5700Mv6 recycles, seconds
 HEALTH_HALT_NOTIFY=600    # reminder interval once recovery is halted, seconds
+HEALTH_RADIO_SETTLE=45    # max wait for service after a radio cycle, seconds
 
 # Recovery bookkeeping (tmpfs, cleared on reboot).
 FAIL_COUNT_FILE="${STATE_DIR}/recovery_failures"
@@ -33,6 +34,11 @@ V6_RECOVER_FILE="${STATE_DIR}/v6_recover_at"
 
 HEALTH_STATE='unknown'
 HEALTH_DETAIL=''
+DIAL_DETAIL='notrun'
+DIAL_STAT4=''
+DIAL_STAT6=''
+DIAL_ERR4=''
+DIAL_ERR6=''
 HEALTH_ADDR4='-'
 HEALTH_ADDR6='-'
 HEALTH_DEVICE='-'
@@ -43,27 +49,51 @@ RECOVERY_REASON=''
 
 [ -r "${USB_HELPER}" ] && . "${USB_HELPER}"
 
+# The log lives on tmpfs, i.e. in RAM.  A wedged link used to append on every
+# poll with no upper bound, so cap the file and keep the most recent tail.
+LOG_MAX_LINES="${MT5700M_LOG_MAX_LINES:-2000}"
+
+log_rotate_if_needed() {
+	local lines
+	[ "${LOG_MAX_LINES}" -gt 0 ] || return 0
+	lines="$(wc -l < "${LOG_FILE}" 2>/dev/null || echo 0)"
+	case "${lines}" in ''|*[!0-9]*) return 0 ;; esac
+	[ "${lines}" -gt "${LOG_MAX_LINES}" ] || return 0
+	tail -n "${LOG_MAX_LINES}" "${LOG_FILE}" > "${LOG_FILE}.tmp" 2>/dev/null || return 0
+	mv "${LOG_FILE}.tmp" "${LOG_FILE}" 2>/dev/null || true
+}
+
 log_message() {
 	local message="$*"
 	mkdir -p "${STATE_DIR}"
 	printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${message}" >> "${LOG_FILE}"
+	log_rotate_if_needed
 	logger -t "${TAG}" -- "${message}"
 }
 
 acquire_lock() {
-	local owner
+	local owner current
 	if mkdir "${LOCK_DIR}" 2>/dev/null; then
 		echo "$$" > "${LOCK_DIR}/pid"
 		return 0
 	fi
 	owner="$(cat "${LOCK_DIR}/pid" 2>/dev/null || true)"
 	case "${owner}" in ''|*[!0-9]*) owner='' ;; esac
-	if [ -z "${owner}" ] || ! kill -0 "${owner}" 2>/dev/null; then
+	if [ -n "${owner}" ] && ! kill -0 "${owner}" 2>/dev/null; then
+		# The recorded owner is dead.  Re-read once more: a concurrent
+		# reclaim may already have swapped in a live pid, and deleting the
+		# directory in that window would let a third process slip in.
+		current="$(cat "${LOCK_DIR}/pid" 2>/dev/null || true)"
+		case "${current}" in ''|*[!0-9]*) current='' ;; esac
+		[ -n "${current}" ] && [ "${current}" != "${owner}" ] && return 1
 		rm -rf "${LOCK_DIR}" 2>/dev/null
 		mkdir "${LOCK_DIR}" 2>/dev/null || return 1
 		echo "$$" > "${LOCK_DIR}/pid"
 		return 0
 	fi
+	# owner empty (the directory is mid-initialisation by another process) or a
+	# live owner holds it: contesting here would either corrupt a fresh lock or
+	# race a live holder, so back off and let the caller retry.
 	return 1
 }
 
@@ -77,7 +107,17 @@ acquire_lock_wait() {
 }
 
 release_lock() {
-	rm -rf "${LOCK_DIR}" 2>/dev/null
+	# Only release a lock this process actually owns.  A stale-pid sweep can
+	# let another instance claim the directory, and deleting it here would
+	# silently open the critical section to a third process.
+	local owner
+	[ -d "${LOCK_DIR}" ] || return 0
+	owner="$(cat "${LOCK_DIR}/pid" 2>/dev/null || true)"
+	case "${owner}" in ''|*[!0-9]*) owner='' ;; esac
+	if [ -n "${owner}" ] && [ "${owner}" != "$$" ]; then
+		return 0
+	fi
+	rm -rf "${LOCK_DIR}" 2>/dev/null || true
 }
 
 bool_value() {
@@ -103,7 +143,10 @@ numeric_value() {
 state_read() {
 	local value
 	value="$(cat "$1" 2>/dev/null || true)"
-	value="$(printf '%s' "${value}" | tr -d '[:space:]')"
+	# Explicit whitespace chars, not '[:space:]': busybox tr treats the
+	# class as a literal set of characters and strips nothing useful
+	# (verified on device: '12 34' survives tr -d '[:space:]' unchanged).
+	value="$(printf '%s' "${value}" | tr -d ' \t\r\n')"
 	case "${value}" in ''|*[!0-9]*) value="$2" ;; esac
 	printf '%s\n' "${value}"
 }
@@ -124,6 +167,7 @@ load_health_config() {
 	HEALTH_ROUND_TIMEOUT="$(numeric_value "$(recovery_value round_timeout 90)" 90)"
 	HEALTH_PROBE_TIMEOUT="$(numeric_value "$(recovery_value probe_timeout 5)" 5)"
 	HEALTH_V6_COOLDOWN="$(numeric_value "$(recovery_value v6_cooldown 300)" 300)"
+	HEALTH_RADIO_SETTLE="$(numeric_value "$(recovery_value radio_settle 45)" 45)"
 	HEALTH_HALT_NOTIFY="$(numeric_value "$(recovery_value halt_notify 600)" 600)"
 	HEALTH_PING_HOST="$(recovery_value ping_host '223.5.5.5')"
 	HEALTH_PING_HOST6="$(recovery_value ping_host6 '2400:3200::1')"
@@ -132,6 +176,7 @@ load_health_config() {
 	[ "${HEALTH_ROUND_TIMEOUT}" -ge 30 ] || HEALTH_ROUND_TIMEOUT=30
 	[ "${HEALTH_PROBE_TIMEOUT}" -ge 2 ] || HEALTH_PROBE_TIMEOUT=2
 	[ "${HEALTH_BACKOFF_MAX}" -ge "${HEALTH_BACKOFF_BASE}" ] || HEALTH_BACKOFF_MAX="${HEALTH_BACKOFF_BASE}"
+	[ "${HEALTH_RADIO_SETTLE}" -ge 5 ] || HEALTH_RADIO_SETTLE=5
 }
 
 # Run a command under a wall-clock limit when coreutils-timeout is available.
@@ -385,18 +430,21 @@ probe_dns() { # $1=dns server handed out by the modem
 }
 
 connectivity_probe() { # $1=device; 0 = the data path really carries traffic
-	local dev="$1" dns started budget
+	local dev="$1" dns started budget probe_cost
 	dns="$(iface_dns_server "${INTERFACE}")"
 	[ -n "${dns}" ] || dns="$(iface_dns_server "${INTERFACE6}")"
 	# Total probe budget: a black-holed link must not inflate the recovery
 	# round by waiting on every probe in turn.
 	started="$(date +%s)"
 	budget=$((HEALTH_PROBE_TIMEOUT * 4))
+	# Worst-case wall clock of one probe, used to keep the whole sequence
+	# inside the budget rather than only checking it after the fact.
+	probe_cost=$((HEALTH_PROBE_TIMEOUT * 2 + 2))
 	if probe_ping 4 "${dev}" "${HEALTH_PING_HOST}"; then
 		CONNECTIVITY_DETAIL="ping4=ok ping6=skip dns=skip"
 		return 0
 	fi
-	probe_budget_left "${started}" "${budget}" || {
+	probe_budget_left "${started}" "${budget}" "${probe_cost}" || {
 		CONNECTIVITY_DETAIL="ping4=fail ping6=skip dns=skip(probe-budget)"
 		return 1
 	}
@@ -410,7 +458,7 @@ connectivity_probe() { # $1=device; 0 = the data path really carries traffic
 		CONNECTIVITY_DETAIL="ping4=fail ping6=fail dns=skip(no-modem-dns)"
 		return 1
 	fi
-	probe_budget_left "${started}" "${budget}" || {
+	probe_budget_left "${started}" "${budget}" "${probe_cost}" || {
 		CONNECTIVITY_DETAIL="ping4=fail ping6=fail dns=skip(probe-budget)"
 		return 1
 	}
@@ -422,8 +470,11 @@ connectivity_probe() { # $1=device; 0 = the data path really carries traffic
 	return 1
 }
 
-probe_budget_left() { # $1=start epoch $2=budget seconds
-	[ "$(($(date +%s) - $1))" -lt "$2" ]
+# $1=start epoch $2=budget seconds $3=cost the next probe may incur.
+# Checking only "elapsed < budget" let a single probe overrun the whole
+# budget, because one probe can itself take HEALTH_PROBE_TIMEOUT*2+2 seconds.
+probe_budget_left() {
+	[ "$(($(date +%s) - $1 + $3))" -le "$2" ]
 }
 
 # ---- layered health decision ----------------------------------------------
@@ -433,6 +484,17 @@ probe_budget_left() { # $1=start epoch $2=budget seconds
 #      before declaring the link broken.
 # Sets HEALTH_STATE (healthy|transient|unhealthy) plus HEALTH_DETAIL, and
 # returns 0 when the link must be left alone.
+# Read the link-layer carrier for a netdev.  Wrapped in a function (rather
+# than an inline cat) so the health tests can drive carrier through a stub
+# instead of depending on the real link state of whatever host runs them.
+# Returns 0 when the interface reports carrier, 1 otherwise.
+iface_carrier() { # $1=netdev
+	local dev="$1" v
+	[ -n "${dev}" ] || return 1
+	v="$(cat "/sys/class/net/${dev}/carrier" 2>/dev/null || echo 0)"
+	[ "${v}" = '1' ]
+}
+
 evaluate_health() {
 	local addr4 addr6 dev
 	HEALTH_ADDR4='none'
@@ -451,7 +513,7 @@ evaluate_health() {
 	else
 		HEALTH_DEVICE="${dev}"
 	fi
-	if [ -n "${dev}" ] && [ "$(cat "/sys/class/net/${dev}/carrier" 2>/dev/null || echo 0)" = '1' ]; then
+	if iface_carrier "${dev}"; then
 		HEALTH_CARRIER=1
 	fi
 
@@ -470,15 +532,27 @@ evaluate_health() {
 		return 0
 	fi
 
-	# 3) addressless -> prove the data path is broken before touching it.
+	# 3) addressless.  Ask the module first: an ICMP probe can never succeed in
+	#    this state, so it can only ever confirm "broken" - it cannot show the
+	#    link as still usable.  The module's own PDP state can.  Fall back to
+	#    the probe only when the module is unreachable altogether.
 	HEALTH_DETAIL="iface=${INTERFACE} device=${HEALTH_DEVICE} ipv4=none ipv6=none carrier=${HEALTH_CARRIER}"
-	if connectivity_probe "${dev}"; then
+	# The module's dial state only proves the radio side.  With carrier down
+	# the host-side NCM link itself is broken (verified on device: module
+	# reports v4=1/v6=1 while eth2 is DOWN and traffic cannot leave), so the
+	# link must be rebuilt regardless of what the modem believes.
+	if [ "${HEALTH_CARRIER}" = '1' ] && modem_dial_status; then
 		HEALTH_STATE='transient'
-		HEALTH_DETAIL="${HEALTH_DETAIL} probe=${CONNECTIVITY_DETAIL}"
+		HEALTH_DETAIL="${HEALTH_DETAIL} dial=${DIAL_DETAIL}"
+		return 0
+	fi
+	if [ "${DIAL_DETAIL}" = 'ndisstatqry=unavailable' ] && connectivity_probe "${dev}"; then
+		HEALTH_STATE='transient'
+		HEALTH_DETAIL="${HEALTH_DETAIL} dial=${DIAL_DETAIL} probe=${CONNECTIVITY_DETAIL}"
 		return 0
 	fi
 	HEALTH_STATE='unhealthy'
-	HEALTH_DETAIL="${HEALTH_DETAIL} probe=${CONNECTIVITY_DETAIL}"
+	HEALTH_DETAIL="${HEALTH_DETAIL} dial=${DIAL_DETAIL} probe=${CONNECTIVITY_DETAIL}"
 	return 1
 }
 
@@ -506,8 +580,8 @@ health_note_transient() {
 
 # The v4 link can be healthy while MT5700Mv6 (DHCPv6) still has no global
 # address; recycle only the v6 interface so we do not drop the v4 path.
-recover_interface6() {
-	local pdp_type attempt=0 now last
+recover_interface6() { # $1=max seconds to spend (defaults to the round budget)
+	local pdp_type attempt=0 now last limit started
 	pdp_type="$(config_value pdp_type ipv4v6)"
 	[ "${pdp_type}" = 'ip' ] && return 0
 	[ "$(uci -q get network.${INTERFACE6}.auto 2>/dev/null || echo 1)" = '0' ] && return 0
@@ -521,7 +595,19 @@ recover_interface6() {
 	fi
 	state_write "${V6_RECOVER_FILE}" "$((now + HEALTH_V6_COOLDOWN))"
 	log_message "interface ${INTERFACE6} has no IPv6 address, recycling (next attempt not before ${HEALTH_V6_COOLDOWN}s)"
+	# Bound the recycling: five rounds of ifdown/ifup plus their sleeps can
+	# run for minutes, and this used to sit entirely outside the round budget.
+	limit="${1:-0}"
+	if [ "${limit}" -le 0 ]; then
+		limit=$((ROUND_DEADLINE - $(date +%s)))
+		[ "${limit}" -gt 0 ] || limit=30
+	fi
+	started="$(date +%s)"
 	while [ "${attempt}" -lt 5 ]; do
+		if [ "$(($(date +%s) - started))" -ge "${limit}" ]; then
+			log_message "interface ${INTERFACE6} recycling stopped after ${limit}s budget"
+			return 1
+		fi
 		ifdown "${INTERFACE6}" >/dev/null 2>&1 || true
 		sleep 2
 		ifup "${INTERFACE6}" >/dev/null 2>&1 || true
@@ -562,15 +648,49 @@ bring_down() {
 # host side or to kick the module side.
 modem_connected() {
 	local srv
-	srv="$(/usr/sbin/mt5700m-at command 'AT^SYSINFOEX' 2>/dev/null | sed -n 's/^\^SYSINFOEX:[[:space:]]*//p' | head -n 1)"
+	srv="$("${AT_HELPER}" command 'AT^SYSINFOEX' 2>/dev/null | sed -n 's/^\^SYSINFOEX:[[:space:]]*//p' | head -n 1)"
 	case "${srv}" in 2,*) return 0 ;; *) return 1 ;; esac
+}
+
+# Ask the module about its own dial state (AT^NDISSTATQRY=<cid>, manual 16.4).
+#
+# This is the only usable evidence while the host interface has no address.
+# An ICMP probe cannot answer the question in that situation: without a source
+# address the kernel has nothing to send from, and `ping -I <dev>` on an
+# addressless interface fails for both families (verified on device).  The
+# module, however, knows whether the PDP context is up and reports a 3GPP
+# cause code when it is not - which also turns an opaque failure into a
+# diagnosable one.
+# Sets DIAL_DETAIL / DIAL_STAT4 / DIAL_STAT6 / DIAL_ERR4 / DIAL_ERR6.
+modem_dial_status() {
+	local raw
+	DIAL_DETAIL='ndisstatqry=unavailable'
+	DIAL_STAT4=''
+	DIAL_STAT6=''
+	DIAL_ERR4=''
+	DIAL_ERR6=''
+	raw="$("${AT_HELPER}" command 'AT^NDISSTATQRY=1' 2>/dev/null |
+		tr -d '\r' |
+		sed -n 's/^\^NDISSTATQRY:[[:space:]]*//p' | head -n 1)"
+	[ -n "${raw}" ] || return 1
+	# ^NDISSTATQRY: <ipv4_stat>,<ipv4_err>,,"IPV4",<ipv6_stat>,<ipv6_err>,,"IPV6"
+	IFS=, read -r DIAL_STAT4 DIAL_ERR4 _ _ DIAL_STAT6 DIAL_ERR6 _ _ <<EOF
+${raw}
+EOF
+	DIAL_DETAIL="ndisstatqry=v4=${DIAL_STAT4:-?}/v6=${DIAL_STAT6:-?}"
+	[ -n "${DIAL_ERR4}" ] && DIAL_DETAIL="${DIAL_DETAIL} err4=${DIAL_ERR4}"
+	[ -n "${DIAL_ERR6}" ] && DIAL_DETAIL="${DIAL_DETAIL} err6=${DIAL_ERR6}"
+	# <stat>: 0 disconnected, 1 connected, 2 connecting, 3 disconnecting
+	[ "${DIAL_STAT4}" = '1' ] && return 0
+	[ "${DIAL_STAT6}" = '1' ] && return 0
+	return 1
 }
 
 # Query the module USB port mode.  4 = NCM (CDC-NCM, recommended for Linux),
 # 0 = ECM; other values may leave the USB data interface absent.
 modem_usb_mode() {
 	local mode
-	mode="$(/usr/sbin/mt5700m-at command 'AT^SETMODE?' 2>/dev/null | tr -d '\r' | grep -oE '^[0-9]+$' | head -n 1)"
+	mode="$("${AT_HELPER}" command 'AT^SETMODE?' 2>/dev/null | tr -d '\r' | grep -oE '^[0-9]+$' | head -n 1)"
 	case "${mode}" in ''|*[!0-9]*) return 1 ;; esac
 	printf '%s\n' "${mode}"
 }
@@ -592,7 +712,7 @@ modem_ensure_usb_mode() {
 	case "${fixed_at}" in ''|*[!0-9]*) fixed_at=0 ;; esac
 	now="$(date +%s)"
 	[ "${now}" -ge "$((fixed_at + 600))" ] || return 1
-	/usr/sbin/mt5700m-at command 'AT^SETMODE=4' >/dev/null 2>&1 || true
+	"${AT_HELPER}" command 'AT^SETMODE=4' >/dev/null 2>&1 || true
 	echo "${now}" > "${STATE_DIR}/usb_mode_fix_time" 2>/dev/null || true
 	return 1
 }
@@ -605,21 +725,40 @@ modem_ensure_usb_mode() {
 modem_cycle_link() {
 	local netdev="$1" attempt=0
 
-	run_with_timeout 10 /usr/sbin/mt5700m-at command 'AT^NDISDUP=1,0' >/dev/null 2>&1 || true
+	run_with_timeout 10 "${AT_HELPER}" command 'AT^NDISDUP=1,0' >/dev/null 2>&1 || true
 	sleep 2
-	run_with_timeout 10 /usr/sbin/mt5700m-at command 'AT^NDISDUP=1,1' >/dev/null 2>&1 || true
+	run_with_timeout 10 "${AT_HELPER}" command 'AT^NDISDUP=1,1' >/dev/null 2>&1 || true
 	while [ "${attempt}" -lt 5 ]; do
-		if [ -n "${netdev}" ] && [ "$(cat "/sys/class/net/${netdev}/carrier" 2>/dev/null || echo 0)" = '1' ]; then
+		if iface_carrier "${netdev}"; then
 			return 0
 		fi
 		sleep 2
 		attempt=$((attempt + 1))
 	done
 	log_message 'NDIS rebuild did not restore carrier, cycling radio'
-	run_with_timeout 10 /usr/sbin/mt5700m-at command 'AT+CFUN=0' >/dev/null 2>&1 || true
+	run_with_timeout 10 "${AT_HELPER}" command 'AT+CFUN=0' >/dev/null 2>&1 || true
+	# Manual 6.1.2: the gap between CFUN=0 and CFUN=1 must exceed 1 s.
 	sleep 2
-	run_with_timeout 10 /usr/sbin/mt5700m-at command 'AT+CFUN=1' >/dev/null 2>&1 || true
-	sleep 5
+	run_with_timeout 10 "${AT_HELPER}" command 'AT+CFUN=1' >/dev/null 2>&1 || true
+	modem_wait_service "${HEALTH_RADIO_SETTLE}" || true
+}
+
+# AT+CFUN=1 returns OK as soon as the command is accepted, not when the module
+# is usable again.  Searching for and registering on a 5G network afterwards
+# takes anywhere from a few seconds to well over half a minute.  Bringing the
+# interface up while the module is still camping gets no DHCP answer, which
+# used to be counted as a failed recovery round and pushed the link towards
+# the retry ceiling.
+modem_wait_service() { # $1=timeout seconds
+	local limit="${1:-45}" waited=0
+	sleep 3
+	while [ "${waited}" -lt "${limit}" ]; do
+		modem_connected && return 0
+		sleep 2
+		waited=$((waited + 2))
+	done
+	log_message "module reports no service ${limit}s after the radio cycle"
+	return 1
 }
 
 # ---- recovery rate limiting ----------------------------------------------
@@ -709,36 +848,77 @@ recovery_gate() {
 	return 0
 }
 
+# Shared handling for "the link works - leave it alone".
+health_accept() {
+	case "${HEALTH_STATE}" in
+		healthy)
+			recovery_clear_failures
+			log_message "interface ${INTERFACE} healthy: ${HEALTH_DETAIL}"
+			recover_interface6 || true
+			return 0
+			;;
+		transient)
+			recovery_clear_failures
+			health_note_transient
+			recover_interface6 || true
+			return 0
+			;;
+	esac
+	return 1
+}
+
+# Cheap re-check for the wait loop: addresses, carrier and the module dial
+# state, with no ICMP and no DNS.  A full evaluate_health() may sit in probes
+# for tens of seconds, which used to exceed the caller's entire wait budget on
+# the very first iteration - so the "wait for DHCP" path never really waited.
+health_poll_once() {
+	local addr4 addr6 dev
+	addr4="$(iface_address "${INTERFACE}" 4 || true)"
+	addr6="$(iface_address "${INTERFACE6}" 6 || true)"
+	dev="$(iface_device "${INTERFACE}" || true)"
+	HEALTH_ADDR4="${addr4:-none}"
+	HEALTH_ADDR6="${addr6:-none}"
+	HEALTH_DEVICE="${dev:-none}"
+	HEALTH_CARRIER=0
+	if iface_carrier "${dev}"; then
+		HEALTH_CARRIER=1
+	fi
+	if [ -n "${addr4}" ] || [ -n "${addr6}" ]; then
+		HEALTH_STATE='healthy'
+		HEALTH_DETAIL="iface=${INTERFACE} device=${HEALTH_DEVICE} ipv4=${HEALTH_ADDR4} ipv6=${HEALTH_ADDR6} carrier=${HEALTH_CARRIER}"
+		return 0
+	fi
+	HEALTH_DETAIL="iface=${INTERFACE} device=${HEALTH_DEVICE} ipv4=none ipv6=none carrier=${HEALTH_CARRIER}"
+	if [ "${HEALTH_CARRIER}" = '1' ] && modem_dial_status; then
+		HEALTH_STATE='transient'
+		HEALTH_DETAIL="${HEALTH_DETAIL} dial=${DIAL_DETAIL}"
+		return 0
+	fi
+	HEALTH_STATE='unhealthy'
+	HEALTH_DETAIL="${HEALTH_DETAIL} dial=${DIAL_DETAIL}"
+	return 1
+}
+
 # Poll until the data path is usable, the wait budget is spent, or the round
-# deadline passes.  Returns 0 as soon as an address shows up or the
-# connectivity probe proves the link still carries traffic.
+# deadline passes.  One full evaluation runs first (the only one allowed to
+# probe); every later iteration uses the cheap poll so the caller's wait
+# window is actually spent waiting rather than probing.
 wait_for_health() {
 	local limit="$1" started remaining waited
 	started="$(date +%s)"
+	evaluate_health
+	health_accept && return 0
 	while :; do
-		evaluate_health
-		case "${HEALTH_STATE}" in
-			healthy)
-				recovery_clear_failures
-				log_message "interface ${INTERFACE} healthy: ${HEALTH_DETAIL}"
-				recover_interface6 || true
-				return 0
-				;;
-			transient)
-				recovery_clear_failures
-				health_note_transient
-				recover_interface6 || true
-				return 0
-				;;
-		esac
 		remaining=$((ROUND_DEADLINE - $(date +%s)))
 		[ "${remaining}" -le 0 ] && return 1
 		[ "${remaining}" -lt "${limit}" ] && limit="${remaining}"
-		# Wall clock, not sleep count: a probe can take seconds, and the
-		# round budget must be honoured either way.
+		# Wall clock, not sleep count: the round budget must be honoured
+		# either way.
 		waited=$(($(date +%s) - started))
 		[ "${waited}" -ge "${limit}" ] && return 1
 		sleep 2
+		health_poll_once
+		health_accept && return 0
 	done
 }
 
@@ -880,7 +1060,7 @@ apply_profile() {
 	password="$(config_value password '')"
 	auth="$(config_value auth none)"
 	case "${auth}" in pap) auth_code=1 ;; chap) auth_code=2 ;; *) auth_code=0 ;; esac
-	/usr/sbin/mt5700m-at advanced-set autodial 1 "${dial_mode}" "${protocol}" "${apn}" "${username}" "${password}" "${auth_code}" >/dev/null
+	"${AT_HELPER}" advanced-set autodial 1 "${dial_mode}" "${protocol}" "${apn}" "${username}" "${password}" "${auth_code}" >/dev/null
 }
 
 connect_manager() {
@@ -950,7 +1130,7 @@ status_json() {
 	up4="$(bool_value "$(printf '%s' "${status4}" | jsonfilter -e '@.up' 2>/dev/null)")"
 	up6="$(bool_value "$(printf '%s' "${status6}" | jsonfilter -e '@.up' 2>/dev/null)")"
 	carrier=0
-	[ -n "${netdev}" ] && [ "$(cat "/sys/class/net/${netdev}/carrier" 2>/dev/null || echo 0)" = '1' ] && carrier=1
+	iface_carrier "${netdev}" && carrier=1
 	json_init
 	json_add_boolean running "$([ "$(config_value enabled 1)" = '1' ] && [ "${state}" = 'normal' ] && echo 1 || echo 0)"
 	json_add_boolean connected "$({ [ "${up4}" = '1' ] || [ "${up6}" = '1' ]; } && [ "${carrier}" = '1' ] && echo 1 || echo 0)"
@@ -990,9 +1170,12 @@ monitor_manager() {
 				# Backoff / unresolved fault: do not hammer the module.
 				*) interval=30 ;;
 			esac
+			# Temperature shares the AT channel with sync_manager; keep it
+			# inside the lock so the two never talk to the module at once.
+			# A concurrent reader corrupts both responses.
+			refresh_temperature_cache >/dev/null 2>&1 || true
 			release_lock
 		fi
-		refresh_temperature_cache >/dev/null 2>&1 || true
 		sleep "${interval}"
 	done
 }

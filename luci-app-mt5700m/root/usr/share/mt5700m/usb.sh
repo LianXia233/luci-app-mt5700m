@@ -193,9 +193,11 @@ mt5700m_path_matches_slot() {
 # made sync_manager report "module has no network interface" even though the
 # modem was already online with an active data link.
 mt5700m_wait_netdev() {
-	local wait="${1:-5}" attempt=0 netdev
+	# Named for what it is, not `wait`: that is a shell builtin and reading
+	# "${wait}" next to a background job is needlessly confusing.
+	local timeout_s="${1:-5}" attempt=0 netdev
 
-	while [ "${attempt}" -lt "${wait}" ]; do
+	while [ "${attempt}" -lt "${timeout_s}" ]; do
 		netdev="$(mt5700m_netdev || true)"
 		[ -n "${netdev}" ] && {
 			printf '%s\n' "${netdev}"

@@ -133,9 +133,18 @@ at_network_cmd() {
 at_response_ok() {
 	# A completed transport request is not necessarily an accepted AT command.
 	# Propagate final modem errors so LuCI never reports a rejected setting as
-	# successfully applied. Some ubus-at-daemon versions preserve escaped line
-	# endings, so do not require the final result token to start on a clean line.
-	printf '%s\n' "$1" | grep -Fq 'ERROR' && return 1
+	# successfully applied.
+	#
+	# Only a *final result token* counts.  A bare substring search for "ERROR"
+	# misreads a payload that merely contains the word - an APN named ERROR, or
+	# an SMS body - and reports a perfectly applied setting as rejected.  Match
+	# an anchored result line instead (optionally prefixed by +CME / +CMS).
+	# CR is stripped first because some ubus-at-daemon builds preserve escaped
+	# line endings.
+	printf '%s\n' "$1" |
+		tr -d '\r' |
+		grep -Eq '^[[:space:]]*(\+CME[[:space:]]+|\+CMS[[:space:]]+)?ERROR([[:space:]]|:|$)' &&
+		return 1
 	return 0
 }
 
@@ -185,16 +194,30 @@ at_serial_cmd() {
 	cat "${device}" > "${tmp}" 2>/dev/null &
 	reader="$!"
 
+	# The reader must never outlive this function.  Callers wrap AT commands in
+	# `timeout`, and busybox timeout signals only its direct child - it does not
+	# kill the process group the way GNU coreutils does.  Without these traps a
+	# timed-out command orphans the background `cat` with the serial device
+	# still open; the leaked descriptors accumulate until every AT command
+	# fails while the module itself is perfectly healthy.  Verified on device:
+	# `timeout 2 <script with a background job>` leaves the job alive (rc=143).
+	at_serial_cleanup() {
+		kill "${reader}" 2>/dev/null || true
+		wait "${reader}" 2>/dev/null || true
+		rm -f "${tmp}" 2>/dev/null || true
+	}
+	trap 'at_serial_cleanup' EXIT
+	trap 'at_serial_cleanup; exit 130' INT TERM HUP
+
 	printf '%s\r' "${command}" > "${device}"
 
 	elapsed=0
 	while [ "${elapsed}" -lt "${timeout_s}" ]; do
 		output="$(tr -d '\r' < "${tmp}" 2>/dev/null || true)"
 		if printf '%s\n' "${output}" | grep -Eq '(^|\n)(OK|ERROR|\+CME ERROR|\+CMS ERROR)(\n|$)'; then
+			at_serial_cleanup
+			trap - EXIT INT TERM HUP
 			printf '%s\n' "${output}"
-			kill "${reader}" 2>/dev/null || true
-			wait "${reader}" 2>/dev/null || true
-			rm -f "${tmp}"
 			at_response_ok "${output}"
 			return $?
 		fi
@@ -202,10 +225,10 @@ at_serial_cmd() {
 		elapsed=$((elapsed + 1))
 	done
 
-	kill "${reader}" 2>/dev/null || true
-	wait "${reader}" 2>/dev/null || true
+	# Read the partial response *before* discarding the file it lives in.
 	output="$(tr -d '\r' < "${tmp}" 2>/dev/null || true)"
-	rm -f "${tmp}"
+	at_serial_cleanup
+	trap - EXIT INT TERM HUP
 
 	[ -n "${output}" ] && printf '%s\n' "${output}"
 	# A serial timeout is a transport failure, not a modem ERROR response.

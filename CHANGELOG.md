@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.3.40] - 2026-08-29
+
+### Fixed
+- 实机（ImmortalWrt 6.18.44 aarch64 / MT5700M）拨号健康检测与恢复回归，修复若干缺陷：
+  - 修复 healthy 判定在模组侧谎报已拨号（`NDISSTATQRY` v4/v6=1）但主机侧网卡 `carrier=0`（链路 DOWN）时，被误判为 transient、永不触发恢复的问题。引入 **carrier 门控**：无 carrier 时即便模块报已拨号也判 unhealthy，交由恢复流程重新拉起链路。实机验证 eth2 由 DOWN 恢复正常并获得地址 `10.6.150.230/8`，外网 ping `223.5.5.5` 0% 丢包。
+  - 修复 `acquire_lock()` 在并发初始化（owner 为空表示该进程仍在初始化）场景下的竞争：原逻辑会误删正在被其他进程初始化的锁，造成锁被抢/误删。现对空 owner 与存活 owner 统一退避，消除竞争窗口。
+  - 修复 `state_read` 对空白/非数字内容的处理：`busybox tr` 不支持 POSIX 字符类 `[:space:]`，原 `tr -d '[:space:]'` 在设备上不过滤空格，导致 `12 34` 不被归一。改为显式 `tr -d ' \t\r\n'`，计数类字段（如 `recovery_failures`）解析更稳健。
+  - 修复 `mt5700m-at` 的清理逻辑（`at_serial_cleanup` 临时文件泄漏、`at_response_ok` 未传播 ERROR）与 `usb.sh` 变量重命名（`wait`→`timeout_s`）。
+- 测试桩补齐：`timeout` 在 busybox 下不走 PATH 而直接 exec，测试中需显式 stub；新增 `iface_carrier()` 可注入函数替代硬编码 `/sys/class/net` 读取，并用 `timeout`/`carrier` stub 确保测试可独立于真实网卡运行；新增用例覆盖 carrier 门控（用例 2.3b）。修复测试自身对退避时长断言的时序脆弱性（改用单一时间戳锚点，兼容慢速主机）。
+
+### Changed
+- 默认配置与 `90-mt5700m` 同步新增 `radio_settle='45'`（HEALTH_RADIO_SETTLE），与代码默认值对齐。
+
 ## [2.3.39] - 2026-08-28
 
 ### Changed

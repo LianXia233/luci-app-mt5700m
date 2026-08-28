@@ -22,6 +22,7 @@ if ! uci -q get mt5700m.recovery >/dev/null 2>&1; then
 	uci -q set mt5700m.recovery.dns_host='www.baidu.com'
 	uci -q set mt5700m.recovery.v6_cooldown='300'
 	uci -q set mt5700m.recovery.halt_notify='600'
+	uci -q set mt5700m.recovery.radio_settle='45'
 fi
 
 # Migrate only the user-owned MT5700M profile from an existing QModem

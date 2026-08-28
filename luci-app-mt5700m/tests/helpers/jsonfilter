@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Test double for OpenWrt's jsonfilter (-e mode, subset used by mt5700m).
+
+Implements the expression forms the manager relies on:
+
+    @.key                       scalar lookup
+    @['key']                    quoted key lookup
+    @['key'][0]                 array index
+    @['key'][0]['subkey']       index then quoted key
+
+Crucially it reproduces the behaviour that caused the original dial-loop bug:
+a *dotted* key containing a hyphen ("@.ipv4-address") is rejected by real
+jsonfilter builds with "Syntax error: Invalid escape sequence".  A test double
+that silently accepted it would let that class of bug through again, so the
+same rejection is implemented here.
+"""
+
+import json
+import re
+import sys
+
+
+class SyntaxErr(Exception):
+    pass
+
+
+def parse(expr):
+    """Return a list of steps: ('key', name) or ('index', n)."""
+    if not expr.startswith('@'):
+        raise SyntaxErr('expression must start with @')
+    steps = []
+    rest = expr[1:]
+    while rest:
+        if rest.startswith('.'):
+            m = re.match(r"\.([A-Za-z0-9_]+)", rest)
+            if not m:
+                raise SyntaxErr('Syntax error: Invalid escape sequence')
+            name = m.group(1)
+            # Real jsonfilter also refuses a dotted name that would need
+            # quoting, which is exactly what broke '@.ipv4-address'.
+            if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', name):
+                raise SyntaxErr('Syntax error: Invalid escape sequence')
+            steps.append(('key', name))
+            rest = rest[m.end():]
+        elif rest.startswith('['):
+            m = re.match(r"\[\s*'([^']*)'\s*\]", rest)
+            if m:
+                steps.append(('key', m.group(1)))
+                rest = rest[m.end():]
+                continue
+            m = re.match(r"\[\s*(\d+)\s*\]", rest)
+            if not m:
+                raise SyntaxErr('Syntax error: bad subscript')
+            steps.append(('index', int(m.group(1))))
+            rest = rest[m.end():]
+        else:
+            raise SyntaxErr('Syntax error: unexpected token')
+    return steps
+
+
+def walk(node, steps):
+    for kind, arg in steps:
+        if kind == 'key':
+            if not isinstance(node, dict) or arg not in node:
+                return None
+            node = node[arg]
+        else:
+            if not isinstance(node, list) or arg >= len(node):
+                return None
+            node = node[arg]
+    return node
+
+
+def render(value):
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    if isinstance(value, (dict, list)):
+        return json.dumps(value)
+    return str(value)
+
+
+def main(argv):
+    expr = None
+    args = []
+    i = 1
+    while i < len(argv):
+        if argv[i] == '-e':
+            i += 1
+            if i >= len(argv):
+                sys.stderr.write('jsonfilter: -e requires an argument\n')
+                return 2
+            # -e may be repeated; only the first is used by the manager.
+            if expr is None:
+                expr = argv[i]
+        else:
+            args.append(argv[i])
+        i += 1
+
+    if expr is None:
+        sys.stderr.write('jsonfilter: missing -e EXPRESSION\n')
+        return 2
+
+    try:
+        steps = parse(expr)
+    except SyntaxErr as e:
+        sys.stderr.write('jsonfilter: %s\n' % e)
+        return 2
+
+    raw = sys.stdin.read()
+    if not raw.strip():
+        return 0
+    try:
+        data = json.loads(raw)
+    except ValueError as e:
+        sys.stderr.write('jsonfilter: invalid json: %s\n' % e)
+        return 2
+
+    out = render(walk(data, steps))
+    if out is not None:
+        sys.stdout.write(out + '\n')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))
