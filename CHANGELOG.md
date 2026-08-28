@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.3.39] - 2026-08-28
+
+### Changed
+- 发布说明改为按版本自动生成，不再内联全量历史。原先 `release.yml` 里硬编码了一整段发布说明（v2.3.18 起的所有变更），导致每个 Release 页面都显示 5000+ 字符的过期日志。现在新增 `Build release notes` 步骤，用 awk 从 `CHANGELOG.md` 精确截取 `PKG_VERSION` 对应的一段（遇到下一个 `## [` 标题即停），拼上产物清单（文件名 / 大小 / SHA256 前 12 位）与安装示例，通过 `--notes-file` 发布；同名 Release 已存在时也会同步更新说明。实测正文从 5381 字符降到 2053 字符，且全部为当前版本内容。
+- 清理了历史 Release（v2.3.36、v2.3.37），避免发版列表堆积过期条目。
+
+### Added
+- 新增 `Auto Clean Releases` 工作流（`.github/workflows/auto-clean.yml`）：每天 03:17 UTC 定时执行，也可手动触发。默认保留最近 5 个 Release，其余删除；手动触发支持 `keep`（保留数量）、`dry_run`（仅预览不删除，默认开）、`cleanup_tag`（是否同时删除对应 git tag）三个参数，执行结果写入 Job Summary 表格。
+
 ## [2.3.38] - 2026-08-28
 
 ### Fixed

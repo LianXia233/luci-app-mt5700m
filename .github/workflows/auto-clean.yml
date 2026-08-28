@@ -1,0 +1,104 @@
+name: Auto Clean Releases
+
+# Keeps the Releases page from piling up: only the newest N releases are kept,
+# older ones (and, optionally, their tags) are removed.  Run manually with
+# dry_run=true first to preview what would be deleted.
+on:
+  schedule:
+    # 每天 03:17 UTC（北京时间 11:17）执行一次
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      keep:
+        description: '保留最近多少个 Release'
+        required: false
+        default: '5'
+      dry_run:
+        description: '仅预览、不实际删除'
+        type: boolean
+        required: false
+        default: true
+      cleanup_tag:
+        description: '同时删除对应的 git tag'
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-clean-releases
+  cancel-in-progress: false
+
+jobs:
+  clean-releases:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Prune old releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP_INPUT: ${{ github.event.inputs.keep }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          CLEANUP_TAG: ${{ github.event.inputs.cleanup_tag }}
+        run: |
+          set -euo pipefail
+
+          KEEP="${KEEP_INPUT:-5}"
+          case "${KEEP}" in ''|*[!0-9]*) KEEP=5 ;; esac
+          [ "${KEEP}" -ge 1 ] || KEEP=1
+          # Scheduled runs have no inputs: default to a safe preview.
+          DRY_RUN="${DRY_RUN:-true}"
+          CLEANUP_TAG="${CLEANUP_TAG:-true}"
+
+          # Newest first; drafts without createdAt are ignored.
+          mapfile -t TAGS < <(gh release list --limit 200 \
+            --json tagName,createdAt \
+            --jq '[.[] | select(.createdAt != null)] | sort_by(.createdAt) | reverse | .[].tagName')
+
+          total="${#TAGS[@]}"
+          echo "当前 Release 数量: ${total}，保留最近 ${KEEP} 个，dry_run=${DRY_RUN}"
+
+          {
+            echo "## Auto Clean Releases"
+            echo
+            echo "- 模式：$( [ "${DRY_RUN}" = 'true' ] && echo '预览（未删除）' || echo '实际删除' )"
+            echo "- 当前 Release 数量：${total}"
+            echo "- 保留最近：${KEEP}"
+            echo
+            echo '| 操作 | Release |'
+            echo '| --- | --- |'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if [ "${total}" -le "${KEEP}" ]; then
+            echo "无需清理。"
+            echo "- 结果：无需清理" >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          index=0
+          deleted=0
+          for tag in "${TAGS[@]}"; do
+            index=$((index + 1))
+            if [ "${index}" -le "${KEEP}" ]; then
+              echo "keep   [${index}] ${tag}"
+              echo "| 保留 | \`${tag}\` |" >> "${GITHUB_STEP_SUMMARY}"
+              continue
+            fi
+            if [ "${DRY_RUN}" = 'true' ]; then
+              echo "would-delete [${index}] ${tag}"
+              echo "| 将删除（预览） | \`${tag}\` |" >> "${GITHUB_STEP_SUMMARY}"
+              continue
+            fi
+            echo "delete [${index}] ${tag}"
+            if [ "${CLEANUP_TAG}" = 'true' ]; then
+              gh release delete "${tag}" --cleanup-tag --yes || echo "WARN: 删除 ${tag} 失败，跳过"
+            else
+              gh release delete "${tag}" --yes || echo "WARN: 删除 ${tag} 失败，跳过"
+            fi
+            deleted=$((deleted + 1))
+            echo "| 已删除 | \`${tag}\` |" >> "${GITHUB_STEP_SUMMARY}"
+          done
+
+          echo "清理完成，删除 ${deleted} 个 Release。"
