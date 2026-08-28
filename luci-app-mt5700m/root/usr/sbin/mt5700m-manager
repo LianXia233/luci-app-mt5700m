@@ -209,6 +209,57 @@ interface_up() {
 	[ "$(printf '%s' "${output}" | jsonfilter -e '@.up' 2>/dev/null)" = 'true' ]
 }
 
+# Has the interface actually obtained an IPv4 address?  "up" alone is not
+# enough: on DHCP the protocol may still be running without a lease, which
+# shows up in LuCI as "interface exists but no IP".
+interface_has_ip() {
+	local name="$1" output
+	output="$(ubus call "network.interface.${name}" status 2>/dev/null || true)"
+	[ -n "$(printf '%s' "${output}" | jsonfilter -e '@.ipv4-address[0].address' 2>/dev/null || true)" ]
+}
+
+interface6_has_ip() {
+	local output
+	output="$(ubus call "network.interface.${INTERFACE6}" status 2>/dev/null || true)"
+	[ -n "$(printf '%s' "${output}" | jsonfilter -e '@.ipv6-address[0].address' 2>/dev/null || true)" ]
+}
+
+# Overall health of the data path, judged by the profile: IPv4 for "ip",
+# IPv6 for "ipv6", IPv4 for the common dual-stack case (the v6 companion is
+# nursed separately by recover_interface6).
+interface_healthy() {
+	local pdp_type
+	pdp_type="$(config_value pdp_type ipv4v6)"
+	case "${pdp_type}" in
+		ip) interface_up "${INTERFACE}" && interface_has_ip "${INTERFACE}" ;;
+		ipv6) interface_up "${INTERFACE6}" && interface6_has_ip ;;
+		*) interface_up "${INTERFACE}" && interface_has_ip "${INTERFACE}" ;;
+	esac
+}
+
+# The v4 link can be healthy while MT5700Mv6 (DHCPv6) still has no global
+# address; recycle only the v6 interface so we do not drop the v4 path.
+recover_interface6() {
+	local pdp_type attempt=0
+	pdp_type="$(config_value pdp_type ipv4v6)"
+	[ "${pdp_type}" = 'ip' ] && return 0
+	[ "$(uci -q get network.${INTERFACE6}.auto 2>/dev/null || echo 1)" = '0' ] && return 0
+	interface6_has_ip && return 0
+	log_message "interface ${INTERFACE6} has no IPv6 address, recycling"
+	while [ "${attempt}" -lt 5 ]; do
+		ifdown "${INTERFACE6}" >/dev/null 2>&1 || true
+		sleep 2
+		ifup "${INTERFACE6}" >/dev/null 2>&1 || true
+		if interface6_has_ip; then
+			log_message "interface ${INTERFACE6} got IPv6 after ${attempt} recycle"
+			return 0
+		fi
+		attempt=$((attempt + 1))
+	done
+	log_message "interface ${INTERFACE6} still has no IPv6 address"
+	return 1
+}
+
 bring_up() {
 	local pdp_type
 	pdp_type="$(config_value pdp_type ipv4v6)"
@@ -294,17 +345,19 @@ modem_cycle_link() {
 	sleep 5
 }
 
-# Bring the interface up and then nurse it to a healthy state.  Covers the
-# "modem online, data connected, but OpenWrt has no interface / interface down"
-# case: wait for DHCP, rebuild the module link when carrier is missing, and
-# force a fresh ifdown/ifup as a final retry.
+# Bring the interface up and nurse it until it actually has an IP address.
+# Covers the real-world "modem online, interface config present, but no IP"
+# case: wait for DHCP (with explicit address check, not just up state),
+# rebuild the module link when carrier is missing, and hard-recycle via
+# ifdown/ifup when the DHCP client is stuck.
 bring_up_with_recovery() {
 	local netdev="$1" attempt=0
 
 	bring_up
-	while [ "${attempt}" -lt 6 ]; do
-		if interface_up "${INTERFACE}"; then
-			log_message "interface ${INTERFACE} up after ${attempt}x2s"
+	while [ "${attempt}" -lt 10 ]; do
+		if interface_healthy; then
+			log_message "interface ${INTERFACE} healthy after ${attempt}x2s"
+			recover_interface6 || true
 			return 0
 		fi
 		sleep 2
@@ -317,7 +370,8 @@ bring_up_with_recovery() {
 		bring_up
 		attempt=0
 		while [ "${attempt}" -lt 8 ]; do
-			if interface_up "${INTERFACE}"; then
+			if interface_healthy; then
+				recover_interface6 || true
 				return 0
 			fi
 			sleep 2
@@ -325,13 +379,39 @@ bring_up_with_recovery() {
 		done
 	fi
 
+	# Carrier present but still no address: the DHCP client is stuck.
+	# Force a fresh ifdown/ifup before touching the modem link.
+	log_message 'interface present but no IP, recycling ifdown/ifup'
 	ifdown "${INTERFACE}" >/dev/null 2>&1 || true
 	sleep 2
 	bring_up
-	if interface_up "${INTERFACE}"; then
-		return 0
+	attempt=0
+	while [ "${attempt}" -lt 8 ]; do
+		if interface_healthy; then
+			recover_interface6 || true
+			return 0
+		fi
+		sleep 2
+		attempt=$((attempt + 1))
+	done
+
+	# Last resort: rebuild the module-side data link.
+	if [ -n "${netdev}" ]; then
+		log_message 'no IP after recycle, rebuilding modem link'
+		modem_cycle_link "${netdev}" || true
+		bring_up
+		attempt=0
+		while [ "${attempt}" -lt 8 ]; do
+			if interface_healthy; then
+				recover_interface6 || true
+				return 0
+			fi
+			sleep 2
+			attempt=$((attempt + 1))
+		done
 	fi
-	log_message "interface ${INTERFACE} still down after recovery"
+
+	log_message "interface ${INTERFACE} still has no IP after recovery"
 	return 1
 }
 
@@ -365,10 +445,10 @@ sync_manager() {
 	}
 	ensure_network "${netdev}"
 	if [ "$(config_value enabled 1)" = '1' ]; then
-		if interface_up "${INTERFACE}"; then
-			:
+		if interface_healthy; then
+			recover_interface6 || true
 		elif modem_connected; then
-			log_message 'modem online but interface down; recovering host side'
+			log_message 'modem online but interface not healthy; recovering host side'
 			bring_up_with_recovery "${netdev}" || true
 		else
 			bring_up
