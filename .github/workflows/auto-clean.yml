@@ -35,10 +35,15 @@ jobs:
   clean-releases:
     runs-on: ubuntu-latest
 
+    env:
+      # No checkout here: without GH_REPO `gh` fails with
+      # "failed to run git: not a git repository" and silently lists nothing.
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+
     steps:
       - name: Prune old releases
         env:
-          GH_TOKEN: ${{ github.token }}
           KEEP_INPUT: ${{ github.event.inputs.keep }}
           DRY_RUN: ${{ github.event.inputs.dry_run }}
           CLEANUP_TAG: ${{ github.event.inputs.cleanup_tag }}
@@ -52,10 +57,14 @@ jobs:
           DRY_RUN="${DRY_RUN:-true}"
           CLEANUP_TAG="${CLEANUP_TAG:-true}"
 
-          # Newest first; drafts without createdAt are ignored.
-          mapfile -t TAGS < <(gh release list --limit 200 \
-            --json tagName,createdAt \
-            --jq '[.[] | select(.createdAt != null)] | sort_by(.createdAt) | reverse | .[].tagName')
+          # Newest first; drafts without createdAt are ignored.  Fail loudly
+          # when the listing cannot be fetched instead of reporting "0".
+          if ! releases_json="$(gh release list --limit 200 --json tagName,createdAt)"; then
+            echo "ERROR: 获取 Release 列表失败（检查 GH_TOKEN / GH_REPO 权限）" >&2
+            exit 1
+          fi
+          mapfile -t TAGS < <(printf '%s\n' "${releases_json}" |
+            jq -r '[.[] | select(.createdAt != null)] | sort_by(.createdAt) | reverse | .[].tagName')
 
           total="${#TAGS[@]}"
           echo "当前 Release 数量: ${total}，保留最近 ${KEEP} 个，dry_run=${DRY_RUN}"
