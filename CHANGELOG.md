@@ -7,7 +7,7 @@
 - 清理了历史 Release（v2.3.36、v2.3.37），避免发版列表堆积过期条目。
 
 ### Added
-- 新增 `Auto Clean Releases` 工作流（`.github/workflows/auto-clean.yml`）：每天 03:17 UTC 定时执行，也可手动触发。默认保留最近 5 个 Release，其余删除；手动触发支持 `keep`（保留数量）、`dry_run`（仅预览不删除，默认开）、`cleanup_tag`（是否同时删除对应 git tag）三个参数，执行结果写入 Job Summary 表格。
+- 新增 `Auto Clean Releases` 工作流（`.github/workflows/auto-clean.yml`）：每天 03:17 UTC 定时执行，也可手动触发。**默认只保留最近 1 个 Release**（即仅保留最新版），其余连同 git tag 一并删除；手动触发支持 `keep`（保留数量，默认 1）、`dry_run`（仅预览不删除，手动默认开、定时默认关）、`cleanup_tag`（是否同时删除 git tag，默认开）三个参数，执行结果写入 Job Summary 表格。
 
 ## [2.3.38] - 2026-08-28
 

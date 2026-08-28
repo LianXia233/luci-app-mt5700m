@@ -1,8 +1,8 @@
 name: Auto Clean Releases
 
-# Keeps the Releases page from piling up: only the newest N releases are kept,
-# older ones (and, optionally, their tags) are removed.  Run manually with
-# dry_run=true first to preview what would be deleted.
+# Keeps the Releases page from piling up: only the newest N releases are kept
+# (default N=1, i.e. just the latest one), older ones - and their tags - are
+# removed.  Manual runs default to a dry run; the scheduled run really deletes.
 on:
   schedule:
     # 每天 03:17 UTC（北京时间 11:17）执行一次
@@ -12,7 +12,7 @@ on:
       keep:
         description: '保留最近多少个 Release'
         required: false
-        default: '5'
+        default: '1'
       dry_run:
         description: '仅预览、不实际删除'
         type: boolean
@@ -50,11 +50,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          KEEP="${KEEP_INPUT:-5}"
-          case "${KEEP}" in ''|*[!0-9]*) KEEP=5 ;; esac
+          KEEP="${KEEP_INPUT:-1}"
+          case "${KEEP}" in ''|*[!0-9]*) KEEP=1 ;; esac
           [ "${KEEP}" -ge 1 ] || KEEP=1
-          # Scheduled runs have no inputs: default to a safe preview.
-          DRY_RUN="${DRY_RUN:-true}"
+          # Scheduled runs carry no inputs: they must actually clean.  Manual
+          # runs default to a preview so a mis-click cannot delete anything.
+          if [ "${GITHUB_EVENT_NAME}" = 'schedule' ]; then
+            DRY_RUN="${DRY_RUN:-false}"
+          else
+            DRY_RUN="${DRY_RUN:-true}"
+          fi
           CLEANUP_TAG="${CLEANUP_TAG:-true}"
 
           # Newest first; drafts without createdAt are ignored.  Fail loudly
