@@ -6,6 +6,20 @@ config mt5700m 'settings'
 	option port '20249'
 	option timeout '8'
 
+# Dial health check / recovery policy.  Values below are the built-in
+# defaults; the section only exists so they can be tuned without rebuilding.
+config recovery 'recovery'
+	option max_retries '3'
+	option backoff_base '60'
+	option backoff_max '900'
+	option round_timeout '90'
+	option probe_timeout '5'
+	option ping_host '223.5.5.5'
+	option ping_host6 '2400:3200::1'
+	option dns_host 'www.baidu.com'
+	option v6_cooldown '300'
+	option halt_notify '600'
+
 config connection 'connection'
 	option enabled '1'
 	option dial_mode '1'

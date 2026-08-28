@@ -10,6 +10,37 @@ TEMP_CACHE="${STATE_DIR}/temperature"
 INTERFACE='MT5700M'
 INTERFACE6='MT5700Mv6'
 
+# --- health check / recovery policy ---------------------------------------
+# Defaults only; every value is overridable through UCI (mt5700m.recovery.*).
+HEALTH_MAX_RETRIES=3      # consecutive failed recovery rounds before halting
+HEALTH_BACKOFF_BASE=60    # exponential backoff base, seconds
+HEALTH_BACKOFF_MAX=900    # backoff ceiling, seconds
+HEALTH_ROUND_TIMEOUT=90   # hard time budget for one recovery round, seconds
+HEALTH_PROBE_TIMEOUT=5    # per-probe (ping / DNS) timeout, seconds
+HEALTH_PING_HOST='223.5.5.5'
+HEALTH_PING_HOST6='2400:3200::1'
+HEALTH_DNS_HOST='www.baidu.com'
+HEALTH_V6_COOLDOWN=300    # min. spacing between MT5700Mv6 recycles, seconds
+HEALTH_HALT_NOTIFY=600    # reminder interval once recovery is halted, seconds
+
+# Recovery bookkeeping (tmpfs, cleared on reboot).
+FAIL_COUNT_FILE="${STATE_DIR}/recovery_failures"
+NEXT_ATTEMPT_FILE="${STATE_DIR}/recovery_next_attempt"
+HALT_FILE="${STATE_DIR}/recovery_halted"
+HALT_NOTICE_FILE="${STATE_DIR}/recovery_halt_notice"
+TRANSIENT_FILE="${STATE_DIR}/transient_notified"
+V6_RECOVER_FILE="${STATE_DIR}/v6_recover_at"
+
+HEALTH_STATE='unknown'
+HEALTH_DETAIL=''
+HEALTH_ADDR4='-'
+HEALTH_ADDR6='-'
+HEALTH_DEVICE='-'
+HEALTH_CARRIER=0
+CONNECTIVITY_DETAIL='notrun'
+ROUND_DEADLINE=0
+RECOVERY_REASON=''
+
 [ -r "${USB_HELPER}" ] && . "${USB_HELPER}"
 
 log_message() {
@@ -55,6 +86,63 @@ bool_value() {
 
 config_value() {
 	uci -q get "mt5700m.connection.$1" 2>/dev/null || printf '%s\n' "$2"
+}
+
+recovery_value() {
+	uci -q get "mt5700m.recovery.$1" 2>/dev/null || printf '%s\n' "$2"
+}
+
+# Accept only plain integers so a malformed UCI option cannot turn the
+# recovery guard off (or make it wait forever).
+numeric_value() {
+	local value="$1" default="$2"
+	case "${value}" in ''|*[!0-9]*) value="${default}" ;; esac
+	printf '%s\n' "${value}"
+}
+
+state_read() {
+	local value
+	value="$(cat "$1" 2>/dev/null || true)"
+	value="$(printf '%s' "${value}" | tr -d '[:space:]')"
+	case "${value}" in ''|*[!0-9]*) value="$2" ;; esac
+	printf '%s\n' "${value}"
+}
+
+state_write() {
+	mkdir -p "${STATE_DIR}" 2>/dev/null || true
+	printf '%s\n' "$2" > "$1" 2>/dev/null || true
+}
+
+state_clear() {
+	rm -f "$1" 2>/dev/null || true
+}
+
+load_health_config() {
+	HEALTH_MAX_RETRIES="$(numeric_value "$(recovery_value max_retries 3)" 3)"
+	HEALTH_BACKOFF_BASE="$(numeric_value "$(recovery_value backoff_base 60)" 60)"
+	HEALTH_BACKOFF_MAX="$(numeric_value "$(recovery_value backoff_max 900)" 900)"
+	HEALTH_ROUND_TIMEOUT="$(numeric_value "$(recovery_value round_timeout 90)" 90)"
+	HEALTH_PROBE_TIMEOUT="$(numeric_value "$(recovery_value probe_timeout 5)" 5)"
+	HEALTH_V6_COOLDOWN="$(numeric_value "$(recovery_value v6_cooldown 300)" 300)"
+	HEALTH_HALT_NOTIFY="$(numeric_value "$(recovery_value halt_notify 600)" 600)"
+	HEALTH_PING_HOST="$(recovery_value ping_host '223.5.5.5')"
+	HEALTH_PING_HOST6="$(recovery_value ping_host6 '2400:3200::1')"
+	HEALTH_DNS_HOST="$(recovery_value dns_host 'www.baidu.com')"
+	[ "${HEALTH_MAX_RETRIES}" -ge 1 ] || HEALTH_MAX_RETRIES=1
+	[ "${HEALTH_ROUND_TIMEOUT}" -ge 30 ] || HEALTH_ROUND_TIMEOUT=30
+	[ "${HEALTH_PROBE_TIMEOUT}" -ge 2 ] || HEALTH_PROBE_TIMEOUT=2
+	[ "${HEALTH_BACKOFF_MAX}" -ge "${HEALTH_BACKOFF_BASE}" ] || HEALTH_BACKOFF_MAX="${HEALTH_BACKOFF_BASE}"
+}
+
+# Run a command under a wall-clock limit when coreutils-timeout is available.
+run_with_timeout() {
+	local limit="$1"
+	shift
+	if command -v timeout >/dev/null 2>&1; then
+		timeout "${limit}" "$@"
+	else
+		"$@"
+	fi
 }
 
 run_temperature_query() {
@@ -209,43 +297,230 @@ interface_up() {
 	[ "$(printf '%s' "${output}" | jsonfilter -e '@.up' 2>/dev/null)" = 'true' ]
 }
 
-# Has the interface actually obtained an IPv4 address?  "up" alone is not
-# enough: on DHCP the protocol may still be running without a lease, which
-# shows up in LuCI as "interface exists but no IP".
+# ---- address discovery ----------------------------------------------------
+# "up" alone is not enough: on DHCP the protocol may still be running without
+# a lease, which shows up in LuCI as "interface exists but no IP".
+#
+# netifd publishes addresses inside JSON arrays.  The dotted jsonfilter syntax
+# ("@.ipv4-address[0].address") is rejected by current jsonfilter builds with
+# "Syntax error: Invalid escape sequence", which made every address lookup
+# return nothing: the manager concluded "no IP" on a perfectly working link
+# and restarted the data path every single cycle.  Use the bracket-quoted
+# form, and fall back to `ip` so that a jsonfilter change can never again be
+# mistaken for a missing address.
+ubus_status() {
+	ubus call "network.interface.$1" status 2>/dev/null || true
+}
+
+iface_field() { # $1=interface $2=scalar key
+	ubus_status "$1" | jsonfilter -e "@.$2" 2>/dev/null | head -n 1
+}
+
+iface_device() { # $1=interface; prints the l3 device, empty when unknown
+	local dev
+	dev="$(iface_field "$1" l3_device)"
+	[ -n "${dev}" ] || dev="$(iface_field "$1" device)"
+	case "${dev}" in @*) dev='' ;; esac
+	printf '%s\n' "${dev}"
+}
+
+iface_array_expr() { # $1=interface $2=array key $3=suffix expression
+	ubus_status "$1" | jsonfilter -e "@['$2']$3" 2>/dev/null | head -n 1
+}
+
+iface_address() { # $1=interface $2=4|6
+	local address dev
+	address="$(iface_array_expr "$1" "ipv$2-address" "[0]['address']")"
+	if [ -n "${address}" ]; then
+		printf '%s\n' "${address}"
+		return 0
+	fi
+	dev="$(iface_device "$1")"
+	[ -n "${dev}" ] || return 1
+	address="$(ip -o "-$2" addr show dev "${dev}" scope global 2>/dev/null | awk '{print $4}' | sed 's#/.*##' | head -n 1)"
+	[ -n "${address}" ] || return 1
+	printf '%s\n' "${address}"
+}
+
+iface_dns_server() { # $1=interface; first DNS server handed out by the modem
+	local dns
+	dns="$(iface_array_expr "$1" dns-server "[0]")"
+	if [ -n "${dns}" ]; then
+		printf '%s\n' "${dns}"
+		return 0
+	fi
+	ubus_status "$1" | tr -d '\n' | sed -n 's/.*"dns-server":[^[]*\[[^"]*"\([0-9a-fA-F.:]*\)".*/\1/p'
+}
+
 interface_has_ip() {
-	local name="$1" output
-	output="$(ubus call "network.interface.${name}" status 2>/dev/null || true)"
-	[ -n "$(printf '%s' "${output}" | jsonfilter -e '@.ipv4-address[0].address' 2>/dev/null || true)" ]
+	iface_address "${INTERFACE}" 4 >/dev/null
 }
 
 interface6_has_ip() {
-	local output
-	output="$(ubus call "network.interface.${INTERFACE6}" status 2>/dev/null || true)"
-	[ -n "$(printf '%s' "${output}" | jsonfilter -e '@.ipv6-address[0].address' 2>/dev/null || true)" ]
+	iface_address "${INTERFACE6}" 6 >/dev/null
 }
 
-# Overall health of the data path, judged by the profile: IPv4 for "ip",
-# IPv6 for "ipv6", IPv4 for the common dual-stack case (the v6 companion is
-# nursed separately by recover_interface6).
-interface_healthy() {
-	local pdp_type
-	pdp_type="$(config_value pdp_type ipv4v6)"
-	case "${pdp_type}" in
-		ip) interface_up "${INTERFACE}" && interface_has_ip "${INTERFACE}" ;;
-		ipv6) interface_up "${INTERFACE6}" && interface6_has_ip ;;
-		*) interface_up "${INTERFACE}" && interface_has_ip "${INTERFACE}" ;;
-	esac
+# ---- connectivity probe ---------------------------------------------------
+# Only reached when neither stack reports an address.  A modem data path can be
+# perfectly usable while netifd has not published the address yet (DHCP renew,
+# slow DHCPv6, RA-only setups).  Probing before tearing the link down is what
+# stops the "no IP -> rebuild -> no IP" treadmill.
+probe_ping() { # $1=family $2=device (may be empty) $3=target
+	local limit="$((HEALTH_PROBE_TIMEOUT * 2 + 2))"
+	if [ -n "$2" ]; then
+		# Always bind the probe to the modem device.  An unbound probe can be
+		# answered by a local proxy/tun interface (sing-box style setups reply
+		# to everything) or by a second WAN, which would report a dead
+		# cellular link as healthy.
+		run_with_timeout "${limit}" ping -"$1" -c 2 -W "${HEALTH_PROBE_TIMEOUT}" -I "$2" "$3" >/dev/null 2>&1
+		return $?
+	fi
+	# No device known: best effort through the default route.
+	run_with_timeout "${limit}" ping -"$1" -c 2 -W "${HEALTH_PROBE_TIMEOUT}" "$3" >/dev/null 2>&1
+}
+
+probe_dns() { # $1=dns server handed out by the modem
+	run_with_timeout "$((HEALTH_PROBE_TIMEOUT * 2 + 2))" \
+		nslookup "${HEALTH_DNS_HOST}" "$1" >/dev/null 2>&1
+}
+
+connectivity_probe() { # $1=device; 0 = the data path really carries traffic
+	local dev="$1" dns started budget
+	dns="$(iface_dns_server "${INTERFACE}")"
+	[ -n "${dns}" ] || dns="$(iface_dns_server "${INTERFACE6}")"
+	# Total probe budget: a black-holed link must not inflate the recovery
+	# round by waiting on every probe in turn.
+	started="$(date +%s)"
+	budget=$((HEALTH_PROBE_TIMEOUT * 4))
+	if probe_ping 4 "${dev}" "${HEALTH_PING_HOST}"; then
+		CONNECTIVITY_DETAIL="ping4=ok ping6=skip dns=skip"
+		return 0
+	fi
+	probe_budget_left "${started}" "${budget}" || {
+		CONNECTIVITY_DETAIL="ping4=fail ping6=skip dns=skip(probe-budget)"
+		return 1
+	}
+	if probe_ping 6 "${dev}" "${HEALTH_PING_HOST6}"; then
+		CONNECTIVITY_DETAIL="ping4=fail ping6=ok dns=skip"
+		return 0
+	fi
+	if [ -z "${dns}" ]; then
+		# No modem DNS: the system resolver may belong to a proxy or another
+		# WAN, so it is not evidence for this link.
+		CONNECTIVITY_DETAIL="ping4=fail ping6=fail dns=skip(no-modem-dns)"
+		return 1
+	fi
+	probe_budget_left "${started}" "${budget}" || {
+		CONNECTIVITY_DETAIL="ping4=fail ping6=fail dns=skip(probe-budget)"
+		return 1
+	}
+	if probe_dns "${dns}"; then
+		CONNECTIVITY_DETAIL="ping4=fail ping6=fail dns=ok(server=${dns})"
+		return 0
+	fi
+	CONNECTIVITY_DETAIL="ping4=fail ping6=fail dns=fail(server=${dns})"
+	return 1
+}
+
+probe_budget_left() { # $1=start epoch $2=budget seconds
+	[ "$(($(date +%s) - $1))" -lt "$2" ]
+}
+
+# ---- layered health decision ----------------------------------------------
+#   1. does netifd know the interface at all?
+#   2. did the data path obtain an IPv4 or an IPv6 address?
+#   3. no address on either stack -> run a real connectivity test (ICMP + DNS)
+#      before declaring the link broken.
+# Sets HEALTH_STATE (healthy|transient|unhealthy) plus HEALTH_DETAIL, and
+# returns 0 when the link must be left alone.
+evaluate_health() {
+	local addr4 addr6 dev
+	HEALTH_ADDR4='none'
+	HEALTH_ADDR6='none'
+	HEALTH_DEVICE='none'
+	HEALTH_CARRIER=0
+	CONNECTIVITY_DETAIL='notrun'
+	addr4="$(iface_address "${INTERFACE}" 4 || true)"
+	addr6="$(iface_address "${INTERFACE6}" 6 || true)"
+	dev="$(iface_device "${INTERFACE}" || true)"
+	[ -n "${addr4}" ] && HEALTH_ADDR4="${addr4}"
+	[ -n "${addr6}" ] && HEALTH_ADDR6="${addr6}"
+	if [ -z "${dev}" ]; then
+		dev="$(iface_device "${INTERFACE6}" || true)"
+		[ -n "${dev}" ] && HEALTH_DEVICE="${dev}"
+	else
+		HEALTH_DEVICE="${dev}"
+	fi
+	if [ -n "${dev}" ] && [ "$(cat "/sys/class/net/${dev}/carrier" 2>/dev/null || echo 0)" = '1' ]; then
+		HEALTH_CARRIER=1
+	fi
+
+	# 1) interface known to netifd?
+	if ! ubus call "network.interface.${INTERFACE}" status >/dev/null 2>&1 &&
+		! ubus call "network.interface.${INTERFACE6}" status >/dev/null 2>&1; then
+		HEALTH_STATE='unhealthy'
+		HEALTH_DETAIL="iface=${INTERFACE}/${INTERFACE6} absent in netifd device=${HEALTH_DEVICE} carrier=${HEALTH_CARRIER}"
+		return 1
+	fi
+
+	# 2) any address at all -> the data path is up, no probe needed.
+	if [ -n "${addr4}" ] || [ -n "${addr6}" ]; then
+		HEALTH_STATE='healthy'
+		HEALTH_DETAIL="iface=${INTERFACE} device=${HEALTH_DEVICE} ipv4=${HEALTH_ADDR4} ipv6=${HEALTH_ADDR6} carrier=${HEALTH_CARRIER}"
+		return 0
+	fi
+
+	# 3) addressless -> prove the data path is broken before touching it.
+	HEALTH_DETAIL="iface=${INTERFACE} device=${HEALTH_DEVICE} ipv4=none ipv6=none carrier=${HEALTH_CARRIER}"
+	if connectivity_probe "${dev}"; then
+		HEALTH_STATE='transient'
+		HEALTH_DETAIL="${HEALTH_DETAIL} probe=${CONNECTIVITY_DETAIL}"
+		return 0
+	fi
+	HEALTH_STATE='unhealthy'
+	HEALTH_DETAIL="${HEALTH_DETAIL} probe=${CONNECTIVITY_DETAIL}"
+	return 1
+}
+
+# Address-based health without running any probe, for status reporting.
+health_state_quick() {
+	if [ -n "$(iface_address "${INTERFACE}" 4 || true)" ] ||
+		[ -n "$(iface_address "${INTERFACE6}" 6 || true)" ]; then
+		printf '%s\n' 'healthy'
+	else
+		printf '%s\n' 'no-address'
+	fi
+}
+
+# A short-lived state anomaly (no address yet, but traffic still flows) is not
+# a fault: warn once per interval, reset the retry counter and leave the link
+# alone instead of cycling the modem.
+health_note_transient() {
+	local now last
+	now="$(date +%s)"
+	last="$(state_read "${TRANSIENT_FILE}" 0)"
+	[ "${now}" -lt "${last}" ] && return 0
+	log_message "transient state anomaly: ${HEALTH_DETAIL} - connectivity still works, keeping the link up (retry counter reset)"
+	state_write "${TRANSIENT_FILE}" "$((now + HEALTH_HALT_NOTIFY))"
 }
 
 # The v4 link can be healthy while MT5700Mv6 (DHCPv6) still has no global
 # address; recycle only the v6 interface so we do not drop the v4 path.
 recover_interface6() {
-	local pdp_type attempt=0
+	local pdp_type attempt=0 now last
 	pdp_type="$(config_value pdp_type ipv4v6)"
 	[ "${pdp_type}" = 'ip' ] && return 0
 	[ "$(uci -q get network.${INTERFACE6}.auto 2>/dev/null || echo 1)" = '0' ] && return 0
 	interface6_has_ip && return 0
-	log_message "interface ${INTERFACE6} has no IPv6 address, recycling"
+	# Rate limit: DHCPv6/RA can legitimately need minutes, and this used to be
+	# retried on every monitor tick, which hammered the v6 interface.
+	now="$(date +%s)"
+	last="$(state_read "${V6_RECOVER_FILE}" 0)"
+	if [ "${now}" -lt "${last}" ]; then
+		return 1
+	fi
+	state_write "${V6_RECOVER_FILE}" "$((now + HEALTH_V6_COOLDOWN))"
+	log_message "interface ${INTERFACE6} has no IPv6 address, recycling (next attempt not before ${HEALTH_V6_COOLDOWN}s)"
 	while [ "${attempt}" -lt 5 ]; do
 		ifdown "${INTERFACE6}" >/dev/null 2>&1 || true
 		sleep 2
@@ -325,12 +600,14 @@ modem_ensure_usb_mode() {
 # Rebuild the module-side data link without dropping network registration.
 # Prefer NDISDUP (tear down + re-establish PDP); fall back to a radio cycle
 # if carrier still does not appear on $1.
+# Every step is time-boxed: a wedged AT channel must not stall the recovery
+# round (and with it the monitor) indefinitely.
 modem_cycle_link() {
 	local netdev="$1" attempt=0
 
-	/usr/sbin/mt5700m-at command 'AT^NDISDUP=1,0' >/dev/null 2>&1 || true
+	run_with_timeout 10 /usr/sbin/mt5700m-at command 'AT^NDISDUP=1,0' >/dev/null 2>&1 || true
 	sleep 2
-	/usr/sbin/mt5700m-at command 'AT^NDISDUP=1,1' >/dev/null 2>&1 || true
+	run_with_timeout 10 /usr/sbin/mt5700m-at command 'AT^NDISDUP=1,1' >/dev/null 2>&1 || true
 	while [ "${attempt}" -lt 5 ]; do
 		if [ -n "${netdev}" ] && [ "$(cat "/sys/class/net/${netdev}/carrier" 2>/dev/null || echo 0)" = '1' ]; then
 			return 0
@@ -339,79 +616,201 @@ modem_cycle_link() {
 		attempt=$((attempt + 1))
 	done
 	log_message 'NDIS rebuild did not restore carrier, cycling radio'
-	/usr/sbin/mt5700m-at command 'AT+CFUN=0' >/dev/null 2>&1 || true
+	run_with_timeout 10 /usr/sbin/mt5700m-at command 'AT+CFUN=0' >/dev/null 2>&1 || true
 	sleep 2
-	/usr/sbin/mt5700m-at command 'AT+CFUN=1' >/dev/null 2>&1 || true
+	run_with_timeout 10 /usr/sbin/mt5700m-at command 'AT+CFUN=1' >/dev/null 2>&1 || true
 	sleep 5
 }
 
-# Bring the interface up and nurse it until it actually has an IP address.
-# Covers the real-world "modem online, interface config present, but no IP"
-# case: wait for DHCP (with explicit address check, not just up state),
-# rebuild the module link when carrier is missing, and hard-recycle via
-# ifdown/ifup when the DHCP client is stuck.
-bring_up_with_recovery() {
-	local netdev="$1" attempt=0
+# ---- recovery rate limiting ----------------------------------------------
+# Without these guards a permanently broken data path made the monitor restart
+# the modem every ~90s forever.  The policy now is: at most HEALTH_MAX_RETRIES
+# consecutive rounds, exponential backoff between them, a hard time budget per
+# round, and a full stop (with a loud error) once the ceiling is hit.
+recovery_failures() {
+	state_read "${FAIL_COUNT_FILE}" 0
+}
 
-	bring_up
-	while [ "${attempt}" -lt 10 ]; do
-		if interface_healthy; then
-			log_message "interface ${INTERFACE} healthy after ${attempt}x2s"
-			recover_interface6 || true
-			return 0
-		fi
-		sleep 2
-		attempt=$((attempt + 1))
+# Called when the link is working again: drop the retry counter, the pending
+# backoff and the halted flag.  Transient/halt notice timestamps are kept so
+# their rate limiting survives the 15s poll that follows a healthy check.
+recovery_clear_failures() {
+	local failures
+	failures="$(recovery_failures)"
+	[ "${failures}" = '0' ] && [ ! -f "${HALT_FILE}" ] && return 0
+	state_write "${FAIL_COUNT_FILE}" 0
+	state_clear "${NEXT_ATTEMPT_FILE}"
+	state_clear "${HALT_FILE}"
+	state_clear "${HALT_NOTICE_FILE}"
+}
+
+# Full reset, used by user-initiated actions (connect / redial / manual reset).
+recovery_reset() {
+	recovery_clear_failures
+	state_clear "${TRANSIENT_FILE}"
+}
+
+# One-line diagnostic for the current round: interface, address state,
+# connectivity result, retry counter and the action that follows.
+log_recovery() { # $1=stage $2=next action
+	log_message "recovery[${1}] state=${HEALTH_STATE} ${HEALTH_DETAIL} retries=$(recovery_failures)/${HEALTH_MAX_RETRIES} next=${2}"
+}
+
+recovery_halt_notice() {
+	local now last failures="$1"
+	now="$(date +%s)"
+	last="$(state_read "${HALT_NOTICE_FILE}" 0)"
+	[ "${now}" -lt "${last}" ] && return 0
+	log_message "ERROR: recovery halted after ${failures}/${HEALTH_MAX_RETRIES} consecutive failed rounds; ${HEALTH_DETAIL}"
+	log_message "ERROR: automatic link rebuild is suspended until manual intervention. Check module registration/APN/signal, then run 'mt5700m-manager redial' or 'mt5700m-manager reset-recovery' (or remove ${HALT_FILE})"
+	state_write "${HALT_NOTICE_FILE}" "$((now + HEALTH_HALT_NOTIFY))"
+}
+
+# Record a failed round and schedule the next one, or halt.
+recovery_record_failure() {
+	local failures exponent backoff now
+	failures="$(recovery_failures)"
+	failures=$((failures + 1))
+	now="$(date +%s)"
+	state_write "${FAIL_COUNT_FILE}" "${failures}"
+	if [ "${failures}" -ge "${HEALTH_MAX_RETRIES}" ]; then
+		state_write "${HALT_FILE}" "${now}"
+		state_clear "${NEXT_ATTEMPT_FILE}"
+		recovery_halt_notice "${failures}"
+		return 0
+	fi
+	backoff="${HEALTH_BACKOFF_BASE}"
+	exponent=$((failures - 1))
+	while [ "${exponent}" -gt 0 ]; do
+		backoff=$((backoff * 2))
+		exponent=$((exponent - 1))
 	done
+	[ "${backoff}" -le "${HEALTH_BACKOFF_MAX}" ] || backoff="${HEALTH_BACKOFF_MAX}"
+	state_write "${NEXT_ATTEMPT_FILE}" "$((now + backoff))"
+	log_message "recovery round ${failures}/${HEALTH_MAX_RETRIES} failed; backing off ${backoff}s before the next attempt"
+}
 
-	if [ -n "${netdev}" ] && [ "$(cat "/sys/class/net/${netdev}/carrier" 2>/dev/null || echo 0)" = '0' ]; then
-		log_message "carrier missing on ${netdev}, rebuilding modem link"
-		modem_cycle_link "${netdev}" || true
-		bring_up
-		attempt=0
-		while [ "${attempt}" -lt 8 ]; do
-			if interface_healthy; then
+# Returns 0 when a new recovery round may start; sets RECOVERY_REASON when not.
+recovery_gate() {
+	local failures next now
+	RECOVERY_REASON=''
+	failures="$(recovery_failures)"
+	next="$(state_read "${NEXT_ATTEMPT_FILE}" 0)"
+	now="$(date +%s)"
+	if [ -f "${HALT_FILE}" ]; then
+		RECOVERY_REASON="halted after ${failures}/${HEALTH_MAX_RETRIES} failed rounds, manual intervention required"
+		recovery_halt_notice "${failures}"
+		return 1
+	fi
+	if [ "${now}" -lt "${next}" ]; then
+		RECOVERY_REASON="in backoff, next attempt in $((next - now))s (retries=${failures}/${HEALTH_MAX_RETRIES})"
+		return 1
+	fi
+	return 0
+}
+
+# Poll until the data path is usable, the wait budget is spent, or the round
+# deadline passes.  Returns 0 as soon as an address shows up or the
+# connectivity probe proves the link still carries traffic.
+wait_for_health() {
+	local limit="$1" started remaining waited
+	started="$(date +%s)"
+	while :; do
+		evaluate_health
+		case "${HEALTH_STATE}" in
+			healthy)
+				recovery_clear_failures
+				log_message "interface ${INTERFACE} healthy: ${HEALTH_DETAIL}"
 				recover_interface6 || true
 				return 0
-			fi
-			sleep 2
-			attempt=$((attempt + 1))
-		done
+				;;
+			transient)
+				recovery_clear_failures
+				health_note_transient
+				recover_interface6 || true
+				return 0
+				;;
+		esac
+		remaining=$((ROUND_DEADLINE - $(date +%s)))
+		[ "${remaining}" -le 0 ] && return 1
+		[ "${remaining}" -lt "${limit}" ] && limit="${remaining}"
+		# Wall clock, not sleep count: a probe can take seconds, and the
+		# round budget must be honoured either way.
+		waited=$(($(date +%s) - started))
+		[ "${waited}" -ge "${limit}" ] && return 1
+		sleep 2
+	done
+}
+
+# Bring the interface up and nurse it until the data path is really usable.
+# Covers the real-world "modem online, interface config present, but no IP"
+# case: wait for DHCP (with an explicit address check, not just the up state),
+# rebuild the module link when carrier is missing, and hard-recycle via
+# ifdown/ifup when the DHCP client is stuck.  Every step is bounded by the
+# per-round time budget and by the retry ceiling above.
+bring_up_with_recovery() {
+	local netdev="$1" failures remaining
+
+	if ! recovery_gate; then
+		log_message "recovery skipped: ${RECOVERY_REASON}"
+		return 1
+	fi
+	failures="$(recovery_failures)"
+	ROUND_DEADLINE=$(($(date +%s) + HEALTH_ROUND_TIMEOUT))
+	evaluate_health
+	log_recovery 'start' "round=$((failures + 1))/${HEALTH_MAX_RETRIES} budget=${HEALTH_ROUND_TIMEOUT}s action=bring-up"
+
+	bring_up
+	if wait_for_health 20; then
+		return 0
+	fi
+
+	# Carrier missing: the module-side data link is down, not the DHCP client.
+	remaining=$((ROUND_DEADLINE - $(date +%s)))
+	if [ "${HEALTH_CARRIER}" != '1' ] && [ "${remaining}" -gt 20 ]; then
+		log_recovery 'carrier-missing' 'action=rebuild-modem-link'
+		# Not wrapped in run_with_timeout: `timeout` cannot run a shell
+		# function.  modem_cycle_link bounds its own AT calls, and the round
+		# deadline below bounds the rest.
+		modem_cycle_link "${netdev}" || true
+		bring_up
+		if wait_for_health 16; then
+			return 0
+		fi
 	fi
 
 	# Carrier present but still no address: the DHCP client is stuck.
 	# Force a fresh ifdown/ifup before touching the modem link.
-	log_message 'interface present but no IP, recycling ifdown/ifup'
-	ifdown "${INTERFACE}" >/dev/null 2>&1 || true
-	sleep 2
-	bring_up
-	attempt=0
-	while [ "${attempt}" -lt 8 ]; do
-		if interface_healthy; then
-			recover_interface6 || true
+	remaining=$((ROUND_DEADLINE - $(date +%s)))
+	if [ "${remaining}" -gt 20 ]; then
+		log_recovery 'no-address' 'action=ifdown-ifup-recycle'
+		run_with_timeout 30 ifdown "${INTERFACE}" >/dev/null 2>&1 || true
+		sleep 2
+		bring_up
+		if wait_for_health 16; then
 			return 0
 		fi
-		sleep 2
-		attempt=$((attempt + 1))
-	done
-
-	# Last resort: rebuild the module-side data link.
-	if [ -n "${netdev}" ]; then
-		log_message 'no IP after recycle, rebuilding modem link'
-		modem_cycle_link "${netdev}" || true
-		bring_up
-		attempt=0
-		while [ "${attempt}" -lt 8 ]; do
-			if interface_healthy; then
-				recover_interface6 || true
-				return 0
-			fi
-			sleep 2
-			attempt=$((attempt + 1))
-		done
 	fi
 
-	log_message "interface ${INTERFACE} still has no IP after recovery"
+	# Last resort: rebuild the module-side data link.
+	remaining=$((ROUND_DEADLINE - $(date +%s)))
+	if [ -n "${netdev}" ] && [ "${remaining}" -gt 20 ]; then
+		log_recovery 'still-no-address' 'action=rebuild-modem-link(last-resort)'
+		modem_cycle_link "${netdev}" || true
+		bring_up
+		if wait_for_health 16; then
+			return 0
+		fi
+	fi
+
+	remaining=$((ROUND_DEADLINE - $(date +%s)))
+	[ "${remaining}" -gt 0 ] || log_recovery 'round-timeout' "budget=${HEALTH_ROUND_TIMEOUT}s exhausted action=record-failure"
+	recovery_record_failure
+	if [ -f "${HALT_FILE}" ]; then
+		log_recovery 'halted' 'action=wait-for-manual-intervention'
+	else
+		log_recovery 'failed' "backoff-until-$(state_read "${NEXT_ATTEMPT_FILE}" 0)"
+	fi
 	return 1
 }
 
@@ -445,10 +844,16 @@ sync_manager() {
 	}
 	ensure_network "${netdev}"
 	if [ "$(config_value enabled 1)" = '1' ]; then
-		if interface_healthy; then
+		load_health_config
+		if evaluate_health; then
+			# healthy or a short-lived state anomaly: leave the link alone.
+			case "${HEALTH_STATE}" in
+				transient) health_note_transient ;;
+			esac
+			recovery_clear_failures
 			recover_interface6 || true
 		elif modem_connected; then
-			log_message 'modem online but interface not healthy; recovering host side'
+			log_message "modem online but interface not healthy: ${HEALTH_DETAIL}"
 			bring_up_with_recovery "${netdev}" || true
 		else
 			bring_up
@@ -456,6 +861,9 @@ sync_manager() {
 	else
 		bring_down
 	fi
+	# 2 tells the monitor that recovery is halted: no aggressive polling.
+	[ -f "${HALT_FILE}" ] && return 2
+	return 0
 }
 
 apply_profile() {
@@ -476,11 +884,16 @@ apply_profile() {
 }
 
 connect_manager() {
-	local netdev
+	local netdev rc
 	CONFIG_CHANGED=0
 	set_if_changed mt5700m.connection.enabled 1
 	[ "${CONFIG_CHANGED}" = '0' ] || uci -q commit mt5700m
-	sync_manager || return 1
+	# Manual action counts as the intervention the halted state waits for.
+	load_health_config
+	recovery_reset
+	sync_manager
+	rc=$?
+	[ "${rc}" = '0' ] || [ "${rc}" = '2' ] || return 1
 	apply_profile || log_message 'module profile was not changed; continuing with retained profile'
 	netdev="$(mt5700m_netdev || true)"
 	if [ -n "${netdev}" ]; then
@@ -500,13 +913,18 @@ disconnect_manager() {
 }
 
 redial_manager() {
-	local netdev
+	local netdev rc
 	bring_down
 	sleep 1
 	CONFIG_CHANGED=0
 	set_if_changed mt5700m.connection.enabled 1
 	[ "${CONFIG_CHANGED}" = '0' ] || uci -q commit mt5700m
-	sync_manager || return 1
+	# Manual redial clears the retry counter, backoff and halted state.
+	load_health_config
+	recovery_reset
+	sync_manager
+	rc=$?
+	[ "${rc}" = '0' ] || [ "${rc}" = '2' ] || return 1
 	apply_profile || log_message 'module profile was not changed during redial'
 	netdev="$(mt5700m_netdev || true)"
 	if [ -n "${netdev}" ]; then
@@ -519,6 +937,7 @@ redial_manager() {
 
 status_json() {
 	local info state rest product slot netdev atport status4 status6 up4 up6 carrier
+	load_health_config
 	. /usr/share/libubox/jshn.sh
 	info="$(mt5700m_usb_info || true)"
 	state="${info%%|*}"
@@ -548,20 +967,29 @@ status_json() {
 	json_add_string interface6 "${INTERFACE6}"
 	json_add_string mode 'NCM / ECM'
 	json_add_string metric "$(uci -q get network.${INTERFACE}.metric 2>/dev/null || config_value metric 50)"
+	json_add_string health "$(health_state_quick)"
+	json_add_string ipv4_address "$(iface_address "${INTERFACE}" 4 || echo '')"
+	json_add_string ipv6_address "$(iface_address "${INTERFACE6}" 6 || echo '')"
+	json_add_string recovery "$(recovery_failures)/${HEALTH_MAX_RETRIES}"
+	json_add_boolean recovery_halted "$([ -f "${HALT_FILE}" ] && echo 1 || echo 0)"
 	json_dump
 }
 
 monitor_manager() {
-	local interval=15
+	local interval=15 rc
 	while :; do
+		interval=15
 		if acquire_lock; then
-			if sync_manager >/dev/null 2>&1; then
-				interval=15
-			else
-				# Interface missing / unhealthy: poll faster so recovery kicks in
-				# without waiting the full 15s cycle.
-				interval=5
-			fi
+			sync_manager >/dev/null 2>&1
+			rc=$?
+			case "${rc}" in
+				0) interval=15 ;;
+				# Recovery is halted and waiting for manual intervention:
+				# no point in polling aggressively.
+				2) interval=60 ;;
+				# Backoff / unresolved fault: do not hammer the module.
+				*) interval=30 ;;
+			esac
 			release_lock
 		fi
 		refresh_temperature_cache >/dev/null 2>&1 || true
@@ -575,6 +1003,11 @@ case "${action}" in
 	status|status-json) status_json ;;
 	refresh-temperature) refresh_temperature_cache ;;
 	log) tail -n 120 "${LOG_FILE}" 2>/dev/null || true ;;
+	reset-recovery)
+		load_health_config
+		recovery_reset
+		echo "recovery state cleared (retry counter, backoff and halted flag)"
+		;;
 	*)
 		acquire_lock_wait || { echo 'manager is busy' >&2; exit 2; }
 		trap release_lock EXIT INT TERM
@@ -584,7 +1017,7 @@ case "${action}" in
 			disconnect) disconnect_manager ;;
 			redial) redial_manager ;;
 			down) bring_down ;;
-			*) echo "Usage: $0 {status-json|sync|connect|disconnect|redial|refresh-temperature|log|monitor}" >&2; exit 64 ;;
+			*) echo "Usage: $0 {status-json|sync|connect|disconnect|redial|reset-recovery|refresh-temperature|log|monitor}" >&2; exit 64 ;;
 		esac
 		;;
 esac

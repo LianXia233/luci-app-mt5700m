@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.3.38] - 2026-08-28
+
+### Fixed
+- 修复拨号健康检测死循环：每约 90 秒重复「modem online but interface not healthy → ifdown/ifup → no IP after recycle → rebuilding modem link → still has no IP」，无退避、无次数上限、永不收敛。
+  - 根因：地址判定使用 `jsonfilter -e '@.ipv4-address[0].address'`。当前 jsonfilter 构建不支持该点号语法（报 `Syntax error: Invalid escape sequence`），导致地址查询恒为空，`interface_healthy()` 永远为假，于是每个监控周期都触发一次完整恢复并重建模组数据链路。改用方括号引用形式 `@['ipv4-address'][0]['address']`，并在 jsonfilter 取不到时回退到 `ip -o addr` 解析，避免再有 jsonfilter 变更被误读成"无 IP"。
+- 分层健康判定：接口是否存在（netifd）→ 是否已获得 IPv4/IPv6 地址 → 双栈均无地址时才执行一次真实连通性测试（绑定出口设备的 ICMP + 使用模组下发 DNS 的域名解析）。
+  - 连通性正常即判定健康：只记录一条「transient state anomaly」警告并重置重试计数，不再重启链路。
+  - 只有连通性测试也失败，才判定异常并进入恢复流程。
+- 恢复动作频率控制：连续重试上限（默认 3 轮）、指数退避（60s→120s→…，上限 900s）、单轮操作超时（默认 90s 时间预算，`modem_cycle_link` / `ifdown` 均带 `timeout` 上限）。达到上限后停止重建链路，输出明确的 ERROR 日志并等待人工介入（每 600s 提醒一次）；`mt5700m-manager redial` 或 `reset-recovery` 可解除停机。
+- 每轮恢复输出可诊断信息：接口名、设备名、IPv4/IPv6 地址状态、carrier、连通性测试结果、当前重试次数、下一步动作（单行 `recovery[<stage>] ... next=<action>`）。
+- `recover_interface6` 增加限频（默认 300s），避免 DHCPv6/RA 尚未完成时的每个监控周期重拉 v6 接口。
+- `status-json` 增加 `health` / `ipv4_address` / `ipv6_address` / `recovery` / `recovery_halted` 字段便于排障。
+- 监控轮询间隔分级：健康 15s、异常/退避 30s、已停机等待人工介入 60s（原先失败时缩到 5s，反而加速冲击模组）。
+
+### Added
+- `mt5700m.recovery.*` UCI 配置段（`max_retries` / `backoff_base` / `backoff_max` / `round_timeout` / `probe_timeout` / `ping_host` / `ping_host6` / `dns_host` / `v6_cooldown` / `halt_notify`），缺省即使用内置默认值。
+
 ## [2.3.37] - 2026-08-28
 
 ### Fixed

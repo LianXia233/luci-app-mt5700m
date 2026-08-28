@@ -8,6 +8,22 @@ uci -q set mt5700m.settings.host="$(uci -q get mt5700m.settings.host || echo 192
 uci -q set mt5700m.settings.port="$(uci -q get mt5700m.settings.port || echo 20249)"
 uci -q set mt5700m.settings.timeout="$(uci -q get mt5700m.settings.timeout || echo 8)"
 
+# Dial health check / recovery policy.  Missing options fall back to the
+# built-in defaults in /usr/sbin/mt5700m-manager.
+if ! uci -q get mt5700m.recovery >/dev/null 2>&1; then
+	uci -q set mt5700m.recovery='recovery'
+	uci -q set mt5700m.recovery.max_retries='3'
+	uci -q set mt5700m.recovery.backoff_base='60'
+	uci -q set mt5700m.recovery.backoff_max='900'
+	uci -q set mt5700m.recovery.round_timeout='90'
+	uci -q set mt5700m.recovery.probe_timeout='5'
+	uci -q set mt5700m.recovery.ping_host='223.5.5.5'
+	uci -q set mt5700m.recovery.ping_host6='2400:3200::1'
+	uci -q set mt5700m.recovery.dns_host='www.baidu.com'
+	uci -q set mt5700m.recovery.v6_cooldown='300'
+	uci -q set mt5700m.recovery.halt_notify='600'
+fi
+
 # Migrate only the user-owned MT5700M profile from an existing QModem
 # installation. Discovery state and generic vendor settings are intentionally
 # not copied into the dedicated manager.
