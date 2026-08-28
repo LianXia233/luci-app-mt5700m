@@ -230,6 +230,111 @@ bring_down() {
 	ifdown "${INTERFACE}" >/dev/null 2>&1 || true
 }
 
+# Is the module itself reachable and service-registered?  On NCM/ECM setups
+# the modem can be online with an active data link while the host interface is
+# missing or not up yet; this tells sync_manager whether to wait/recover the
+# host side or to kick the module side.
+modem_connected() {
+	local srv
+	srv="$(/usr/sbin/mt5700m-at command 'AT^SYSINFOEX' 2>/dev/null | sed -n 's/^\^SYSINFOEX:[[:space:]]*//p' | head -n 1)"
+	case "${srv}" in 2,*) return 0 ;; *) return 1 ;; esac
+}
+
+# Query the module USB port mode.  4 = NCM (CDC-NCM, recommended for Linux),
+# 0 = ECM; other values may leave the USB data interface absent.
+modem_usb_mode() {
+	local mode
+	mode="$(/usr/sbin/mt5700m-at command 'AT^SETMODE?' 2>/dev/null | tr -d '\r' | grep -oE '^[0-9]+$' | head -n 1)"
+	case "${mode}" in ''|*[!0-9]*) return 1 ;; esac
+	printf '%s\n' "${mode}"
+}
+
+# Ensure the module stays in NCM mode (SETMODE=4).  A wrong mode (e.g. 2) is
+# a root cause of "modem online but OpenWrt has no network interface": the USB
+# NCM device simply never enumerates.  The change only takes effect after a
+# module reboot, so we write it at most once per 10 minutes and log the
+# pending reboot requirement instead of hammering the modem every cycle.
+modem_ensure_usb_mode() {
+	local mode fixed_at now
+	mode="$(modem_usb_mode)" || return 1
+	[ "${mode}" = '4' ] && {
+		rm -f "${STATE_DIR}/usb_mode_fix_time" 2>/dev/null || true
+		return 0
+	}
+	log_message "usb mode=${mode} not NCM(4); applying AT^SETMODE=4 (takes effect after module reboot)"
+	fixed_at="$(cat "${STATE_DIR}/usb_mode_fix_time" 2>/dev/null || echo 0)"
+	case "${fixed_at}" in ''|*[!0-9]*) fixed_at=0 ;; esac
+	now="$(date +%s)"
+	[ "${now}" -ge "$((fixed_at + 600))" ] || return 1
+	/usr/sbin/mt5700m-at command 'AT^SETMODE=4' >/dev/null 2>&1 || true
+	echo "${now}" > "${STATE_DIR}/usb_mode_fix_time" 2>/dev/null || true
+	return 1
+}
+
+# Rebuild the module-side data link without dropping network registration.
+# Prefer NDISDUP (tear down + re-establish PDP); fall back to a radio cycle
+# if carrier still does not appear on $1.
+modem_cycle_link() {
+	local netdev="$1" attempt=0
+
+	/usr/sbin/mt5700m-at command 'AT^NDISDUP=1,0' >/dev/null 2>&1 || true
+	sleep 2
+	/usr/sbin/mt5700m-at command 'AT^NDISDUP=1,1' >/dev/null 2>&1 || true
+	while [ "${attempt}" -lt 5 ]; do
+		if [ -n "${netdev}" ] && [ "$(cat "/sys/class/net/${netdev}/carrier" 2>/dev/null || echo 0)" = '1' ]; then
+			return 0
+		fi
+		sleep 2
+		attempt=$((attempt + 1))
+	done
+	log_message 'NDIS rebuild did not restore carrier, cycling radio'
+	/usr/sbin/mt5700m-at command 'AT+CFUN=0' >/dev/null 2>&1 || true
+	sleep 2
+	/usr/sbin/mt5700m-at command 'AT+CFUN=1' >/dev/null 2>&1 || true
+	sleep 5
+}
+
+# Bring the interface up and then nurse it to a healthy state.  Covers the
+# "modem online, data connected, but OpenWrt has no interface / interface down"
+# case: wait for DHCP, rebuild the module link when carrier is missing, and
+# force a fresh ifdown/ifup as a final retry.
+bring_up_with_recovery() {
+	local netdev="$1" attempt=0
+
+	bring_up
+	while [ "${attempt}" -lt 6 ]; do
+		if interface_up "${INTERFACE}"; then
+			log_message "interface ${INTERFACE} up after ${attempt}x2s"
+			return 0
+		fi
+		sleep 2
+		attempt=$((attempt + 1))
+	done
+
+	if [ -n "${netdev}" ] && [ "$(cat "/sys/class/net/${netdev}/carrier" 2>/dev/null || echo 0)" = '0' ]; then
+		log_message "carrier missing on ${netdev}, rebuilding modem link"
+		modem_cycle_link "${netdev}" || true
+		bring_up
+		attempt=0
+		while [ "${attempt}" -lt 8 ]; do
+			if interface_up "${INTERFACE}"; then
+				return 0
+			fi
+			sleep 2
+			attempt=$((attempt + 1))
+		done
+	fi
+
+	ifdown "${INTERFACE}" >/dev/null 2>&1 || true
+	sleep 2
+	bring_up
+	if interface_up "${INTERFACE}"; then
+		return 0
+	fi
+	log_message "interface ${INTERFACE} still down after recovery"
+	return 1
+}
+
 sync_manager() {
 	local info state netdev
 	info="$(mt5700m_usb_info || true)"
@@ -239,43 +344,70 @@ sync_manager() {
 		[ -n "${info}" ] && log_message "module unavailable state=${state}" || true
 		return 0
 	fi
+	# USB mode guard: wrong SETMODE leaves the NCM data interface absent even
+	# though the modem is online; ensure mode 4 before binding/awaiting it.
+	[ "$(config_value enabled 1)" = '1' ] && modem_ensure_usb_mode || true
 	mt5700m_bind_network_driver || log_message 'unable to bind MT5700M NCM interface'
 	mt5700m_pcui_port >/dev/null 2>&1 || {
 		mt5700m_bind_serial_driver || true
 		sleep 1
 	}
-	netdev="$(mt5700m_netdev || true)"
+	netdev="$(mt5700m_wait_netdev 5 || true)"
+	if [ -z "${netdev}" ]; then
+		log_message 'NCM interface missing, forcing rebind'
+		mt5700m_force_ncm_rebind || true
+		sleep 2
+		netdev="$(mt5700m_wait_netdev 8 || true)"
+	fi
 	[ -n "${netdev}" ] || {
 		log_message 'normal-mode module has no network interface'
 		return 1
 	}
 	ensure_network "${netdev}"
 	if [ "$(config_value enabled 1)" = '1' ]; then
-		interface_up "${INTERFACE}" || bring_up
+		if interface_up "${INTERFACE}"; then
+			:
+		elif modem_connected; then
+			log_message 'modem online but interface down; recovering host side'
+			bring_up_with_recovery "${netdev}" || true
+		else
+			bring_up
+		fi
 	else
 		bring_down
 	fi
 }
 
 apply_profile() {
-	local pdp protocol apn username password auth auth_code
+	local pdp protocol apn username password auth auth_code dial_mode
 	pdp="$(config_value pdp_type ipv4v6)"
 	case "${pdp}" in ip) protocol='IP' ;; ipv6) protocol='IPV6' ;; *) protocol='IPV4V6' ;; esac
+	# USB host dialing is the default (dial_mode=1): the NCM port carries the
+	# data session and OpenWrt runs DHCP on it.  dial_mode=0 is module-embedded
+	# (RNDIS-like, no host DHCP), 2 is reserved.
+	dial_mode="$(config_value dial_mode 1)"
+	case "${dial_mode}" in 0|1|2) ;; *) dial_mode=1 ;; esac
 	apn="$(config_value apn '')"
 	username="$(config_value username '')"
 	password="$(config_value password '')"
 	auth="$(config_value auth none)"
 	case "${auth}" in pap) auth_code=1 ;; chap) auth_code=2 ;; *) auth_code=0 ;; esac
-	/usr/sbin/mt5700m-at advanced-set autodial 1 1 "${protocol}" "${apn}" "${username}" "${password}" "${auth_code}" >/dev/null
+	/usr/sbin/mt5700m-at advanced-set autodial 1 "${dial_mode}" "${protocol}" "${apn}" "${username}" "${password}" "${auth_code}" >/dev/null
 }
 
 connect_manager() {
+	local netdev
 	CONFIG_CHANGED=0
 	set_if_changed mt5700m.connection.enabled 1
 	[ "${CONFIG_CHANGED}" = '0' ] || uci -q commit mt5700m
 	sync_manager || return 1
 	apply_profile || log_message 'module profile was not changed; continuing with retained profile'
-	bring_up
+	netdev="$(mt5700m_netdev || true)"
+	if [ -n "${netdev}" ]; then
+		bring_up_with_recovery "${netdev}" || true
+	else
+		bring_up
+	fi
 	log_message 'connection enabled'
 }
 
@@ -288,6 +420,7 @@ disconnect_manager() {
 }
 
 redial_manager() {
+	local netdev
 	bring_down
 	sleep 1
 	CONFIG_CHANGED=0
@@ -295,7 +428,12 @@ redial_manager() {
 	[ "${CONFIG_CHANGED}" = '0' ] || uci -q commit mt5700m
 	sync_manager || return 1
 	apply_profile || log_message 'module profile was not changed during redial'
-	bring_up
+	netdev="$(mt5700m_netdev || true)"
+	if [ -n "${netdev}" ]; then
+		bring_up_with_recovery "${netdev}" || true
+	else
+		bring_up
+	fi
 	log_message 'connection recycled'
 }
 
@@ -323,6 +461,7 @@ status_json() {
 	json_add_string usb_state "${state}"
 	json_add_string usb_pid "${product}"
 	json_add_string usb_slot "${slot}"
+	json_add_string usb_mode "$(modem_usb_mode || echo '')"
 	json_add_string at_port "${atport}"
 	json_add_string network "${netdev}"
 	json_add_string interface "${INTERFACE}"
@@ -333,13 +472,20 @@ status_json() {
 }
 
 monitor_manager() {
+	local interval=15
 	while :; do
 		if acquire_lock; then
-			sync_manager >/dev/null 2>&1 || true
+			if sync_manager >/dev/null 2>&1; then
+				interval=15
+			else
+				# Interface missing / unhealthy: poll faster so recovery kicks in
+				# without waiting the full 15s cycle.
+				interval=5
+			fi
 			release_lock
 		fi
 		refresh_temperature_cache >/dev/null 2>&1 || true
-		sleep 15
+		sleep "${interval}"
 	done
 }
 

@@ -8,6 +8,7 @@ config mt5700m 'settings'
 
 config connection 'connection'
 	option enabled '1'
+	option dial_mode '1'
 	option apn ''
 	option pdp_type 'ipv4v6'
 	option auth 'none'

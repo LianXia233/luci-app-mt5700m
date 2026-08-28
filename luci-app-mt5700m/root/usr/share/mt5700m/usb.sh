@@ -187,3 +187,60 @@ mt5700m_path_matches_slot() {
 	esac
 	return 1
 }
+
+# Poll for the NCM network interface for up to $1 seconds.  Some devices
+# enumerate the cdc_ncm data interface slowly after bind; returning too early
+# made sync_manager report "module has no network interface" even though the
+# modem was already online with an active data link.
+mt5700m_wait_netdev() {
+	local wait="${1:-5}" attempt=0 netdev
+
+	while [ "${attempt}" -lt "${wait}" ]; do
+		netdev="$(mt5700m_netdev || true)"
+		[ -n "${netdev}" ] && {
+			printf '%s\n' "${netdev}"
+			return 0
+		}
+		attempt=$((attempt + 1))
+		sleep 1
+	done
+	return 1
+}
+
+# Force-rebind the NCM control/data pair.  A dynamic usb-serial option ID can
+# claim the CDC pair before cdc_ncm loads (AT ports present, no eth device),
+# which leaves the modem online with a connected data session but no OpenWrt
+# network interface.  Unbind any non-cdc_ncm driver from CDC interfaces and
+# explicitly bind the NCM control interface and its data endpoint.
+mt5700m_force_ncm_rebind() {
+	local slot interface class subclass driver control data
+
+	slot="$(mt5700m_normal_slot)" || return 1
+	for interface in "${MT5700M_SYSFS_ROOT}/bus/usb/devices/${slot}:"*; do
+		[ -d "${interface}" ] || continue
+		class="$(tr 'A-F' 'a-f' < "${interface}/bInterfaceClass" 2>/dev/null || true)"
+		subclass="$(tr 'A-F' 'a-f' < "${interface}/bInterfaceSubClass" 2>/dev/null || true)"
+		case "${class}" in 02|0a) ;; *) continue ;; esac
+		driver="$(basename "$(readlink -f "${interface}/driver" 2>/dev/null)" 2>/dev/null || true)"
+		if [ -n "${driver}" ] && [ "${driver}" != 'cdc_ncm' ]; then
+			[ -w "${interface}/driver/unbind" ] && printf '%s\n' "${interface##*/}" > "${interface}/driver/unbind" 2>/dev/null || true
+		fi
+		case "${class}:${subclass}" in
+			02:0d) control="${interface##*/}" ;;
+			0a:00|02:06) data="${interface##*/}" ;;
+		esac
+	done
+
+	[ -n "${control}" ] || return 1
+	driver="$(basename "$(readlink -f "${MT5700M_SYSFS_ROOT}/bus/usb/devices/${control}/driver" 2>/dev/null)" 2>/dev/null || true)"
+	if [ "${driver}" != 'cdc_ncm' ]; then
+		[ -w "${MT5700M_SYSFS_ROOT}/bus/usb/drivers/cdc_ncm/bind" ] || return 1
+		printf '%s\n' "${control}" > "${MT5700M_SYSFS_ROOT}/bus/usb/drivers/cdc_ncm/bind" 2>/dev/null || true
+	fi
+	# Bind the data endpoint explicitly; cdc_ncm picks it up on bind of the
+	# control interface, but on some kernels it needs the explicit nudge.
+	if [ -n "${data}" ] && [ -w "${MT5700M_SYSFS_ROOT}/bus/usb/drivers/cdc_ncm/bind" ]; then
+		printf '%s\n' "${data}" > "${MT5700M_SYSFS_ROOT}/bus/usb/drivers/cdc_ncm/bind" 2>/dev/null || true
+	fi
+	return 0
+}
