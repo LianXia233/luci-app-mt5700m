@@ -129,13 +129,17 @@ make package/luci-app-mt5700m/compile V=s
 - **v2.3.41 起旧的 umi 前端与 `at-server.py` 已从仓库移除**，构建时由
   `scripts/build-release.sh` 把 3.0.2 前端（`www/5700`）与 Python 后端折叠进
   `luci-app-mt5700m` 包，单个安装包即包含前端 + 后端 + LuCI 管理页
+- **v2.3.42 起后端默认走 UBUS**（经 `ubus-at-daemon` 转发 AT 命令），与 LuCI 管理页
+  共享同一个 AT 口：WebUI 与模组管理功能可同时使用，不会争抢 PCUI 串口。
+  代价是无主动上报通道（来电/新短信实时推送不可用），需要时可在
+  `/etc/config/at-webserver` 切 `connection_type='SERIAL'` 并停用 `ubus-at-daemon`
 - 实机部署差异、文件冲突处理与验证记录见 [`mt5700webui-openwrt-server/VENDOR.md`](mt5700webui-openwrt-server/VENDOR.md)
 
 ## 版本信息
 
 | 版本 | 说明 |
 | --- | --- |
-| `2.3.41-r1` | 当前开发版本（OpenWrt 安装包，WebUI 3.0.2 + Python 后端） |
+| `2.3.42-r1` | 当前开发版本（OpenWrt 安装包，WebUI 3.0.2 + Python 后端，AT 通道 UBUS 共享） |
 
 版本演进与修复记录见 [CHANGELOG.md](CHANGELOG.md)。
 

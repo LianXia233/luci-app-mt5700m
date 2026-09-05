@@ -15,6 +15,7 @@ import asyncio
 import glob
 import json
 import logging
+import os
 import re
 import signal
 import socket
@@ -67,6 +68,11 @@ NOTIFY_MAX_RETRIES = 3
 AUTO_SERIAL_PORT = "auto"
 PREFERRED_AT_PORT = "/dev/ttyUSB1"
 
+# UBUS 模式（经 ubus-at-daemon 转发）：与应用其它组件共享同一 AT 通道
+UBUS_OBJECT = "at-daemon"
+UBUS_METHOD = "sendat"
+UBUS_KEEPALIVE = 20.0
+
 SENDER_CALL = "来电提醒"
 SENDER_SIGNAL = "信号监控"
 
@@ -83,7 +89,11 @@ def setup_logging(verbose):
 # ---------------------------------------------------------------- UCI 配置
 DEFAULTS = {
     "enabled": True,
-    "connection_type": "NETWORK",
+    # UBUS 为默认：经 ubus-at-daemon 转发，与 luci-app-mt5700m 共享 AT 通道，
+    # 避免 WebUI 后端与管理器争抢同一个 PCUI 串口。
+    "connection_type": "UBUS",
+    "ubus_at_port": "",
+    "ubus_timeout": 10.0,
     "network_host": "192.168.8.1",
     "network_port": 20249,
     "network_timeout": 10.0,
@@ -162,6 +172,7 @@ def load_uci_config():
     cfg["network_timeout"] = float(cfg["network_timeout"])
     cfg["serial_baudrate"] = int(cfg["serial_baudrate"])
     cfg["serial_timeout"] = float(cfg["serial_timeout"])
+    cfg["ubus_timeout"] = float(cfg["ubus_timeout"])
     cfg["websocket_port"] = int(cfg["websocket_port"])
     cfg["cellscan_timeout"] = float(cfg["cellscan_timeout"])
     for k in ("notify_sms", "notify_call", "notify_memory_full", "notify_signal",
@@ -446,6 +457,81 @@ class TcpTransport(Transport):
         return "网络 " + self.addr
 
 
+class UbusTransport(Transport):
+    """经 ubus-at-daemon 转发 AT 命令（请求/响应式）。
+
+    OpenWrt 上 PCUI 串口通常已被 ubus-at-daemon 独占，WebUI 后端直接开串口
+    会与 luci-app-mt5700m 的管理功能争抢同一个 AT 口。该模式通过
+    `ubus call at-daemon sendat` 让 daemon 统一串行化所有 AT 请求，实现共享。
+
+    限制：ubus 是请求/响应式，没有主动上报通道，因此 URC（来电、新短信、
+    PDCP 统计、信号变化）在本模式下不可用；主动查询类功能不受影响。
+    """
+
+    def __init__(self, at_port, timeout):
+        self.at_port = at_port or detect_pcui_port()
+        self.timeout = max(1, int(timeout))
+
+    def query(self, command, timeout=None):
+        t = max(1, int(timeout if timeout else self.timeout))
+        payload = json.dumps({
+            "at_port": self.at_port,
+            "at_cmd": command,
+            "timeout": t,
+        })
+        try:
+            r = subprocess.run(["ubus", "call", UBUS_OBJECT, UBUS_METHOD, payload],
+                               capture_output=True, text=True, timeout=t + 5)
+        except subprocess.TimeoutExpired:
+            raise TimeoutError("ubus sendat 超时（%ds）: %s" % (t, command[:40]))
+        except FileNotFoundError:
+            raise ConnectionError("系统缺少 ubus 命令")
+        if r.returncode != 0:
+            raise ConnectionError("ubus sendat 失败: %s" % (r.stderr or r.stdout or "").strip()[:200])
+        try:
+            data = json.loads(r.stdout or "{}")
+        except ValueError:
+            raise ConnectionError("ubus 返回无法解析: %s" % (r.stdout or "")[:200])
+        resp = data.get("response", "")
+        if not resp and data.get("status") != "success":
+            raise ConnectionError("ubus sendat 无应答（status=%s）" % data.get("status"))
+        return resp
+
+    # 请求/响应式通道，以下接口仅为满足 Transport 抽象
+    def write(self, data):
+        raise NotImplementedError("UBUS 通道请使用 query()")
+
+    def read(self, n):
+        return b""
+
+    def close(self):
+        pass
+
+    def describe(self):
+        return "ubus at-daemon (%s)" % self.at_port
+
+
+def detect_pcui_port():
+    """按 USB 接口类型探测 PCUI AT 口（bInterfaceClass/Sub/Proto = ff:06:12）。"""
+    try:
+        for tty in sorted(glob.glob("/sys/class/tty/ttyUSB*")):
+            try:
+                iface = os.path.realpath(os.path.join(tty, "device")) + "/.."
+                with open(os.path.join(iface, "bInterfaceClass")) as f:
+                    cls = f.read().strip().lower()
+                with open(os.path.join(iface, "bInterfaceSubClass")) as f:
+                    sub = f.read().strip().lower()
+                with open(os.path.join(iface, "bInterfaceProtocol")) as f:
+                    proto = f.read().strip().lower()
+            except OSError:
+                continue
+            if (cls, sub, proto) == ("ff", "06", "12"):
+                return "/dev/" + os.path.basename(tty)
+    except Exception as e:
+        log.debug("PCUI 接口探测失败: %s", e)
+    return PREFERRED_AT_PORT
+
+
 def list_serial_candidates():
     ports = glob.glob("/dev/ttyUSB*")
     # PCUI（ttyUSB1）排最前，其余按编号升序
@@ -457,7 +543,10 @@ def list_serial_candidates():
 
 def open_transport(cfg):
     """按配置建立连接。返回 Transport。"""
-    if cfg["connection_type"] == "SERIAL":
+    ctype = cfg["connection_type"]
+    if ctype == "UBUS":
+        return UbusTransport(cfg["ubus_at_port"], cfg["ubus_timeout"])
+    if ctype == "SERIAL":
         port = cfg["serial_port"]
         baud = cfg["serial_baudrate"]
         if port == AUTO_SERIAL_PORT:
@@ -543,9 +632,30 @@ class ATClient:
         self.conn_lock.release()
         self.connected.set()
         log.info("已连接到 %s", tp.describe())
-        t = threading.Thread(target=self.read_loop, args=(tp,), daemon=True)
-        t.start()
+
+        if isinstance(tp, UbusTransport):
+            # UBUS 是请求/响应式，没有可读的字节流：改用保活探测线程
+            # 检测通道可用性（失败则触发重连）。
+            log.info("UBUS 模式：无主动上报通道，来电/新短信实时推送不可用")
+            t = threading.Thread(target=self.ubus_watchdog, args=(tp,), daemon=True)
+            t.start()
+        else:
+            t = threading.Thread(target=self.read_loop, args=(tp,), daemon=True)
+            t.start()
         self.init_modem()
+
+    def ubus_watchdog(self, tp):
+        """UBUS 通道保活：定期发 AT，失败则断开触发重连。"""
+        while self.connected.is_set() and self.tp is tp:
+            time.sleep(UBUS_KEEPALIVE)
+            if self.tp is not tp:
+                return
+            try:
+                tp.query("AT", 5)
+            except Exception as e:
+                log.warning("UBUS AT 通道失效，准备重连: %s", e)
+                self.teardown(tp)
+                return
 
     def run(self, stop_event):
         backoff = 5.0
@@ -667,6 +777,19 @@ class ATClient:
             if tp is None:
                 raise ConnectionError("AT 通道未连接")
 
+            if isinstance(tp, UbusTransport):
+                # 请求/响应式：一次调用拿回完整应答（不支持流式回调）
+                if stream is not None:
+                    log.debug("UBUS 模式无流式应答，扫频等结果将一次性返回")
+                text = tp.query(command.strip(), timeout)
+                raw = text.replace("\r\n", "\n").replace("\r", "\n")
+                echo = command.strip()
+                lines = [l.strip() for l in raw.split("\n") if l.strip() and l.strip() != echo]
+                self.last_cmd_at = time.monotonic()
+                if not lines:
+                    raise TimeoutError("模组无应答")
+                return ATResponse(lines)
+
             if not command.endswith("\r"):
                 command += "\r"
 
@@ -711,6 +834,9 @@ class ATClient:
         self.conn_lock.release()
         if tp is None:
             raise ConnectionError("AT 通道未连接")
+        if isinstance(tp, UbusTransport):
+            # 请求/响应式通道没有「等待中的命令」概念，打断无意义
+            raise RuntimeError("UBUS 模式下不支持打断长命令")
         self.pend_lock.acquire()
         has_pending = self.pending is not None
         self.pend_lock.release()

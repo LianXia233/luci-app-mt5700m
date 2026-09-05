@@ -1,0 +1,48 @@
+#!/bin/sh
+# mt5700webui：初始化 AT WebServer 配置并启用服务
+#
+# 说明：
+# - WebUI 前端（www/5700）由 Python 后端 /usr/bin/at-webserver.py 提供服务
+# - 后端默认走 UBUS（经 ubus-at-daemon 转发），与 luci-app-mt5700m 的管理功能
+#   共享同一个 AT 口，避免两者争抢 PCUI 串口
+# - 本脚本只在配置缺失时写入默认值，不覆盖用户已有配置
+
+[ -x /usr/bin/at-webserver.py ] || exit 0
+
+. /lib/functions.sh
+
+# 配置段不存在时补默认值
+if ! uci -q show at-webserver >/dev/null 2>&1 || [ -z "$(uci -q get at-webserver.config)" ]; then
+	uci -q batch <<-EOF
+		set at-webserver.config=at-webserver
+		set at-webserver.config.enabled=1
+		set at-webserver.config.connection_type=UBUS
+		set at-webserver.config.ubus_at_port=
+		set at-webserver.config.ubus_timeout=10
+		set at-webserver.config.serial_port=auto
+		set at-webserver.config.serial_baudrate=115200
+		set at-webserver.config.serial_timeout=10
+		set at-webserver.config.network_host=192.168.8.1
+		set at-webserver.config.network_port=20249
+		set at-webserver.config.network_timeout=10
+		set at-webserver.config.websocket_port=8765
+		commit at-webserver
+	EOF
+fi
+
+# 确保关键键存在（升级场景可能缺少 UBUS 相关项）
+if [ -z "$(uci -q get at-webserver.config.connection_type)" ]; then
+	uci -q set at-webserver.config.connection_type=UBUS
+	uci -q commit at-webserver
+fi
+
+# 启用服务：procd 只运行 /etc/rc.d 中有链接的 init 脚本
+/etc/init.d/at-webserver enable
+
+# UBUS 模式依赖 ubus-at-daemon 持有 AT 口
+if [ -x /etc/init.d/ubus-at-daemon ]; then
+	/etc/init.d/ubus-at-daemon enable
+	/etc/init.d/ubus-at-daemon running || /etc/init.d/ubus-at-daemon start
+fi
+
+exit 0

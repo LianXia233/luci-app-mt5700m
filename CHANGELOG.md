@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.3.42] - 2026-09-06
+
+### Added
+- Python 后端 `at-webserver.py` 新增 **UBUS 连接模式**（经 `ubus call at-daemon sendat` 转发）并设为默认：AT 口由 `ubus-at-daemon` 独占并串行化，WebUI 后端与 `mt5700m-at` 作为客户端共享同一通道，LuCI 管理页与 WebUI 可同时使用。AT 口按 USB 接口类型 `ff:06:12`（PCUI）自动探测，回退 `/dev/ttyUSB1`，可用 `ubus_at_port` 指定。
+- 新增 `luci-app-mt5700m/root/etc/uci-defaults/93-mt5700m-webui`：首次安装时写入默认 UCI 配置（`connection_type=UBUS` 等）并 `enable` `at-webserver` 与 `ubus-at-daemon`。OpenWrt 的 procd 只运行 `/etc/rc.d` 中有链接的 init 脚本，缺少此步骤会导致服务不开机自启。
+
+### Fixed
+- 修复 LuCI 管理页（`/cgi-bin/luci/admin/modem/mt5700m/status`）加载失败：v2.3.41 部署时 WebUI 后端以 SERIAL 模式独占 PCUI 串口并停用 `ubus-at-daemon`，导致管理页依赖的 `ubus call at-daemon` 通道不存在。改由 UBUS 模式共享 AT 口后恢复。
+- 修复 `at-webserver` 未开机自启（`/etc/rc.d` 无链接）：旧栈的 `93-mt5700m-webui` 被移除后没有替代的启用步骤。
+
+### Changed
+- `luci-app-mt5700m/Makefile` 版本 2.3.41 -> 2.3.42。
+- `.github/workflows/ci.yml` 恢复对 `93-mt5700m-webui` 的语法与可执行位检查。
+- 文档：`VENDOR.md` 增加三种连接模式对比与 UBUS 限制说明，README 同步。
+
 ## [2.3.41] - 2026-09-06
 
 ### Removed
