@@ -3,8 +3,7 @@
 *.sh text eol=lf
 *.py text eol=lf
 luci-app-mt5700m/root/** text eol=lf
-luci-app-mt5700m/htdocs/cgi-bin/** text eol=lf
-luci-app-mt5700m/htdocs/5700/** text eol=lf
+mt5700webui-openwrt-server/at-webserver/files-py/** text eol=lf
 *.js text eol=lf
 *.html text eol=lf
 *.css text eol=lf

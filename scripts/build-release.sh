@@ -31,6 +31,17 @@ sed -i 's/^[[:space:]]*default m$/\tdefault n/' Config-build.in
 
 mkdir -p package/h5000m-custom
 cp -a "${repo_dir}/luci-app-mt5700m" package/h5000m-custom/
+
+# Fold the standalone WebUI (mt5700webui 3.0.2: React/Semi frontend + Python
+# AT backend) into the package source, so one apk ships frontend + backend +
+# LuCI manager.  The LuCI app itself no longer carries the old umi WebUI
+# (htdocs/5700, at-server.py were removed from the repo).
+pkg_src="package/h5000m-custom/luci-app-mt5700m"
+mkdir -p "${pkg_src}/htdocs" "${pkg_src}/root/usr/bin" "${pkg_src}/root/etc/init.d"
+cp -a "${repo_dir}/mt5700webui-openwrt-server/at-webserver/files/www/5700" "${pkg_src}/htdocs/5700"
+cp -f "${repo_dir}/mt5700webui-openwrt-server/at-webserver/at-webserver.py" "${pkg_src}/root/usr/bin/at-webserver.py"
+cp -f "${repo_dir}/mt5700webui-openwrt-server/at-webserver/files-py/etc/init.d/at-webserver" "${pkg_src}/root/etc/init.d/at-webserver"
+echo "INFO: folded mt5700webui 3.0.2 frontend + Python backend into package source"
 cat > .config <<'EOF'
 CONFIG_TARGET_mediatek=y
 CONFIG_TARGET_mediatek_filogic=y
@@ -56,33 +67,28 @@ rm -rf build_dir/target-*/luci-app-mt5700m \
        staging_dir/target-*/root-*/www/luci-static/resources/view/mt5700m \
        staging_dir/target-*/root-*/www/5700 \
        bin/packages/*/custom/luci-app-mt5700m*.apk 2>/dev/null || true
-# CRLF prevention: .gitattributes mandates eol=lf for htdocs/5700 text files.
-# Removing the pre-compile `sed -i 's/\r$//'` step — it was empirically proven to
-# corrupt large single-line JS bundles (umi bundle) on CI runners, causing both
-# build failures (node --check) and runtime SyntaxErrors (exposed `xmlns` from
-# truncated JS strings in network.js / status.js).
-# The post-compile `cp -a` of pristine repo htdocs into staging_dir is the safety
-# net for any SDK copy/tar artifacts, and `node --check` validates the result.
+# CRLF prevention: .gitattributes mandates eol=lf for www/5700 text files.
+# A pre-compile `sed -i 's/\r$//'` was empirically proven to corrupt large
+# single-line JS bundles on CI runners, so it stays removed.  The post-compile
+# `cp -a` of pristine repo files into staging_dir is the safety net for any
+# SDK copy/tar artifacts, and `node --check` validates the result.
 
 make package/h5000m-custom/luci-app-mt5700m/compile -j"$(nproc)" V=s
 
-# Re-copy the PRISTINE htdocs/5700 from the repo source into the freshly staged
-# www tree, AFTER `make compile` and BEFORE the node --check guard below.
+# Re-copy the PRISTINE www/5700 frontend (mt5700webui 3.0.2) from the repo
+# source into the freshly staged www tree, AFTER `make compile` and BEFORE
+# the node --check guard below.
 #
-# This is the step that ACTUALLY fixes the truncation — empirically proven:
-#   - v2.3.22: this step PRESENT  -> build SUCCEEDED
-#   - v2.3.26: this step REMOVED  -> build FAILED (node --check caught truncated umi.js)
-#   - v2.3.27: still absent (only a pre-compile sed was added) -> build FAILED
-#
-# The OpenWrt SDK's staging/copy step truncates the large JS bundle (the umi bundle
-# has 34000+ char lines; the SDK copy/tar mangles CRLF/long-line files).  Crucially,
-# the .apk is assembled FROM staging_dir, so overwriting staging_dir here DOES reach
-# the package.  The repo source (repo_dir) is the clean, intact copy, so re-copying it
-# guarantees the staged tree — and thus the shipped package — contains uncorrupted files.
-# (Our earlier v2.3.26 analysis wrongly judged this "too late"; the evidence above
-#  shows it is the effective fix.  Keep it.)
-cp -a "${repo_dir}/luci-app-mt5700m/htdocs/5700/." staging_dir/target-*/root-*/www/5700/.
-echo "INFO: re-copied pristine htdocs/5700 into staging_dir after compile"
+# This is the step that fixes SDK truncation of huge minified JS bundles
+# (34000+ char lines; the SDK copy/tar mangles CRLF/long-line files).
+# Empirical history with the old umi bundle:
+#   - v2.3.22: step PRESENT  -> build SUCCEEDED
+#   - v2.3.26: step REMOVED  -> build FAILED (node --check caught truncation)
+#   - v2.3.27: absent again  -> build FAILED
+# The .apk is assembled FROM staging_dir, so overwriting staging_dir here
+# DOES reach the package.  The new React bundle has the same exposure.
+cp -a "${repo_dir}/mt5700webui-openwrt-server/at-webserver/files/www/5700/." staging_dir/target-*/root-*/www/5700/.
+echo "INFO: re-copied pristine www/5700 (mt5700webui 3.0.2) into staging_dir after compile"
 
 # Sanity check: the freshly staged www tree must contain the WebUI integration.
 # If this fails, the SDK reused a cached htdocs copy and the package would be broken.

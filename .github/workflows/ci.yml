@@ -17,15 +17,12 @@ jobs:
       - name: Check shell syntax and USB detection
         run: |
           sh -n luci-app-mt5700m/root/etc/hotplug.d/usb/60-mt5700m
-          sh -n luci-app-mt5700m/root/etc/init.d/at-webserver
+          sh -n mt5700webui-openwrt-server/at-webserver/files-py/etc/init.d/at-webserver
           sh -n luci-app-mt5700m/root/etc/init.d/mt5700m-manager
           sh -n luci-app-mt5700m/root/etc/init.d/mt5700m-traffic
           sh -n luci-app-mt5700m/root/etc/hotplug.d/net/95-mt5700m-traffic
           sh -n luci-app-mt5700m/root/etc/uci-defaults/90-mt5700m
           sh -n luci-app-mt5700m/root/etc/uci-defaults/92-mt5700m-traffic
-          sh -n luci-app-mt5700m/root/etc/uci-defaults/93-mt5700m-webui
-          sh -n luci-app-mt5700m/htdocs/cgi-bin/at-ws-info
-          sh -n luci-app-mt5700m/htdocs/cgi-bin/at-log-clear
           sh -n luci-app-mt5700m/root/usr/libexec/rpcd/mt5700m
           sh -n luci-app-mt5700m/root/usr/libexec/rpcd/mt5700m-traffic
           sh -n luci-app-mt5700m/root/usr/sbin/mt5700m-at
@@ -44,23 +41,40 @@ jobs:
           for f in luci-app-mt5700m/root/etc/init.d/*; do
             test -x "$f" || { echo "ERROR: init script not executable: $f" >&2; exit 1; }
           done
-          # uhttpd requires +x on CGI scripts.
-          for f in luci-app-mt5700m/htdocs/cgi-bin/*; do
-            test -x "$f" || { echo "ERROR: CGI script not executable: $f" >&2; exit 1; }
-          done
+          # The standalone WebUI init script (folded into the package at build
+          # time by scripts/build-release.sh) must also ship +x.
+          test -x mt5700webui-openwrt-server/at-webserver/files-py/etc/init.d/at-webserver
           test -x luci-app-mt5700m/root/usr/sbin/mt5700m-at
           test -x luci-app-mt5700m/root/usr/sbin/mt5700m-manager
           test -x luci-app-mt5700m/root/usr/sbin/mt5700m-traffic
-          test -x luci-app-mt5700m/root/usr/bin/at-server.py
           test -x luci-app-mt5700m/root/usr/libexec/rpcd/mt5700m
           test -x luci-app-mt5700m/root/usr/libexec/rpcd/mt5700m-traffic
           test -x luci-app-mt5700m/root/etc/hotplug.d/net/95-mt5700m-traffic
           test -x luci-app-mt5700m/root/etc/hotplug.d/usb/60-mt5700m
           test -x luci-app-mt5700m/root/etc/uci-defaults/90-mt5700m
           test -x luci-app-mt5700m/root/etc/uci-defaults/92-mt5700m-traffic
-          test -x luci-app-mt5700m/root/etc/uci-defaults/93-mt5700m-webui
       - name: Check LuCI JavaScript syntax
         run: find luci-app-mt5700m/htdocs -type f -name '*.js' -print0 | xargs -0 -n1 node --check
+      - name: Check mt5700webui frontend bundle
+        run: |
+          # The 3.0.2 frontend ships prebuilt minified bundles; validate every
+          # chunk parses (same guard as build-release.sh, but on the repo tree).
+          find mt5700webui-openwrt-server/at-webserver/files/www/5700 -type f -name '*.js' -print0 | xargs -0 -n1 node --check
+          test -f mt5700webui-openwrt-server/at-webserver/files/www/5700/index.html
+      - name: Check Python AT backend
+        run: |
+          python3 -m py_compile mt5700webui-openwrt-server/at-webserver/at-webserver.py
+          python3 - <<'EOF'
+          import ast, sys
+          src = open('mt5700webui-openwrt-server/at-webserver/at-webserver.py', encoding='utf-8').read()
+          tree = ast.parse(src)
+          imports = {n.names[0].name.split('.')[0] for n in ast.walk(tree) if isinstance(n, ast.Import)}
+          required = {'serial', 'websockets'}
+          missing = required - imports
+          if missing:
+              sys.exit(f'backend missing required imports: {missing}')
+          print('backend imports OK:', sorted(required))
+          EOF
       - name: Validate JSON metadata
         run: |
           jq empty luci-app-mt5700m/root/usr/share/luci/menu.d/luci-app-mt5700m.json

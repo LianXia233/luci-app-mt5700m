@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.3.41] - 2026-09-06
+
+### Removed
+- 移除旧版 WebUI 全套：umi 旧前端（`htdocs/5700/`，88 个静态文件）、旧 Python 后端 `root/usr/bin/at-server.py`、旧 `root/etc/init.d/at-webserver`（Python/pyserial 版，服务 `at-server.py`）、`root/etc/uci-defaults/93-mt5700m-webui`、`root/etc/config/at-webserver`、`htdocs/cgi-bin/at-ws-info`、`htdocs/cgi-bin/at-log-clear` 及配套 `htdocs/scripts`。WebUI 由 mt5700webui 3.0.2 前端 + Python 移植版后端（`mt5700webui-openwrt-server/`）全面接替。
+
+### Changed
+- `scripts/build-release.sh`：构建时将 mt5700webui 3.0.2 前端（`www/5700`）与 Python 后端（`at-webserver.py` + `files-py/etc/init.d/at-webserver`）折叠进 `luci-app-mt5700m` 包源码，单个安装包包含前端 + 后端 + LuCI 管理页；SDK 截断防护（pristine 重拷贝 + node --check）保留，数据源换为新前端。
+- `luci-app-mt5700m/Makefile`：版本升至 2.3.41；JSMin 禁用注释更新为新前端背景。
+- `.github/workflows/ci.yml`：移除已删文件（旧 init.d、cgi-bin、93-mt5700m-webui、at-server.py）的检查，新增 mt5700webui 前端 bundle node --check、后端 py_compile 与关键 import 校验。
+- `mt5700webui-openwrt-server/at-webserver/files-py/etc/init.d/at-webserver` git mode 修正为 100755（init.d 必须可执行，procd 只跑 +x 脚本）。
+
 ## [WebUI 3.0.2] - 2026-09-06
 
 ### Added

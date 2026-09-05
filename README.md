@@ -118,21 +118,24 @@ make package/luci-app-mt5700m/compile V=s
 - 升级自早期独立流量插件时会自动迁移已有记录
 - 不再安装或显示单独的“流量统计”应用
 
-## WebUI 独立前端（mt5700webui）
+## WebUI 前端（mt5700webui 3.0.2）
 
-[`mt5700webui-openwrt-server/`](mt5700webui-openwrt-server/VENDOR.md) 归档了上游 [inotdream/mt5700webui-openwrt-server](https://github.com/inotdream/mt5700webui-openwrt-server) v3.0.2 的完整源码与 aarch64_cortex-a53 预编译包，作为本应用的独立 WebUI（React + Semi Design，访问 `http://<路由器地址>/5700/`）。
+[`mt5700webui-openwrt-server/`](mt5700webui-openwrt-server/VENDOR.md) 归档了上游 [inotdream/mt5700webui-openwrt-server](https://github.com/inotdream/mt5700webui-openwrt-server) v3.0.2 的完整源码与 aarch64_cortex-a53 预编译包，作为本应用的 WebUI（React + Semi Design，访问 `http://<路由器地址>/5700/`）。
 
 - 上游 Go 后端（`at-webserver`）通过 WebSocket 直连模组 AT 口，与本应用的 LuCI 管理页互补
 - 本仓库在归档基础上新增了 **Go 后端的 Python 移植版** `at-webserver.py`（pyserial + websockets，单文件）：
   Go 版二进制在 ImmortalWrt 6.18 内核（n_tty 重构）上存在串口空闲读被误判 EOF 的兼容问题，
   Python 版在同一内核上实机验证稳定，协议与 Go 版完全一致
+- **v2.3.41 起旧的 umi 前端与 `at-server.py` 已从仓库移除**，构建时由
+  `scripts/build-release.sh` 把 3.0.2 前端（`www/5700`）与 Python 后端折叠进
+  `luci-app-mt5700m` 包，单个安装包即包含前端 + 后端 + LuCI 管理页
 - 实机部署差异、文件冲突处理与验证记录见 [`mt5700webui-openwrt-server/VENDOR.md`](mt5700webui-openwrt-server/VENDOR.md)
 
 ## 版本信息
 
 | 版本 | 说明 |
 | --- | --- |
-| `2.3.33-r1` | 当前开发版本（OpenWrt 安装包） |
+| `2.3.41-r1` | 当前开发版本（OpenWrt 安装包，WebUI 3.0.2 + Python 后端） |
 
 版本演进与修复记录见 [CHANGELOG.md](CHANGELOG.md)。
 
