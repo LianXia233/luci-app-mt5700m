@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.3.44] - 2026-09-06
+
+### Fixed
+- **修复 WebUI（`/5700/`）所有按钮渲染为实心红色块、文字不可见的问题。** 根因：LuCI 构建期的 `csstidy --template=highest`（`LUCI_MINIFY_CSS` 默认开启）会把 Semi Design 主题中依赖出现顺序的重复规则合并去重——`.semi-button-light` 的浅色背景规则（`background-color: var(--semi-color-fill-0)`，在 `.semi-button-primary` 之后重复声明以恢复浅色底）被合并到前面，导致同特异性的 `.semi-button-primary { background-color: var(--semi-color-primary) }` 按级联顺序获胜；按钮图标/文字为 `currentColor`（主色红），最终背景色 = 文字色 = `#c7000b`，整颗按钮变成不可辨识的红色色块。与 2.3.41 时 jsmin 破坏 JS 同类，属构建期二次压缩破坏已压缩产物。修复：Makefile 增加 `LUCI_MINIFY_CSS:=0`，vendor CSS 原样随包分发（实测定测：修复后按钮 `background-color` 为浅灰 `rgba(100,116,139,.07)`、文字为深色，正常可读）。
+
+### Changed
+- `luci-app-mt5700m/Makefile` 版本 2.3.43 -> 2.3.44。
+
 ## [2.3.43] - 2026-09-06
 
 ### Fixed

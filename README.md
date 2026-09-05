@@ -139,7 +139,7 @@ make package/luci-app-mt5700m/compile V=s
 
 | 版本 | 说明 |
 | --- | --- |
-| `2.3.43-r1` | 当前开发版本（OpenWrt 安装包，WebUI 3.0.2 + Python 后端，AT 通道 UBUS 共享） |
+| `2.3.44-r1` | 当前开发版本（OpenWrt 安装包，WebUI 3.0.2 + Python 后端，AT 通道 UBUS 共享） |
 
 版本演进与修复记录见 [CHANGELOG.md](CHANGELOG.md)。
 

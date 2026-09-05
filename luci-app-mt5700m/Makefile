@@ -10,8 +10,17 @@ include $(TOPDIR)/rules.mk
 # also requires python3 + websockets + pyserial (see LUCI_DEPENDS).
 LUCI_MINIFY_JS:=0
 
+# Same story for CSS: LuCI's build-time `csstidy --template=highest` merges
+# selectors and drops "duplicate" rules.  Semi Design's theme relies on
+# order-dependent repeated rules (e.g. `.semi-button-light` declared again
+# after `.semi-button-primary` to restore the light background); csstidy
+# collapses them, the solid primary background wins and every light/borderless
+# button renders as a solid primary block with same-color (invisible) text.
+# Ship the pre-minified vendor CSS untouched.
+LUCI_MINIFY_CSS:=0
+
 PKG_NAME:=luci-app-mt5700m
-PKG_VERSION:=2.3.43
+PKG_VERSION:=2.3.44
 PKG_RELEASE:=1
 PKG_LICENSE:=Apache-2.0
 
