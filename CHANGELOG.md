@@ -1,5 +1,16 @@
 # Changelog
 
+## [WebUI 3.0.2] - 2026-09-06
+
+### Added
+- 归档上游 [inotdream/mt5700webui-openwrt-server](https://github.com/inotdream/mt5700webui-openwrt-server) v3.0.2 完整源码（Go 后端 + React/Semi 前端 + LuCI 集成应用）至 `mt5700webui-openwrt-server/`，移除上游 CI 工作流与垃圾文件，其余原样保留。详见 [`VENDOR.md`](mt5700webui-openwrt-server/VENDOR.md)。
+- 新增 **Go 后端的 Python 移植版** `mt5700webui-openwrt-server/at-webserver/at-webserver.py`（单文件，依赖 pyserial + websockets）与配套 procd init 脚本（`files-py/`）。协议与 Go 版严格一致：WS 文本帧即 AT 命令、`{success,data|error}` 应答、ping/pong 心跳、认证握手、`AT+CONNECT?`/`AT+SCHED?`/`AT^CELLSCAN` 伪命令、`raw_data`/`incoming_call`/`new_sms`/`pdcp_data`/`cellscan` 推送、短信 PDU 解码（GSM-7/UCS2、长短信分片拼装）、定时锁频（含频段/频点校验与 SCS 自动推断）、企业微信通知合并推送。移植背景：Go 版二进制在 ImmortalWrt 6.18 内核（n_tty 重构）上串口空闲读返回 0 字节被误判 EOF 陷入重连死循环；Python 版经实机验证稳定。
+- 新增 `mt5700webui-openwrt-server/prebuilt/aarch64_cortex-a53/`：上游 v3.0.2 预编译 apk 存档（at-webserver 后端包 + luci-i18n 中文语言包）。
+
+### Changed
+- 实机（H5000M / ImmortalWrt 6.18.44 aarch64）WebUI 后端由旧 Python 服务（`at-server.py`，配套 umi 旧前端）切换为 3.0.2 前端 + Python 移植版后端：`connection_type` 由 `UBUS` 改为 `SERIAL` + 串口自动探测（`ubus-at-daemon` 停用，AT 口由 WebUI 后端独占）。旧前端与服务已备份（`/root/webui-old-backup-20260906.tar.gz`）。
+- 实机验证通过：WS 认证/ping-pong/`AT+CONNECT?`（串口模式返回 1）/`AT+CGMR`（V200R001C20B014）/`AT^MONSC`（NR 实时小区）/`AT+C5GREG?`/`AT+SCHED?` 全链路正常。
+
 ## [2.3.40] - 2026-08-29
 
 ### Fixed
