@@ -7,9 +7,16 @@
 #   共享同一个 AT 口，避免两者争抢 PCUI 串口
 # - 本脚本只在配置缺失时写入默认值，不覆盖用户已有配置
 
-[ -x /usr/bin/at-webserver.py ] || exit 0
+# 后端文件存在性检查：OpenWrt 构建会把 /usr/bin/at-webserver.py 装成 0644，
+# 故用 -f 而非 -x；同时恢复可执行位（Shebang 直执行 + 兜底 -x 守卫）。
+[ -f /usr/bin/at-webserver.py ] || exit 0
+chmod 0755 /usr/bin/at-webserver.py 2>/dev/null
 
 . /lib/functions.sh
+
+# 此 ImmortalWrt 的 uci 在新建 section 前要求配置文件已存在，否则
+# `uci set <cfg>.<sec>=<type>` / `uci batch` 会报 "Entry not found"。
+uci -q show at-webserver >/dev/null 2>&1 || touch /etc/config/at-webserver
 
 # 配置段不存在时补默认值
 if ! uci -q show at-webserver >/dev/null 2>&1 || [ -z "$(uci -q get at-webserver.config)" ]; then

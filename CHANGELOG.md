@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.3.43] - 2026-09-06
+
+### Fixed
+- **修复全新安装（卸载后重装）后 `at-webserver` 配置缺失、服务无法自启/启动的问题。** 根因有两处，均在 `luci-app-mt5700m/root/etc/uci-defaults/93-mt5700m-webui`：
+  1. 守卫 `[ -x /usr/bin/at-webserver.py ]` 依赖可执行位，但 OpenWrt 构建系统把 `root/usr/bin/at-webserver.py` 装成 `0644`（源文件虽为 `0755`），导致 `-x` 为假、脚本直接 `exit 0` 跳过全部初始化逻辑。改为 `[ -f ... ]`（仅检查存在性）并在脚本内 `chmod 0755` 恢复可执行位。
+  2. `uci batch` / `uci set <cfg>.<sec>=<type>` 在本机 ImmortalWrt 的 uci 上，若 `/etc/config/at-webserver` 尚不存在会报 `Entry not found` 而静默失败。在 batch 前增加 `touch /etc/config/at-webserver` 确保配置文件存在。
+- 此前 2.3.41/2.3.42 实机能用，是因为开发期手动 `uci set` 建过配置，并非 uci-defaults 生效；干净重装路径此前从未被验证。本版本起该路径已闭环。
+
+### Changed
+- `luci-app-mt5700m/Makefile` 版本 2.3.42 -> 2.3.43。
+
 ## [2.3.42] - 2026-09-06
 
 ### Added
