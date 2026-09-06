@@ -1,32 +1,36 @@
-# mt5700webui-openwrt-server（上游 3.0.2 源码 + Python 后端移植）
+# mt5700webui-openwrt-server（上游 3.0.2 前端归档 + Rust 后端重写）
 
-本目录是上游 [inotdream/mt5700webui-openwrt-server](https://github.com/inotdream/mt5700webui-openwrt-server) v3.0.2 的完整源码归档，供本仓库集成与二次开发使用。
+本目录是上游 [inotdream/mt5700webui-openwrt-server](https://github.com/inotdream/mt5700webui-openwrt-server) v3.0.2 的源码归档（前端为主），AT 后端已由本仓库用 Rust 重写（v4.0），供本仓库集成与二次开发使用。
 
 ## 归档内容
 
 | 路径 | 说明 |
 | --- | --- |
-| `at-webserver/src/` | 上游 Go 后端源码（原样保留） |
-| `at-webserver/at-webserver.py` | **本地新增**：Go 后端的 Python 移植版（单文件，pyserial + websockets） |
-| `at-webserver/files-py/etc/init.d/at-webserver` | **本地新增**：Python 版 procd init 脚本 |
-| `at-webserver/files/` | 上游打包文件（默认 UCI 配置、init.d、`www/5700` 前端构建产物） |
+| `at-webserver/src/` | **本地新增**：Rust 后端源码（v4.0 重写，std-only 零第三方依赖） |
+| `at-webserver/Cargo.toml` | **本地新增**：Rust 工程（release profile：opt-level=z + lto + strip） |
+| `at-webserver/Makefile` | **本地新增**：OpenWrt 构建集成（packages feed `lang/rust`） |
+| `at-webserver/files/` | 上游打包文件 + 本地改造的 init.d（默认 UCI 配置、`www/5700` 前端构建产物） |
 | `luci-app-at-webserver/` | 上游 LuCI 集成应用（config/debug/logs 页面） |
 | `semi-tcpweb/` | 上游 React + Semi Design 前端源码 |
 | `docs/` | 上游文档与截图 |
-| `prebuilt/aarch64_cortex-a53/` | 上游 v3.0.2 预编译 apk（aarch64_cortex-a53，H5000M 用） |
+| `prebuilt/aarch64_cortex-a53/` | 上游 v3.0.2 预编译 apk（aarch64_cortex-a53，仅作历史参考） |
+
+上游 Go 后端源码、Python 移植版（`at-webserver.py` + `files-py/`）已在 v2.4.0 移除：
+Go 版在 ImmortalWrt 6.18 内核存在串口空闲读被误判 EOF 的兼容问题且缺 UBUS transport；
+Python 版由 Rust 重写接替。重写背景与行为对齐说明见仓库根 `CHANGELOG.md`。
 
 ## 与上游的差异
 
-1. 移除了上游 `.github/`（CI 工作流）与 `config.js.backup` 垃圾文件，其余源码原样保留。
-2. 新增 `at-webserver.py`：在不改变 WebSocket 协议的前提下，用 Python 复刻 Go 后端全部行为
-   （命令收发/URC 分发/短信 PDU 解码/定时锁频/全网扫频/通知推送）。
-   - 背景：Go 版二进制在 ImmortalWrt 6.18 内核（n_tty 重构）上串口空闲读返回 0 字节，
-     被误判为连接中断进入重连死循环；pyserial 的串口姿势在同一内核上经实机验证可靠。
-   - 依赖：`python3-pyserial`、`python3-websockets`（OpenWrt/ImmortalWrt 官方源可装）。
+1. 移除了上游 `.github/`（CI 工作流）与 `config.js.backup` 垃圾文件；v2.4.0 起进一步
+   移除上游 Go 后端源码与 vendor 目录。
+2. **v2.4.0：AT 后端 Rust 重写**（`at-webserver` 4.0，std-only 单二进制，argv[0] 分发）：
+   以 `at-webserver` 运行是 WebSocket daemon（复刻 Python 版全部行为：命令收发/URC 分发/
+   短信通知/定时锁频/全网扫频）；经 `/usr/sbin/mt5700m-at` symlink 调用则进入 LuCI shell
+   后端模式（stdout/退出码契约与原 shell 逐条对齐）。零第三方 crate，firmware 友好。
 
 ## 连接模式：UBUS / SERIAL / NETWORK
 
-Python 后端支持三种 AT 通道，`connection_type` 在 `/etc/config/at-webserver` 中配置：
+后端支持三种 AT 通道，`connection_type` 在 `/etc/config/at-webserver` 中配置：
 
 | 模式 | 通道 | 主动上报（URC） | 与 luci-app-mt5700m 共存 | 适用 |
 | --- | --- | --- | --- | --- |
@@ -68,8 +72,11 @@ apk add --allow-untrusted ./at-webserver-3.0.2-r1_aarch64_cortex-a53.apk
   - `/usr/bin/at-webserver.py` + `files-py/etc/init.d/at-webserver`
   - `uci set at-webserver.config.connection_type='SERIAL'`、`serial_port='auto'`
   - 需停用 `ubus-at-daemon`（Python 后端以 SERIAL 模式独占 AT 口，与其互斥）
-- v2.3.41 起：前端与 Python 后端由 `scripts/build-release.sh` 折叠进 `luci-app-mt5700m` 包，
+- v2.3.41 起：前端与后端由 `scripts/build-release.sh` 折叠进 `luci-app-mt5700m` 包，
   单个安装包即包含前端 + 后端 + LuCI 管理页；旧 umi 前端与旧 Python 服务已从仓库移除。
+- v2.4.0 起：AT 后端替换为 **Rust 重写版**（`at-webserver` 4.0，UBUS 默认 + SERIAL/NETWORK
+  可选），构建时以 `aarch64-unknown-linux-musl` 目标交叉编译（rust-lld 自包含链接），
+  前端与 Rust 二进制折叠进 `luci-app-mt5700m` 包；Python/Go 后端不再随包分发。
 - v2.3.42 起：Python 后端新增 **UBUS 连接模式并设为默认**。
   背景：SERIAL 模式下后端独占 PCUI 串口，与 `luci-app-mt5700m` 的 `mt5700m-at`
   （走 `ubus call at-daemon`）互斥，导致 LuCI 管理页加载失败。
