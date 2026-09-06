@@ -770,78 +770,98 @@ fn lte_bandwidth(code: i64) -> f64 {
     }
 }
 
+/// Running counters shared by the carrier-aggregation parsers.
+#[derive(Default)]
+struct CaTotals {
+    count: usize,
+    nr_count: usize,
+    lte_count: usize,
+    dl_total: f64,
+    ul_total: f64,
+}
+
+/// Parse one `^HFREQINFO:` line into a `carrier_N=` record.
+///
+/// Real modem example (len=9 fields):
+///   `^HFREQINFO: 0,7,41,513000,2565000,100000,513000,2565000,100000`
+/// The 2.4.1/2.4.2 build had `let num = |k| field[i + k]` while callers passed
+/// ABSOLUTE indices (`num(i + 5)` -> `field[i + i + 5]`) — with i=2 the first
+/// out-of-range access was `field[9]` on a 9-element vector, panicking the
+/// whole `status` invocation ("len is 9 but the index is 9") and blanking the
+/// LuCI carrier panel. `k` is therefore an ABSOLUTE index here.
+fn append_hfreqinfo_line(out: &mut String, line: &str, t: &mut CaTotals) {
+    let Some(rest) = line.strip_prefix("^HFREQINFO:") else {
+        return;
+    };
+    let clean: String = rest
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '\r' | '"'))
+        .collect();
+    let field: Vec<&str> = clean.split(',').collect();
+    if field.len() < 2 {
+        return;
+    }
+    let (radio, divisor, limit) = match field[1] {
+        "7" => ("NR", 1000.0f64, 4usize),
+        "6" => ("LTE", 10.0f64, 1usize),
+        _ => return,
+    };
+    let mut parsed = 0usize;
+    let mut i = 2usize;
+    while i + 6 < field.len() && parsed < limit {
+        let ok = (0..7).all(|k| {
+            field[i + k]
+                .bytes()
+                .all(|b| b.is_ascii_digit())
+                && !field[i + k].is_empty()
+        });
+        if !ok {
+            i += 7;
+            continue;
+        }
+        let num = |k: usize| field[k].parse::<f64>().unwrap_or(0.0);
+        t.count += 1;
+        parsed += 1;
+        if radio == "NR" {
+            t.nr_count += 1;
+        } else {
+            t.lte_count += 1;
+        }
+        let band = if radio == "NR" {
+            format!("n{}", field[i])
+        } else {
+            format!("B{}", field[i])
+        };
+        let dl_frequency = num(i + 2) / divisor;
+        let ul_frequency = num(i + 5) / divisor;
+        let dl_bandwidth = num(i + 3) / 1000.0;
+        let ul_bandwidth = num(i + 6) / 1000.0;
+        t.dl_total += dl_bandwidth;
+        t.ul_total += ul_bandwidth;
+        let _ = write!(
+            out,
+            "carrier_{}={}|{}|{}|{:.2}|{:.1}|{}|{:.2}|{:.1}\n",
+            t.count, radio, band, field[i + 1], dl_frequency, dl_bandwidth, field[i + 4],
+            ul_frequency, ul_bandwidth
+        );
+        i += 7;
+    }
+}
+
 pub fn print_carrier_aggregation(settings: &Settings) -> String {
     let frequency_raw = at::at_cmd(settings, "AT^HFREQINFO?");
     let lte_ca_raw = at::at_cmd(settings, "AT^CASCELLINFO?");
     let nsa_raw = at::at_cmd(settings, "AT^MONSSC");
 
     let mut out = String::new();
-    let mut count = 0usize;
-    let mut nr_count = 0usize;
-    let mut lte_count = 0usize;
-    let mut lte_scell_count = 0usize;
-    let mut dc = false;
-    let mut dl_total = 0.0f64;
-    let mut ul_total = 0.0f64;
+    let mut t = CaTotals::default();
 
     for line in frequency_raw.text.lines() {
-        let Some(rest) = line.strip_prefix("^HFREQINFO:") else {
-            continue;
-        };
-        let clean: String = rest
-            .chars()
-            .filter(|c| !matches!(c, ' ' | '\r' | '"'))
-            .collect();
-        let field: Vec<&str> = clean.split(',').collect();
-        if field.len() < 2 {
-            continue;
-        }
-        let (radio, divisor, limit) = match field[1] {
-            "7" => ("NR", 1000.0f64, 4usize),
-            "6" => ("LTE", 10.0f64, 1usize),
-            _ => continue,
-        };
-        let mut parsed = 0usize;
-        let mut i = 2usize;
-        while i + 6 < field.len() && parsed < limit {
-            let ok = (0..7).all(|k| {
-                field[i + k]
-                    .bytes()
-                    .all(|b| b.is_ascii_digit())
-                    && !field[i + k].is_empty()
-            });
-            if !ok {
-                i += 7;
-                continue;
-            }
-            let num = |k: usize| field[i + k].parse::<f64>().unwrap_or(0.0);
-            count += 1;
-            parsed += 1;
-            if radio == "NR" {
-                nr_count += 1;
-            } else {
-                lte_count += 1;
-            }
-            let band = if radio == "NR" {
-                format!("n{}", field[i])
-            } else {
-                format!("B{}", field[i])
-            };
-            let dl_frequency = num(i + 2) / divisor;
-            let ul_frequency = num(i + 5) / divisor;
-            let dl_bandwidth = num(i + 3) / 1000.0;
-            let ul_bandwidth = num(i + 6) / 1000.0;
-            dl_total += dl_bandwidth;
-            ul_total += ul_bandwidth;
-            let _ = write!(
-                out,
-                "carrier_{}={}|{}|{}|{:.2}|{:.1}|{}|{:.2}|{:.1}\n",
-                count, radio, band, field[i + 1], dl_frequency, dl_bandwidth, field[i + 4],
-                ul_frequency, ul_bandwidth
-            );
-            i += 7;
-        }
+        append_hfreqinfo_line(&mut out, line, &mut t);
     }
+
+    let mut lte_scell_count = 0usize;
+    let mut dc = false;
 
     for line in lte_ca_raw.text.lines() {
         let Some(rest) = line.strip_prefix("^CASCELLINFO:") else {
@@ -860,15 +880,15 @@ pub fn print_carrier_aggregation(settings: &Settings) -> String {
         let Some(nums) = nums else { continue };
         let ul_bandwidth = lte_bandwidth(nums[10]);
         let dl_bandwidth = lte_bandwidth(nums[11]);
-        count += 1;
-        lte_count += 1;
+        t.count += 1;
+        t.lte_count += 1;
         lte_scell_count += 1;
-        dl_total += dl_bandwidth;
-        ul_total += ul_bandwidth;
+        t.dl_total += dl_bandwidth;
+        t.ul_total += ul_bandwidth;
         let _ = write!(
             out,
             "carrier_{}=LTE|B{}|{}|{:.2}|{:.1}|{}|{:.2}|{:.1}\n",
-            count, nums[5], nums[7], nums[9] as f64 / 10.0, dl_bandwidth, nums[6],
+            t.count, nums[5], nums[7], nums[9] as f64 / 10.0, dl_bandwidth, nums[6],
             nums[8] as f64 / 10.0, ul_bandwidth
         );
     }
@@ -881,33 +901,33 @@ pub fn print_carrier_aggregation(settings: &Settings) -> String {
         }
     }
 
-    if count == 0 {
+    if t.count == 0 {
         return out;
     }
-    if nr_count > 0 && lte_count > 0 {
+    if t.nr_count > 0 && t.lte_count > 0 {
         dc = true;
     }
-    let ca = nr_count > 1 || lte_scell_count > 0;
+    let ca = t.nr_count > 1 || lte_scell_count > 0;
     let mode = if dc {
         if ca { "EN-DC + CA" } else { "EN-DC" }
-    } else if nr_count > 0 {
-        if nr_count > 1 { "NR-CA" } else { "NR" }
-    } else if lte_count > 1 {
+    } else if t.nr_count > 0 {
+        if t.nr_count > 1 { "NR-CA" } else { "NR" }
+    } else if t.lte_count > 1 {
         "LTE-CA"
     } else {
         "LTE"
     };
 
-    let _ = writeln!(out, "carrier_count={}", count);
+    let _ = writeln!(out, "carrier_count={}", t.count);
     let _ = writeln!(out, "ca_active={}", ca as i32);
     let _ = writeln!(out, "dc_active={}", dc as i32);
-    let _ = writeln!(out, "nr_carrier_count={}", nr_count);
-    let _ = writeln!(out, "lte_carrier_count={}", lte_count);
+    let _ = writeln!(out, "nr_carrier_count={}", t.nr_count);
+    let _ = writeln!(out, "lte_carrier_count={}", t.lte_count);
     let _ = writeln!(out, "lte_secondary_count={}", lte_scell_count);
     let _ = writeln!(out, "secondary_connection_count={}", secondary_count);
     let _ = writeln!(out, "ca_mode={}", mode);
-    let _ = writeln!(out, "ca_dl_bandwidth={:.1}", dl_total);
-    let _ = writeln!(out, "ca_ul_bandwidth={:.1}", ul_total);
+    let _ = writeln!(out, "ca_dl_bandwidth={:.1}", t.dl_total);
+    let _ = writeln!(out, "ca_ul_bandwidth={:.1}", t.ul_total);
     out
 }
 
@@ -2015,6 +2035,56 @@ pub fn run(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hfreqinfo_real_nr_carrier() {
+        // Regression: the 2.4.1/2.4.2 num closure indexed field[i + (i + k)],
+        // panicking on this exact 9-field line from the modem
+        // ("index out of bounds: the len is 9 but the index is 9").
+        let mut out = String::new();
+        let mut t = CaTotals::default();
+        append_hfreqinfo_line(
+            &mut out,
+            "^HFREQINFO: 0,7,41,513000,2565000,100000,513000,2565000,100000",
+            &mut t,
+        );
+        assert_eq!(
+            out,
+            "carrier_1=NR|n41|513000|2565.00|100.0|513000|2565.00|100.0\n"
+        );
+        assert_eq!(t.count, 1);
+        assert_eq!(t.nr_count, 1);
+        assert!((t.dl_total - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn hfreqinfo_non_numeric_group_skipped() {
+        let mut out = String::new();
+        let mut t = CaTotals::default();
+        append_hfreqinfo_line(
+            &mut out,
+            "^HFREQINFO: 0,7,n41,513000,2565000,100000,513000,2565000,100000",
+            &mut t,
+        );
+        assert_eq!(out, "");
+        assert_eq!(t.count, 0);
+    }
+
+    #[test]
+    fn hfreqinfo_lte_single_carrier() {
+        let mut out = String::new();
+        let mut t = CaTotals::default();
+        append_hfreqinfo_line(
+            &mut out,
+            "^HFREQINFO: 0,6,3,1650,18400,20000,1850,17450,20000",
+            &mut t,
+        );
+        assert_eq!(
+            out,
+            "carrier_1=LTE|B3|1650|1840.00|20.0|1850|1745.00|20.0\n"
+        );
+        assert_eq!(t.lte_count, 1);
+    }
 
     #[test]
     fn lte_lock_contract() {

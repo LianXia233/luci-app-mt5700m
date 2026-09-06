@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.4.3] - 2026-09-06
+
+### Fixed
+- **修复 `status` 在 NR 单载波实机上 panic（LuCI 载波面板不显示）**：`AT^HFREQINFO?` 解析的 `num` 闭包写成了 `field[i + k]`（k 为相对偏移），而调用方传的是绝对索引 `num(i + 5)` 等，索引被加了两次——模组实答 `^HFREQINFO: 0,7,41,513000,2565000,100000,513000,2565000,100000`（9 个字段）时访问 `field[9]` 越界，`thread 'main' panicked ... len is 9 but the index is 9`，整个 status 子命令中断，载波段及其后输出全部丢失。修正为绝对索引 `field[k]`；解析逻辑提取为纯函数 `append_hfreqinfo_line` 并新增 3 个用真实模组应答的回归测试（NR 单载波/非数字组跳过/LTE 单载波），26/26 通过。实机验证：`status` 输出 `carrier_1=NR|n41|513000|2565.00|100.0|513000|2565.00|100.0`，ca_mode=NR、CA 带宽 100MHz，不再 panic。
+
 ## [2.4.2] - 2026-09-06
 
 ### Fixed
