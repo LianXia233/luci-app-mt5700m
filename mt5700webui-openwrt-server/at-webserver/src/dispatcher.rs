@@ -159,12 +159,12 @@ impl Dispatcher {
                 .map(|s| s.trim().trim_matches(|c| c == '"' || c == ' '))
                 .unwrap_or("");
             if !index.is_empty() {
+                // Payload is a plain field map; the WS broadcast layer adds
+                // the {"type","data"} envelope (Python parity).
                 let mut data = std::collections::BTreeMap::new();
                 data.insert("storage".to_string(), json::str_val(&storage));
                 data.insert("index".to_string(), json::str_val(index));
-                let mut m = std::collections::BTreeMap::new();
-                m.insert("data".to_string(), Value::Obj(data));
-                events.push(("new_sms", Value::Obj(m)));
+                events.push(("new_sms", Value::Obj(data)));
             }
             return events;
         }
@@ -197,10 +197,10 @@ impl Dispatcher {
         }
 
         // ---- passthrough ----
+        // raw_data payload must be a plain string (the frontend checks
+        // `typeof data == "string"` before dispatching it).
         if passthrough(t) {
-            let mut m = std::collections::BTreeMap::new();
-            m.insert("data".to_string(), json::str_val(t));
-            events.push(("raw_data", Value::Obj(m)));
+            events.push(("raw_data", json::str_val(t)));
         }
         events
     }

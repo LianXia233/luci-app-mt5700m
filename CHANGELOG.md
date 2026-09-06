@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.4.5] - 2026-09-06
+
+### Fixed
+- **修复 WS 事件广播信封格式（实机 PDCP 联调发现，自 2.4.0 起所有推送事件均不可被前端消费）**：Rust `broadcast()` 把事件对象平铺到消息顶层（`{"type":"pdcp_data","ulPdcpRate":...}`），而 Python 后端契约与前端消费路径统一为嵌套信封 `{"type":...,"data":{...}}`（`msg.data.xxx`；`raw_data` 还要求 `typeof data == "string"`）。平铺导致 `data` 为 undefined：PDCP 速率面板收不到字段、来电提醒（`t.data.number/time/state`）与短信通知（`t.data.sender/content/time`）条件永不满足、`raw_data` 类型检查失败。现统一按 Python `ws.broadcast(type, data)` 包一层 `data`；dispatcher 侧 `new_sms`/`raw_data` 的事件负载去掉多余内层包装（`raw_data` 负载改为纯字符串）。实机 WS 端到端验证：采样开关 ON 后 `pdcp_data` 事件按 750ms 到达且字段有值，OFF 后 3s 内零事件。回归测试 33/33（新增信封嵌套断言）。
+- 注：2.4.4 的 PDCP 轮询模拟本身工作正常（事件节奏、开关启停均正确），仅信封格式错误；2.4.4 已发布但建议直接跳过安装。
+
 ## [2.4.4] - 2026-09-06
 
 ### Fixed

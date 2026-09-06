@@ -258,13 +258,13 @@ impl AtClient {
 // ---------------------------------------------------------------- Broadcast
 
 fn broadcast(peers: &Arc<Mutex<Vec<Arc<ClientConn>>>>, msg_type: &str, data: &Value) {
+    // Protocol-compatible with the Python backend's `ws.broadcast(type,
+    // data)`: the payload rides in a nested "data" field. The frontend
+    // consumes `msg.data.xxx` (and expects `typeof data == "string"` for
+    // raw_data), so a top-level merge would break every event consumer.
     let mut merged = std::collections::BTreeMap::new();
     merged.insert("type".to_string(), json::str_val(msg_type));
-    if let Value::Obj(m) = data {
-        for (k, v) in m {
-            merged.insert(k.clone(), v.clone());
-        }
-    }
+    merged.insert("data".to_string(), data.clone());
     let msg = Value::Obj(merged).dump();
     let mut list = peers.lock().unwrap();
     list.retain(|p| p.try_send(&msg));
@@ -886,5 +886,26 @@ mod tests {
         assert!(dump.contains("\"ulPdcpRate\":512"));
         assert!(dump.contains("\"dlPdcpRate\":1024"));
         assert!(dump.contains("\"highPriQueMaxBuffTime\":3"));
+    }
+
+    #[test]
+    fn broadcast_envelope_is_nested_data() {
+        // The frontend consumes msg.data.xxx (Python ws.broadcast parity);
+        // a top-level merge would break every event consumer.
+        let data = crate::dispatcher::handle_pdcp(
+            "^PDCPDATAINFO: 1,5,65535,0,0,0,0,0,0,0,0,512,0,0,1,2",
+        )
+        .unwrap();
+        let mut merged = std::collections::BTreeMap::new();
+        merged.insert("type".to_string(), json::str_val("pdcp_data"));
+        merged.insert("data".to_string(), data);
+        let msg = Value::Obj(merged).dump();
+        let ev: Value = json::parse(&msg).unwrap();
+        assert_eq!(ev.get("type").and_then(|v| v.as_str()), Some("pdcp_data"));
+        let inner = ev.get("data").expect("nested data object");
+        assert!(inner
+            .get("ulPdcpRate")
+            .and_then(|v| v.as_u64())
+            .is_some());
     }
 }
