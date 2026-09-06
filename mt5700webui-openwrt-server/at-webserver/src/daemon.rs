@@ -450,6 +450,134 @@ fn sched_json() -> String {
     Value::Obj(map).dump()
 }
 
+// ---------------------------------------------------------------- PDCP rate simulation (UBUS mode)
+
+/// Sampling interval bounds for the poll simulation. The frontend asks for
+/// 750 ms by default (`AT^PDCPDATAINFO=1[,ms]`); clamped to protect the
+/// shared ubus AT channel.
+const PDCP_MIN_INTERVAL_MS: u64 = 250;
+const PDCP_MAX_INTERVAL_MS: u64 = 5000;
+const PDCP_DEFAULT_INTERVAL_MS: u64 = 750;
+
+enum PdcpCmd {
+    Start(u64),
+    Stop,
+}
+
+/// Recognize the sampling switch the frontend sends over the WebSocket.
+/// `AT^PDCPDATAINFO=1[,ms]` starts (defaults to 750 ms), `=0` stops.
+/// Anything else falls through to the modem unchanged.
+fn parse_pdcp_command(command: &str) -> Option<PdcpCmd> {
+    const PREFIX: &str = "AT^PDCPDATAINFO=";
+    let rest = command.trim().strip_prefix(PREFIX)?;
+    if rest == "0" {
+        return Some(PdcpCmd::Stop);
+    }
+    let mut it = rest.split(',');
+    if it.next()? != "1" {
+        return None;
+    }
+    let interval = match it.next() {
+        Some(v) if !v.is_empty() => v.parse::<u64>().ok()?,
+        _ => PDCP_DEFAULT_INTERVAL_MS,
+    };
+    Some(PdcpCmd::Start(interval.clamp(
+        PDCP_MIN_INTERVAL_MS,
+        PDCP_MAX_INTERVAL_MS,
+    )))
+}
+
+/// Shared sampling switch between the WebSocket command handler and the
+/// poller thread. Std-only condvar, same style as `ClientConn`.
+struct PdcpState {
+    inner: Mutex<(bool, u64)>, // (running, interval_ms)
+    cond: Condvar,
+}
+
+impl PdcpState {
+    fn new() -> Arc<Self> {
+        Arc::new(PdcpState {
+            inner: Mutex::new((false, PDCP_DEFAULT_INTERVAL_MS)),
+            cond: Condvar::new(),
+        })
+    }
+
+    fn start(&self, interval_ms: u64) {
+        let mut g = self.inner.lock().unwrap();
+        *g = (true, interval_ms);
+        self.cond.notify_all();
+    }
+
+    fn stop(&self) {
+        let mut g = self.inner.lock().unwrap();
+        g.0 = false;
+        self.cond.notify_all();
+    }
+
+    /// Snapshot the switch, sleeping one interval (or 1 s while stopped)
+    /// unless it changes in the meantime.
+    fn wait_tick(&self, running: bool, interval_ms: u64) -> (bool, u64) {
+        let sleep = if running {
+            Duration::from_millis(interval_ms)
+        } else {
+            Duration::from_secs(1)
+        };
+        let (guard, _) = self
+            .cond
+            .wait_timeout_while(
+                self.inner.lock().unwrap(),
+                sleep,
+                |s| s.0 == running && s.1 == interval_ms,
+            )
+            .unwrap();
+        *guard
+    }
+}
+
+/// Poll `AT^PDCPDATAINFO?` while the frontend sampling switch is on and
+/// broadcast each result as the same `pdcp_data` event the URC stream path
+/// produces. UBUS is request/response only, so this stands in for the
+/// modem's `AT^PDCPDATAINFO=1` push — the push itself is deliberately NOT
+/// enabled on the modem, keeping URC noise out of the shared serial port.
+fn spawn_pdcp_poller(
+    client: Arc<AtClient>,
+    peers: Arc<Mutex<Vec<Arc<ClientConn>>>>,
+    state: Arc<PdcpState>,
+) {
+    thread::spawn(move || {
+        let mut running = false;
+        let mut interval_ms = PDCP_DEFAULT_INTERVAL_MS;
+        loop {
+            let (run, iv) = state.wait_tick(running, interval_ms);
+            running = run;
+            interval_ms = iv;
+            if !running {
+                continue;
+            }
+            // Nobody is listening: skip the modem round-trip until a
+            // client reconnects and re-arms the switch.
+            if peers.lock().unwrap().is_empty() {
+                continue;
+            }
+            let text = match client.send("AT^PDCPDATAINFO?", 3) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            let line = match text
+                .lines()
+                .map(str::trim)
+                .find(|l| l.starts_with("^PDCPDATAINFO:"))
+            {
+                Some(l) => l,
+                None => continue,
+            };
+            if let Some(data) = crate::dispatcher::handle_pdcp(line) {
+                broadcast(&peers, "pdcp_data", &data);
+            }
+        }
+    });
+}
+
 // ---------------------------------------------------------------- Client connections
 
 pub struct ClientConn {
@@ -570,12 +698,20 @@ pub fn run(args: &[String]) -> i32 {
         scheduler::spawn(client.clone(), Arc::new(AtomicBool::new(false)));
     }
 
+    // UBUS mode has no URC stream: emulate the PDCP rate push with a
+    // poller driven by the frontend sampling switch.
+    let pdcp = PdcpState::new();
+    if client.describe() == "UBUS" {
+        spawn_pdcp_poller(client.clone(), peers.clone(), pdcp.clone());
+    }
+
     for incoming in listener.incoming() {
         let Ok(mut stream) = incoming else { continue };
         let _ = stream.set_nodelay(true);
         let client = client.clone();
         let scan = scan.clone();
         let peers = peers.clone();
+        let pdcp = pdcp.clone();
         thread::spawn(move || {
             if ws::handshake(&mut stream).is_err() {
                 return;
@@ -628,7 +764,7 @@ pub fn run(args: &[String]) -> i32 {
                                 }
                                 continue;
                             }
-                            let response = run_command(&client, &scan, &peers, &command);
+                            let response = run_command(&client, &scan, &peers, &pdcp, &command);
                             if !conn.try_send(&response.dump()) {
                                 break;
                             }
@@ -655,11 +791,27 @@ fn run_command(
     client: &Arc<AtClient>,
     scan: &Arc<ScanState>,
     peers: &Arc<Mutex<Vec<Arc<ClientConn>>>>,
+    pdcp: &Arc<PdcpState>,
     command: &str,
 ) -> Value {
     if command.trim() == "AT+CONNECT?" {
         let kind = if client.describe() == "SERIAL" { "1" } else { "0" };
         return ok_response(&format!("+CONNECT: {}\r\nOK", kind));
+    }
+    // UBUS mode: the sampling switch drives the local poller instead of the
+    // modem push (which the shared serial transport could not deliver).
+    if client.describe() == "UBUS" {
+        match parse_pdcp_command(command) {
+            Some(PdcpCmd::Stop) => {
+                pdcp.stop();
+                return ok_response("");
+            }
+            Some(PdcpCmd::Start(ms)) => {
+                pdcp.start(ms);
+                return ok_response("");
+            }
+            None => {}
+        }
     }
     if let Some(resp) = handle_schedule_command(command) {
         return resp;
@@ -680,5 +832,59 @@ fn run_command(
             }
         }
         Err(e) => err_response(&e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pdcp_switch_on_variants() {
+        match parse_pdcp_command("AT^PDCPDATAINFO=1,750") {
+            Some(PdcpCmd::Start(ms)) => assert_eq!(ms, 750),
+            _ => panic!("start with interval"),
+        }
+        match parse_pdcp_command("AT^PDCPDATAINFO=1") {
+            Some(PdcpCmd::Start(ms)) => assert_eq!(ms, PDCP_DEFAULT_INTERVAL_MS),
+            _ => panic!("start default"),
+        }
+        // interval clamped into [250, 5000]
+        match parse_pdcp_command("AT^PDCPDATAINFO=1,50") {
+            Some(PdcpCmd::Start(ms)) => assert_eq!(ms, PDCP_MIN_INTERVAL_MS),
+            _ => panic!("interval clamped low"),
+        }
+        match parse_pdcp_command("AT^PDCPDATAINFO=1,99999") {
+            Some(PdcpCmd::Start(ms)) => assert_eq!(ms, PDCP_MAX_INTERVAL_MS),
+            _ => panic!("interval clamped high"),
+        }
+    }
+
+    #[test]
+    fn pdcp_switch_off_and_fallthrough() {
+        assert!(matches!(
+            parse_pdcp_command("AT^PDCPDATAINFO=0"),
+            Some(PdcpCmd::Stop)
+        ));
+        // unrelated commands pass through to the modem
+        assert!(parse_pdcp_command("AT^PDCPDATAINFO?").is_none());
+        assert!(parse_pdcp_command("AT^PDCPDATAINFO=2").is_none());
+        assert!(parse_pdcp_command("AT+CGMR").is_none());
+    }
+
+    #[test]
+    fn pdcp_poller_parses_ubus_response_text() {
+        // Shape of what client.send returns in UBUS mode.
+        let text = "\r\n^PDCPDATAINFO: 1,5,65535,0,0,0,30,0,792,0,512,1024,0,0,571749518,571748729\r\nOK\r\n";
+        let line = text
+            .lines()
+            .map(str::trim)
+            .find(|l| l.starts_with("^PDCPDATAINFO:"))
+            .expect("line found");
+        let data = crate::dispatcher::handle_pdcp(line).expect("parsed");
+        let dump = data.dump();
+        assert!(dump.contains("\"ulPdcpRate\":512"));
+        assert!(dump.contains("\"dlPdcpRate\":1024"));
+        assert!(dump.contains("\"highPriQueMaxBuffTime\":3"));
     }
 }

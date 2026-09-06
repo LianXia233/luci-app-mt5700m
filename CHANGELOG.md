@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.4] - 2026-09-06
+
+### Fixed
+- **修复 WebUI network/info 网络速率面板恒为 0 / "等待速率上报…无数据"**。根因：速率图依赖 `^PDCPDATAINFO:` URC 推送，而默认 UBUS 连接模式下 `ubus-at-daemon` 只有请求/响应通道（`open`/`sendat`/`list`/`close`），URC 永远到不了 WebUI daemon——这是上游 Python 版就写明文档的已知限制，速率面板从未在 UBUS 模式工作过。修复分两层：
+  - **UBUS 模式轮询模拟**：daemon 拦截前端的采样开关命令 `AT^PDCPDATAINFO=1[,间隔ms]`（默认 750ms，钳位 250-5000ms）与 `AT^PDCPDATAINFO=0`，不起用模组推送（避免污染共享 PCUI 串口的应答流），改为按间隔轮询 `AT^PDCPDATAINFO?` 并以与 URC 流完全一致的 `{"type":"pdcp_data","data":{...}}` 事件广播；无 WS 客户端时暂停查询。其余命令不受影响，SERIAL/NETWORK 模式不经过此路径（走原生 URC 推送）。
+  - **补回 dispatcher 缺失的 PDCP 解析**：Rust 移植时丢失了 Python `Dispatcher.handle_pdcp`，`^PDCPDATAINFO:` 在 URC 流（SERIAL/NETWORK 模式）中同样被丢弃。现按 Python `PDCP_FIELDS` 表解析 14 个统计字段（`avgDelay` 等 5 个字段按十分位换算），16 字段查询响应（末尾 2 个累计字节计数）只取前 14。实机验证：`AT^PDCPDATAINFO?` 经 ubus 返回 16 字段、66ms；测试 32/32 通过（新增 6 个：字段映射/短行拒绝/事件类型/开关解析钳位/UBUS 应答文本解析）。
+
 ## [2.4.3] - 2026-09-06
 
 ### Fixed

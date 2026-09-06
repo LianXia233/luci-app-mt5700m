@@ -9,6 +9,48 @@ use std::time::Instant;
 const CALL_DEDUP_WINDOW_SECS: u64 = 30;
 const SIGNAL_CHANGE_THRESHOLD: f64 = 1.0;
 
+/// Field map of `^PDCPDATAINFO:`, port of the Python `PDCP_FIELDS` table.
+/// The bool flag marks "report in tenths" (value / 10). Query responses
+/// (`AT^PDCPDATAINFO?`) append two extra cumulative byte counters after
+/// these 14 fields; they are ignored here (the frontend regex captures
+/// them in an optional group for its own delta math).
+const PDCP_FIELDS: [(&str, bool); 14] = [
+    ("id", false),
+    ("pduSessionId", false),
+    ("discardTimerLen", false),
+    ("avgDelay", true),
+    ("minDelay", true),
+    ("maxDelay", true),
+    ("highPriQueMaxBuffTime", true),
+    ("lowPriQueMaxBuffTime", true),
+    ("highPriQueBuffPktNums", false),
+    ("lowPriQueBuffPktNums", false),
+    ("ulPdcpRate", false),
+    ("dlPdcpRate", false),
+    ("ulDiscardCnt", false),
+    ("dlDiscardCnt", false),
+];
+
+/// Parse one `^PDCPDATAINFO:` line into the `pdcp_data` payload. Shared by
+/// the URC stream path (SERIAL/NETWORK) and the UBUS-mode poll simulation.
+pub fn handle_pdcp(line: &str) -> Option<Value> {
+    let body = line.strip_prefix("^PDCPDATAINFO:")?.trim();
+    let parts: Vec<&str> = body.split(',').map(|p| p.trim()).collect();
+    if parts.len() < PDCP_FIELDS.len() {
+        return None;
+    }
+    let mut m = std::collections::BTreeMap::new();
+    for (i, (name, tenth)) in PDCP_FIELDS.iter().enumerate() {
+        let v: f64 = parts[i].parse().ok()?;
+        if *tenth {
+            m.insert(name.to_string(), json::num_val(v / 10.0));
+        } else {
+            m.insert(name.to_string(), json::num_val(v as u64));
+        }
+    }
+    Some(Value::Obj(m))
+}
+
 pub struct Dispatcher {
     last_call_number: String,
     last_call_at: Option<Instant>,
@@ -142,6 +184,14 @@ impl Dispatcher {
         if t.starts_with("^HCSQ:") {
             if let Some(ev) = self.handle_hcsq(t) {
                 events.push(("signal", ev));
+            }
+            return events;
+        }
+
+        // ---- PDCP stats ----
+        if t.starts_with("^PDCPDATAINFO:") {
+            if let Some(ev) = handle_pdcp(t) {
+                events.push(("pdcp_data", ev));
             }
             return events;
         }
@@ -303,5 +353,44 @@ mod tests {
         assert!(passthrough("+CUSD: 0,\"...\",15"));
         assert!(!passthrough("+CUSD: 0"));
         assert!(!passthrough("OK"));
+    }
+
+    #[test]
+    fn pdcp_line_parses_all_fields() {
+        // Real modem URC/URC-query line (16 fields: 14 stats + 2 cumulative
+        // byte counters that the frontend regex captures optionally).
+        let ev = handle_pdcp("^PDCPDATAINFO: 1,5,65535,0,0,0,70,50,2380,168,512,1024,3,9,571749518,571748729")
+            .expect("parses");
+        let dump = ev.dump();
+        assert!(dump.contains("\"id\":1"));
+        assert!(dump.contains("\"pduSessionId\":5"));
+        assert!(dump.contains("\"discardTimerLen\":65535"));
+        assert!(dump.contains("\"avgDelay\":0"));
+        assert!(dump.contains("\"highPriQueMaxBuffTime\":7")); // 70 tenths
+        assert!(dump.contains("\"lowPriQueMaxBuffTime\":5")); // 50 tenths
+        assert!(dump.contains("\"highPriQueBuffPktNums\":2380"));
+        assert!(dump.contains("\"lowPriQueBuffPktNums\":168"));
+        assert!(dump.contains("\"ulPdcpRate\":512"));
+        assert!(dump.contains("\"dlPdcpRate\":1024"));
+        assert!(dump.contains("\"ulDiscardCnt\":3"));
+        assert!(dump.contains("\"dlDiscardCnt\":9"));
+        // extra cumulative byte counters must not leak into the payload
+        assert!(!dump.contains("571749518"));
+    }
+
+    #[test]
+    fn pdcp_short_line_rejected() {
+        assert!(handle_pdcp("^PDCPDATAINFO: 1,5").is_none());
+        assert!(handle_pdcp("^HCSQ: \"LTE\",60,50,20,30").is_none());
+    }
+
+    #[test]
+    fn pdcp_dispatch_event_type() {
+        let mut d = Dispatcher::new();
+        let ev = d.handle_line(
+            "^PDCPDATAINFO: 1,5,65535,0,0,0,0,0,0,0,0,0,0,0,562533856,562533859",
+        );
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0].0, "pdcp_data");
     }
 }
