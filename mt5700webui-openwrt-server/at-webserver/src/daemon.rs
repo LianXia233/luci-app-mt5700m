@@ -489,16 +489,57 @@ fn parse_pdcp_command(command: &str) -> Option<PdcpCmd> {
 
 /// Shared sampling switch between the WebSocket command handler and the
 /// poller thread. Std-only condvar, same style as `ClientConn`.
+///
+/// The poller also keeps the previous WAN byte counters here: the modem
+/// does not compute rates for `AT^PDCPDATAINFO?` queries (only the URC
+/// push carries them, and that never reaches the daemon over UBUS), so
+/// the daemon derives ulPdcpRate/dlPdcpRate from the default-route
+/// interface's rx/tx deltas instead.
 struct PdcpState {
     inner: Mutex<(bool, u64)>, // (running, interval_ms)
     cond: Condvar,
+    last_wan: Mutex<Option<(u64, u64, std::time::Instant)>>, // (rx, tx, at)
 }
+
+/// Default-route interface from /proc/net/route (Linux-only by design;
+/// the daemon runs on OpenWrt).
+fn default_wan_iface() -> Option<String> {
+    let s = std::fs::read_to_string("/proc/net/route").ok()?;
+    for line in s.lines().skip(1) {
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() > 1 && f[1] == "00000000" {
+            return Some(f[0].to_string());
+        }
+    }
+    None
+}
+
+/// (rx_bytes, tx_bytes) of the default-route interface.
+fn wan_counters() -> Option<(u64, u64)> {
+    let iface = default_wan_iface()?;
+    let read = |sub: &str| -> Option<u64> {
+        std::fs::read_to_string(format!(
+            "/sys/class/net/{}/statistics/{}",
+            iface, sub
+        ))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+    };
+    Some((read("rx_bytes")?, read("tx_bytes")?))
+}
+
+/// Max delta window for a trusted rate: past this (device asleep, clients
+/// away, counters reset) the sample only refreshes the baseline.
+const PDCP_MAX_RATE_WINDOW_SECS: f64 = 5.0;
 
 impl PdcpState {
     fn new() -> Arc<Self> {
         Arc::new(PdcpState {
             inner: Mutex::new((false, PDCP_DEFAULT_INTERVAL_MS)),
             cond: Condvar::new(),
+            last_wan: Mutex::new(None),
         })
     }
 
@@ -571,9 +612,34 @@ fn spawn_pdcp_poller(
                 Some(l) => l,
                 None => continue,
             };
-            if let Some(data) = crate::dispatcher::handle_pdcp(line) {
-                broadcast(&peers, "pdcp_data", &data);
+            let Some(mut data) = crate::dispatcher::handle_pdcp(line) else {
+                continue;
+            };
+            // The modem never rates a query response, so derive
+            // ulPdcpRate/dlPdcpRate (bytes/s, the unit the frontend
+            // converts with *8/1e6) from WAN interface byte deltas.
+            if let Some((rx, tx)) = wan_counters() {
+                let now = std::time::Instant::now();
+                let mut last = state.last_wan.lock().unwrap();
+                let mut rates: Option<(u64, u64)> = None;
+                if let Some((lrx, ltx, lat)) = *last {
+                    let dt = now.duration_since(lat).as_secs_f64();
+                    if (0.2..=PDCP_MAX_RATE_WINDOW_SECS).contains(&dt) {
+                        let dl = (rx.saturating_sub(lrx) as f64 / dt).round() as u64;
+                        let ul = (tx.saturating_sub(ltx) as f64 / dt).round() as u64;
+                        rates = Some((dl, ul));
+                    }
+                }
+                *last = Some((rx, tx, now));
+                drop(last);
+                if let Some((dl, ul)) = rates {
+                    if let Value::Obj(ref mut m) = data {
+                        m.insert("dlPdcpRate".to_string(), json::num_val(dl));
+                        m.insert("ulPdcpRate".to_string(), json::num_val(ul));
+                    }
+                }
             }
+            broadcast(&peers, "pdcp_data", &data);
         }
     });
 }
