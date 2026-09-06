@@ -118,28 +118,34 @@ make package/luci-app-mt5700m/compile V=s
 - 升级自早期独立流量插件时会自动迁移已有记录
 - 不再安装或显示单独的“流量统计”应用
 
-## WebUI 前端（mt5700webui 3.0.2）
+## WebUI 前端（mt5700webui 4.0）
 
-[`mt5700webui-openwrt-server/`](mt5700webui-openwrt-server/VENDOR.md) 归档了上游 [inotdream/mt5700webui-openwrt-server](https://github.com/inotdream/mt5700webui-openwrt-server) v3.0.2 的完整源码与 aarch64_cortex-a53 预编译包，作为本应用的 WebUI（React + Semi Design，访问 `http://<路由器地址>/5700/`）。
+[`mt5700webui-openwrt-server/`](mt5700webui-openwrt-server/VENDOR.md) 归档了上游 [inotdream/mt5700webui-openwrt-server](https://github.com/inotdream/mt5700webui-openwrt-server) v3.0.2 的 WebUI 前端（React + Semi Design，访问 `http://<路由器地址>/5700/`）。
 
-- 上游 Go 后端（`at-webserver`）通过 WebSocket 直连模组 AT 口，与本应用的 LuCI 管理页互补
-- 本仓库在归档基础上新增了 **Go 后端的 Python 移植版** `at-webserver.py`（pyserial + websockets，单文件）：
-  Go 版二进制在 ImmortalWrt 6.18 内核（n_tty 重构）上存在串口空闲读被误判 EOF 的兼容问题，
-  Python 版在同一内核上实机验证稳定，协议与 Go 版完全一致
-- **v2.3.41 起旧的 umi 前端与 `at-server.py` 已从仓库移除**，构建时由
-  `scripts/build-release.sh` 把 3.0.2 前端（`www/5700`）与 Python 后端折叠进
-  `luci-app-mt5700m` 包，单个安装包即包含前端 + 后端 + LuCI 管理页
-- **v2.3.42 起后端默认走 UBUS**（经 `ubus-at-daemon` 转发 AT 命令），与 LuCI 管理页
-  共享同一个 AT 口：WebUI 与模组管理功能可同时使用，不会争抢 PCUI 串口。
-  代价是无主动上报通道（来电/新短信实时推送不可用），需要时可在
-  `/etc/config/at-webserver` 切 `connection_type='SERIAL'` 并停用 `ubus-at-daemon`
+- **v2.4.0 起 AT 后端为 Rust 重写版**（`at-webserver` 4.0，`mt5700webui-openwrt-server/at-webserver/src/`）：
+  std-only 零第三方依赖的单静态二进制，同时服务两个前端——
+  以 `at-webserver` 运行是 WebSocket daemon（WebUI 后端），经
+  `/usr/sbin/mt5700m-at` symlink 调用则进入 LuCI shell 后端模式（argv[0] 分发，
+  输出契约与原 shell 脚本逐条对齐，LuCI 前端零改动）
+- 取代了此前的三套实现：shell 版 `mt5700m-at`（1659 行）、Python 版
+  `at-webserver.py`（2108 行）与上游 Go 版 `at-webserver`（Go 版在 ImmortalWrt 6.18
+  内核上存在串口空闲读被误判 EOF 的兼容问题，且缺 UBUS transport）
+- **默认走 UBUS**（经 `ubus-at-daemon` 转发 AT 命令），与 LuCI 管理页共享同一个
+  AT 口：WebUI 与模组管理功能可同时使用，不会争抢 PCUI 串口。
+  UBUS 模式无主动上报通道（来电/新短信实时推送不可用）；SERIAL/NETWORK 模式
+  支持 URC 推送（来电、新短信、存储满、信号变化）与昼夜定时锁频调度器
+- IMEI 相关路径（`set-imei` -> `AT^PHYNUM=IMEI`）按原逻辑原样移植，行为零改动
+- 构建时 `scripts/build-release.sh` 在 runner 上以
+  `aarch64-unknown-linux-musl` 目标交叉编译（std-only，rust-lld 自包含链接，
+  无需交叉工具链），前端（`www/5700`）与 Rust 二进制折叠进 `luci-app-mt5700m`
+  包，单个安装包即包含前端 + 后端 + LuCI 管理页
 - 实机部署差异、文件冲突处理与验证记录见 [`mt5700webui-openwrt-server/VENDOR.md`](mt5700webui-openwrt-server/VENDOR.md)
 
 ## 版本信息
 
 | 版本 | 说明 |
 | --- | --- |
-| `2.3.44-r1` | 当前开发版本（OpenWrt 安装包，WebUI 3.0.2 + Python 后端，AT 通道 UBUS 共享） |
+| `2.4.0-r1` | 当前开发版本（OpenWrt 安装包，WebUI 4.0 + Rust 双入口后端，AT 通道 UBUS 共享） |
 
 版本演进与修复记录见 [CHANGELOG.md](CHANGELOG.md)。
 

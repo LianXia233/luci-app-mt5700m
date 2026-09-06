@@ -13,3 +13,4 @@ mt5700webui-openwrt-server/at-webserver/files-py/** text eol=lf
 *.woff binary
 *.woff2 binary
 *.ico binary
+*.rs text eol=lf

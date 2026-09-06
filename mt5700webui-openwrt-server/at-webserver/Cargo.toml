@@ -1,0 +1,21 @@
+[package]
+name = "at-webserver"
+version = "4.0.0"
+edition = "2021"
+description = "MT5700M AT WebSocket daemon + LuCLI backend (single binary, dual frontend)"
+license = "MIT"
+
+# std-only: no third-party crates. OpenWrt buildroot rust feed compiles this
+# without a cargo index or vendored sources.
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[[bin]]
+name = "at-webserver"
+path = "src/main.rs"

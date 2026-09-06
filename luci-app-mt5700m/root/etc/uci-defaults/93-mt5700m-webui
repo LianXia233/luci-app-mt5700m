@@ -2,15 +2,23 @@
 # mt5700webui：初始化 AT WebServer 配置并启用服务
 #
 # 说明：
-# - WebUI 前端（www/5700）由 Python 后端 /usr/bin/at-webserver.py 提供服务
+# - WebUI 前端（www/5700）由 Rust 后端 /usr/bin/at-webserver 提供服务
+#   （单二进制双入口：作为 at-webserver 运行是 WebSocket daemon，
+#   经 /usr/sbin/mt5700m-at symlink 调用是 LuCI shell 后端）
 # - 后端默认走 UBUS（经 ubus-at-daemon 转发），与 luci-app-mt5700m 的管理功能
 #   共享同一个 AT 口，避免两者争抢 PCUI 串口
 # - 本脚本只在配置缺失时写入默认值，不覆盖用户已有配置
 
-# 后端文件存在性检查：OpenWrt 构建会把 /usr/bin/at-webserver.py 装成 0644，
-# 故用 -f 而非 -x；同时恢复可执行位（Shebang 直执行 + 兜底 -x 守卫）。
-[ -f /usr/bin/at-webserver.py ] || exit 0
-chmod 0755 /usr/bin/at-webserver.py 2>/dev/null
+# 后端文件存在性检查：OpenWrt 构建可能把 /usr/bin/at-webserver 装成 0644，
+# 故用 -f 而非 -x；同时恢复可执行位。
+[ -f /usr/bin/at-webserver ] || exit 0
+chmod 0755 /usr/bin/at-webserver 2>/dev/null
+
+# LuCI shell 后端入口：同名分发（argv[0] basename = mt5700m-at -> cli 模式）
+[ -e /usr/sbin/mt5700m-at ] || ln -sf /usr/bin/at-webserver /usr/sbin/mt5700m-at 2>/dev/null
+
+# 升级清理：移除 3.x 时代的 Python 后端残留
+rm -f /usr/bin/at-webserver.py 2>/dev/null
 
 . /lib/functions.sh
 

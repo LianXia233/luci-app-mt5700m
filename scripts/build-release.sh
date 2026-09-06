@@ -32,16 +32,38 @@ sed -i 's/^[[:space:]]*default m$/\tdefault n/' Config-build.in
 mkdir -p package/h5000m-custom
 cp -a "${repo_dir}/luci-app-mt5700m" package/h5000m-custom/
 
-# Fold the standalone WebUI (mt5700webui 3.0.2: React/Semi frontend + Python
+# ---------------------------------------------------------------------------
+# Build the Rust AT backend (v4.0). One std-only static binary serves BOTH
+# frontends: "at-webserver" (WebSocket daemon for the WebUI) and
+# "mt5700m-at" (LuCI shell contract via argv[0] dispatch; installed as a
+# symlink by 93-mt5700m-webui). The aarch64-unknown-linux-musl target links
+# with the bundled rust-lld, so no cross toolchain is needed on the runner.
+# ---------------------------------------------------------------------------
+rust_dir="${repo_dir}/mt5700webui-openwrt-server/at-webserver"
+rust_target="aarch64-unknown-linux-musl"
+rust_bin=""
+if command -v cargo >/dev/null 2>&1; then
+	rustup target add "${rust_target}" >/dev/null 2>&1 || true
+	(cd "${rust_dir}" && cargo build --release --locked --target "${rust_target}")
+	rust_bin="${rust_dir}/target/${rust_target}/release/at-webserver"
+fi
+if [ ! -f "${rust_bin}" ]; then
+	echo "ERROR: Rust backend binary not built (cargo missing or compile error)." >&2
+	exit 1
+fi
+echo "INFO: built Rust at-webserver backend (${rust_target})"
+
+# Fold the standalone WebUI (mt5700webui 4.0: React/Semi frontend + Rust
 # AT backend) into the package source, so one apk ships frontend + backend +
 # LuCI manager.  The LuCI app itself no longer carries the old umi WebUI
 # (htdocs/5700, at-server.py were removed from the repo).
 pkg_src="package/h5000m-custom/luci-app-mt5700m"
 mkdir -p "${pkg_src}/htdocs" "${pkg_src}/root/usr/bin" "${pkg_src}/root/etc/init.d"
 cp -a "${repo_dir}/mt5700webui-openwrt-server/at-webserver/files/www/5700" "${pkg_src}/htdocs/5700"
-cp -f "${repo_dir}/mt5700webui-openwrt-server/at-webserver/at-webserver.py" "${pkg_src}/root/usr/bin/at-webserver.py"
-cp -f "${repo_dir}/mt5700webui-openwrt-server/at-webserver/files-py/etc/init.d/at-webserver" "${pkg_src}/root/etc/init.d/at-webserver"
-echo "INFO: folded mt5700webui 3.0.2 frontend + Python backend into package source"
+cp -f "${rust_bin}" "${pkg_src}/root/usr/bin/at-webserver"
+chmod 0755 "${pkg_src}/root/usr/bin/at-webserver"
+cp -f "${repo_dir}/mt5700webui-openwrt-server/at-webserver/files/etc/init.d/at-webserver" "${pkg_src}/root/etc/init.d/at-webserver"
+echo "INFO: folded mt5700webui 4.0 frontend + Rust backend into package source"
 cat > .config <<'EOF'
 CONFIG_TARGET_mediatek=y
 CONFIG_TARGET_mediatek_filogic=y
@@ -75,7 +97,7 @@ rm -rf build_dir/target-*/luci-app-mt5700m \
 
 make package/h5000m-custom/luci-app-mt5700m/compile -j"$(nproc)" V=s
 
-# Re-copy the PRISTINE www/5700 frontend (mt5700webui 3.0.2) from the repo
+# Re-copy the PRISTINE www/5700 frontend (mt5700webui 4.0) from the repo
 # source into the freshly staged www tree, AFTER `make compile` and BEFORE
 # the node --check guard below.
 #
@@ -88,7 +110,7 @@ make package/h5000m-custom/luci-app-mt5700m/compile -j"$(nproc)" V=s
 # The .apk is assembled FROM staging_dir, so overwriting staging_dir here
 # DOES reach the package.  The new React bundle has the same exposure.
 cp -a "${repo_dir}/mt5700webui-openwrt-server/at-webserver/files/www/5700/." staging_dir/target-*/root-*/www/5700/.
-echo "INFO: re-copied pristine www/5700 (mt5700webui 3.0.2) into staging_dir after compile"
+echo "INFO: re-copied pristine www/5700 (mt5700webui 4.0) into staging_dir after compile"
 
 # Sanity check: the freshly staged www tree must contain the WebUI integration.
 # If this fails, the SDK reused a cached htdocs copy and the package would be broken.

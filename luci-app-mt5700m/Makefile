@@ -1,13 +1,14 @@
 include $(TOPDIR)/rules.mk
 
-# The WebUI (www/5700, from mt5700webui-openwrt-server 3.0.2, folded in at
+# The WebUI (www/5700, from mt5700webui-openwrt-server 4.0, folded in at
 # build time by scripts/build-release.sh) is a pre-built React/Webpack SPA
 # whose bundle already ships minified.  LuCI's build-time `jsmin` (Crockford
 # JSMin) cannot parse regex literals that follow `=>`/`)`/`]` and rewrites
 # them as division, which corrupts the bundle and white-screens the SPA at
 # /5700/.  Disable JS minification for this package so the already-minified
-# bundle ships untouched.  The Python AT backend (root/usr/bin/at-webserver.py)
-# also requires python3 + websockets + pyserial (see LUCI_DEPENDS).
+# bundle ships untouched.  The AT backend is a prebuilt static Rust binary
+# (root/usr/bin/at-webserver, folded in at build time) — no Python runtime,
+# no websockets/pyserial packages.
 LUCI_MINIFY_JS:=0
 
 # Same story for CSS: LuCI's build-time `csstidy --template=highest` merges
@@ -20,12 +21,12 @@ LUCI_MINIFY_JS:=0
 LUCI_MINIFY_CSS:=0
 
 PKG_NAME:=luci-app-mt5700m
-PKG_VERSION:=2.3.44
+PKG_VERSION:=2.4.0
 PKG_RELEASE:=1
 PKG_LICENSE:=Apache-2.0
 
 LUCI_TITLE:=MT5700M module management
-LUCI_DEPENDS:=+luci-base +ubus-at-daemon +sms-tool_q +python3 +python3-websockets +python3-pyserial
+LUCI_DEPENDS:=+luci-base +ubus-at-daemon +sms-tool_q
 LUCI_EXTRA_DEPENDS:=kmod-usb2 (>=0), kmod-usb3 (>=0), kmod-usb-serial (>=0), kmod-usb-serial-option (>=0), kmod-usb-net (>=0), kmod-usb-net-cdc-ether (>=0), kmod-usb-net-cdc-ncm (>=0)
 LUCI_PKGARCH:=all
 

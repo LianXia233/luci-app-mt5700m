@@ -214,8 +214,10 @@ start_service() {
 	
 	setup_firewall
 	
-	# 清理可能残留的旧进程（含 1.x 的 Python 版本），用 TERM 让其正常退出
+	# 清理可能残留的旧进程（1.x Python at-server.py 与 3.x Python
+	# at-webserver.py），用 TERM 让其正常退出
 	killall -q at-server.py 2>/dev/null
+	killall -q at-webserver.py 2>/dev/null
 	killall -q "$PROG_NAME" 2>/dev/null
 	
 	logger -t at-webserver "配置 procd 实例..."

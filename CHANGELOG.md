@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.4.0] - 2026-09-06
+
+### Added
+- **AT 后端 Rust 重写（at-webserver 4.0，双前端单二进制）**。`mt5700webui-openwrt-server/at-webserver/src/` 新增 std-only 零第三方依赖的 Rust 实现，按 argv[0] 分发双入口：以 `at-webserver` 运行为 WebSocket AT daemon（WebUI 后端，协议与 Go/Python 版一致：auth_key 认证、文本帧 ping/pong、`AT+CONNECT?`/`AT+SCHED?`/`AT+SCHED=` 伪命令、`AT^CELLSCAN` 异步扫频、URC 推送），经 `/usr/sbin/mt5700m-at` symlink 调用进入 LuCI shell 后端模式（`mt5700m-at` 全部子命令 stdout 契约逐条对齐，LuCI 前端零改动）。
+- AT 通道三模式级联与原 shell `at_cmd()` 逐条对齐：UBUS（`ubus call at-daemon sendat`，payload 键 `at_port`/`at_cmd`/`timeout`）优先，at-daemon 缺失（rc 127）回退直连串口，auto 模式串口失败落网络端口（网关探测 + host 候选列表）；anchored ERROR 终止符判定与 `at_response_ok` 一致。
+- `usb.sh` 移植：`mt5700m_usb_info`（3466:3301/3302/3303 状态识别）与 PCUI 口探测（USB 接口类 `ff:06:12` 或接口描述匹配），status 输出契约不变。
+- daemon 侧新增 URC 分发器（移植 urc.go/Python Dispatcher）：来电（RING/+CLIP 去重 30s/^CEND）、新短信（+CMTI）、存储满（^SMMEMFULL）、信号变化（^HCSQ，阈值 1dB）与 passthrough（^REJINFO/带逗号 +CUSD）。
+- daemon 侧新增昼夜定时锁频调度器（移植 Python Scheduler 控制环）：时段判定（支持跨午夜窗口）、LTE/NR 锁频命令构建（type 0/1/2/3，频点数校验不一致回退解锁、FR2 频段 SCS 自动 120kHz）、飞行模式切换包络、无服务超时强制解锁恢复；UBUS 模式同样可用。
+- 硬约束：IMEI 路径（`set-imei` -> `AT^PHYNUM=IMEI`）按原 shell 逻辑原样移植，无任何行为改动。
+
+### Removed
+- 删除 Go 版后端 `mt5700webui-openwrt-server/at-webserver/src/*.go`（含 vendor 与预编译 apk）：审计确认其未接入主包部署路径（`build-release.sh` 只折入 Python 版），且缺少 UBUS transport、在 ImmortalWrt 6.18 内核存在串口空闲读 EOF 误判问题。
+- 删除 Python 后端 `at-webserver.py` 与 `files-py/`：职责由 Rust daemon 全面接替。
+
+### Changed
+- `scripts/build-release.sh`：改为在 runner 上以 `aarch64-unknown-linux-musl` 目标交叉编译 Rust 后端（std-only，rust-lld 自包含链接，无需交叉工具链），产物与 init.d 折叠进 `luci-app-mt5700m` 包。
+- `luci-app-mt5700m/Makefile`：`LUCI_DEPENDS` 移除 `+python3 +python3-websockets +python3-pyserial`；版本 2.3.44 -> 2.4.0。
+- `93-mt5700m-webui`：后端检查改为 `/usr/bin/at-webserver`，新增 `/usr/sbin/mt5700m-at` symlink 建立与 3.x Python 残留清理。
+- `at-webserver/Makefile`：Go 打包改为 Rust 打包（feed 集成走 packages feed `lang/rust`）。
+
+### Fixed
+- 彻底消除三套后端（shell/Python/Go）间锁频命令构建、AT 解析行为的分叉：LuCI 与 WebUI 现共享同一份 AT 实现，`AT^SYSCFGEX` 参数补引号逻辑（normalizeSyscfgex）统一收口。
+
 ## [2.3.44] - 2026-09-06
 
 ### Fixed
