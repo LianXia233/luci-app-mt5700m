@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.4.7] - 2026-09-07
+
+### Fixed
+- **消除开机启动竞争窗口（上电重启实测发现）**：at-webserver 与 ubus-at-daemon 同为 `START=99`，rc.d 按字典序执行使前者先启动。实机用 `/proc/<pid>/stat` starttime 测量：mt5700m-manager T+16s、at-webserver T+18s、ubus-at-daemon T+28s——即开机后有约 10 秒窗口，WebSocket 端口已监听但 `at-daemon` 对象尚未注册，此时 WebUI 的每条 AT 命令都会失败（表现为面板报错/全零），需等待或手动刷新才恢复。
+  现 daemon 在 UBUS 模式下**绑定 8765 端口前**先轮询 `ubus list at-daemon` 就绪（间隔 500ms，上限 60s）：窗口期内端口不开放，前端表现为"连接失败→自动重连"，就绪后立即监听，不再产生失败命令。超时（如未安装 at-daemon 或走其它模式）仍照常启动，不阻塞开机；SERIAL/NETWORK 模式不受影响。
+  注：判定启动时序不能用 `logread` 时间差——开机初期 NTP 校时会扭曲时间戳（本次日志显示间隔 33s，实测仅 10s），须用进程 starttime/CLK_TCK。
+- 测试 36/36（新增 3 个就绪门控用例：轮询至成功、超时不早退、首次探测立即返回）。
+
 ## [2.4.6] - 2026-09-06
 
 ### Fixed

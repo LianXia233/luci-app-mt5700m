@@ -14,11 +14,12 @@ use crate::scheduler;
 use crate::ws::{self, WsError};
 use std::collections::VecDeque;
 use std::io::{Read, Write};
+use std::process::Stdio;
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const WS_AUTH_TIMEOUT: u64 = 10;
 const WS_WRITE_TIMEOUT: u64 = 10;
@@ -644,6 +645,44 @@ fn spawn_pdcp_poller(
     });
 }
 
+// ---------------------------------------------------------------- Startup readiness gate (UBUS)
+
+/// In UBUS mode every AT command goes through the `at-daemon` ubus object,
+/// but procd launches both services at the same runlevel (START=99) and
+/// dictionary order puts at-webserver first: measured on device,
+/// at-webserver starts at T+18s and ubus-at-daemon only at T+28s. Binding
+/// the websocket during that gap makes early client commands fail with an
+/// error; keeping the socket closed instead lets clients reconnect until
+/// the backend is really usable.
+const UBUS_READY_TIMEOUT: Duration = Duration::from_secs(60);
+const UBUS_READY_POLL: Duration = Duration::from_millis(500);
+
+fn ubus_at_daemon_ready() -> bool {
+    std::process::Command::new("ubus")
+        .args(["list", at::UBUS_OBJECT])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Poll `probe` until it succeeds or the timeout elapses. Returns whether
+/// it became ready in time. Pure polling logic so it is testable without
+/// spawning ubus.
+fn wait_until_ready(probe: &dyn Fn() -> bool, timeout: Duration, step: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if probe() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(step);
+    }
+}
+
 // ---------------------------------------------------------------- Client connections
 
 pub struct ClientConn {
@@ -738,6 +777,23 @@ pub fn run(args: &[String]) -> i32 {
         eprintln!("at-webserver disabled via UCI");
         return 0;
     }
+    if config.connection_type == "UBUS" {
+        eprintln!(
+            "at-webserver: waiting for ubus object '{}' (max {}s)",
+            at::UBUS_OBJECT,
+            UBUS_READY_TIMEOUT.as_secs()
+        );
+        if wait_until_ready(&ubus_at_daemon_ready, UBUS_READY_TIMEOUT, UBUS_READY_POLL) {
+            eprintln!("at-webserver: ubus object '{}' ready", at::UBUS_OBJECT);
+        } else {
+            eprintln!(
+                "at-webserver: ubus object '{}' still missing after {}s, starting anyway",
+                at::UBUS_OBJECT,
+                UBUS_READY_TIMEOUT.as_secs()
+            );
+        }
+    }
+
     let addr = format!("0.0.0.0:{}", config.websocket_port);
     let listener = match TcpListener::bind(&addr) {
         Ok(l) => l,
@@ -952,6 +1008,45 @@ mod tests {
         assert!(dump.contains("\"ulPdcpRate\":512"));
         assert!(dump.contains("\"dlPdcpRate\":1024"));
         assert!(dump.contains("\"highPriQueMaxBuffTime\":3"));
+    }
+
+    #[test]
+    fn wait_until_ready_polls_until_true() {
+        use std::sync::atomic::AtomicUsize;
+        let calls = AtomicUsize::new(0);
+        let probe = || {
+            let n = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            n >= 2 // becomes ready on the third probe
+        };
+        assert!(wait_until_ready(
+            &probe,
+            Duration::from_secs(5),
+            Duration::from_millis(1)
+        ));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn wait_until_ready_times_out() {
+        let started = Instant::now();
+        assert!(!wait_until_ready(
+            &|| false,
+            Duration::from_millis(60),
+            Duration::from_millis(10)
+        ));
+        // must not return early, and must not hang
+        assert!(started.elapsed() >= Duration::from_millis(60));
+    }
+
+    #[test]
+    fn wait_until_ready_first_probe_success_is_immediate() {
+        let started = Instant::now();
+        assert!(wait_until_ready(
+            &|| true,
+            Duration::from_secs(5),
+            Duration::from_millis(500)
+        ));
+        assert!(started.elapsed() < Duration::from_millis(200));
     }
 
     #[test]
