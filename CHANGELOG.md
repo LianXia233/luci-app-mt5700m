@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.4.1] - 2026-09-06
+
+### Fixed
+- CI 静态检查适配 Rust 后端（`4a40a91` 推送后暴露，`b2bcb66`/`383a822` 修复）：`sh -n` 与 `test -x` 的 WebUI init.d 路径 `files-py/etc/init.d` -> `files/etc/init.d`；"Check Python AT backend"（py_compile + imports）替换为 "Check Rust backend"（`cargo test --locked`）；`files/etc/init.d/at-webserver` 修正 git mode 为 100755（该脚本由上游以 0644 归档，procd 只运行 +x 的 init 脚本，早期 2.3.31 曾因同一问题导致 WebUI 面板全零）。
+- 文档同步：`mt5700webui-openwrt-server/VENDOR.md` 更新为 Rust 4.0 归档说明（上游 Go 源码、Python 移植版移除，归档表与实机部署记录重写）。
+
 ## [2.4.0] - 2026-09-06
 
 ### Added
@@ -22,7 +28,6 @@
 
 ### Fixed
 - 彻底消除三套后端（shell/Python/Go）间锁频命令构建、AT 解析行为的分叉：LuCI 与 WebUI 现共享同一份 AT 实现，`AT^SYSCFGEX` 参数补引号逻辑（normalizeSyscfgex）统一收口。
-- CI 静态检查适配 Rust 后端（`4a40a91` 推送后暴露，`b2bcb66`/`383a822` 修复）：`sh -n` 与 `test -x` 的 WebUI init.d 路径 `files-py/etc/init.d` -> `files/etc/init.d`；"Check Python AT backend"（py_compile + imports）替换为 "Check Rust backend"（`cargo test --locked`）；`files/etc/init.d/at-webserver` 修正 git mode 为 100755（该脚本由上游以 0644 归档，procd 只运行 +x 的 init 脚本，早期 2.3.31 曾因同一问题导致 WebUI 面板全零）。
 
 ## [2.3.44] - 2026-09-06
 
