@@ -38,13 +38,20 @@ cp -a "${repo_dir}/luci-app-mt5700m" package/h5000m-custom/
 # "mt5700m-at" (LuCI shell contract via argv[0] dispatch; installed as a
 # symlink by 93-mt5700m-webui). The aarch64-unknown-linux-musl target links
 # with the bundled rust-lld, so no cross toolchain is needed on the runner.
+# NOTE: linker config is MANDATORY. Without it rustc drives the HOST cc, and
+# the aarch64-only workaround flag `-Wl,--fix-cortex-a53-843419` (injected by
+# rustc for this target) is rejected by the x86_64 GNU ld:
+#   /usr/bin/ld: unrecognized option '--fix-cortex-a53-843419'
+# rust-lld understands it and links self-contained (bundled musl crt + libc).
 # ---------------------------------------------------------------------------
 rust_dir="${repo_dir}/mt5700webui-openwrt-server/at-webserver"
 rust_target="aarch64-unknown-linux-musl"
 rust_bin=""
 if command -v cargo >/dev/null 2>&1; then
 	rustup target add "${rust_target}" >/dev/null 2>&1 || true
-	(cd "${rust_dir}" && cargo build --release --locked --target "${rust_target}")
+	(cd "${rust_dir}" && \
+	 RUSTFLAGS="-C link-self-contained=yes -C linker=rust-lld" \
+	 cargo build --release --locked --target "${rust_target}")
 	rust_bin="${rust_dir}/target/${rust_target}/release/at-webserver"
 fi
 if [ ! -f "${rust_bin}" ]; then
