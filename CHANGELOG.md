@@ -4,6 +4,7 @@
 
 ### Fixed
 - CI 静态检查适配 Rust 后端（`4a40a91` 推送后暴露，`b2bcb66`/`383a822` 修复）：`sh -n` 与 `test -x` 的 WebUI init.d 路径 `files-py/etc/init.d` -> `files/etc/init.d`；"Check Python AT backend"（py_compile + imports）替换为 "Check Rust backend"（`cargo test --locked`）；`files/etc/init.d/at-webserver` 修正 git mode 为 100755（该脚本由上游以 0644 归档，procd 只运行 +x 的 init 脚本，早期 2.3.31 曾因同一问题导致 WebUI 面板全零）。
+- Release 构建修复 aarch64 Rust 链接（run 34013382900 失败暴露，`ad88ca9` 修复）：rustc 对 `aarch64-unknown-linux-musl` 默认调宿主 `cc`，目标特有的 `-Wl,--fix-cortex-a53-843419` 被 x86_64 模式 GNU ld 拒绝（`unrecognized option`）；`build-release.sh` 现显式 `RUSTFLAGS="-C link-self-contained=yes -C linker=rust-lld"`，用捆绑 rust-lld 完成自包含静态链接（本机已验证产出 647KB AArch64 ELF，machine 0xb7）。
 - 文档同步：`mt5700webui-openwrt-server/VENDOR.md` 更新为 Rust 4.0 归档说明（上游 Go 源码、Python 移植版移除，归档表与实机部署记录重写）。
 
 ## [2.4.0] - 2026-09-06
