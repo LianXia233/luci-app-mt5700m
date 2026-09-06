@@ -218,7 +218,12 @@ start_service() {
 	# at-webserver.py），用 TERM 让其正常退出
 	killall -q at-server.py 2>/dev/null
 	killall -q at-webserver.py 2>/dev/null
-	killall -q "$PROG_NAME" 2>/dev/null
+	# Self-kill guard: while this init script runs, its own process name IS
+	# "$PROG_NAME", so busybox killall would TERM the script itself (rc=143,
+	# procd instance never registered). Kill only real daemon PIDs instead.
+	for _pid in $(pidof "$PROG_NAME" 2>/dev/null); do
+		[ "$_pid" = "$$" ] || kill "$_pid" 2>/dev/null
+	done
 	
 	logger -t at-webserver "配置 procd 实例..."
 	echo "Starting AT WebServer..."
@@ -241,7 +246,12 @@ stop_service() {
 	echo "Stopping AT WebServer..."
 	
 	# 交给 procd 停止实例；这里只发 TERM 兜底，让服务能优雅关闭连接
-	killall -q "$PROG_NAME" 2>/dev/null
+	# Self-kill guard: while this init script runs, its own process name IS
+	# "$PROG_NAME", so busybox killall would TERM the script itself (rc=143,
+	# procd instance never registered). Kill only real daemon PIDs instead.
+	for _pid in $(pidof "$PROG_NAME" 2>/dev/null); do
+		[ "$_pid" = "$$" ] || kill "$_pid" 2>/dev/null
+	done
 	
 	# 清理 pidfile
 	rm -f /var/run/at-webserver.pid
@@ -298,7 +308,12 @@ reload_service() {
 	# 提交最新配置
 	uci -q commit at-webserver
 	
-	killall -q "$PROG_NAME" 2>/dev/null
+	# Self-kill guard: while this init script runs, its own process name IS
+	# "$PROG_NAME", so busybox killall would TERM the script itself (rc=143,
+	# procd instance never registered). Kill only real daemon PIDs instead.
+	for _pid in $(pidof "$PROG_NAME" 2>/dev/null); do
+		[ "$_pid" = "$$" ] || kill "$_pid" 2>/dev/null
+	done
 	rm -f /var/run/at-webserver.pid
 	
 	# 等待进程退出

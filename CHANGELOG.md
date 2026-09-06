@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.4.2] - 2026-09-06
+
+### Fixed
+- **修复 CLI 在 UBUS 模式设备上必然挂死的问题（实机 H5000M/MT5700M 发现）**：`mt5700m_pcui_port()` 将 `/dev/ttyUSB1` 全路径传给 `port_is_pcui()`，而后者拼出 `/sys/class/tty//dev/ttyUSB1/device` 这类非法 sysfs 路径（移植时丢失了 shell 版的 basename 处理），PCUI 探测恒为 None，`auto` 级联跳过 UBUS/串口直接落入 network 通道。现统一在 sysfs 入口做 basename 归一。实机验证：`command 'AT+CSQ'` 由无限挂死变为 0.08s 经 UBUS 返回。
+- **修复 network 通道 TCP connect 无超时**：模组网络 AT 端点不可达时 `TcpStream::connect` 停留在 SYN_SENT 数分钟（内核默认超时），CLI/守护进程级联被冻死。改用 `TcpStream::connect_timeout`（按配置超时，逐候选地址尝试）。
+- **修复 init.d 自杀缺陷**：脚本进程名即 `at-webserver`，`start_service`/`stop_service` 里的 `killall -q "$PROG_NAME"` 会把 init 脚本自己 TERM 掉（rc=143，procd 实例从未注册，服务无法启动/停止）。改为 `pidof` 枚举并排除自身 PID。实机取证：同名脚本 `killall` 必现自杀。
+- 修复 LuCI shell 入口残留：v2.4.0 重写后 `root/usr/sbin/mt5700m-at` 仍以旧 shell 文件随包安装，uci-defaults 的 symlink 逻辑被"文件已存在"挡住，LuCI 实际仍调用旧 shell。该文件已删除，由 `93-mt5700m-webui` 创建 symlink 指向 Rust 单二进制。
+
 ## [2.4.1] - 2026-09-06
 
 ### Fixed

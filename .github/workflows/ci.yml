@@ -26,7 +26,6 @@ jobs:
           sh -n luci-app-mt5700m/root/etc/uci-defaults/93-mt5700m-webui
           sh -n luci-app-mt5700m/root/usr/libexec/rpcd/mt5700m
           sh -n luci-app-mt5700m/root/usr/libexec/rpcd/mt5700m-traffic
-          sh -n luci-app-mt5700m/root/usr/sbin/mt5700m-at
           sh -n luci-app-mt5700m/root/usr/sbin/mt5700m-manager
           sh -n luci-app-mt5700m/root/usr/sbin/mt5700m-traffic
           sh -n luci-app-mt5700m/root/usr/share/mt5700m/usb.sh
@@ -45,7 +44,6 @@ jobs:
           # The standalone WebUI init script (folded into the package at build
           # time by scripts/build-release.sh) must also ship +x.
           test -x mt5700webui-openwrt-server/at-webserver/files/etc/init.d/at-webserver
-          test -x luci-app-mt5700m/root/usr/sbin/mt5700m-at
           test -x luci-app-mt5700m/root/usr/sbin/mt5700m-manager
           test -x luci-app-mt5700m/root/usr/sbin/mt5700m-traffic
           test -x luci-app-mt5700m/root/usr/libexec/rpcd/mt5700m

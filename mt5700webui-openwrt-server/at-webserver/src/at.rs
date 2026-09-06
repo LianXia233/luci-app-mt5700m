@@ -315,7 +315,20 @@ pub fn network_sendat(
     command: &str,
 ) -> Result<String, AtError> {
     let addr = format!("{}:{}", host, port);
-    let mut stream = std::net::TcpStream::connect(&addr).map_err(|_| AtError::NetworkFailed)?;
+    // connect_timeout is MANDATORY: a plain TcpStream::connect to an
+    // unreachable/blackholed modem endpoint stays in SYN_SENT for the kernel
+    // default (~2 min per attempt), freezing the CLI cascade.
+    let addrs: Vec<std::net::SocketAddr> = std::net::ToSocketAddrs::to_socket_addrs(&addr)
+        .map_err(|_| AtError::NetworkFailed)?
+        .collect();
+    let mut stream: Option<std::net::TcpStream> = None;
+    for a in &addrs {
+        if let Ok(s) = std::net::TcpStream::connect_timeout(a, Duration::from_secs(timeout_s.max(1))) {
+            stream = Some(s);
+            break;
+        }
+    }
+    let mut stream = stream.ok_or(AtError::NetworkFailed)?;
     let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
     let _ = stream.set_nodelay(true);
 
@@ -496,8 +509,18 @@ fn read_trim(path: std::path::PathBuf) -> Option<String> {
 
 /// Walk up from a tty device node's sysfs entry until a USB device directory
 /// with idVendor/idProduct is found. Port of `mt5700m_usb_device_dir_for_path`.
+/// `tty` may be a bare name ("ttyUSB1") or a full device path ("/dev/ttyUSB1");
+/// only the basename is used to build the sysfs class path.
+fn sys_tty_device_path(tty: &str) -> Option<std::path::PathBuf> {
+    let name = std::path::Path::new(tty)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| tty.to_string());
+    std::fs::canonicalize(format!("/sys/class/tty/{}/device", name)).ok()
+}
+
 fn usb_device_dir_for_path(tty: &str) -> Option<std::path::PathBuf> {
-    let mut path = std::fs::canonicalize(format!("/sys/class/tty/{}/device", tty)).ok()?;
+    let mut path = sys_tty_device_path(tty)?;
     loop {
         if path.join("idVendor").is_file() && path.join("idProduct").is_file() {
             return Some(path);
@@ -509,7 +532,7 @@ fn usb_device_dir_for_path(tty: &str) -> Option<std::path::PathBuf> {
 }
 
 fn interface_dir_for_tty(tty: &str) -> Option<std::path::PathBuf> {
-    let mut path = std::fs::canonicalize(format!("/sys/class/tty/{}/device", tty)).ok()?;
+    let mut path = sys_tty_device_path(tty)?;
     loop {
         if path.join("bInterfaceClass").is_file() || path.join("interface").is_file() {
             return Some(path);
