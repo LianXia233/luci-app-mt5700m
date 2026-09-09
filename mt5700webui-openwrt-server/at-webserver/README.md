@@ -97,10 +97,13 @@ WebSocket 协议与 Go/Python 版完全一致：文本帧承载 AT 命令，JSON
 （`{"auth_key": ...}` 认证、URC 推送、`AT+SCHED?`/`AT+SCHED=` 伪命令、
 `AT^CELLSCAN` 异步扫频）语义不变。详见 [API.md](API.md)。
 
-## OpenWrt 打包
+## 构建
 
-- CI/SDK 流程：`scripts/build-release.sh` 在 runner 上以
-  `aarch64-unknown-linux-musl` 交叉编译后折叠进 `luci-app-mt5700m`
-- 独立 feed 包：本目录 Makefile 依赖 packages feed 的 `lang/rust`
-  （`rust/host` + `rust-package.mk`），`make package/at-webserver/compile`
-  从源码编译
+由仓库根 `scripts/build-release.sh` 统一构建：
+
+1. `cargo build --release --locked --target aarch64-unknown-linux-musl` 交叉编译 Rust 二进制
+2. 编译产物（`at-webserver`）连同 `files/` 下的前端、init 脚本、UCI 配置一起折叠进
+   `luci-app-mt5700m` 包源码目录
+3. OpenWrt SDK 打包为单个 apk/ipk
+
+不产生独立的 `at-webserver` 包。
