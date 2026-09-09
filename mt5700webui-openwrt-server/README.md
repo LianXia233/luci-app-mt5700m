@@ -1,8 +1,10 @@
 # MT5700M WebUI for OpenWrt
 
-[![build](https://github.com/inotdream/mt5700webui-openwrt-server/actions/workflows/build.yml/badge.svg)](https://github.com/inotdream/mt5700webui-openwrt-server/actions/workflows/build.yml)
+[![CI](https://github.com/LianXia233/luci-app-mt5700m/actions/workflows/ci.yml/badge.svg)](https://github.com/LianXia233/luci-app-mt5700m/actions/workflows/ci.yml)
 
-MT5700M-CN 5G 模组的 OpenWrt Web 管理界面：Go 单二进制后端（`at-webserver`）通过 WebSocket 直连模组 AT 口，前端为 React + Semi Design（`semi-tcpweb`），无需 Python 运行时。
+MT5700M-CN 5G 模组的 OpenWrt Web 管理界面：Rust 单二进制后端（`at-webserver`）通过 WebSocket 直连模组 AT 口，前端为 React + Semi Design（`semi-tcpweb`），无需 Python 运行时。
+
+> **本目录是上游 [inotdream/mt5700webui-openwrt-server](https://github.com/inotdream/mt5700webui-openwrt-server) v3.0.2 的归档**。前端与 Rust 后端由 `scripts/build-release.sh` 折叠进 `luci-app-mt5700m` 包，不产生独立的 `at-webserver` / `luci-app-at-webserver` 包。安装与使用说明见仓库根 [README.md](../README.md)。
 
 ![网络状态](docs/screenshots/network-info.png)
 
@@ -39,37 +41,6 @@ MT5700M-CN 5G 模组的 OpenWrt Web 管理界面：Go 单二进制后端（`at-w
 
 </details>
 
-## 安装
-
-从 [Releases](https://github.com/inotdream/mt5700webui-openwrt-server/releases) 下载对应架构的包。两个都要装：`at-webserver`（后端 + WebUI）与 `luci-app-at-webserver`（LuCI 集成，架构无关）。
-
-**OpenWrt 24.10 及更早版本（opkg，`.ipk`）：**
-
-```sh
-opkg install ./at-webserver_*_<架构>.ipk ./luci-app-at-webserver_*_all.ipk
-```
-
-**OpenWrt 主干 SNAPSHOT（apk，`.apk`）：**
-
-```sh
-apk add --allow-untrusted ./at-webserver-*_<架构>.apk ./luci-app-at-webserver-*.apk
-```
-
-常见设备架构对照：
-
-| SoC / 平台 | 架构 |
-| --- | --- |
-| MT7981 / MT7986 / IPQ807x | `aarch64_cortex-a53` |
-| 其他 ARM64（RK33xx 等） | `aarch64_generic` |
-| IPQ40xx | `arm_cortex-a7_neon-vfpv4` |
-| MT7621 | `mipsel_24kc` |
-| QCA95xx / ath79 | `mips_24kc` |
-| x86 软路由 | `x86_64` |
-
-安装后访问 `http://路由器IP/5700/`，模组连接方式（串口 / tcp）与 WebSocket 密钥可在 LuCI「服务 → AT WebServer」中配置。
-
-> 旧版（1.x，Python 版）网盘存档：https://www.123865.com/s/BwcjVv-PexFd?pwd=GweY 提取码 `GweY`
-
 ## 源码构建
 
 **前端**（产物会同步到 `at-webserver/files/www/5700`，随包发布）：
@@ -80,22 +51,20 @@ npm ci
 npm run build && ./scripts/sync-www.sh
 ```
 
-**OpenWrt 包**（把仓库当 feed 或复制包目录进 SDK）：
+**Rust 后端**（std-only 零第三方依赖，无需 cargo 索引）：
 
 ```sh
-echo "src-git mt5700 https://github.com/inotdream/mt5700webui-openwrt-server.git" >> feeds.conf
-./scripts/feeds update mt5700 && ./scripts/feeds install -a -p mt5700
-make package/at-webserver/compile package/luci-app-at-webserver/compile V=s
+cd at-webserver
+cargo build --release --offline
 ```
 
-Go 依赖已 vendor 进 `at-webserver/src/vendor`，编译过程无需联网。CI 会对每次推送做前端类型检查、Go 单测，并用官方 SDK 构建 6 种架构 × ipk/apk 两种格式；打 `v*` tag 自动发布 Release。
+**完整发布包**由仓库根 `scripts/build-release.sh` 构建：编译 Rust 后端 → 折叠进 `luci-app-mt5700m` → OpenWrt SDK 打包。
 
 ## 目录结构
 
 | 目录 | 说明 |
 | --- | --- |
-| `at-webserver/` | Go 后端源码与 OpenWrt 打包（含 WebUI 构建产物） |
-| `luci-app-at-webserver/` | LuCI 集成（服务开关、连接配置、定时锁频开关） |
+| `at-webserver/` | Rust 后端源码与运行时文件（init.d、UCI 配置、WebUI 构建产物） |
 | `semi-tcpweb/` | WebUI 前端源码（Vite + React + Semi Design） |
 | `docs/` | 文档与截图 |
 
