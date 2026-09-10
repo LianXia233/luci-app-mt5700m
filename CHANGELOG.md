@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.4.8] - 2026-09-10
+
+### Changed
+- **移除未使用的上游独立软件包**：删除 `mt5700webui-openwrt-server/at-webserver/Makefile`（OpenWrt 独立包 Makefile，Rust 后端实际由 cargo 编译后折入 `luci-app-mt5700m`）、`mt5700webui-openwrt-server/luci-app-at-webserver/`（上游 LuCI 集成包，含 config / debug / logs 页面，从未参与构建也从未被依赖）与 `mt5700webui-openwrt-server/prebuilt/` 下的旧预编译 APK（at-webserver 3.0.2 及 i18n 包，仅作历史参考）。发布构建入口 `scripts/build-release.sh` 本就不消费这些产物，因此对已安装包的运行时行为没有影响。
+- 同步更新 `VENDOR.md`、`mt5700webui-openwrt-server/README.md`、`at-webserver/README.md`，明确所有内容以**单个 `luci-app-mt5700m` 包**交付，不再存在独立安装入口。
+
+### Chore
+- 仓库清理了 v2.4.7 及其之前的 Releases 页面历史条目（保留策略：仅留最新版本），历史修复记录仍完整保留在本文件中。
+
 ## [2.4.7] - 2026-09-07
 
 ### Fixed

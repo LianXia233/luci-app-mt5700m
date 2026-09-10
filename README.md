@@ -145,7 +145,7 @@ make package/luci-app-mt5700m/compile V=s
 
 | 版本 | 说明 |
 | --- | --- |
-| `2.4.0-r1` | 当前开发版本（OpenWrt 安装包，WebUI 4.0 + Rust 双入口后端，AT 通道 UBUS 共享） |
+| `2.4.8-r1` | 当前版本（OpenWrt 安装包，WebUI 4.0 + Rust 双入口后端，AT 通道 UBUS 共享；所有功能合并为单个 `luci-app-mt5700m` 包，不再提供独立安装入口） |
 
 版本演进与修复记录见 [CHANGELOG.md](CHANGELOG.md)。
 
