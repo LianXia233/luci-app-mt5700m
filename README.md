@@ -20,6 +20,7 @@
 - [界面预览](#界面预览)
 - [主要功能](#主要功能)
 - [安装与编译](#安装与编译)
+  - [手动构建与版本号](#手动构建与版本号)
 - [依赖说明](#依赖说明)
 - [流量历史](#流量历史)
 - [WebUI 独立前端（mt5700webui）](#webui-独立前端mt5700webui)
@@ -102,6 +103,31 @@ make package/luci-app-mt5700m/compile V=s
 - SDK 构建公钥与 SHA256 校验文件
 
 > 安装时必须使用与设备固件 ABI / 内核版本相匹配的软件源。
+
+### 手动构建与版本号
+
+手动触发 `Build Release` 工作流时可以直接指定本次构建使用的版本号，无需先提交 `PKG_VERSION` 变更：
+
+| 输入项 | 类型 | 说明 |
+| --- | --- | --- |
+| `version` | 字符串 | 直接指定版本号，如 `2.4.9`、`2.5.0-rc1`；前缀 `v` 可省略。留空则按 `bump` 计算。 |
+| `bump` | 选项 | `none`（默认）/ `patch` / `minor` / `major`，在 `PKG_VERSION` 基线上递增。仅当 `version` 留空时生效。 |
+
+优先级为 `version` > `bump` > `PKG_VERSION` 基线。版本号必须匹配 `X.Y.Z` 或 `X.Y.Z-<后缀>`，否则工作流在构建开始前即失败，不会产出半成品 Release。
+
+解析出的版本只覆盖**本次构建工作区**里的 `Makefile`，不会写回仓库；`scripts/build-release.sh` 会把 `luci-app-mt5700m/` 复制进 SDK，因此安装包文件名、控制数据与 Release 标题都会带上该版本。
+
+手动构建发布到 `manual-v<版本>-<时间戳>` 标签（例如 `manual-v2.4.9-20260910-013000`），不会占用正式 `vX.Y.Z` 标签；正式版本仍需提交 `PKG_VERSION` 后推送 `vX.Y.Z` 标签触发。若 `CHANGELOG.md` 中缺少该版本条目，Release 说明会标注缺失，运行摘要（Job Summary）也会给出警告。
+
+通过 API 触发时同样支持：
+
+```sh
+curl -X POST \
+  -H "Accept: application/vnd.github+json" \
+  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+  https://api.github.com/repos/LianXia233/luci-app-mt5700m/actions/workflows/release.yml/dispatches \
+  -d '{"ref":"main","inputs":{"version":"2.4.9"}}'
+```
 
 ## 依赖说明
 

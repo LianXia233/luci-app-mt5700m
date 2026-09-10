@@ -5,6 +5,21 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: '手动指定版本号（如 2.4.9、2.5.0-rc1），前缀 v 可省略。留空则按 bump 递增，bump 为 none 时沿用 Makefile 的 PKG_VERSION。'
+        required: false
+        default: ''
+      bump:
+        description: '版本号递增方式，仅当 version 留空时生效'
+        type: choice
+        required: false
+        default: 'none'
+        options:
+          - none
+          - patch
+          - minor
+          - major
 
 permissions:
   contents: write
@@ -21,11 +36,90 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate release version
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Resolve build version
+        id: resolve_version
+        # Priority for the version that ends up in the package:
+        #   1. workflow_dispatch input `version` (explicit, wins over bump)
+        #   2. workflow_dispatch input `bump` (patch/minor/major on the baseline)
+        #   3. PKG_VERSION from luci-app-mt5700m/Makefile (baseline)
+        # Tag pushes ignore both inputs and keep the original assertion that
+        # the pushed tag equals v${PKG_VERSION}.
+        #
+        # Inputs are passed through the environment instead of being expanded
+        # into the script body so a crafted input cannot inject shell code.
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          INPUT_BUMP: ${{ github.event.inputs.bump }}
         run: |
-          version="$(sed -n 's/^PKG_VERSION:=//p' luci-app-mt5700m/Makefile)"
-          test "${GITHUB_REF_NAME}" = "v${version}"
+          set -euo pipefail
+
+          base="$(sed -n 's/^PKG_VERSION:=//p' luci-app-mt5700m/Makefile)"
+          if [ -z "${base}" ]; then
+            echo "ERROR: 无法从 luci-app-mt5700m/Makefile 读取 PKG_VERSION" >&2
+            exit 1
+          fi
+
+          new="${base}"
+          source_desc="Makefile PKG_VERSION（基线）"
+
+          if [ "${GITHUB_EVENT_NAME}" = 'workflow_dispatch' ]; then
+            if [ -n "${INPUT_VERSION}" ]; then
+              # Accept both "2.4.9" and "v2.4.9".
+              new="${INPUT_VERSION#v}"
+              source_desc="workflow_dispatch 输入 version=${INPUT_VERSION}"
+            elif [ -n "${INPUT_BUMP}" ] && [ "${INPUT_BUMP}" != 'none' ]; then
+              new="$(awk -v v="${base}" -v part="${INPUT_BUMP}" 'BEGIN{
+                if (split(v, a, ".") < 3) { print "ERR"; exit 1 }
+                if (part == "major") { a[1]++; a[2] = 0; a[3] = 0 }
+                else if (part == "minor") { a[2]++; a[3] = 0 }
+                else { a[3]++ }
+                printf "%d.%d.%d\n", a[1], a[2], a[3]
+              }')"
+              if [ "${new}" = 'ERR' ]; then
+                echo "ERROR: 无法从 ${base} 递增 ${INPUT_BUMP}（基线不是 X.Y.Z）" >&2
+                exit 1
+              fi
+              source_desc="workflow_dispatch 输入 bump=${INPUT_BUMP}"
+            fi
+          fi
+
+          # X.Y.Z, optionally followed by a pre-release suffix (-rc1, -beta.2).
+          # Validated before anything is interpolated into sed/awk/tag names.
+          if ! printf '%s' "${new}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "ERROR: 版本号格式非法：'${new}'（应为 X.Y.Z 或 X.Y.Z-后缀）" >&2
+            exit 1
+          fi
+
+          if [ "${GITHUB_EVENT_NAME}" != 'workflow_dispatch' ] && [ "${GITHUB_REF_TYPE}" = 'tag' ]; then
+            if [ "${GITHUB_REF_NAME}" != "v${new}" ]; then
+              echo "ERROR: 标签 ${GITHUB_REF_NAME} 与 PKG_VERSION ${new} 不一致" >&2
+              exit 1
+            fi
+          fi
+
+          # scripts/build-release.sh copies luci-app-mt5700m/ into the SDK, so
+          # patching the checked-out Makefile is enough to make the apk carry
+          # the requested version. The repository itself is never modified.
+          if [ "${new}" != "${base}" ]; then
+            sed -i "s/^PKG_VERSION:=.*/PKG_VERSION:=${new}/" luci-app-mt5700m/Makefile
+          fi
+
+          echo "version=${new}" >> "${GITHUB_OUTPUT}"
+          echo "base_version=${base}" >> "${GITHUB_OUTPUT}"
+          echo "构建版本：${new}（来源：${source_desc}）"
+
+          {
+            echo '### 构建版本'
+            echo
+            echo "- 解析结果：\`${new}\`"
+            echo "- 来源：${source_desc}"
+            if [ "${new}" != "${base}" ]; then
+              echo "- 基线（Makefile 原值）：\`${base}\`，已在工作区覆盖，**不写回仓库**"
+            fi
+            if ! grep -q "^## \[${new}\]" CHANGELOG.md 2>/dev/null; then
+              echo "- 警告：CHANGELOG.md 中没有 \`[${new}]\` 条目，Release 说明会标注缺失"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Install build dependencies
         run: |
@@ -131,9 +225,13 @@ jobs:
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          RESOLVED_VERSION: ${{ steps.resolve_version.outputs.version }}
         run: |
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            TAG="manual-$(date +%Y%m%d-%H%M%S)"
+            # Manual builds never claim a formal vX.Y.Z tag: the version is
+            # baked into the name so a snapshot is identifiable at a glance
+            # (e.g. manual-v2.4.9-20260910-013000).
+            TAG="manual-v${RESOLVED_VERSION}-$(date +%Y%m%d-%H%M%S)"
           else
             TAG="${GITHUB_REF_NAME}"
           fi
