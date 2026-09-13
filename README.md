@@ -79,6 +79,22 @@
 | **高级** | 统一收纳 USB/PCIe、通信诊断和 MT5700M 专用 AT 终端入口 |
 | **其它** | 定期缓存模组温度，供 H5000M 风扇控制等本机组件低开销共享 |
 
+## 与 luci-app-mt5700 的区别
+
+本仓库与同系列的 [`luci-app-mt5700`](https://github.com/LianXia233/luci-app-mt5700) 都面向 MT5700M-CN 5G 模组，但技术路线不同，按场景选用：
+
+| 维度 | luci-app-mt5700m（本仓库） | luci-app-mt5700 |
+|:--|:--|:--|
+| 后端实现 | 纯 LuCI（JS），依赖外部 `ubus-at-daemon` 守护进程与 `sms-tool_q` | Rust 后端 `at-webserver-rust` 随包内置，单包交付 |
+| 通信架构 | LuCI → ubus（at-daemon / sms-tool_q）→ 模组 | LuCI → rpcd（ucode 代理 `mt5700.uc`）→ Rust → 模组 AT |
+| 拨号方式 | NCM 拨号（依赖 `kmod-usb-net-cdc-ncm` 等内核模块） | PCUI 串口 AT（`SERIAL`，默认 `/dev/ttyUSB1`，TCP 备用） |
+| 功能侧重 | 概览、移动数据、网络与小区、短信、系统维护、流量历史 | 扫频、定时锁频、企业微信推送、通知日志（含 12 页全功能管理） |
+| 版本 / 许可 | 2.x / Apache-2.0 | v1.12.2 / MIT |
+
+> **两个插件互不兼容：** 二者都直接接管同一 MT5700M 模组的控制通道（AT/串口）与数据接口，同一台设备上同时安装会争用通道、造成配置冲突，因此管理同一模组时只能二选一，不可同时启用。
+
+选型：偏好纯 LuCI、NCM 拨号、配套原版 WebUI 的选本仓库；需要扫频 / 锁频 / 常驻后端管控的选 `luci-app-mt5700`。
+
 ## 安装与编译
 
 源码包位于 `luci-app-mt5700m/`，按以下步骤编译安装：
