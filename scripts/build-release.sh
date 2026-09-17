@@ -123,7 +123,9 @@ echo "INFO: re-copied pristine www/5700 (mt5700webui 4.0) into staging_dir after
 # If this fails, the SDK reused a cached htdocs copy and the package would be broken.
 # We check for the homepage entry-button class (a JS string literal that survives
 # any minification, unlike a // comment) and for the bundled WebUI SPA entry.
-if ! grep -rq "mt5700m-webui-cta" staging_dir/target-*/root-*/www/luci-static/resources/view/mt5700m/ 2>/dev/null; then
+# Literal: the refactored LuCI frontend (v2.5, status.js) marks the /5700 entry
+# button with class `mt-hero-btn`; older releases used `mt5700m-webui-cta`.
+if ! grep -rq "mt-hero-btn" staging_dir/target-*/root-*/www/luci-static/resources/view/mt5700m/ 2>/dev/null; then
   echo "ERROR: built www tree is missing the WebUI entry button (SDK caching?)" >&2
   exit 1
 fi

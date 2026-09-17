@@ -33,8 +33,14 @@ LUCI_TITLE:=MT5700M module management
 # variables, the L.resource() stylesheet loader and rpc.declare/fs.exec from
 # luci-base >= 25.12.  OpenWrt < 25.12 (24.10 and earlier) is intentionally
 # NOT supported; 25.12 is the current stable series and 24.10 reached EOL in
-# September 2026.
-LUCI_DEPENDS:=+luci-base (>= 25.12) +ubus-at-daemon +sms-tool_q
+# September 2026.  NOTE: OpenWrt DEPENDS has no version-constraint syntax
+# (unlike EXTRA_DEPENDS, which supports the one-word `(>=X)` form for ucode
+# format deps) — a `pkg (>= X)` token is whitespace-split into separate
+# pseudo-packages, breaks `make defconfig` with "dependency does not exist"
+# warnings and a Kconfig syntax error.  The floor is therefore not enforced
+# by the package Makefile; the feed-provided luci-base is expected to be >=
+# 25.12.
+LUCI_DEPENDS:=+luci-base +ubus-at-daemon +sms-tool_q
 LUCI_EXTRA_DEPENDS:=kmod-usb2 (>=0), kmod-usb3 (>=0), kmod-usb-serial (>=0), kmod-usb-serial-option (>=0), kmod-usb-net (>=0), kmod-usb-net-cdc-ether (>=0), kmod-usb-net-cdc-ncm (>=0)
 LUCI_PKGARCH:=all
 
