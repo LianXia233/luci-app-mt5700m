@@ -138,7 +138,7 @@ return view.extend({
 		var messages = parser.parseMessages(listResult.stdout || '');
 		var info = parser.parseInfo(infoResult.stdout || '');
 		var history = this.sentHistory();
-		var groups = parser.groupMessages(messages);
+		var groups = parser.groupMessages(messages.concat(history));
 		var self = this;
 
 		var slots = '';
@@ -181,6 +181,12 @@ return view.extend({
 		}
 		var chatBody = E('div', { 'class': 'mt-sms-chat-list' }, []);
 		var chatShell = E('div', { 'class': 'mt-sms-chat' }, [ chatBody ]);
+		/* 初始选中第一个会话：立即填充聊天面板，避免空面板直到手动点击（评审 P2） */
+		if (groups.length) {
+			groups[0].messages.forEach(function(msg) { chatBody.appendChild(chatItem(msg)); });
+			navEmpty.style.display = 'none';
+			chatShell.style.display = '';
+		}
 		var composeInput = E('input', { 'class': 'mt-sms-compose-input', 'type': 'tel', 'placeholder': _('Phone number…') });
 		var composeText = E('input', { 'class': 'mt-sms-compose-input', 'type': 'text', 'placeholder': _('Write a message…') });
 		var sendBtn = E('button', { 'type': 'button', 'class': 'mt-sms-compose-action mt-sms-toolbar-action' }, _('Send'));

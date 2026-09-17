@@ -169,7 +169,7 @@ return view.extend({
 					E('h3', { 'class': 'mt-card-title' }, _('SIM and radio')),
 					E('p', { 'class': 'mt-card-desc' }, _('Daily SIM and radio controls defined by the MT5700M AT command manual.')),
 					c.stateRow(_('Current radio state'), functionLevel === '0' ? _('Airplane mode') : _('Online')),
-					c.actionBar(c.btn(functionLevel === '0' ? _('Resume mobile radio') : _('Enter airplane mode'), function() { self.runConfirmed(_('Change radio function'), functionLevel === '0' ? _('Resume mobile registration and data service?') : _('Airplane mode immediately disconnects mobile data and voice service.'), [ 'airplane', functionLevel === '0' ? '1' : '0' ], functionLevel !== '0'); })),
+					c.actionBar(c.btn(functionLevel === '0' ? _('Resume mobile radio') : _('Enter airplane mode'), function() { c.runConfirmed(_('Change radio function'), functionLevel === '0' ? _('Resume mobile registration and data service?') : _('Airplane mode immediately disconnects mobile data and voice service.'), [ 'airplane', functionLevel === '0' ? '1' : '0' ], functionLevel !== '0'); })),
 					c.formRow(_('Module status LED'), ledSelect),
 					c.actionBar(c.btn(_('Apply LED setting'), function() { c.confirmRun(_('Module status LED'), _('The LED setting is stored by the module and takes effect after restart.'), [ 'advanced-set', 'led', ledSelect.value ], true); })),
 					c.actionBar(c.btn(_('Manage SIM PIN'), function() { self.showPinManager(sim); })),
@@ -200,14 +200,14 @@ return view.extend({
 					E('button', { 'class': 'btn cbi-button-action', 'click': function() {
 						if (!/^http:\/\//.test(fotaUrl.value || ''))
 							return ui.addNotification(null, E('p', {}, _('Enter a valid HTTP update-server URL.')), 'warning');
-						self.runConfirmed(_('Start firmware download'), _('The modem will contact the specified server and may temporarily use mobile data.'), [ 'fota-start', fotaUrl.value ], false);
+						c.runConfirmed(_('Start firmware download'), _('The modem will contact the specified server and may temporarily use mobile data.'), [ 'fota-start', fotaUrl.value ], false);
 					} }, _('Check and download'))
 				]),
 				E('div', { 'class': 'mt-advanced-actions' }, [
 					E('button', { 'class': 'btn cbi-button', 'click': function() { window.location.reload(); } }, _('Refresh status')),
-					E('button', { 'class': 'btn cbi-button', 'disabled': fotaState === '31' ? null : 'disabled', 'click': function() { self.runConfirmed(_('Resume download'), _('Resume the paused firmware download?'), [ 'fota-resume' ], false); } }, _('Resume Download')),
-					E('button', { 'class': 'btn cbi-button-negative', 'disabled': fotaState === '40' ? null : 'disabled', 'click': function() { self.runConfirmed(_('Install firmware'), _('The modem will restart. Do not disconnect power until installation is complete.'), [ 'fota-upgrade' ], true); } }, _('Install update')),
-					E('button', { 'class': 'btn cbi-button-negative', 'click': function() { self.runConfirmed(_('Restart Module'), _('This will restart the MT5700M module and temporarily interrupt 5G connectivity.'), [ 'restart' ], true, 24000); } }, _('Restart Module'))
+					E('button', { 'class': 'btn cbi-button', 'disabled': fotaState === '31' ? null : 'disabled', 'click': function() { c.runConfirmed(_('Resume download'), _('Resume the paused firmware download?'), [ 'fota-resume' ], false); } }, _('Resume Download')),
+					E('button', { 'class': 'btn cbi-button-negative', 'disabled': fotaState === '40' ? null : 'disabled', 'click': function() { c.runConfirmed(_('Install firmware'), _('The modem will restart. Do not disconnect power until installation is complete.'), [ 'fota-upgrade' ], true); } }, _('Install update')),
+					E('button', { 'class': 'btn cbi-button-negative', 'click': function() { c.runConfirmed(_('Restart Module'), _('This will restart the MT5700M module and temporarily interrupt 5G connectivity.'), [ 'restart' ], true, 24000); } }, _('Restart Module'))
 				])
 			]),
 			c.details(_('Technical details'), null, E('pre', { 'class': 'mt-raw' }, raw || _('No response.')))

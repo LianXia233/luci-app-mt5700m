@@ -119,7 +119,9 @@ function btnLink(label, href, opts) {
 	var cls = opts.cls || 'mt-session-action';
 	if (opts.primary) cls += ' mt-diag-action--primary';
 	if (opts.danger) cls += ' mt-session-action--danger';
-	return E('a', { 'class': cls, 'href': href }, label);
+	var attrs = { 'class': cls, 'href': href };
+	if (opts.click) attrs.click = opts.click;
+	return E('a', attrs, label);
 }
 
 function actionBar(children) {
