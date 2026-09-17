@@ -26,7 +26,15 @@ PKG_RELEASE:=1
 PKG_LICENSE:=Apache-2.0
 
 LUCI_TITLE:=MT5700M module management
-LUCI_DEPENDS:=+luci-base +ubus-at-daemon +sms-tool_q
+# Refactored LuCI frontend (v2.5): ES2018+ client-side JavaScript built on the
+# LuCI2 framework with a shared design system (resources/mt5700m/style.css),
+# a component library (components.js), a unified data channel (api.js) and a
+# pure AT parser layer (parser.js).  It uses `:root[data-darkmode]` theme
+# variables, the L.resource() stylesheet loader and rpc.declare/fs.exec from
+# luci-base >= 25.12.  OpenWrt < 25.12 (24.10 and earlier) is intentionally
+# NOT supported; 25.12 is the current stable series and 24.10 reached EOL in
+# September 2026.
+LUCI_DEPENDS:=+luci-base (>= 25.12) +ubus-at-daemon +sms-tool_q
 LUCI_EXTRA_DEPENDS:=kmod-usb2 (>=0), kmod-usb3 (>=0), kmod-usb-serial (>=0), kmod-usb-serial-option (>=0), kmod-usb-net (>=0), kmod-usb-net-cdc-ether (>=0), kmod-usb-net-cdc-ncm (>=0)
 LUCI_PKGARCH:=all
 

@@ -1,7 +1,14 @@
 'use strict';
 'require view';
 'require form';
-'require mt5700m.controls as controls';
+'require mt5700m.components as c';
+
+/*
+ * MT5700M LuCI — 通信诊断（settings）
+ * ---------------------------------------------
+ * 纯 LuCI form 配置页（uci 'mt5700m' section 'settings'）：管理通道连接方式。
+ * 表单框架保留 LuCI 原生能力；外观统一到 mt- 设计系统。
+ */
 
 return view.extend({
 	render: function() {
@@ -47,25 +54,14 @@ return view.extend({
 		o.rmempty = false;
 
 		return m.render().then(function(formNode) {
-			return E('div', { 'class':'mt-diag-page mt-ui-page' }, [
-				E('style', {}, [
-					'.mt-diag-page{max-width:900px;margin:0 auto}.mt-diag-hero{display:flex;justify-content:space-between;align-items:center;gap:18px;padding:20px 22px;margin-bottom:16px;border-radius:15px;background:linear-gradient(135deg,#304667,#3b587d);color:#fff}.mt-diag-hero h2{margin:0 0 5px;color:#fff;font-size:22px}.mt-diag-hero p{margin:0;font-size:12px;opacity:.8}.mt-diag-badge{padding:6px 10px;border-radius:999px;background:rgba(255,255,255,.14);font-size:11px;white-space:nowrap}',
-					'.mt-diag-card{padding:18px 20px;border:1px solid var(--border-color-medium,#d9dde4);border-radius:13px;background:var(--background-color-high,#fff)}.mt-diag-card-head{margin-bottom:10px}.mt-diag-card-head h3{margin:0 0 5px;font-size:16px}.mt-diag-card-head p{margin:0;color:var(--text-color-medium,#69717d);font-size:12px;line-height:1.5}.mt-diag-card .cbi-map>h2,.mt-diag-card .cbi-map-descr,.mt-diag-card .cbi-section>h3{display:none}.mt-diag-card .cbi-section{margin:0;padding:0;border:0;box-shadow:none}.mt-diag-card .cbi-section-node{padding:0}.mt-diag-card .cbi-value{padding:9px 0;border-bottom:1px solid var(--border-color-low,#edf0f4)}.mt-diag-card .cbi-value:last-child{border-bottom:0}.mt-diag-back{margin-top:14px}',
-					'@media(max-width:720px){.mt-diag-hero{display:block}.mt-diag-badge{display:inline-block;margin-top:12px}.mt-diag-card{padding:16px}}'
-				].join('')),
-				controls.styleNode(),
-				E('section', { 'class':'mt-diag-hero mt-ui-hero' }, [
-					E('div', {}, [ E('h2', {}, _('Communication diagnostics')), E('p', {}, _('Low-level AT channel settings for troubleshooting module communication.')) ]),
-					E('span', { 'class':'mt-diag-badge' }, _('Automatic mode recommended'))
-				]),
-				E('section', { 'class':'mt-diag-card mt-ui-card' }, [
-					E('div', { 'class':'mt-diag-card-head' }, [
-						E('h3', {}, _('AT communication')),
-						E('p', {}, _('These settings do not change APN or mobile data. Leave them unchanged unless automatic detection fails.'))
-					]),
-					formNode
-				]),
-				E('div', { 'class':'mt-diag-back' }, E('a', { 'class':'btn', 'href':L.url('admin/modem/mt5700m/system') }, _('Back to Device and SIM')))
+			return E('div', { 'class': 'mt-page', 'style': 'max-width:900px;margin:0 auto' }, [
+				c.cssLink(),
+				c.hero(null, _('Communication diagnostics'), _('Low-level AT channel settings for troubleshooting module communication.'), [
+					c.badge(_('Automatic mode recommended'), 'primary')
+				], 'slate'),
+				c.card(_('AT communication'), _('These settings do not change APN or mobile data. Leave them unchanged unless automatic detection fails.'), formNode),
+				E('div', { 'class': 'mt-advanced-actions', 'style': 'margin-top:14px;justify-content:flex-start' },
+					E('a', { 'class': 'btn', 'href': L.url('admin/modem/mt5700m/system') }, _('Back to Device and SIM')))
 			]);
 		});
 	}
