@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.5.0] - 2026-09-17
+
+### Changed
+- **LuCI 管理页前端重构为分层 ES2018+ 架构（仅动 LuCI，WebUI / rpcd 后端不受影响）**：原单文件 `controls.js` 拆分为四层——`resources/mt5700m/style.css`（设计系统，CSS 变量 + `:root[data-darkmode]` 暗色主题）、`components.js`（组件库：卡片/表单/信号表/仪表/确认弹窗）、`api.js`（统一数据通道：rpc.declare 声明 mt5700m status/log/connect/disconnect/redial、mt5700m-traffic summary、network.device status，及 fs.exec AT 子命令封装）、`parser.js`（纯 AT 文本/PDU 解析层）。`view/mt5700m/` 全部 8 个页面（概览/移动数据/无线与小区/短信/模块与 SIM/AT 终端/高级设置/通信诊断）基于新分层重写，行为契约与原版一致：拨号/断开/重拨、APN、会话计数、锁频、邻区、SSB 波束、短信收发/导入导出、PIN/PUK、AT 终端、USB 模式等命令路径逐项对齐，fs.exec 子命令与后端契约不变。i18n 全部 `_()` 键保留原文，`po/` 翻译零改动；新增 UI 键（ADVANCED/MESSAGING/Sent/Received 等）无翻译时回退英文。
+- **OpenWrt 25.12 基线**：`LUCI_DEPENDS` 增加 `luci-base (>= 25.12)`，仅支持当前稳定分支；24.10 及更早（2026-09 EOL）不再支持。主题跟随 luci-base 的 `:root[data-darkmode]` 选择器，样式表经 `L.resource()` 加载。
+- **保留 `LUCI_MINIFY_JS/CSS:=0`**：构建期 jsmin/csstidy 会破坏已压缩的 React WebUI bundle 与依赖规则顺序的 Semi Design 主题，维持禁用并补充注释说明。
+
+### Fixed
+- **修复原版 GSM7 短信解码隔位丢字缺陷**：`decodeGsm7` 在 bit 对齐处（shift=0）未对低 7 位做 `& 0x7f` 掩码，首个与每 8 个 septet 出现丢字（如 `Hello` 首字符丢失）；重构版已修正，短信正文解码完整。
+- **修复评审发现的四处缺陷**（Codex 审查 PR #3）：① `system.js` 的飞机模式/固件下载/恢复/安装/重启确认仍调用已移除的 `self.runConfirmed`（点击抛 TypeError），统一改走组件库 `c.runConfirmed`；② `btnLink()` 丢弃 `opts.click` 导致短信工具栏 Settings/导入导出/清除/刷新全部失效，现已透传点击回调；③ 本地已发历史未并入会话分组，发送后刷新消息消失，现已合并（已发消息显示 `Sent` 气泡）；④ 首个会话默认选中但聊天面板为空，现渲染时即填充。
+
+### Removed
+- 删除旧 `htdocs/luci-static/resources/mt5700m/controls.js`（被四层架构取代，8 个页面均不再引用）。
+
 ## [2.4.8] - 2026-09-10
 
 ### Changed
