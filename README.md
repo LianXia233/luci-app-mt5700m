@@ -2,198 +2,242 @@
 
 # MT5700M Manager for OpenWrt
 
-**面向移远 MT5700M-CN 5G 模组的 OpenWrt LuCI 管理器**
+**面向移远 MT5700M-CN 5G 模组的高性能 OpenWrt LuCI 管理器与 Web 控制中心**
 
-统一管理状态、移动数据、网络与小区、短信、系统维护与 AT 终端，并按 MT5700M 手册识别 USB 正常 / 升级 / Dump 模式。
+统一聚合状态监控、NCM 移动数据、小区与 7 路 SSB 波束、短信中心、原生流量统计与专用 AT 终端，并按 MT5700M 手册精准识别 USB 正常 / 升级 / Dump 硬件模式。
 
 [![CI](https://github.com/LianXia233/luci-app-mt5700m/actions/workflows/ci.yml/badge.svg)](https://github.com/LianXia233/luci-app-mt5700m/actions/workflows/ci.yml)
 [![Build Release](https://github.com/LianXia233/luci-app-mt5700m/actions/workflows/release.yml/badge.svg)](https://github.com/LianXia233/luci-app-mt5700m/actions/workflows/release.yml)
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/Version-v2.4.8--r1-blue.svg?style=flat-square)](https://github.com/LianXia233/luci-app-mt5700m/releases)
+[![OpenWrt](https://img.shields.io/badge/OpenWrt-Filogic%20%7C%20ImmortalWrt-00C49F.svg?style=flat-square&logo=openwrt)](https://openwrt.org/)
+[![Backend](https://img.shields.io/badge/Backend-Rust%20(std--only)-DEA584.svg?style=flat-square&logo=rust)](mt5700webui-openwrt-server/at-webserver/)
+[![WebUI](https://img.shields.io/badge/WebUI-React%20%2B%20Semi%20Design-61DAFB.svg?style=flat-square&logo=react)](https://github.com/inotdream/mt5700webui-openwrt-server)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square)](LICENSE)
+
+<p align="center">
+  <b>单包交付</b>：LuCI 原生视图 + WebUI 4.0 独立前端 + Rust 双入口后端一键集成<br>
+  不依赖外部云端、不上传 SIM 隐私、零第三方 Rust 依赖、原生内核流量统计
+</p>
 
 </div>
 
 ---
 
-## 目录
-
-- [项目简介](#项目简介)
-- [界面预览](#界面预览)
-- [主要功能](#主要功能)
-- [安装与编译](#安装与编译)
-  - [手动构建与版本号](#手动构建与版本号)
-- [依赖说明](#依赖说明)
-- [流量历史](#流量历史)
-- [WebUI 独立前端（mt5700webui）](#webui-独立前端mt5700webui)
-- [版本信息](#版本信息)
-- [设计边界与许可](#设计边界与许可)
+| 属性维度 | 说明与工程规范 |
+|:--|:--|
+| **软件包名** | `luci-app-mt5700m`（单包内嵌 LuCI 前端、独立 WebUI 与 Rust 后端） |
+| **适配硬件** | 移远 Quectel MT5700M-CN 5G 模组 |
+| **数据面拨号** | NCM 协议（基于 `kmod-usb-net-cdc-ncm`，高吞吐低开销） |
+| **控制面通讯** | 默认走 UBUS 共享通道（`ubus-at-daemon`），消除多前端串口争抢 |
+| **访问入口** | LuCI 路径：`调制解调器` → `MT5700M 管理` · WebUI 独立路径：`http://<路由器IP>/5700/` |
 
 ---
 
-## 项目简介
-
-本项目是一个专门面向 **移远 MT5700M-CN 5G 模组** 的 OpenWrt LuCI 管理器。它将状态、移动数据、网络与小区、短信、系统维护和 AT 终端统一到一个应用中，并按照 MT5700M 手册识别 **USB 正常 / 升级 / Dump** 三种模式。
-
-- 简体中文界面
-- 不依赖云服务，不上传模组或 SIM 数据
-- 版本采用标准的 `主版本.次版本.修订版本-r打包修订` 格式（如 `2.3.33-r1`）
-
 ## 界面预览
 
-<table>
-  <tr>
-    <td width="50%">
-      <img src="docs/preview/01-overview.png" alt="MT5700M 概览页：信号强度、载波聚合、IPv4/IPv6 地址与模组 / SIM 信息"><br>
-      <b>概览页</b><br>
-      首页集中展示 RSRP / RSRQ / SINR / 温度、NR-n41 载波状态、IPv4/IPv6 双栈地址、模组固件、IMEI 与 SIM 签约速率。
-    </td>
-    <td width="50%">
-      <img src="docs/preview/02-mobile-data.png" alt="移动数据：APN、IPv4/IPv6、MTU 与模组流量计数"><br>
-      <b>移动数据</b><br>
-      配置自动拨号 / 网络接口 / APN / IP 协议，查看已分配地址、IPv4 DNS、IPv6 PD / DNS 以及模组原生流量计数。
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <img src="docs/preview/03-network-cell.png" alt="网络与小区：RSRP / RSRQ / SINR / 温度、服务小区、无线状态"><br>
-      <b>网络与小区</b><br>
-      服务小区、接入制式、MCC/MNC、ARFCN、PCI 与无线链路详情（NR-MCS、上下行调制、QoS）；5G 波束数与 NSA 辅连接可视化。
-    </td>
-    <td width="50%">
-      <img src="docs/preview/04-ssb-beams.png" alt="SSB 波束与 NR 邻区：服务 SSB、波束 RSRP/SINR、NR 邻区锁定与小区扫描"><br>
-      <b>SSB 波束与 NR 邻区</b><br>
-      可视化 7 路 SSB 波束的 RSRP / SINR 强度；支持 NR 邻区的入驻、锁定、刷新状态与小区扫描控制。
-    </td>
-  </tr>
-</table>
+<div align="center">
 
-## 主要功能
+| 概览页 (Dashboard) | 移动数据 (Mobile Data) |
+|:---:|:---:|
+| <img src="docs/preview/01-overview.png" alt="概览页" width="420"/> | <img src="docs/preview/02-mobile-data.png" alt="移动数据" width="420"/> |
+| 实时 RSRP/RSRQ/SINR、模组温度、载波聚合 (NR-n41)、IPv4/IPv6 双栈及 SIM 签约速率 | APN/PDP 配置、IPv4 DNS/IPv6 PD 分配、接口 MTU 与模组原生流量计数 |
+| **网络与小区 (Cell & Radio)** | **SSB 波束与 NR 邻区 (Beams & Scan)** |
+| <img src="docs/preview/03-network-cell.png" alt="网络与小区" width="420"/> | <img src="docs/preview/04-ssb-beams.png" alt="SSB 波束与 NR 邻区" width="420"/> |
+| 服务小区 ARFCN/PCI、上下行调制阶数 (NR-MCS)、QoS 参数及 5G 波束可视化 | **7 路 SSB 空间波束**强度 RSRP/SINR 谱、NR 邻区监听、小区锁定与扫频 |
 
-| 模块 | 能力 |
-| --- | --- |
-| **首页概览** | 信号质量、载波聚合、IPv4/IPv6 与移动流量优先展示；RSRP / RSRQ / SINR 等信号质量人性化显示 |
-| **移动数据** | 网关、DNS、PDP 会话和模组原生计数集中管理；APN、PDP、漫游和移动数据连接管理 |
-| **模组与 SIM 卡** | 模组身份、手机号、SIM 信息和签约速率集中展示 |
-| **网络与小区** | 网络制式、LTE/WCDMA 频段及小区锁定 |
-| **短信** | 短信收发与联系人友好的列表界面 |
-| **系统维护** | IMEI、手机号、签约速率、USB/网口状态及系统维护 |
-| **高级** | 统一收纳 USB/PCIe、通信诊断和 MT5700M 专用 AT 终端入口 |
-| **其它** | 定期缓存模组温度，供 H5000M 风扇控制等本机组件低开销共享 |
+</div>
 
-## 与 luci-app-mt5700 的区别
+---
 
-本仓库与同系列的 [`luci-app-mt5700`](https://github.com/LianXia233/luci-app-mt5700) 都面向 MT5700M-CN 5G 模组，但技术路线不同，按场景选用：
+## 系统拓扑与多层协同架构
 
-| 维度 | luci-app-mt5700m（本仓库） | luci-app-mt5700 |
-|:--|:--|:--|
-| 后端实现 | 纯 LuCI（JS），依赖外部 `ubus-at-daemon` 守护进程与 `sms-tool_q` | Rust 后端 `at-webserver-rust` 随包内置，单包交付 |
-| 通信架构 | LuCI → ubus（at-daemon / sms-tool_q）→ 模组 | LuCI → rpcd（ucode 代理 `mt5700.uc`）→ Rust → 模组 AT |
-| 拨号方式 | NCM 拨号（依赖 `kmod-usb-net-cdc-ncm` 等内核模块） | PCUI 串口 AT（`SERIAL`，默认 `/dev/ttyUSB1`，TCP 备用） |
-| 功能侧重 | 概览、移动数据、网络与小区、短信、系统维护、流量历史 | 扫频、定时锁频、企业微信推送、通知日志（含 12 页全功能管理） |
-| 版本 / 许可 | 2.x / Apache-2.0 | v1.12.2 / MIT |
+系统采用**双前端共用统一后端通道**的设计，通过 UBUS 代理层实现并发仲裁，彻底避免传统工具在 Web 与后台同时调用时出现的 TTY 串口锁死。
 
-> **两个插件互不兼容：** 二者都直接接管同一 MT5700M 模组的控制通道（AT/串口）与数据接口，同一台设备上同时安装会争用通道、造成配置冲突，因此管理同一模组时只能二选一，不可同时启用。
+```mermaid
+flowchart TD
+    subgraph Client["前端展示层 (Dual-Frontend)"]
+        LuCI["LuCI 管理页面<br/>(原生 OpenWrt 沉浸体验)"]
+        WebUI["mt5700webui 4.0 独立面板<br/>(React + Semi Design)"]
+    end
 
-选型：偏好纯 LuCI、NCM 拨号、配套原版 WebUI 的选本仓库；需要扫频 / 锁频 / 常驻后端管控的选 `luci-app-mt5700`。
+    subgraph Core["Rust 高性能后端 (at-webserver 4.0)"]
+        RustBin["单静态二进制: at-webserver-rust<br/>(std-only 无外部 C 库依赖)"]
+        ModeWS["WebSocket Daemon 模式<br/>(服务 WebUI 前端)"]
+        ModeCLI["LuCI Shell 模式<br/>(对齐 mt5700m-at 命令行契约)"]
+    end
+
+    subgraph Daemon["系统通信与守护层"]
+        UbusDaemon["ubus-at-daemon 守护进程<br/>(UBUS 共享通道，排队免争抢)"]
+        SerialDirect["PCUI 串口通道 (直连 /dev/ttyUSB1)<br/>(独占模式，支持 URC 实时推送与昼夜锁频)"]
+        SmsTool["sms-tool_q (短信读写辅助进程)"]
+    end
+
+    subgraph Hardware["移远 MT5700M-CN 5G 硬件模组"]
+        ModemAT["AT 控制面通道 (PCUI / Modem 端口)"]
+        ModemData["NDIS / NCM 数据面通道 (USB 物理端点)"]
+    end
+
+    LuCI -->|执行 /usr/sbin/mt5700m-at| ModeCLI
+    WebUI -->|WebSocket 交互| ModeWS
+
+    RustBin -.-> ModeWS
+    RustBin -.-> ModeCLI
+
+    ModeWS & ModeCLI -->|默认走 UBUS 共享| UbusDaemon
+    ModeWS & ModeCLI -.->|可选直连模式| SerialDirect
+
+    UbusDaemon & SerialDirect -->|AT 指令调度| ModemAT
+    LuCI -->|短信调度| SmsTool --> ModemAT
+    ModemData -->|kmod-usb-net-cdc-ncm| NetDev["网卡设备 wwan0 / usb0"]
+```
+
+---
+
+## 硬件工作模式识别模型
+
+应用根据移远 MT5700M 官方工程手册规范，实时探测 USB 枚举状态，动态判定当前硬件生命周期模式并显示对应的维护建议：
+
+```mermaid
+flowchart LR
+    Start["硬件插入 / 开机枚举"] --> Detect{"识别 USB 端口组合"}
+    Detect -->|正常枚举 PCUI + NCM + AT| Normal["🟢 Normal 模式<br/>全功能管理与 NCM 拨号"]
+    Detect -->|仅保留下载控制口| Upgrade["🟡 Upgrade 模式<br/>固件刷写与升级中"]
+    Detect -->|捕获 RAMDump 端口| Dump["🔴 Dump 模式<br/>内核转储与异常排查"]
+```
+
+---
+
+## 主要功能矩阵
+
+系统划分为七大功能模块，提供从网络层到底层芯片级的完整维测能力：
+
+| 功能域 | 核心模块 | 详细能力说明 |
+|:---|:---|:---|
+| **核心状态** | **首页概览** | 聚合展示物理信号量（RSRP / RSRQ / SINR / 模组温度）、载波聚合状态、双栈 IP、模块固件版本与 IMEI |
+| **移动网络** | **移动数据** | NCM 自动拨号接入、APN 配置、PDP 上下文控制、IPv4 DNS / IPv6 Prefix Delegation 获取与 MTU 优化 |
+| **射频微测** | **网络与小区** | 锁定指定 5G NR / LTE 频段、ARFCN 频点与 PCI 物理小区；监听 NR-MCS 调制方式与下行 QoS |
+| **波束感知** | **SSB 波束与邻区** | 针对 MT5700M 芯片深度呈现 **7 路空间 SSB 波束**强弱梯度分布；支持实时小区扫描与邻区常驻 |
+| **信息服务** | **短信中心** | 支持 PDU / Text 短信收发、长短信自动分片重组及通讯录友好呈现，本地存储免泄露 |
+| **系统维测** | **高级与 AT 终端** | MT5700M 专用 Web 终端（含语法高亮与常用模板）；USB / PCIe 通信链路状态深度诊断 |
+| **本地监控** | **流量与温度调度** | 纯内核网卡计数器解析（**零依赖 vnStat**）；定时缓存模组温度供机壳风扇等脚本低开销共享 |
+
+---
+
+## 插件技术路线对比选型
+
+本仓库与同系列的 [`luci-app-mt5700`](https://github.com/LianXia233/luci-app-mt5700) 均深度适配 MT5700M 模组，但底层通讯与设计哲学完全不同，请按需选型：
+
+| 评估维度 | luci-app-mt5700m (本仓库) | luci-app-mt5700 |
+|:---|:---|:---|
+| **架构设计哲学** | 纯 LuCI 视图 + 轻量 Rust std 双入口后端 + 现代化独立 WebUI | 12 页深度控制台 + 常驻 Tokio 异步后台进程 |
+| **底层拨号通路** | **NCM 拨号**（基于 `kmod-usb-net-cdc-ncm`，吞吐高、资源低） | **PCUI 串口 AT / NDIS 拨号**（对账容灾重试完善） |
+| **AT 调度机制** | 优先走 **UBUS 共享通道**（`ubus-at-daemon`），前端无并发锁冲突 | **Rust 常驻进程独占 TTY**，内建指令排队调度机 |
+| **特色专属功能** | **7 路 SSB 空间波束分析**、内置 WebUI 4.0 前端、免 vnStat 流量历史 | **全网基站扫频**、昼夜定时频段锁定、企业微信/Webhook 告警推送 |
+| **开源许可规范** | **Apache-2.0**（主程序） / MPL-2.0（底层通信包） | **GPL-3.0** |
+
+> [!CAUTION]
+> **切勿同时安装两款插件！**  
+> 两者均直接争夺 MT5700M 的 USB 通信端点与物理网络设备。在同一固件中同时安装会导致 AT 串口竞争撕裂及数据链路异常，同一设备仅能二选其一。
+
+---
 
 ## 安装与编译
 
-源码包位于 `luci-app-mt5700m/`，按以下步骤编译安装：
+### 预编译包直接安装
+
+GitHub Actions 定期使用官方 OpenWrt SNAPSHOT `mediatek/filogic` SDK 构建发布。在 [Releases](https://github.com/LianXia233/luci-app-mt5700m/releases) 页面获取对应安装包。
 
 ```sh
-# 1. 克隆仓库
-git clone https://github.com/LianXia233/luci-app-mt5700m.git
+# 1. 安装核心依赖内核模块
+opkg update
+opkg install kmod-usb-serial kmod-usb-net-cdc-ncm kmod-usb-net-cdc-ether
 
-# 2. 复制到 OpenWrt 源码包目录
+# 2. 安装底层传输支持包
+opkg install sms-tool_q_*.ipk
+opkg install ubus-at-daemon_*.ipk
+
+# 3. 安装应用本体与中文语言包
+opkg install luci-app-mt5700m_*.ipk
+opkg install luci-i18n-mt5700m-zh-cn_*.ipk
+```
+
+---
+
+### 从源码编译集成
+
+```sh
+# 1. 克隆源码至本地
+git clone [https://github.com/LianXia233/luci-app-mt5700m.git](https://github.com/LianXia233/luci-app-mt5700m.git)
+
+# 2. 拷贝应用目录到 OpenWrt 源码树 package 目录中
 cp -a luci-app-mt5700m/luci-app-mt5700m /path/to/openwrt/package/
 
-# 3. 配置并编译
+# 3. 配置并执行单包编译
 make menuconfig
-# LuCI -> Applications -> luci-app-mt5700m
+# 路径: LuCI -> 3. Applications -> luci-app-mt5700m 勾选为 <*>
 make package/luci-app-mt5700m/compile V=s
 ```
 
-每个 GitHub Release 均由 GitHub Actions 使用官方 OpenWrt SNAPSHOT `mediatek/filogic` SDK 在线构建，附带：
+---
 
-- 应用本体与中文语言包
-- 两个底层传输包（AT 与短信）
-- SDK 构建公钥与 SHA256 校验文件
+### 自动化构建工作流与动态版本注入
 
-> 安装时必须使用与设备固件 ABI / 内核版本相匹配的软件源。
+手动触发 GitHub Actions `Build Release` 工作流时，支持动态版本注入，无需在仓库硬编码修改 `Makefile`：
 
-### 手动构建与版本号
+```mermaid
+flowchart TD
+    Trigger["🚀 触发 Build Release 工作流<br/>(手动 Dispatch / API)"] --> Check{"检查输入参数"}
+    Check -->|指定 version| UseVer["应用用户指定版本"]
+    Check -->|留空 version| CalcVer["按 bump 递增 (patch/minor/major)"]
+    UseVer --> Validate{"语义化版本校验<br/>(X.Y.Z 或 X.Y.Z-后缀)"}
+    CalcVer --> Validate
+    Validate -->|校验失败| Fail["❌ 终止构建 (防产生脏 Release)"]
+    Validate -->|校验通过| Build["覆盖本次编译工作区 Makefile 并调用 SDK 构建"]
+    Build --> Release["📦 发布至 release 标签: manual-v[版本]-[时间戳]"]
+```
 
-手动触发 `Build Release` 工作流时可以直接指定本次构建使用的版本号，无需先提交 `PKG_VERSION` 变更：
-
-| 输入项 | 类型 | 说明 |
-| --- | --- | --- |
-| `version` | 字符串 | 直接指定版本号，如 `2.4.9`、`2.5.0-rc1`；前缀 `v` 可省略。留空则按 `bump` 计算。 |
-| `bump` | 选项 | `none`（默认）/ `patch` / `minor` / `major`，在 `PKG_VERSION` 基线上递增。仅当 `version` 留空时生效。 |
-
-优先级为 `version` > `bump` > `PKG_VERSION` 基线。版本号必须匹配 `X.Y.Z` 或 `X.Y.Z-<后缀>`，否则工作流在构建开始前即失败，不会产出半成品 Release。
-
-解析出的版本只覆盖**本次构建工作区**里的 `Makefile`，不会写回仓库；`scripts/build-release.sh` 会把 `luci-app-mt5700m/` 复制进 SDK，因此安装包文件名、控制数据与 Release 标题都会带上该版本。
-
-手动构建发布到 `manual-v<版本>-<时间戳>` 标签（例如 `manual-v2.4.9-20260910-013000`），不会占用正式 `vX.Y.Z` 标签；正式版本仍需提交 `PKG_VERSION` 后推送 `vX.Y.Z` 标签触发。若 `CHANGELOG.md` 中缺少该版本条目，Release 说明会标注缺失，运行摘要（Job Summary）也会给出警告。
-
-通过 API 触发时同样支持：
+<details>
+<summary><b>展开查看：通过 GitHub REST API 命令行一键触发构建</b></summary>
 
 ```sh
 curl -X POST \
   -H "Accept: application/vnd.github+json" \
   -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-  https://api.github.com/repos/LianXia233/luci-app-mt5700m/actions/workflows/release.yml/dispatches \
+  [https://api.github.com/repos/LianXia233/luci-app-mt5700m/actions/workflows/release.yml/dispatches](https://api.github.com/repos/LianXia233/luci-app-mt5700m/actions/workflows/release.yml/dispatches) \
   -d '{"ref":"main","inputs":{"version":"2.4.9"}}'
 ```
+</details>
 
-## 依赖说明
+---
 
-应用依赖以下组件：
+## 核心底层演进：at-webserver 4.0 (Rust)
 
-- `ubus-at-daemon`
-- `sms-tool_q`
-- OpenWrt 官方 USB 串口 / 网卡内核模块（`kmod-usb-serial`、`kmod-usb-net-cdc-ether`、`kmod-usb-net-cdc-ncm` 等）
+在 `v2.4.0` 演进中，工程彻底废弃了此前的三套陈旧技术栈：
+- **移除** 1659 行的 Shell 脚本版 `mt5700m-at`（维护难度高，并发处理能力薄弱）。
+- **移除** 2108 行的 Python 脚本版 `at-webserver.py`（环境依赖臃肿，嵌入式系统常驻内存开销大）。
+- **取代** 上游 Go 语言版 `at-webserver`（在 ImmortalWrt 6.18+ 内核上易产生串口空闲读误判 EOF 问题，且原生缺少 UBUS 转发层支持）。
 
-## 流量历史
+**重构后的 Rust std-only 核心优势**：
+1. **argv[0] 双入口智能分发**：
+   - 作为独立后台运行时（`at-webserver`），作为 WebSocket 服务监听回环接口驱动 WebUI 4.0。
+   - 被软链接 `/usr/sbin/mt5700m-at` 调用时，自动切入 CLI 兼容模式，执行输出契约与旧版脚本严密对齐，LuCI 前端零修改即可无缝承接。
+2. **极小体积与零依赖**：基于标准库编写，采用 `rust-lld` 自包含链接，构建产物仅为单静态执行文件，免除复杂的 libc/musl 动态链接库版本冲突。
 
-流量历史由应用直接读取 MT5700M 数据接口的内核计数，**不依赖 `vnStat`**，并保存在 `/etc/mt5700m/traffic-history`。
+---
 
-- 升级自早期独立流量插件时会自动迁移已有记录
-- 不再安装或显示单独的“流量统计”应用
+## 运行依赖与本地化存储
 
-## WebUI 前端（mt5700webui 4.0）
+### 运行依赖
+- **内核驱动**：`kmod-usb-serial`、`kmod-usb-net-cdc-ncm`、`kmod-usb-net-cdc-ether`
+- **通信中间件**：`ubus-at-daemon`、`sms-tool_q`
 
-[`mt5700webui-openwrt-server/`](mt5700webui-openwrt-server/VENDOR.md) 归档了上游 [inotdream/mt5700webui-openwrt-server](https://github.com/inotdream/mt5700webui-openwrt-server) v3.0.2 的 WebUI 前端（React + Semi Design，访问 `http://<路由器地址>/5700/`）。
+### 数据存储
+- **流量统计历史**：持久化存放于 `/etc/mt5700m/traffic-history`。直读内核网卡统计，升级时自动迁移，免除安装 `vnStat` 的额外系统损耗。
+- **温度共享缓存**：定期缓存至系统运行内存，便于嵌入式温控守护进程（如 H5000M 风扇温控驱动）快速直读。
 
-- **v2.4.0 起 AT 后端为 Rust 重写版**（`at-webserver` 4.0，`mt5700webui-openwrt-server/at-webserver/src/`）：
-  std-only 零第三方依赖的单静态二进制，同时服务两个前端——
-  以 `at-webserver` 运行是 WebSocket daemon（WebUI 后端），经
-  `/usr/sbin/mt5700m-at` symlink 调用则进入 LuCI shell 后端模式（argv[0] 分发，
-  输出契约与原 shell 脚本逐条对齐，LuCI 前端零改动）
-- 取代了此前的三套实现：shell 版 `mt5700m-at`（1659 行）、Python 版
-  `at-webserver.py`（2108 行）与上游 Go 版 `at-webserver`（Go 版在 ImmortalWrt 6.18
-  内核上存在串口空闲读被误判 EOF 的兼容问题，且缺 UBUS transport）
-- **默认走 UBUS**（经 `ubus-at-daemon` 转发 AT 命令），与 LuCI 管理页共享同一个
-  AT 口：WebUI 与模组管理功能可同时使用，不会争抢 PCUI 串口。
-  UBUS 模式无主动上报通道（来电/新短信实时推送不可用）；SERIAL/NETWORK 模式
-  支持 URC 推送（来电、新短信、存储满、信号变化）与昼夜定时锁频调度器
-- IMEI 相关路径（`set-imei` -> `AT^PHYNUM=IMEI`）按原逻辑原样移植，行为零改动
-- 构建时 `scripts/build-release.sh` 在 runner 上以
-  `aarch64-unknown-linux-musl` 目标交叉编译（std-only，rust-lld 自包含链接，
-  无需交叉工具链），前端（`www/5700`）与 Rust 二进制折叠进 `luci-app-mt5700m`
-  包，单个安装包即包含前端 + 后端 + LuCI 管理页
-- 实机部署差异、文件冲突处理与验证记录见 [`mt5700webui-openwrt-server/VENDOR.md`](mt5700webui-openwrt-server/VENDOR.md)
+---
 
-## 版本信息
+## 许可证与知识产权声明
 
-| 版本 | 说明 |
-| --- | --- |
-| `2.4.8-r1` | 当前版本（OpenWrt 安装包，WebUI 4.0 + Rust 双入口后端，AT 通道 UBUS 共享；所有功能合并为单个 `luci-app-mt5700m` 包，不再提供独立安装入口） |
-
-版本演进与修复记录见 [CHANGELOG.md](CHANGELOG.md)。
-
-## 设计边界与许可
-
-本项目**不是通用蜂窝模组框架**，只实现 MT5700M 所需的能力。
-
-- 低层 AT 与短信传输包来自固定版本的 [FUjr/QModem](https://github.com/FUjr/QModem)，应用内的精简实现保留了来源说明，详见 [`QMODEM-NOTICE`](luci-app-mt5700m/root/usr/share/mt5700m/QMODEM-NOTICE)。该部分受其上游 MPL-2.0 和非商业限制约束，适用于个人、非商业用途。
-- 本仓库自行编写的代码按 [Apache License 2.0](LICENSE) 发布。
+- **本项目主程序代码**：遵循 [Apache License 2.0](LICENSE) 协议发布，商业友好、修改自由。
+- **底层通信包说明**：低层 AT 与短信传输模块精简自 [FUjr/QModem](https://github.com/FUjr/QModem) 项目，源码保留了原始归属说明，详见 [`QMODEM-NOTICE`](luci-app-mt5700m/root/usr/share/mt5700m/QMODEM-NOTICE)。该部分受 MPL-2.0 及其非商业使用附加条款约束，适用于个人学习与非商业场景。
