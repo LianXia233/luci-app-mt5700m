@@ -14,7 +14,10 @@ mod daemon;
 mod dispatcher;
 mod json;
 mod scheduler;
+mod serial;
 mod sha1;
+mod sms;
+mod sock;
 mod ws;
 
 use std::path::Path;

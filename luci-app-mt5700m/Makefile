@@ -40,7 +40,12 @@ LUCI_TITLE:=MT5700M module management
 # warnings and a Kconfig syntax error.  The floor is therefore not enforced
 # by the package Makefile; the feed-provided luci-base is expected to be >=
 # 25.12.
-LUCI_DEPENDS:=+luci-base +ubus-at-daemon +sms-tool_q
+# Refactored backend (v2.6): the Rust `at-webserver` daemon owns the AT
+# serial port EXCLUSIVELY (TIOCEXCL) and serves both frontends through a local
+# control socket — `ubus-at-daemon` is no longer a dependency. SMS is built
+# and sent in-process (pure-Rust PDU encoder), so `sms-tool_q` is also gone.
+# Only luci-base is required.
+LUCI_DEPENDS:=+luci-base
 LUCI_EXTRA_DEPENDS:=kmod-usb2 (>=0), kmod-usb3 (>=0), kmod-usb-serial (>=0), kmod-usb-serial-option (>=0), kmod-usb-net (>=0), kmod-usb-net-cdc-ether (>=0), kmod-usb-net-cdc-ncm (>=0)
 LUCI_PKGARCH:=all
 

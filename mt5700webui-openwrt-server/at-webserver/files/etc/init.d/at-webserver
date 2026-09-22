@@ -44,7 +44,7 @@ start_service() {
 	# 正确做法是按接口描述符匹配，编进内核，见 docs/mt5700-内核驱动集成.md。
 	detect_and_add_usb_serial() {
 		local conn_type
-		config_get conn_type config connection_type 'NETWORK'
+		config_get conn_type config connection_type 'SERIAL'
 		if [ "$conn_type" != "SERIAL" ]; then
 			return 0
 		fi

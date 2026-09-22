@@ -1,8 +1,7 @@
 //! Day/night band-lock scheduler, port of the Python `Scheduler` / Go
 //! `schedule.go` control loop. Applies AT^LTEFREQLOCK / AT^NRFREQLOCK per
 //! time-of-day, toggles airplane mode around the switch and force-unlocks
-//! after a no-service timeout. Runs only for transports that can send
-//! commands (UBUS included; URC stream is not needed here).
+//! after a no-service timeout. Runs for both SERIAL and NETWORK transports.
 
 use crate::daemon::AtClient;
 use std::sync::atomic::{AtomicBool, Ordering};

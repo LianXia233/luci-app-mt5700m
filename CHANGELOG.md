@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.6.0] - 2026-09-22
+
+### Changed
+- **彻底重构 AT 后端，移除 `ubus-at-daemon` 与 `sms-tool_q` 两个第三方依赖**。Rust
+  后端（daemon 模式）现在**独占**打开 MT5700M PCUI 串口（Linux `TIOCEXCL` + 常驻描述符）。
+  LuCI 的 `mt5700m-at` 改为经本地控制套接字（`/var/run/at-webserver.sock`）向 daemon 下发
+  AT 指令，WebUI 走 WebSocket——二者共用同一独占串口，天然串行化，替代旧版
+  `ubus call at-daemon sendat` 的“共享通道”职能；daemon 不在时 CLI 自动退化为独立直连串口。
+- **短信发送改为进程内纯 Rust PDU 编码**（`sms.rs`）：GSM-7 默认字母表 / UCS-2，长短信
+  自动分片为多部分并携带拼接信息元（UDHI），中文短信可靠；短信读取沿用 `AT+CMGL` PDU 解码。
+- **串口自动扫描 + 手动选择**：默认 `connection_type=SERIAL`、`serial_port=auto`，开机自动
+  枚举 `/dev/ttyUSB*` 与 `/dev/ttyACM*`，按 VID/PID（`3466:3301`）、接口类型（`ff:06:12`）
+  识别 PCUI 端口，必要时以 `AT` 应答探测兜底；`mt5700m-at port scan` 可查看、`port set
+  <path|auto>` 可手动选择。
+- **连接模式精简**：删除 `UBUS` 模式，仅保留 `SERIAL`（默认）/`NETWORK`；`AT^PDCPDATAINFO`
+  等 URC 推送在 SERIAL 下原生生效，移除原先仅用于 UBUS 的轮询模拟。
+- 构建与打包同步更新：`Makefile` 仅依赖 `+luci-base`，`build-release.sh` / `release.yml` 不再
+  拉取 `qmodem` feed、不再编译/发布 `ubus-at-daemon` 与 `sms-tool_q`。
+
+### Fixed
+- **修复 SERIAL/NETWORK 模式下 `send()` 与 `stream_command()` 对同一非重入 `Mutex` 二次加锁
+  导致的死锁**（旧代码默认 UBUS 模式掩盖了此问题）：改为仅由 `stream_command` 负责持锁。
+
 ## [2.5.0] - 2026-09-22
 
 ### Changed

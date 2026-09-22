@@ -1,12 +1,15 @@
 #!/bin/sh
 # mt5700webui：初始化 AT WebServer 配置并启用服务
 #
-# 说明：
+# 说明（v2.6 重构）：
 # - WebUI 前端（www/5700）由 Rust 后端 /usr/bin/at-webserver 提供服务
 #   （单二进制双入口：作为 at-webserver 运行是 WebSocket daemon，
 #   经 /usr/sbin/mt5700m-at symlink 调用是 LuCI shell 后端）
-# - 后端默认走 UBUS（经 ubus-at-daemon 转发），与 luci-app-mt5700m 的管理功能
-#   共享同一个 AT 口，避免两者争抢 PCUI 串口
+# - 后端默认 SERIAL 模式：daemon 独占 AT 串口（TIOCEXCL），WebUI 走
+#   WebSocket，LuCI 的 mt5700m-at 走本地控制套接字，共用同一条串口。
+#   serial_port=auto 表示开机自动扫描 /dev/ttyUSB* 选出 MT5700M PCUI 端口；
+#   如需手动指定改为具体路径（如 /dev/ttyUSB1）。
+# - 已移除对 ubus-at-daemon 与 sms-tool_q 的依赖，不需要安装这两个包。
 # - 本脚本只在配置缺失时写入默认值，不覆盖用户已有配置
 
 # 后端文件存在性检查：OpenWrt 构建可能把 /usr/bin/at-webserver 装成 0644，
@@ -31,9 +34,7 @@ if ! uci -q show at-webserver >/dev/null 2>&1 || [ -z "$(uci -q get at-webserver
 	uci -q batch <<-EOF
 		set at-webserver.config=at-webserver
 		set at-webserver.config.enabled=1
-		set at-webserver.config.connection_type=UBUS
-		set at-webserver.config.ubus_at_port=
-		set at-webserver.config.ubus_timeout=10
+		set at-webserver.config.connection_type=SERIAL
 		set at-webserver.config.serial_port=auto
 		set at-webserver.config.serial_baudrate=115200
 		set at-webserver.config.serial_timeout=10
@@ -45,19 +46,24 @@ if ! uci -q show at-webserver >/dev/null 2>&1 || [ -z "$(uci -q get at-webserver
 	EOF
 fi
 
-# 确保关键键存在（升级场景可能缺少 UBUS 相关项）
+# 确保关键键存在（升级场景可能缺少 SERIAL 相关项）
 if [ -z "$(uci -q get at-webserver.config.connection_type)" ]; then
-	uci -q set at-webserver.config.connection_type=UBUS
+	uci -q set at-webserver.config.connection_type=SERIAL
+	uci -q commit at-webserver
+fi
+if [ -z "$(uci -q get at-webserver.config.serial_port)" ]; then
+	uci -q set at-webserver.config.serial_port=auto
 	uci -q commit at-webserver
 fi
 
 # 启用服务：procd 只运行 /etc/rc.d 中有链接的 init 脚本
 /etc/init.d/at-webserver enable
 
-# UBUS 模式依赖 ubus-at-daemon 持有 AT 口
+# 提示：旧版依赖的 ubus-at-daemon / sms-tool_q 已不再需要；若残留运行，
+# 停用 ubus-at-daemon 以免与独占串口的 daemon 争抢 AT 口。
 if [ -x /etc/init.d/ubus-at-daemon ]; then
-	/etc/init.d/ubus-at-daemon enable
-	/etc/init.d/ubus-at-daemon running || /etc/init.d/ubus-at-daemon start
+	/etc/init.d/ubus-at-daemon stop 2>/dev/null
+	/etc/init.d/ubus-at-daemon disable 2>/dev/null
 fi
 
 exit 0

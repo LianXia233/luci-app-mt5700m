@@ -32,7 +32,7 @@ const PDCP_FIELDS: [(&str, bool); 14] = [
 ];
 
 /// Parse one `^PDCPDATAINFO:` line into the `pdcp_data` payload. Shared by
-/// the URC stream path (SERIAL/NETWORK) and the UBUS-mode poll simulation.
+/// the URC stream path (SERIAL/NETWORK) and the WebSocket response path.
 pub fn handle_pdcp(line: &str) -> Option<Value> {
     let body = line.strip_prefix("^PDCPDATAINFO:")?.trim();
     let parts: Vec<&str> = body.split(',').map(|p| p.trim()).collect();

@@ -10,11 +10,8 @@
 
 use crate::at::{self, AtError, AtOutcome, Mode, Settings};
 use std::fmt::Write as FmtWrite;
-use std::io::Write as IoWrite;
 use std::thread::sleep;
 use std::time::Duration;
-
-pub const USB_HELPER_ENV: &str = "MT5700M_USB_HELPER";
 
 // ---------------------------------------------------------------- UCI
 
@@ -1256,6 +1253,10 @@ fn valid_thermal_thresholds(args: &[String]) -> bool {
         && values[8] < values[7]
 }
 
+/// Send one SMS. `sms-tool_q` has been removed; messages are PDU-encoded
+/// in-process (`crate::sms`) and delivered either through the exclusive AT
+/// daemon (preferred) or, when the daemon is not listening, over a direct
+/// exclusive serial port (or the network endpoint as a final fallback).
 fn at_sms_send(settings: &Settings, number: &str, text: &str) -> i32 {
     if !settings.enabled {
         return 2;
@@ -1267,97 +1268,45 @@ fn at_sms_send(settings: &Settings, number: &str, text: &str) -> i32 {
     }
 
     if matches!(settings.mode, Mode::Serial | Mode::Auto) {
+        // Preferred: the daemon owns the serial port exclusively, so route the
+        // whole PDU transaction through its control socket.
+        match crate::sock::daemon_sms(&number, &text) {
+            Ok(_) => return 0,
+            Err(crate::sock::ControlError::Unavailable) => { /* fall through to direct */ }
+            Err(e) => {
+                eprintln!("{}", e.message());
+                return 1;
+            }
+        }
+
         if let Some(device) = at::detect_mt5700m_at_port(settings) {
-            // sms_tool_q performs PDU encoding and waits for +CMGS. Never
-            // retry after invoking it, avoiding duplicate SMS.
-            if which("sms_tool_q") {
-                match std::process::Command::new("sms_tool_q")
-                    .args(["-d", &device, "send", &number, &text])
-                    .status()
-                {
-                    Ok(st) => return st.code().unwrap_or(1),
-                    Err(_) => return 1,
+            let pdus = crate::sms::encode(&number, &text);
+            let mut ok = true;
+            for pdu in &pdus {
+                if let Err(e) = at::serial_cmgs(&device, settings.timeout_s, pdu) {
+                    eprintln!("{}", e.message());
+                    ok = false;
+                    break;
                 }
             }
-            // Text-mode fallback on the serial device.
-            return text_mode_sms_serial(&device, settings.timeout_s, &number, &text);
-        }
-        if matches!(settings.mode, Mode::Serial) {
+            if ok {
+                return 0;
+            }
+            if matches!(settings.mode, Mode::Serial) {
+                return 1;
+            }
+        } else if matches!(settings.mode, Mode::Serial) {
             eprintln!("AT serial port not found");
             return 1;
         }
     }
 
-    // Network fallback via nc-equivalent stream.
+    // Network fallback via nc-equivalent stream (kept for hosts without a
+    // serial node or daemon; no third-party dependency involved).
     match text_mode_sms_network(settings, &number, &text) {
         Ok(()) => 0,
         Err(e) => e,
     }
-}
-
-fn which(bin: &str) -> bool {
-    std::process::Command::new("command")
-        .args(["-v", bin])
-        .status()
-        .is_ok()
-        || std::env::var("PATH").map(|p| {
-            p.split(':').any(|d| {
-                let p = std::path::Path::new(d).join(bin);
-                p.is_file()
-            })
-        }).unwrap_or(false)
-}
-
-fn text_mode_sms_serial(device: &str, timeout_s: u64, number: &str, text: &str) -> i32 {
-    use std::fs::OpenOptions;
-    let Ok(mut port) = OpenOptions::new().read(true).write(true).open(device) else {
-        return 1;
-    };
-    let _ = std::process::Command::new("stty")
-        .args([
-            "-F", device, "115200", "raw", "-echo", "-echoe", "-echok", "-echoctl", "-echoke",
-            "-ixon", "-ixoff", "min", "0", "time", "5",
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-
-    let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
-    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let handle = at::spawn_public_reader(port.try_clone().unwrap(), buffer.clone(), stop.clone());
-
-    let seq = format!("AT+CMGF=1\rAT+CMGS=\"{}\"\r{}\u{1a}", number, text);
-    let _ = &seq;
-    // The shell interleaves 1s sleeps between the three writes; keep pacing.
-    let _ = port.write_all(b"AT+CMGF=1\r");
-    sleep(Duration::from_secs(1));
-    let _ = port.write_all(format!("AT+CMGS=\"{}\"\r", number).as_bytes());
-    sleep(Duration::from_secs(1));
-    let _ = port.write_all(format!("{}\u{1a}", text).as_bytes());
-    let _ = port.flush();
-
-    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_s + 20);
-    let mut printed = String::new();
-    loop {
-        let snapshot = {
-            let buf = buffer.lock().unwrap();
-            String::from_utf8_lossy(&buf).replace('\r', "")
-        };
-        let done = snapshot.lines().any(|l| {
-            let t = l.trim();
-            t == "OK" || t == "ERROR" || t.starts_with("+CME ERROR") || t.starts_with("+CMS ERROR")
-        });
-        if done || std::time::Instant::now() >= deadline {
-            printed = snapshot;
-            break;
-        }
-        sleep(Duration::from_millis(100));
-    }
-    stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    let _ = handle.join();
-    print!("{}", printed);
-    let _ = seq;
-    0
 }
 
 fn text_mode_sms_network(settings: &Settings, number: &str, text: &str) -> Result<(), i32> {
@@ -1831,6 +1780,121 @@ fn cmd_fota_start(settings: &Settings, url: &str) -> i32 {
     run_at(settings, &format!("AT^FOTAOEMDL=\"{}\"", url))
 }
 
+// ---------------------------------------------------------------- Scan / port
+
+/// Print a human-readable serial-discovery table.
+fn cmd_scan() -> i32 {
+    println!("===== Serial AT ports =====");
+    let ports = at::scan_serial_ports();
+    if ports.is_empty() {
+        println!("(no serial nodes found in /dev)");
+    }
+    for p in &ports {
+        let kind = if p.is_pcui { "PCUI" } else { "tty" };
+        let at = if p.answers_at { "responds" } else { "no-AT" };
+        println!(
+            "{}  state={}  is_pcui={}  iface={}  vid:pid={}:{}  {}  desc={}",
+            p.path,
+            p.state,
+            p.is_pcui,
+            if p.interface_class.is_empty() { "-" } else { &p.interface_class },
+            if p.vendor.is_empty() { "-" } else { &p.vendor },
+            if p.product.is_empty() { "-" } else { &p.product },
+            if p.answers_at { at } else { if p.is_pcui { "pcui" } else { "-" } },
+            p.description.clone().unwrap_or_default(),
+        );
+        let _ = kind;
+    }
+    let resolved = at::auto_detect_serial();
+    match resolved {
+        Some(port) => println!("selected={}", port),
+        None => println!("selected=(none)"),
+    }
+    0
+}
+
+/// Manual port selection + discovery subcommands.
+fn cmd_port(settings: &Settings, args: &[String]) -> i32 {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("show");
+    match sub {
+        "scan" => cmd_scan(),
+        "auto" => match at::auto_detect_serial() {
+            Some(p) => {
+                println!("{}", p);
+                0
+            }
+            None => {
+                eprintln!("no MT5700M serial port detected");
+                1
+            }
+        },
+        "show" => {
+            let resolved = at::detect_mt5700m_at_port(settings);
+            let shown = resolved
+                .clone()
+                .or_else(|| (!settings.at_port.is_empty()).then(|| settings.at_port.clone()))
+                .unwrap_or_default();
+            println!("manual={}", settings.at_port);
+            println!("resolved={}", shown);
+            println!("mode={}", mode_name(settings.mode));
+            0
+        }
+        "set" => {
+            let value = args.get(1).map(|s| s.as_str()).unwrap_or("");
+            if value.is_empty() || !(value.starts_with('/') || value == "auto") {
+                eprintln!("Usage: mt5700m-at port set < /dev/ttyUSBN | auto >");
+                return 1;
+            }
+            if !at::uci_available() {
+                eprintln!("uci not available");
+                return 1;
+            }
+            let mut ok = true;
+            ok &= uci_set("mt5700m.settings.at_port", value);
+            ok &= uci_set("at-webserver.config.serial_port", value);
+            if !ok {
+                eprintln!("could not write serial port selection");
+                return 1;
+            }
+            println!("serial port set to '{}'", value);
+            0
+        }
+        _ => {
+            eprintln!("Usage: mt5700m-at port [scan|auto|show|set <path>]");
+            1
+        }
+    }
+}
+
+fn mode_name(m: Mode) -> &'static str {
+    match m {
+        Mode::Auto => "auto",
+        Mode::Serial => "serial",
+        Mode::Network => "network",
+    }
+}
+
+/// `uci -q set key=value && uci commit cfg`.
+fn uci_set(key: &str, value: &str) -> bool {
+    let set = std::process::Command::new("uci")
+        .args(["-q", "set"])
+        .arg(format!("{}={}", key, value))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    if !matches!(set, Ok(s) if s.success()) {
+        return false;
+    }
+    let cfg = key.split('.').next().unwrap_or("");
+    std::process::Command::new("uci")
+        .args(["-q", "commit", cfg])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 // ---------------------------------------------------------------- Entry
 
 pub fn run(args: &[String]) -> i32 {
@@ -1845,6 +1909,8 @@ pub fn run(args: &[String]) -> i32 {
 
     match first {
         "status" => cmd_status(&settings),
+        "scan" => cmd_scan(),
+        "port" => cmd_port(&settings, &rest),
         "temperature" => {
             print!("{}", print_temperature(&settings));
             0

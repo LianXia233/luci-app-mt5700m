@@ -28,25 +28,29 @@ Python 版由 Rust 重写接替。重写背景与行为对齐说明见仓库根 
    短信通知/定时锁频/全网扫频）；经 `/usr/sbin/mt5700m-at` symlink 调用则进入 LuCI shell
    后端模式（stdout/退出码契约与原 shell 逐条对齐）。零第三方 crate，firmware 友好。
 
-## 连接模式：UBUS / SERIAL / NETWORK
+## 连接模式：SERIAL / NETWORK（v2.6 起）
 
-后端支持三种 AT 通道，`connection_type` 在 `/etc/config/at-webserver` 中配置：
+> v2.6 彻底重构：`UBUS` 模式与 `ubus-at-daemon` 已移除，串口改由 Rust 后端独占
+> （`TIOCEXCL`）。LuCI 的 `mt5700m-at` 通过本地控制套接字（`/var/run/at-webserver.sock`）
+> 复用该独占串口，与 WebUI 共用，不再争抢 PCUI 口；`sms-tool_q` 也已移除，短信改为进程内
+> 纯 Rust PDU 编码。
 
-| 模式 | 通道 | 主动上报（URC） | 与 luci-app-mt5700m 共存 | 适用 |
-| --- | --- | --- | --- | --- |
-| `UBUS`（默认） | 经 `ubus call at-daemon sendat` 转发 | 不支持 | 支持（共享同一 AT 口，由 daemon 串行化） | **推荐**：WebUI 与管理页同时可用 |
-| `SERIAL` | 直接打开 PCUI 串口（`/dev/ttyUSB1`） | 支持 | 不支持（需停用 `ubus-at-daemon`） | 需要来电/短信实时推送时 |
-| `NETWORK` | TCP 连模组网络 AT 口（默认 `192.168.8.1:20249`） | 支持 | 支持 | 模组开启网络 AT 服务时 |
+后端支持两种 AT 通道，`connection_type` 在 `/etc/config/at-webserver` 中配置：
 
-UBUS 模式要点：
+| 模式 | 通道 | 主动上报（URC） | 与 luci-app-mt5700m 共存 |
+| --- | --- | --- | --- |
+| `SERIAL`（默认） | daemon 独占打开 PCUI 串口（`serial_port=auto` 自动扫描或手动指定） | 支持 | 支持（管理页经控制套接字，WebUI 经 WebSocket，共用同一串口） |
+| `NETWORK` | TCP 连模组网络 AT 口（默认 `192.168.8.1:20249`） | 支持 | 支持 |
 
-- 由 `ubus-at-daemon` 独占串口并串行化所有 AT 请求，WebUI 后端与 `mt5700m-at` 均为其客户端，
-  因此管理页与 WebUI 可同时使用，不会争抢 PCUI 口。
-- AT 口自动探测依据 USB 接口类型 `bInterfaceClass:SubClass:Protocol = ff:06:12`（PCUI），
-  失败时回退 `/dev/ttyUSB1`；也可用 `ubus_at_port` 显式指定。
-- 代价：ubus 是请求/响应式，**没有主动上报通道**，`raw_data`/`incoming_call`/`new_sms`/
-  `pdcp_data` 等推送与定时锁频的实时性依赖轮询，短信/来电通知在 UBUS 模式下不可用。
-  需要这些能力时切 `SERIAL`（并停用 `ubus-at-daemon`）。
+SERIAL 模式要点：
+
+- 仅 Rust 后端 `at-webserver` 持有该 TTY 文件描述符，并请求内核 `TIOCEXCL` 排斥其它打开者；
+  `mt5700m-at`（LuCI）经由 `/var/run/at-webserver.sock` 控制套接字向它发指令，天然串行化。
+- 串口自动探测依据 USB 接口类型 `bInterfaceClass:SubClass:Protocol = ff:06:12`（PCUI）与
+  VID/PID（`3466:3301`），必要时以 `AT` 应答探测兜底；`serial_port` 填具体路径（或运行
+  `mt5700m-at port set <path>`）则手动选择。
+- URC（`raw_data`/`incoming_call`/`new_sms`/`pdcp_data` 等）在 SERIAL 下原生实时推送，
+  无需轮询模拟。短信读取/写入均走同一个独占通道。
 
 ## 构建流程
 
@@ -57,4 +61,4 @@ UBUS 模式要点：
    折叠进 `luci-app-mt5700m` 包源码目录
 3. 由 OpenWrt SDK 打包为单个 apk/ipk，包含 LuCI 管理页 + WebUI 前端 + AT 后端
 
-最终发布的包：`luci-app-mt5700m`（含前端+后端）、`ubus-at-daemon`、`sms-tool_q`。
+最终发布的包：`luci-app-mt5700m`（含前端+后端）。不再发布 `ubus-at-daemon` 与 `sms-tool_q`。

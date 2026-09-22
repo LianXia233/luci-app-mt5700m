@@ -212,7 +212,7 @@ jobs:
                 "$(sha256sum "$f" | cut -c1-12)"
             done
             printf '\n### 安装\n\n```sh\n'
-            printf 'apk add --allow-untrusted luci-app-mt5700m-*.apk ubus-at-daemon-*.apk sms-tool_q-*.apk\n'
+            printf 'apk add --allow-untrusted luci-app-mt5700m-*.apk\n'
             printf 'sha256sum -c SHA256SUMS\n'
             printf '```\n\n'
             printf '完整历史见仓库 [CHANGELOG.md](../../blob/main/CHANGELOG.md)。\n'

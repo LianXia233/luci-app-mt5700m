@@ -5,7 +5,6 @@ repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work_dir="${RUNNER_TEMP:-/tmp}/mt5700m-sdk"
 output_dir="${repo_dir}/dist-release"
 base_url="https://downloads.openwrt.org/snapshots/targets/mediatek/filogic"
-qmodem_commit="6f84b7935921cce6a215171af5e93cad62f8a5a5"
 
 mkdir -p "${work_dir}" "${output_dir}"
 find "${output_dir}" -mindepth 1 -maxdepth 1 -delete
@@ -19,11 +18,12 @@ tar --zstd -xf "${archive}"
 sdk_dir="$(find "${work_dir}" -maxdepth 1 -type d -name 'openwrt-sdk-*' | head -n 1)"
 test -n "${sdk_dir}"
 
+# NOTE (v2.6): the `qmodem` feed is no longer pulled in — it only supplied
+# ubus-at-daemon and sms-tool_q, both eliminated by the Rust backend
+# (exclusive serial + local control socket + in-process SMS encoder).
 cd "${sdk_dir}"
-printf '\nsrc-git qmodem https://github.com/FUjr/QModem.git^%s\n' "${qmodem_commit}" >> feeds.conf.default
 ./scripts/feeds update -a
 ./scripts/feeds install luci-base
-./scripts/feeds install -p qmodem ubus-at-daemon sms-tool_q
 
 perl -0pi -e 's/(config ALL\n\s+bool "Select all userspace packages by default"\n\s+default )y/${1}n/' Config.in
 perl -0pi -e 's/(config TARGET_MULTI_PROFILE\n\s+bool\n\s+default )y/${1}n/; s/(config TARGET_ALL_PROFILES\n\s+bool\n\s+default )y/${1}n/; s/(config TARGET_DEVICE_mediatek_filogic_DEVICE_[^\n]+\n\s+bool\n\s+default )y/${1}n/g' Config-build.in
@@ -79,8 +79,8 @@ CONFIG_TARGET_mediatek_filogic=y
 # CONFIG_ALL_NONSHARED is not set
 CONFIG_PACKAGE_luci-app-mt5700m=m
 CONFIG_LUCI_LANG_zh_Hans=y
-CONFIG_PACKAGE_ubus-at-daemon=m
-CONFIG_PACKAGE_sms-tool_q=m
+# CONFIG_PACKAGE_ubus-at-daemon is not set
+# CONFIG_PACKAGE_sms-tool_q is not set
 # CONFIG_PACKAGE_luci-app-qmodem is not set
 # CONFIG_PACKAGE_luci-app-qmodem-next is not set
 # CONFIG_PACKAGE_qmodem is not set
@@ -88,7 +88,6 @@ CONFIG_PACKAGE_sms-tool_q=m
 # CONFIG_PACKAGE_tom_modem is not set
 EOF
 make defconfig
-make package/feeds/qmodem/ubus_at_daemon/compile package/feeds/qmodem/sms-tool_q/compile -j"$(nproc)" V=s
 # Force a clean rebuild so the SDK re-copies the updated htdocs (network.js/status.js)
 # instead of reusing a cached build_dir / staging copy from the previous version.
 make package/h5000m-custom/luci-app-mt5700m/clean >/dev/null 2>&1 || true
@@ -147,7 +146,7 @@ while IFS= read -r js; do
   fi
 done < <(find staging_dir/target-*/root-*/www/5700 -name '*.js' -type f 2>/dev/null)
 
-find bin -type f \( -name 'luci-app-mt5700m-*.apk' -o -name 'luci-app-mt5700m_*.ipk' -o -name 'luci-i18n-mt5700m-zh-cn-*.apk' -o -name 'luci-i18n-mt5700m-zh-cn_*.ipk' -o -name 'ubus-at-daemon-*.apk' -o -name 'ubus-at-daemon_*.ipk' -o -name 'sms-tool_q-*.apk' -o -name 'sms-tool_q_*.ipk' \) -exec cp -f {} "${output_dir}/" \;
+find bin -type f \( -name 'luci-app-mt5700m-*.apk' -o -name 'luci-app-mt5700m_*.ipk' -o -name 'luci-i18n-mt5700m-zh-cn-*.apk' -o -name 'luci-i18n-mt5700m-zh-cn_*.ipk' \) -exec cp -f {} "${output_dir}/" \;
 test "$(find "${output_dir}" -type f \( -name '*.apk' -o -name '*.ipk' \) | wc -l)" -ge 4
 cp -f public-key.pem "${output_dir}/openwrt-sdk-build.pem" 2>/dev/null || true
 (cd "${output_dir}" && find . -maxdepth 1 -type f \( -name '*.apk' -o -name '*.ipk' -o -name 'openwrt-sdk-build.pem' \) -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)

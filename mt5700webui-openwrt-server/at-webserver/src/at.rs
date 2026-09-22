@@ -1,16 +1,24 @@
-//! Shared AT channel: UBUS (via ubus-at-daemon) first, direct serial fallback,
-//! then the network AT endpoint (host:20249). This module is the single point
-//! where both frontends meet the modem, mirroring the shell `at_cmd()` cascade
-//! and the Python `UbusTransport` exactly.
+//! Shared AT channel for the single-binary MT5700M backend.
+//!
+//! `ubus-at-daemon` and `sms-tool_q` have been removed. The daemon owns the
+//! AT serial port exclusively (TIOCEXCL + continuous descriptor). Every other
+//! producer — the LuCI `mt5700m-at` CLI and the WebUI — reaches the modem
+//! through that daemon, either by the control socket (CLI) or the WebSocket
+//! (WebUI). This module is the CLI/transport layer:
+//!
+//!   * cascades a command: **control socket** → **direct serial (exclusive)**
+//!     → **network AT endpoint**;
+//!   * drives serial auto-scan discovery and manual port selection (`at_port`);
+//!   * performs exclusive serial open (via `serial`), used when the daemon is
+//!     not running or for the CLI's own one-shot transport.
 
-use crate::json;
+use crate::serial;
+use crate::sock;
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-pub const UBUS_OBJECT: &str = "at-daemon";
-pub const UBUS_METHOD: &str = "sendat";
 pub const PREFERRED_AT_PORT: &str = "/dev/ttyUSB1";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -51,10 +59,8 @@ pub enum AtError {
     Disabled,
     /// command sanitized to nothing
     Empty,
-    /// ubus or json tooling absent / at-daemon not registered (shell: 127)
-    UbusMissing,
-    /// ubus call failed or reported non-success status
-    UbusFailed(String),
+    /// daemon answered but reported an internal/transport fault
+    DaemonFailed(String),
     /// serial port not found / not writable
     NoSerialPort,
     /// serial read timed out; carries whatever partial output arrived
@@ -70,8 +76,7 @@ impl AtError {
         match self {
             AtError::Disabled => 2,
             AtError::Empty | AtError::NoSerialPort | AtError::NetworkFailed => 1,
-            AtError::UbusMissing => 127,
-            AtError::UbusFailed(_) => 1,
+            AtError::DaemonFailed(_) => 1,
             AtError::SerialTimeout(_) => 124,
             AtError::ModemError(_) => 1,
         }
@@ -81,8 +86,7 @@ impl AtError {
         match self {
             AtError::Disabled => "AT backend disabled (mt5700m.settings.enabled != 1)".into(),
             AtError::Empty => "empty AT command".into(),
-            AtError::UbusMissing => "at-daemon ubus object not available".into(),
-            AtError::UbusFailed(e) => format!("ubus sendat failed: {}", e),
+            AtError::DaemonFailed(e) => format!("AT daemon failed: {}", e),
             AtError::NoSerialPort => "AT serial port not found".into(),
             AtError::SerialTimeout(_) => "serial response timeout".into(),
             AtError::NetworkFailed => "network AT endpoint unreachable".into(),
@@ -112,8 +116,8 @@ impl AtOutcome {
     }
 }
 
-/// Anchored final-result check, port of `at_response_ok()`: only a real
-/// result line counts, never the word ERROR inside a payload.
+/// Anchored final-result check: only a real result line counts, never the
+/// word ERROR inside a payload.
 pub fn response_ok(response: &str) -> bool {
     for raw in response.split('\n') {
         let line = raw.trim_start_matches('\r').trim_start();
@@ -148,88 +152,17 @@ pub fn sanitize_command(cmd: &str) -> String {
         .collect()
 }
 
-// ---------------------------------------------------------------- UBUS
-
-/// Port of `at_ubus_cmd()`. Ok(text) on success; UbusMissing maps to the
-/// shell's 127 path (the caller then falls back to direct serial).
-pub fn ubus_sendat(settings: &Settings, device: &str, command: &str) -> Result<String, AtError> {
-    if Command::new("ubus")
-        .arg("list")
-        .arg(UBUS_OBJECT)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_err()
-    {
-        return Err(AtError::UbusMissing);
-    }
-
-    let mut payload: std::collections::BTreeMap<String, json::Value> =
-        std::collections::BTreeMap::new();
-    payload.insert("at_port".into(), json::str_val(device));
-    payload.insert("timeout".into(), json::num_val(settings.timeout_s));
-    payload.insert("at_cmd".into(), json::str_val(command));
-    let payload = json::Value::Obj(payload).dump();
-
-    let output = Command::new("ubus")
-        .args(["call", UBUS_OBJECT, UBUS_METHOD])
-        .arg(&payload)
-        .output()
-        .map_err(|_| AtError::UbusMissing)?;
-
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr);
-        return Err(AtError::UbusFailed(detail.trim().to_string()));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed =
-        json::parse(stdout.trim()).ok_or_else(|| AtError::UbusFailed("bad ubus json".into()))?;
-
-    let status = parsed.get("status").and_then(|v| v.as_str()).unwrap_or("");
-    if status != "success" {
-        return Err(AtError::UbusFailed(format!("status={}", status)));
-    }
-    let response = parsed
-        .get("response")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    if response.is_empty() {
-        return Err(AtError::UbusFailed("empty response".into()));
-    }
-    if !response_ok(&response) {
-        return Err(AtError::ModemError(response));
-    }
-    Ok(response)
-}
-
 // ---------------------------------------------------------------- Serial
 
-/// Port of `at_serial_cmd()`. Opens the device, sends the command and reads
-/// until a final result line appears or the timeout elapses.
+/// Port of `at_serial_cmd()`. Opens the device exclusively, sends the command
+/// and reads until a final result line appears or the timeout elapses.
 pub fn serial_sendat(device: &str, timeout_s: u64, command: &str) -> Result<String, AtError> {
-    use std::fs::OpenOptions;
-
-    let mut port = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(device)
-        .map_err(|_| AtError::NoSerialPort)?;
-
-    // Best effort line discipline setup; the shell ignores stty failures too.
-    let _ = Command::new("stty")
-        .args([
-            "-F", device, "115200", "raw", "-echo", "-echoe", "-echok", "-echoctl", "-echoke",
-            "-ixon", "-ixoff", "min", "0", "time", "5",
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    let mut port = serial::open_serial_exclusive(device).map_err(|_| AtError::NoSerialPort)?;
 
     let buffer: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let read_handle = spawn_reader(port.try_clone().expect("clone tty fd"), buffer.clone(), stop.clone());
+    let rd = port.try_clone().map_err(|_| AtError::NoSerialPort)?;
+    let read_handle = spawn_reader(rd, buffer.clone(), stop.clone());
 
     // Drain stale bytes for 1s like `run_with_timeout 1 cat`.
     std::thread::sleep(Duration::from_secs(1));
@@ -258,10 +191,108 @@ pub fn serial_sendat(device: &str, timeout_s: u64, command: &str) -> Result<Stri
             return Ok(snapshot);
         }
         if std::time::Instant::now() >= deadline {
-            // Serial timeout is a transport failure, not a modem ERROR; the
-            // auto path must try the network endpoint (shell returns 124).
             stop.store(true, std::sync::atomic::Ordering::Relaxed);
             return Err(AtError::SerialTimeout(snapshot));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Send an already-encoded SMS-SUBMIT PDU over an exclusive direct serial
+/// port: two-phase `AT+CMGS` (command, wait `>`, payload + 0x1A, wait result).
+/// Used by the CLI when the daemon is unavailable.
+pub fn serial_cmgs(
+    device: &str,
+    timeout_s: u64,
+    pdu: &crate::sms::SmsPdu,
+) -> Result<String, AtError> {
+    let mut port = serial::open_serial_exclusive(device).map_err(|_| AtError::NoSerialPort)?;
+    let buffer: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let rd = port.try_clone().map_err(|_| AtError::NoSerialPort)?;
+    let read_handle = spawn_reader(rd, buffer.clone(), stop.clone());
+
+    std::thread::sleep(Duration::from_secs(1));
+    buffer.lock().unwrap().clear();
+
+    // 1) Switch to PDU mode; wait for OK.
+    if port.write_all(b"AT+CMGF=0\r").is_err() {
+        return Err(AtError::SerialTimeout(String::new()));
+    }
+    let _ = port.flush();
+    wait_for(
+        &port, &buffer, &stop, timeout_s,
+        |t| t.lines().any(|l| l.trim() == "OK"),
+    )?;
+    buffer.lock().unwrap().clear();
+
+    // 2) Start CMGS with the user-data length; modem replies with '>'.
+    if port
+        .write_all(format!("AT+CMGS={}\r", pdu.length).as_bytes())
+        .is_err()
+    {
+        return Err(AtError::SerialTimeout(String::new()));
+    }
+    let _ = port.flush();
+    wait_for(&port, &buffer, &stop, timeout_s, |t| {
+        t.lines().any(|l| l.trim() == ">") || has_anchored_terminator(t)
+    })?;
+
+    // 3) Send the hex PDU and the SUB (CTRL-Z) terminator.
+    let wire = format!("{}\u{1a}", pdu.hex);
+    if port.write_all(wire.as_bytes()).is_err() {
+        return Err(AtError::SerialTimeout(String::new()));
+    }
+    let _ = port.flush();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_s + 10);
+    let snapshot = loop {
+        let snap = {
+            let buf = buffer.lock().unwrap();
+            String::from_utf8_lossy(&buf).replace('\r', "")
+        };
+        let done = snap.lines().any(|l| {
+            let t = l.trim();
+            t == "OK" || t == "ERROR" || t.starts_with("+CME ERROR") || t.starts_with("+CMS ERROR")
+        });
+        if done || std::time::Instant::now() >= deadline {
+            break snap;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = read_handle.join();
+    if !response_ok(&snapshot) {
+        return Err(AtError::ModemError(snapshot));
+    }
+    Ok(snapshot)
+}
+
+/// Poll `buffer` until `pred` holds, an anchored terminator appears, or the
+/// timeout elapses. `writer` is unused except to keep the TTY write held open.
+#[allow(clippy::type_complexity)]
+fn wait_for<F>(
+    _writer: &std::fs::File,
+    buffer: &Arc<Mutex<Vec<u8>>>,
+    stop: &Arc<std::sync::atomic::AtomicBool>,
+    timeout_s: u64,
+    pred: F,
+) -> Result<(), AtError>
+where
+    F: Fn(&str) -> bool + Send + 'static,
+{
+    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_s);
+    loop {
+        let snap = {
+            let buf = buffer.lock().unwrap();
+            String::from_utf8_lossy(&buf).replace('\r', "")
+        };
+        if pred(&snap) || has_anchored_terminator(&snap) {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            return Err(AtError::SerialTimeout(snap));
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -284,15 +315,6 @@ fn spawn_reader(
     })
 }
 
-/// Public wrapper used by the CLI text-mode SMS fallback.
-pub fn spawn_public_reader(
-    port: std::fs::File,
-    buffer: Arc<Mutex<Vec<u8>>>,
-    stop: Arc<std::sync::atomic::AtomicBool>,
-) -> std::thread::JoinHandle<()> {
-    spawn_reader(port, buffer, stop)
-}
-
 /// True when the `uci` binary exists (OpenWrt). Non-OpenWrt hosts fall back
 /// to defaults.
 pub fn uci_available() -> bool {
@@ -306,8 +328,9 @@ pub fn uci_available() -> bool {
 
 // ---------------------------------------------------------------- Network
 
-/// Port of `at_network_cmd()` using a native TCP stream instead of spawning
-/// nc. Sends `command\r` and reads until a final result or timeout.
+/// Port of `at_network_cmd()` using a native TCP stream. Sends `command\r` and
+/// reads until a final result or timeout. MANDATORY connect_timeout prevents
+/// an unreachable endpoint from freezing the CLI cascade in SYN_SENT.
 pub fn network_sendat(
     host: &str,
     port: u16,
@@ -315,9 +338,6 @@ pub fn network_sendat(
     command: &str,
 ) -> Result<String, AtError> {
     let addr = format!("{}:{}", host, port);
-    // connect_timeout is MANDATORY: a plain TcpStream::connect to an
-    // unreachable/blackholed modem endpoint stays in SYN_SENT for the kernel
-    // default (~2 min per attempt), freezing the CLI cascade.
     let addrs: Vec<std::net::SocketAddr> = std::net::ToSocketAddrs::to_socket_addrs(&addr)
         .map_err(|_| AtError::NetworkFailed)?
         .collect();
@@ -342,7 +362,7 @@ pub fn network_sendat(
     loop {
         let mut chunk = [0u8; 1024];
         match stream.read(&mut chunk) {
-            Ok(0) => break, // remote closed
+            Ok(0) => break,
             Ok(n) => acc.extend_from_slice(&chunk[..n]),
             Err(_) => {
                 if std::time::Instant::now() >= deadline {
@@ -369,8 +389,8 @@ pub fn network_sendat(
 
 // ---------------------------------------------------------------- Dispatch
 
-/// One-shot cascade port of `at_cmd()`. Produces the same stdout text and the
-/// same success/failure semantics as the shell script.
+/// One-shot cascade : control socket → direct serial → network. Produces the
+/// same stdout text and success/failure semantics as the shell script.
 pub fn at_cmd(settings: &Settings, command: &str) -> AtOutcome {
     if !settings.enabled {
         return AtOutcome {
@@ -393,21 +413,37 @@ pub fn at_cmd(settings: &Settings, command: &str) -> AtOutcome {
     }
 }
 
+/// Try the daemon control socket first. `Ok(None)` means "try the next
+/// transport", `Ok(Some(text))` means the daemon answered, `Err(e)` a thrown
+/// modem/transport failure to surface.
+fn daemon_transport(command: &str, timeout: u64) -> Result<Option<String>, AtError> {
+    match sock::daemon_send(command, timeout) {
+        Ok(text) => {
+            if response_ok(&text) {
+                Ok(Some(text))
+            } else {
+                Err(AtError::ModemError(text))
+            }
+        }
+        Err(sock::ControlError::Unavailable) => Ok(None),
+        Err(sock::ControlError::BadResponse(e)) => Err(AtError::DaemonFailed(e)),
+    }
+}
+
 fn serial_cascade(settings: &Settings, command: &str) -> AtOutcome {
+    match daemon_transport(command, settings.timeout_s) {
+        Ok(Some(text)) => return AtOutcome::ok_text(text),
+        Ok(None) => {}
+        Err(e) => return fail(e),
+    }
     let Some(device) = detect_mt5700m_at_port(settings) else {
         return AtOutcome {
             text: String::new(),
             error: Some(AtError::NoSerialPort),
         };
     };
-    match ubus_sendat(settings, &device, command) {
+    match serial_sendat(&device, settings.timeout_s, command) {
         Ok(text) => AtOutcome::ok_text(text),
-        Err(AtError::UbusMissing) => match serial_sendat(&device, settings.timeout_s, command) {
-            Ok(text) => AtOutcome::ok_text(text),
-            Err(e) => fail(e),
-        },
-        // A live at-daemon owns the descriptor; ubus failures other than
-        // "object missing" are final, exactly like the shell `[ rc -ne 127 ]`.
         Err(e) => fail(e),
     }
 }
@@ -417,8 +453,6 @@ fn network_cascade(settings: &Settings, command: &str) -> AtOutcome {
     for target in network_hosts(settings) {
         match network_sendat(&target, settings.port, settings.timeout_s, command) {
             Ok(text) => return AtOutcome::ok_text(text),
-            // The shell's nc path prints the reply text before judging it,
-            // so a modem ERROR response must still reach stdout.
             Err(e @ AtError::ModemError(_)) => {
                 let text = match &e {
                     AtError::ModemError(t) => t.clone(),
@@ -433,29 +467,21 @@ fn network_cascade(settings: &Settings, command: &str) -> AtOutcome {
 }
 
 fn auto_cascade(settings: &Settings, command: &str) -> AtOutcome {
+    if let Ok(Some(text)) = daemon_transport(command, settings.timeout_s) {
+        return AtOutcome::ok_text(text);
+    }
+    // The daemon is unavailable (or failed over); use direct serial, then the
+    // network endpoints as a final fallback, matching the shell's rc path.
     if let Some(device) = detect_mt5700m_at_port(settings) {
-        match ubus_sendat(settings, &device, command) {
+        match serial_sendat(&device, settings.timeout_s, command) {
             Ok(text) => return AtOutcome::ok_text(text),
-            Err(AtError::UbusMissing) => {
-                match serial_sendat(&device, settings.timeout_s, command) {
-                    Ok(text) => return AtOutcome::ok_text(text),
-                    // Any serial failure (timeout or modem ERROR) falls
-                    // through to the network endpoints, matching the shell's
-                    // rc != 0 path.
-                    Err(_) => {}
-                }
-            }
-            Err(e) => return fail(e),
+            Err(_) => {}
         }
     }
     network_cascade(settings, command)
 }
 
-// Small helpers to keep the cascade functions tidy.
 fn fail(e: AtError) -> AtOutcome {
-    // The shell prints whatever response text it obtained before failing
-    // (ubus response, serial partial read, network reply), so carry the text
-    // out for the caller to print.
     let text = match &e {
         AtError::ModemError(t) | AtError::SerialTimeout(t) => t.clone(),
         _ => String::new(),
@@ -465,8 +491,7 @@ fn fail(e: AtError) -> AtOutcome {
 
 // ---------------------------------------------------------------- Probing
 
-/// Port of usb.sh `mt5700m_usb_info()`: first normal-state device wins,
-/// otherwise the first device of any state.
+/// Port of usb.sh `mt5700m_usb_info()`.
 pub fn mt5700m_usb_info() -> Option<String> {
     let root = std::env::var("MT5700M_SYSFS_ROOT").unwrap_or_else(|_| "/sys".into());
     let base = format!("{}/bus/usb/devices", root);
@@ -478,7 +503,7 @@ pub fn mt5700m_usb_info() -> Option<String> {
         let (Some(vendor), Some(product)) = (vendor, product) else {
             continue;
         };
-        if vendor != "3466" {
+        if vendor != serial::QUECTEL_VID {
             continue;
         }
         let state = match product.as_str() {
@@ -507,106 +532,23 @@ fn read_trim(path: std::path::PathBuf) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
-/// Walk up from a tty device node's sysfs entry until a USB device directory
-/// with idVendor/idProduct is found. Port of `mt5700m_usb_device_dir_for_path`.
-/// `tty` may be a bare name ("ttyUSB1") or a full device path ("/dev/ttyUSB1");
-/// only the basename is used to build the sysfs class path.
-fn sys_tty_device_path(tty: &str) -> Option<std::path::PathBuf> {
-    let name = std::path::Path::new(tty)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| tty.to_string());
-    std::fs::canonicalize(format!("/sys/class/tty/{}/device", name)).ok()
-}
-
-fn usb_device_dir_for_path(tty: &str) -> Option<std::path::PathBuf> {
-    let mut path = sys_tty_device_path(tty)?;
-    loop {
-        if path.join("idVendor").is_file() && path.join("idProduct").is_file() {
-            return Some(path);
-        }
-        if !path.pop() || path.parent().is_none() {
-            return None;
-        }
-    }
-}
-
-fn interface_dir_for_tty(tty: &str) -> Option<std::path::PathBuf> {
-    let mut path = sys_tty_device_path(tty)?;
-    loop {
-        if path.join("bInterfaceClass").is_file() || path.join("interface").is_file() {
-            return Some(path);
-        }
-        if !path.pop() || path.parent().is_none() {
-            return None;
-        }
-    }
-}
-
-fn port_belongs_to_normal(tty: &str) -> bool {
-    let Some(dir) = usb_device_dir_for_path(tty) else {
-        return false;
-    };
-    read_trim(dir.join("idVendor")).as_deref() == Some("3466")
-        && read_trim(dir.join("idProduct")).as_deref() == Some("3301")
-}
-
-/// Port of `mt5700m_port_is_pcui()`.
-pub fn port_is_pcui(tty: &str) -> bool {
-    if !port_belongs_to_normal(tty) {
-        return false;
-    }
-    let Some(iface) = interface_dir_for_tty(tty) else {
-        return false;
-    };
-    let class = read_trim(iface.join("bInterfaceClass"))
-        .map(|v| v.to_lowercase())
-        .unwrap_or_default();
-    let subclass = read_trim(iface.join("bInterfaceSubClass"))
-        .map(|v| v.to_lowercase())
-        .unwrap_or_default();
-    let protocol = read_trim(iface.join("bInterfaceProtocol"))
-        .map(|v| v.to_lowercase())
-        .unwrap_or_default();
-    if class == "ff" && subclass == "06" && protocol == "12" {
-        return true;
-    }
-    // Interface description match: *PC*UI* or *PC*-[space]*UI* (case-insensitive).
-    let desc = std::fs::read_to_string(iface.join("interface"))
-        .unwrap_or_default()
-        .to_lowercase();
-    let pc = desc.find("pc");
-    let ui = desc.find("ui");
-    matches!((pc, ui), (Some(p), Some(u)) if u >= p)
-}
-
-/// Port of `mt5700m_pcui_port()`: lexical order of /dev/ttyUSB* like the
-/// shell glob, first PCUI port wins.
-pub fn mt5700m_pcui_port() -> Option<String> {
-    let mut names: Vec<String> = std::fs::read_dir("/dev")
-        .ok()?
-        .flatten()
-        .filter_map(|e| {
-            let n = e.file_name().to_string_lossy().to_string();
-            n.starts_with("ttyUSB").then_some(n)
-        })
-        .collect();
-    names.sort();
-    for name in names {
-        let tty = format!("/dev/{}", name);
-        if port_is_pcui(&tty) {
-            return Some(tty);
-        }
-    }
-    None
-}
-
-/// Port of `detect_mt5700m_at_port()`.
+/// Resolve the AT port: manual `at_port` (if it is a live PCUI or exists) else
+/// auto-scan. Mirrors `detect_mt5700m_at_port()`.
 pub fn detect_mt5700m_at_port(settings: &Settings) -> Option<String> {
-    if !settings.at_port.is_empty() && port_is_pcui(&settings.at_port) {
+    if !settings.at_port.is_empty() && settings.at_port != "auto" {
+        // Manual selection: honour an explicit non-auto path directly.
         return Some(settings.at_port.clone());
     }
-    mt5700m_pcui_port()
+    serial::auto_detect_serial()
+}
+
+/// Re-export for the daemon / frontends.
+pub fn scan_serial_ports() -> Vec<serial::SerialPortInfo> {
+    serial::scan_serial_ports()
+}
+
+pub fn auto_detect_serial() -> Option<String> {
+    serial::auto_detect_serial()
 }
 
 /// Port of `detect_modem_gateway()`.
@@ -634,8 +576,6 @@ fn run_ip(args: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-/// Matches ` dev (eth2|usb|wwan|wwan0|qmimux|rmnet|mhi|USB)` then grabs the
-/// value after `via`.
 fn extract_via(routes: &str) -> Option<String> {
     const DEVS: [&str; 8] = ["eth2", "usb", "wwan", "wwan0", "qmimux", "rmnet", "mhi", "USB"];
     for line in routes.lines() {
@@ -654,7 +594,6 @@ fn extract_via(routes: &str) -> Option<String> {
     None
 }
 
-/// Port of `network_hosts()`.
 pub fn network_hosts(settings: &Settings) -> Vec<String> {
     let gateway = detect_modem_gateway().unwrap_or_default();
     let mut hosts: Vec<String> = Vec::new();
@@ -701,5 +640,15 @@ mod tests {
     fn sanitize() {
         assert_eq!(sanitize_command("AT^XY=1\r\n"), "AT^XY=1");
         assert_eq!(sanitize_command("AT\0X"), "ATX");
+    }
+
+    #[test]
+    fn manual_port_honoured() {
+        let mut s = Settings::default();
+        s.at_port = "/dev/ttyUSB7".into();
+        assert_eq!(detect_mt5700m_at_port(&s).as_deref(), Some("/dev/ttyUSB7"));
+        s.at_port = "auto".into();
+        // auto falls through to filesystem scan (no device on host -> None).
+        assert_eq!(detect_mt5700m_at_port(&s), serial::auto_detect_serial());
     }
 }

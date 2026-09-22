@@ -28,7 +28,7 @@
 | **软件包名** | `luci-app-mt5700m`（单包内嵌 LuCI 前端、独立 WebUI 与 Rust 后端） |
 | **适配硬件** | 移远 Quectel MT5700M-CN 5G 模组 |
 | **数据面拨号** | NCM 协议（基于 `kmod-usb-net-cdc-ncm`，高吞吐低开销） |
-| **控制面通讯** | 默认走 UBUS 共享通道（`ubus-at-daemon`），消除多前端串口争抢 |
+| **控制面通讯** | Rust 后端独占 AT 串口（TIOCEXCL），LuCI 走本地控制套接字、WebUI 走 WebSocket，免第三方 `ubus-at-daemon` |
 | **访问入口** | LuCI 路径：`调制解调器` → `MT5700M 管理` · WebUI 独立路径：`http://<路由器IP>/5700/` |
 
 ---
@@ -51,7 +51,9 @@
 
 ## 系统拓扑与多层协同架构
 
-系统采用**双前端共用统一后端通道**的设计，通过 UBUS 代理层实现并发仲裁，彻底避免传统工具在 Web 与后台同时调用时出现的 TTY 串口锁死。
+系统采用**双前端共用统一后端通道**的设计，由 Rust 后端 `at-webserver` 独占 AT 串口
+（TIOCEXCL + 常驻描述符），LuCI 与 WebUI 都经它访问模组，彻底避免传统工具在 Web
+与后台同时调用时出现的 TTY 串口锁死。`ubus-at-daemon` 与 `sms-tool_q` 已完全移除。
 
 ```mermaid
 flowchart TD
@@ -62,18 +64,13 @@ flowchart TD
 
     subgraph Core["Rust 高性能后端 (at-webserver 4.0)"]
         RustBin["单静态二进制: at-webserver-rust<br/>(std-only 无外部 C 库依赖)"]
-        ModeWS["WebSocket Daemon 模式<br/>(服务 WebUI 前端)"]
+        ModeWS["WebSocket Daemon 模式<br/>(服务 WebUI 前端 :8765)"]
         ModeCLI["LuCI Shell 模式<br/>(对齐 mt5700m-at 命令行契约)"]
-    end
-
-    subgraph Daemon["系统通信与守护层"]
-        UbusDaemon["ubus-at-daemon 守护进程<br/>(UBUS 共享通道，排队免争抢)"]
-        SerialDirect["PCUI 串口通道 (直连 /dev/ttyUSB1)<br/>(独占模式，支持 URC 实时推送与昼夜锁频)"]
-        SmsTool["sms-tool_q (短信读写辅助进程)"]
+        CtrlSock["本地控制套接字<br/>/var/run/at-webserver.sock"]
     end
 
     subgraph Hardware["移远 MT5700M-CN 5G 硬件模组"]
-        ModemAT["AT 控制面通道 (PCUI / Modem 端口)"]
+        ModemAT["AT 控制面通道 (PCUI 串口, 独占 TIOCEXCL)"]
         ModemData["NDIS / NCM 数据面通道 (USB 物理端点)"]
     end
 
@@ -83,11 +80,9 @@ flowchart TD
     RustBin -.-> ModeWS
     RustBin -.-> ModeCLI
 
-    ModeWS & ModeCLI -->|默认走 UBUS 共享| UbusDaemon
-    ModeWS & ModeCLI -.->|可选直连模式| SerialDirect
-
-    UbusDaemon & SerialDirect -->|AT 指令调度| ModemAT
-    LuCI -->|短信调度| SmsTool --> ModemAT
+    ModeCLI -->|经控制套接字排队| CtrlSock
+    CtrlSock -->|独占调度| ModemAT
+    ModeWS -->|独占调度| ModemAT
     ModemData -->|kmod-usb-net-cdc-ncm| NetDev["网卡设备 wwan0 / usb0"]
 ```
 
@@ -131,7 +126,7 @@ flowchart LR
 |:---|:---|:---|
 | **架构设计哲学** | 纯 LuCI 视图 + 轻量 Rust std 双入口后端 + 现代化独立 WebUI | 12 页深度控制台 + 常驻 Tokio 异步后台进程 |
 | **底层拨号通路** | **NCM 拨号**（基于 `kmod-usb-net-cdc-ncm`，吞吐高、资源低） | **PCUI 串口 AT / NDIS 拨号**（对账容灾重试完善） |
-| **AT 调度机制** | 优先走 **UBUS 共享通道**（`ubus-at-daemon`），前端无并发锁冲突 | **Rust 常驻进程独占 TTY**，内建指令排队调度机 |
+| **AT 调度机制** | Rust 后端独占 TTY，内建指令排队调度机（本地控制套接字 + WebSocket 双入口共享） | **Rust 常驻进程独占 TTY**，内建指令排队调度机 |
 | **特色专属功能** | **7 路 SSB 空间波束分析**、内置 WebUI 4.0 前端、免 vnStat 流量历史 | **全网基站扫频**、昼夜定时频段锁定、企业微信/Webhook 告警推送 |
 | **开源许可规范** | **Apache-2.0**（主程序） / MPL-2.0（底层通信包） | **GPL-3.0** |
 
@@ -152,11 +147,7 @@ GitHub Actions 定期使用官方 OpenWrt SNAPSHOT `mediatek/filogic` SDK 构建
 opkg update
 opkg install kmod-usb-serial kmod-usb-net-cdc-ncm kmod-usb-net-cdc-ether
 
-# 2. 安装底层传输支持包
-opkg install sms-tool_q_*.ipk
-opkg install ubus-at-daemon_*.ipk
-
-# 3. 安装应用本体与中文语言包
+# 2. 安装应用本体与中文语言包（Rust 后端已内建，无需单独的通讯中间件）
 opkg install luci-app-mt5700m_*.ipk
 opkg install luci-i18n-mt5700m-zh-cn_*.ipk
 ```
@@ -223,13 +214,35 @@ curl -X POST \
    - 被软链接 `/usr/sbin/mt5700m-at` 调用时，自动切入 CLI 兼容模式，执行输出契约与旧版脚本严密对齐，LuCI 前端零修改即可无缝承接。
 2. **极小体积与零依赖**：基于标准库编写，采用 `rust-lld` 自包含链接，构建产物仅为单静态执行文件，免除复杂的 libc/musl 动态链接库版本冲突。
 
+### v2.6 彻底重构：去除 ubus-at-daemon 与 sms-tool_q
+
+v2.6 对该后端做了一次彻底重构，前端（LuCI 与 WebUI）接口不变、功能等价或更优：
+
+- **移除 `ubus-at-daemon`**：串口不再由第三方守护进程持有。Rust 后端（daemon 模式）以
+  **独占**方式（Linux `TIOCEXCL` + 常驻描述符）打开 MT5700M PCUI 串口。
+- **本地控制套接字**（`/var/run/at-webserver.sock`）：`mt5700m-at`（LuCI 后端）改为经由
+  该套接字向 daemon 发指令，与 WebUI 共用同一条独占串口——替代旧版 `ubus call at-daemon
+  sendat` 的“共享通道”职能。daemon 不在时 CLI 仍可退化为独立直连串口。
+- **移除 `sms-tool_q`**：短信发送改为进程内 **纯 Rust PDU 编码**（GSM-7 默认字母表 /
+  UCS-2，长短信自动分片为多部分 + 拼接信息元），中文短信可靠，不再依赖任何外部短信工具；
+  短信读取继续使用 `AT+CMGL` PDU 解码（路径不变）。
+- **串口自动扫描 + 手动选择**：默认 `serial_port=auto` 开机自动枚举 `/dev/ttyUSB*` /
+  `/dev/ttyACM*`，按 USB VID/PID（`3466:3301`）与接口类型（`ff:06:12`）识别 PCUI 端口，
+  必要时以 `AT` 应答探测兜底；也可用 `mt5700m-at port scan` 查看、`mt5700m-at port set
+  <path|auto>` 手动选择。
+- **连接模式简化为 SERIAL（默认）/ NETWORK**：`UBUS` 模式删除，`AT^PDCPDATAINFO` 等 URC
+  实时推送在 SERIAL 下原生生效，无需轮询模拟。
+
 ---
 
 ## 运行依赖与本地化存储
 
 ### 运行依赖
 - **内核驱动**：`kmod-usb-serial`、`kmod-usb-net-cdc-ncm`、`kmod-usb-net-cdc-ether`
-- **通信中间件**：`ubus-at-daemon`、`sms-tool_q`
+- **后端**：`/usr/bin/at-webserver`（Rust 单静态二进制，随包内建）。串口由后端独占，
+  不再需要 `ubus-at-daemon` 与 `sms-tool_q`。后端默认自动扫描 `/dev/ttyUSB*` 定位
+  MT5700M PCUI 串口（`serial_port=auto`），也可用 `mt5700m-at port set <path>` 手动指定。
+- **AT 通道**：`at-webserver`（SERIAL 默认）→ 控制套接字（LuCI）/ WebSocket（WebUI）。
 
 ### 数据存储
 - **流量统计历史**：持久化存放于 `/etc/mt5700m/traffic-history`。直读内核网卡统计，升级时自动迁移，免除安装 `vnStat` 的额外系统损耗。

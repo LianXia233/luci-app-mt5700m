@@ -3,23 +3,25 @@
 //! frames carry auth and pushed URC events. Client reads match responses to
 //! commands by order, so the read loop is deliberately serial.
 //!
-//! Transports: UBUS (default, via `ubus call at-daemon sendat`, no URC
-//! stream), SERIAL and NETWORK (persistent streams with URC scanning and
-//! the day/night band-lock scheduler).
+//! Transports: SERIAL (default — the daemon exclusively owns the AT serial
+//! port, discovered by auto-scan or chosen by hand) and NETWORK (the modem's
+//! own TCP AT endpoint). The LuCI CLI (`mt5700m-at`) reaches the same
+//! exclusive serial port through a local Unix control socket. `ubus-at-daemon`
+//! and `sms-tool_q` are no longer used.
 
-use crate::at::{self, Settings as CliSettings};
+use crate::at;
 use crate::dispatcher::Dispatcher;
 use crate::json::{self, Value};
 use crate::scheduler;
+use crate::serial;
 use crate::ws::{self, WsError};
 use std::collections::VecDeque;
 use std::io::{Read, Write};
-use std::process::Stdio;
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const WS_AUTH_TIMEOUT: u64 = 10;
 const WS_WRITE_TIMEOUT: u64 = 10;
@@ -27,12 +29,11 @@ const WS_WRITE_TIMEOUT: u64 = 10;
 #[derive(Clone)]
 pub struct DaemonConfig {
     pub enabled: bool,
-    pub connection_type: String, // UBUS | NETWORK | SERIAL
-    pub ubus_at_port: String,
-    pub ubus_timeout: u64,
+    pub connection_type: String, // SERIAL | NETWORK
     pub network_host: String,
     pub network_port: u16,
     pub serial_port: String,
+    pub serial_timeout: u64,
     pub websocket_port: u16,
     pub websocket_auth_key: String,
 }
@@ -41,12 +42,11 @@ impl Default for DaemonConfig {
     fn default() -> Self {
         DaemonConfig {
             enabled: true,
-            connection_type: "UBUS".into(),
-            ubus_at_port: String::new(),
-            ubus_timeout: 10,
+            connection_type: "SERIAL".into(),
             network_host: "192.168.8.1".into(),
             network_port: 20249,
-            serial_port: at::PREFERRED_AT_PORT.into(),
+            serial_port: "auto".into(),
+            serial_timeout: 10,
             websocket_port: 8765,
             websocket_auth_key: String::new(),
         }
@@ -81,12 +81,6 @@ pub fn load_config() -> DaemonConfig {
     if let Some(v) = g("connection_type") {
         c.connection_type = v.to_uppercase();
     }
-    if let Some(v) = g("ubus_at_port") {
-        c.ubus_at_port = v;
-    }
-    if let Some(v) = g("ubus_timeout") {
-        c.ubus_timeout = v.parse().unwrap_or(10);
-    }
     if let Some(v) = g("network_host") {
         c.network_host = v;
     }
@@ -95,6 +89,17 @@ pub fn load_config() -> DaemonConfig {
     }
     if let Some(v) = g("serial_port") {
         c.serial_port = v;
+    }
+    // Honor the manual-specific path when the operator selected `custom`.
+    if c.serial_port.trim() == "custom" {
+        if let Some(custom) = g("serial_port_custom") {
+            if !custom.trim().is_empty() {
+                c.serial_port = custom;
+            }
+        }
+    }
+    if let Some(v) = g("serial_timeout") {
+        c.serial_timeout = v.parse().unwrap_or(10);
     }
     if let Some(v) = g("websocket_port") {
         c.websocket_port = v.parse().unwrap_or(8765);
@@ -122,20 +127,41 @@ pub struct AtClient {
     in_flight: Arc<AtomicBool>,
 }
 
+/// Resolve the serial port for the daemon: honour an explicit path, otherwise
+/// fall back to auto-scan discovery.
+fn resolve_serial_port(config: &DaemonConfig) -> String {
+    let p = config.serial_port.trim();
+    if !p.is_empty() && p != "auto" && p != "custom" {
+        return p.to_string();
+    }
+    at::auto_detect_serial().unwrap_or_else(|| at::PREFERRED_AT_PORT.to_string())
+}
+
+#[cfg_attr(not(unix), allow(dead_code))]
 impl AtClient {
     fn new(config: DaemonConfig) -> Arc<Self> {
         let kind = config.connection_type.clone();
         let stream = match kind.as_str() {
-            "SERIAL" => std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&config.serial_port)
-                .map(Stream::Serial)
-                .unwrap_or(Stream::None),
+            "SERIAL" => {
+                let path = resolve_serial_port(&config);
+                match serial::open_serial_exclusive(&path) {
+                    Ok(f) => {
+                        eprintln!("at-webserver: attached to serial {}", path);
+                        Stream::Serial(f)
+                    }
+                    Err(e) => {
+                        eprintln!("at-webserver: serial open failed: {}", e);
+                        Stream::None
+                    }
+                }
+            }
             "NETWORK" => TcpStream::connect((config.network_host.as_str(), config.network_port))
                 .map(Stream::Tcp)
                 .unwrap_or(Stream::None),
-            _ => Stream::None,
+            _ => {
+                eprintln!("at-webserver: unknown connection type '{}'", kind);
+                Stream::None
+            }
         };
         let client = Arc::new(AtClient {
             config,
@@ -180,37 +206,129 @@ impl AtClient {
 
     fn describe(&self) -> &'static str {
         match self.config.connection_type.as_str() {
-            "SERIAL" => "SERIAL",
             "NETWORK" => "NETWORK",
-            _ => "UBUS",
+            _ => "SERIAL",
         }
     }
 
-    /// Send one AT command and wait for the final result. Serialized.
+    /// Send one AT command and wait for the final result. Serialized behind
+    /// the exclusive serial lock (acquired inside `stream_command`).
     pub fn send(&self, command: &str, timeout: u64) -> Result<String, String> {
-        let _guard = self.lock.lock().map_err(|_| "client lock poisoned")?;
         match self.config.connection_type.as_str() {
-            "UBUS" => {
-                let settings = CliSettings {
-                    enabled: true,
-                    mode: at::Mode::Serial,
-                    at_port: self.config.ubus_at_port.clone(),
-                    host: self.config.network_host.clone(),
-                    port: self.config.network_port,
-                    timeout_s: timeout.max(self.config.ubus_timeout),
-                };
-                let device = if self.config.ubus_at_port.is_empty() {
-                    at::mt5700m_pcui_port()
-                        .unwrap_or_else(|| at::PREFERRED_AT_PORT.to_string())
-                } else {
-                    self.config.ubus_at_port.clone()
-                };
-                at::ubus_sendat(&settings, &device, command)
-                    .map_err(|e| e.message())
-            }
             "SERIAL" | "NETWORK" => self.stream_command(command, timeout),
             _ => Err("unknown connection type".into()),
         }
+    }
+
+    /// Send one SMS-SUBMIT PDU through the persistent stream (two-phase
+    /// `AT+CMGS`). Used by the control socket so the exclusive serial owner
+    /// performs the whole transaction.
+    fn send_pdu(&self, pdu: &crate::sms::SmsPdu, timeout: u64) -> Result<String, String> {
+        self.in_flight.store(true, Ordering::SeqCst);
+        let mut guard = self.lock.lock().map_err(|_| "client lock poisoned")?;
+        {
+            // 1) PDU mode.
+            if let Err(e) = self.write_locked(&mut guard, b"AT+CMGF=0\r") {
+                self.in_flight.store(false, Ordering::SeqCst);
+                return Err(e);
+            }
+            let step = self.wait_for(&mut guard, timeout, |t| {
+                t.lines().any(|l| l.trim() == "OK")
+            })?;
+            if !self.step_ok(&step) {
+                self.in_flight.store(false, Ordering::SeqCst);
+                return Err(self.text(&step));
+            }
+        }
+        {
+            // 2) CMGS length; wait for the '>' prompt (or an error).
+            let cmd = format!("AT+CMGS={}\r", pdu.length);
+            if let Err(e) = self.write_locked(&mut guard, cmd.as_bytes()) {
+                self.in_flight.store(false, Ordering::SeqCst);
+                return Err(e);
+            }
+            let step = self.wait_for(&mut guard, timeout, |t| {
+                t.lines().any(|l| l.trim() == ">")
+                    || has_result(&t)
+            })?;
+            if !self.step_has_prompt(&step) && !self.step_ok(&step) {
+                self.in_flight.store(false, Ordering::SeqCst);
+                return Err(self.text(&step));
+            }
+        }
+        {
+            // 3) Payload + CTRL-Z; expect +CMGS/<mr> then OK.
+            let payload = format!("{}\u{1a}", pdu.hex);
+            if let Err(e) = self.write_locked(&mut guard, payload.as_bytes()) {
+                self.in_flight.store(false, Ordering::SeqCst);
+                return Err(e);
+            }
+            let step = self.wait_for(&mut guard, timeout + 10, has_result)?;
+            self.in_flight.store(false, Ordering::SeqCst);
+            if !self.step_ok(&step) {
+                return Err(self.text(&step));
+            }
+            Ok(step)
+        }
+    }
+
+    /// Send the whole PDU set for one logical SMS (multipart included).
+    pub fn send_sms(&self, number: &str, text: &str) -> Result<String, String> {
+        let pdus = crate::sms::encode(number, text);
+        let mut last = String::new();
+        for pdu in &pdus {
+            last = self.send_pdu(pdu, self.config.serial_timeout)?;
+        }
+        Ok(last)
+    }
+
+    fn write_locked(&self, guard: &mut std::sync::MutexGuard<'_, Stream>, wire: &[u8]) -> Result<(), String> {
+        match &mut **guard {
+            Stream::Serial(f) => f.write_all(wire).map_err(|e| e.to_string()),
+            Stream::Tcp(s) => s.write_all(wire).and_then(|_| s.flush()).map_err(|e| e.to_string()),
+            Stream::None => Err("transport not connected".into()),
+        }
+    }
+
+    fn text(&self, t: &str) -> String {
+        if t.is_empty() {
+            "transport error".to_string()
+        } else {
+            t.to_string()
+        }
+    }
+
+    fn step_ok(&self, t: &str) -> bool {
+        t.lines().any(|l| l.trim() == "OK")
+    }
+
+    fn step_has_prompt(&self, t: &str) -> bool {
+        t.lines().any(|l| l.trim() == ">")
+    }
+
+    /// Poll the shared rx queue until `pred` holds / a result line arrives /
+    /// timeout. Returns the accumulated text.
+    fn wait_for(
+        &self,
+        _guard: &mut std::sync::MutexGuard<'_, Stream>,
+        timeout: u64,
+        pred: impl Fn(&str) -> bool,
+    ) -> Result<String, String> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(timeout.max(2));
+        let mut acc = String::new();
+        loop {
+            let drained: String = {
+                let mut rx = self.rx.lock().unwrap();
+                let out: Vec<u8> = rx.drain(..).collect();
+                String::from_utf8_lossy(&out).replace('\r', "")
+            };
+            acc.push_str(&drained);
+            if pred(&acc) || has_result(&acc) || std::time::Instant::now() >= deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        Ok(acc)
     }
 
     fn stream_command(&self, command: &str, timeout: u64) -> Result<String, String> {
@@ -220,17 +338,9 @@ impl AtClient {
         {
             let mut guard = self.lock.lock().map_err(|_| "client lock poisoned")?;
             let wire = format!("{}\r", command);
-            let result = match &mut *guard {
-                Stream::Serial(f) => f.write_all(wire.as_bytes()).and_then(|_| f.flush()),
-                Stream::Tcp(s) => s.write_all(wire.as_bytes()).and_then(|_| s.flush()),
-                Stream::None => {
-                    self.in_flight.store(false, Ordering::SeqCst);
-                    return Err("transport not connected".into());
-                }
-            };
-            if let Err(e) = result {
+            if let Err(e) = self.write_locked(&mut guard, wire.as_bytes()) {
                 self.in_flight.store(false, Ordering::SeqCst);
-                return Err(e.to_string());
+                return Err(e);
             }
         }
         let deadline = std::time::Instant::now() + Duration::from_secs(timeout.max(2));
@@ -254,6 +364,14 @@ impl AtClient {
         self.in_flight.store(false, Ordering::SeqCst);
         Ok(acc)
     }
+}
+
+#[cfg_attr(not(unix), allow(dead_code))]
+fn has_result(t: &str) -> bool {
+    t.lines().any(|l| {
+        let l = l.trim();
+        l == "OK" || l == "ERROR" || l.starts_with("+CME ERROR:") || l.starts_with("+CMS ERROR:")
+    })
 }
 
 // ---------------------------------------------------------------- Broadcast
@@ -451,236 +569,164 @@ fn sched_json() -> String {
     Value::Obj(map).dump()
 }
 
-// ---------------------------------------------------------------- PDCP rate simulation (UBUS mode)
+// ---------------------------------------------------------------- Control socket
+//
+// The LuCI shell backend (`mt5700m-at`) reaches the modem through this local
+// Unix socket instead of the removed `ubus-at-daemon`. Every command is
+// serialised behind the daemon's exclusive serial lock, so the CLI never
+// touches /dev/ttyUSB* itself.
 
-/// Sampling interval bounds for the poll simulation. The frontend asks for
-/// 750 ms by default (`AT^PDCPDATAINFO=1[,ms]`); clamped to protect the
-/// shared ubus AT channel.
-const PDCP_MIN_INTERVAL_MS: u64 = 250;
-const PDCP_MAX_INTERVAL_MS: u64 = 5000;
-const PDCP_DEFAULT_INTERVAL_MS: u64 = 750;
-
-enum PdcpCmd {
-    Start(u64),
-    Stop,
-}
-
-/// Recognize the sampling switch the frontend sends over the WebSocket.
-/// `AT^PDCPDATAINFO=1[,ms]` starts (defaults to 750 ms), `=0` stops.
-/// Anything else falls through to the modem unchanged.
-fn parse_pdcp_command(command: &str) -> Option<PdcpCmd> {
-    const PREFIX: &str = "AT^PDCPDATAINFO=";
-    let rest = command.trim().strip_prefix(PREFIX)?;
-    if rest == "0" {
-        return Some(PdcpCmd::Stop);
-    }
-    let mut it = rest.split(',');
-    if it.next()? != "1" {
-        return None;
-    }
-    let interval = match it.next() {
-        Some(v) if !v.is_empty() => v.parse::<u64>().ok()?,
-        _ => PDCP_DEFAULT_INTERVAL_MS,
-    };
-    Some(PdcpCmd::Start(interval.clamp(
-        PDCP_MIN_INTERVAL_MS,
-        PDCP_MAX_INTERVAL_MS,
-    )))
-}
-
-/// Shared sampling switch between the WebSocket command handler and the
-/// poller thread. Std-only condvar, same style as `ClientConn`.
-///
-/// The poller also keeps the previous WAN byte counters here: the modem
-/// does not compute rates for `AT^PDCPDATAINFO?` queries (only the URC
-/// push carries them, and that never reaches the daemon over UBUS), so
-/// the daemon derives ulPdcpRate/dlPdcpRate from the default-route
-/// interface's rx/tx deltas instead.
-struct PdcpState {
-    inner: Mutex<(bool, u64)>, // (running, interval_ms)
-    cond: Condvar,
-    last_wan: Mutex<Option<(u64, u64, std::time::Instant)>>, // (rx, tx, at)
-}
-
-/// Default-route interface from /proc/net/route (Linux-only by design;
-/// the daemon runs on OpenWrt).
-fn default_wan_iface() -> Option<String> {
-    let s = std::fs::read_to_string("/proc/net/route").ok()?;
-    for line in s.lines().skip(1) {
-        let f: Vec<&str> = line.split('\t').collect();
-        if f.len() > 1 && f[1] == "00000000" {
-            return Some(f[0].to_string());
+/// Handle one control-socket request line and return the JSON response line.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn handle_control_request(client: &Arc<AtClient>, line: &str) -> String {
+    let parsed = json::parse(line);
+    let cmd = parsed
+        .as_ref()
+        .and_then(|v| v.get("cmd"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let mut ok = std::collections::BTreeMap::new();
+    match cmd {
+        "send" => {
+            let command = parsed
+                .as_ref()
+                .and_then(|v| v.get("command"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let timeout = parsed
+                .as_ref()
+                .and_then(|v| v.get("timeout"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(2);
+            if command.is_empty() {
+                ok.insert("ok".to_string(), Value::Bool(false));
+                ok.insert("error".to_string(), json::str_val("empty command"));
+            } else {
+                match client.send(&command, timeout) {
+                    Ok(text) => {
+                        ok.insert("ok".to_string(), Value::Bool(true));
+                        ok.insert("response".to_string(), json::str_val(text.trim()));
+                    }
+                    Err(e) => {
+                        ok.insert("ok".to_string(), Value::Bool(false));
+                        ok.insert("error".to_string(), json::str_val(&e));
+                    }
+                }
+            }
+        }
+        "sms" => {
+            let number = parsed
+                .as_ref()
+                .and_then(|v| v.get("number"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let text = parsed
+                .as_ref()
+                .and_then(|v| v.get("text"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if number.is_empty() || text.is_empty() {
+                ok.insert("ok".to_string(), Value::Bool(false));
+                ok.insert("error".to_string(), json::str_val("empty number or text"));
+            } else {
+                match client.send_sms(&number, &text) {
+                    Ok(resp) => {
+                        ok.insert("ok".to_string(), Value::Bool(true));
+                        ok.insert("response".to_string(), json::str_val(&resp));
+                    }
+                    Err(e) => {
+                        ok.insert("ok".to_string(), Value::Bool(false));
+                        ok.insert("error".to_string(), json::str_val(&e));
+                    }
+                }
+            }
+        }
+        "scan" => {
+            let ports: Vec<Value> = at::scan_serial_ports()
+                .iter()
+                .map(|p| {
+                    let mut m = std::collections::BTreeMap::new();
+                    m.insert("path".to_string(), json::str_val(&p.path));
+                    m.insert("state".to_string(), json::str_val(&p.state));
+                    m.insert("is_pcui".to_string(), Value::Bool(p.is_pcui));
+                    m.insert("answers_at".to_string(), Value::Bool(p.answers_at));
+                    m.insert("vendor".to_string(), json::str_val(&p.vendor));
+                    m.insert("product".to_string(), json::str_val(&p.product));
+                    Value::Obj(m)
+                })
+                .collect();
+            ok.insert("ok".to_string(), Value::Bool(true));
+            ok.insert("ports".to_string(), Value::Arr(ports));
+        }
+        _ => {
+            ok.insert("ok".to_string(), Value::Bool(false));
+            ok.insert("error".to_string(), json::str_val("unknown control command"));
         }
     }
-    None
+    let resp = Value::Obj(ok);
+    format!("{}\n", resp.dump())
 }
 
-/// (rx_bytes, tx_bytes) of the default-route interface.
-fn wan_counters() -> Option<(u64, u64)> {
-    let iface = default_wan_iface()?;
-    let read = |sub: &str| -> Option<u64> {
-        std::fs::read_to_string(format!(
-            "/sys/class/net/{}/statistics/{}",
-            iface, sub
-        ))
-        .ok()?
-        .trim()
-        .parse()
-        .ok()
-    };
-    Some((read("rx_bytes")?, read("tx_bytes")?))
-}
-
-/// Max delta window for a trusted rate: past this (device asleep, clients
-/// away, counters reset) the sample only refreshes the baseline.
-const PDCP_MAX_RATE_WINDOW_SECS: f64 = 5.0;
-
-impl PdcpState {
-    fn new() -> Arc<Self> {
-        Arc::new(PdcpState {
-            inner: Mutex::new((false, PDCP_DEFAULT_INTERVAL_MS)),
-            cond: Condvar::new(),
-            last_wan: Mutex::new(None),
-        })
-    }
-
-    fn start(&self, interval_ms: u64) {
-        let mut g = self.inner.lock().unwrap();
-        *g = (true, interval_ms);
-        self.cond.notify_all();
-    }
-
-    fn stop(&self) {
-        let mut g = self.inner.lock().unwrap();
-        g.0 = false;
-        self.cond.notify_all();
-    }
-
-    /// Snapshot the switch, sleeping one interval (or 1 s while stopped)
-    /// unless it changes in the meantime.
-    fn wait_tick(&self, running: bool, interval_ms: u64) -> (bool, u64) {
-        let sleep = if running {
-            Duration::from_millis(interval_ms)
-        } else {
-            Duration::from_secs(1)
+/// Bind the Unix control socket and service `mt5700m-at` requests.
+fn spawn_control_socket(client: Arc<AtClient>) {
+    #[cfg(unix)]
+    {
+        use std::io::BufRead;
+        use std::os::unix::net::{UnixListener, UnixStream};
+        let _ = std::fs::remove_file(crate::sock::CONTROL_SOCKET);
+        if let Some(parent) = std::path::Path::new(crate::sock::CONTROL_SOCKET).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let listener = match UnixListener::bind(crate::sock::CONTROL_SOCKET) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!(
+                    "at-webserver: could not bind control socket {}: {}",
+                    crate::sock::CONTROL_SOCKET,
+                    e
+                );
+                return;
+            }
         };
-        let (guard, _) = self
-            .cond
-            .wait_timeout_while(
-                self.inner.lock().unwrap(),
-                sleep,
-                |s| s.0 == running && s.1 == interval_ms,
-            )
-            .unwrap();
-        *guard
+        eprintln!(
+            "at-webserver: control socket {} ready",
+            crate::sock::CONTROL_SOCKET
+        );
+        thread::spawn(move || {
+            for incoming in listener.incoming() {
+                let Ok(stream) = incoming else { continue };
+                let client = client.clone();
+                thread::spawn(move || {
+                    handle_control_conn(&client, stream);
+                });
+            }
+        });
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = client;
     }
 }
 
-/// Poll `AT^PDCPDATAINFO?` while the frontend sampling switch is on and
-/// broadcast each result as the same `pdcp_data` event the URC stream path
-/// produces. UBUS is request/response only, so this stands in for the
-/// modem's `AT^PDCPDATAINFO=1` push — the push itself is deliberately NOT
-/// enabled on the modem, keeping URC noise out of the shared serial port.
-fn spawn_pdcp_poller(
-    client: Arc<AtClient>,
-    peers: Arc<Mutex<Vec<Arc<ClientConn>>>>,
-    state: Arc<PdcpState>,
-) {
-    thread::spawn(move || {
-        let mut running = false;
-        let mut interval_ms = PDCP_DEFAULT_INTERVAL_MS;
-        loop {
-            let (run, iv) = state.wait_tick(running, interval_ms);
-            running = run;
-            interval_ms = iv;
-            if !running {
-                continue;
-            }
-            // Nobody is listening: skip the modem round-trip until a
-            // client reconnects and re-arms the switch.
-            if peers.lock().unwrap().is_empty() {
-                continue;
-            }
-            let text = match client.send("AT^PDCPDATAINFO?", 3) {
-                Ok(t) => t,
-                Err(_) => continue,
-            };
-            let line = match text
-                .lines()
-                .map(str::trim)
-                .find(|l| l.starts_with("^PDCPDATAINFO:"))
-            {
-                Some(l) => l,
-                None => continue,
-            };
-            let Some(mut data) = crate::dispatcher::handle_pdcp(line) else {
-                continue;
-            };
-            // The modem never rates a query response, so derive
-            // ulPdcpRate/dlPdcpRate (bytes/s, the unit the frontend
-            // converts with *8/1e6) from WAN interface byte deltas.
-            if let Some((rx, tx)) = wan_counters() {
-                let now = std::time::Instant::now();
-                let mut last = state.last_wan.lock().unwrap();
-                let mut rates: Option<(u64, u64)> = None;
-                if let Some((lrx, ltx, lat)) = *last {
-                    let dt = now.duration_since(lat).as_secs_f64();
-                    if (0.2..=PDCP_MAX_RATE_WINDOW_SECS).contains(&dt) {
-                        let dl = (rx.saturating_sub(lrx) as f64 / dt).round() as u64;
-                        let ul = (tx.saturating_sub(ltx) as f64 / dt).round() as u64;
-                        rates = Some((dl, ul));
-                    }
-                }
-                *last = Some((rx, tx, now));
-                drop(last);
-                if let Some((dl, ul)) = rates {
-                    if let Value::Obj(ref mut m) = data {
-                        m.insert("dlPdcpRate".to_string(), json::num_val(dl));
-                        m.insert("ulPdcpRate".to_string(), json::num_val(ul));
-                    }
-                }
-            }
-            broadcast(&peers, "pdcp_data", &data);
-        }
-    });
-}
-
-// ---------------------------------------------------------------- Startup readiness gate (UBUS)
-
-/// In UBUS mode every AT command goes through the `at-daemon` ubus object,
-/// but procd launches both services at the same runlevel (START=99) and
-/// dictionary order puts at-webserver first: measured on device,
-/// at-webserver starts at T+18s and ubus-at-daemon only at T+28s. Binding
-/// the websocket during that gap makes early client commands fail with an
-/// error; keeping the socket closed instead lets clients reconnect until
-/// the backend is really usable.
-const UBUS_READY_TIMEOUT: Duration = Duration::from_secs(60);
-const UBUS_READY_POLL: Duration = Duration::from_millis(500);
-
-fn ubus_at_daemon_ready() -> bool {
-    std::process::Command::new("ubus")
-        .args(["list", at::UBUS_OBJECT])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-/// Poll `probe` until it succeeds or the timeout elapses. Returns whether
-/// it became ready in time. Pure polling logic so it is testable without
-/// spawning ubus.
-fn wait_until_ready(probe: &dyn Fn() -> bool, timeout: Duration, step: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    loop {
-        if probe() {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        thread::sleep(step);
+#[cfg(unix)]
+fn handle_control_conn(client: &Arc<AtClient>, mut stream: std::os::unix::net::UnixStream) {
+    use std::io::BufRead;
+    use std::io::Write;
+    let mut line = String::new();
+    if std::io::BufReader::new(&mut stream)
+        .read_line(&mut line)
+        .ok()
+        .unwrap_or(0)
+        == 0
+    {
+        return;
     }
+    let resp = handle_control_request(client, &line);
+    let _ = stream.write_all(resp.as_bytes());
+    let _ = stream.flush();
 }
 
 // ---------------------------------------------------------------- Client connections
@@ -769,29 +815,13 @@ fn spawn_urc_monitor(client: Arc<AtClient>, peers: Arc<Mutex<Vec<Arc<ClientConn>
 
 pub fn run(args: &[String]) -> i32 {
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("at-webserver daemon: WebSocket AT bridge on :8765 (UBUS/SERIAL/NETWORK)");
+        println!("at-webserver daemon: WebSocket AT bridge on :8765 (SERIAL/NETWORK)");
         return 0;
     }
     let config = load_config();
     if !config.enabled {
         eprintln!("at-webserver disabled via UCI");
         return 0;
-    }
-    if config.connection_type == "UBUS" {
-        eprintln!(
-            "at-webserver: waiting for ubus object '{}' (max {}s)",
-            at::UBUS_OBJECT,
-            UBUS_READY_TIMEOUT.as_secs()
-        );
-        if wait_until_ready(&ubus_at_daemon_ready, UBUS_READY_TIMEOUT, UBUS_READY_POLL) {
-            eprintln!("at-webserver: ubus object '{}' ready", at::UBUS_OBJECT);
-        } else {
-            eprintln!(
-                "at-webserver: ubus object '{}' still missing after {}s, starting anyway",
-                at::UBUS_OBJECT,
-                UBUS_READY_TIMEOUT.as_secs()
-            );
-        }
     }
 
     let addr = format!("0.0.0.0:{}", config.websocket_port);
@@ -815,17 +845,10 @@ pub fn run(args: &[String]) -> i32 {
         client.describe()
     );
 
-    if client.describe() != "UBUS" {
-        spawn_urc_monitor(client.clone(), peers.clone());
-        scheduler::spawn(client.clone(), Arc::new(AtomicBool::new(false)));
-    }
-
-    // UBUS mode has no URC stream: emulate the PDCP rate push with a
-    // poller driven by the frontend sampling switch.
-    let pdcp = PdcpState::new();
-    if client.describe() == "UBUS" {
-        spawn_pdcp_poller(client.clone(), peers.clone(), pdcp.clone());
-    }
+    // Persistent transports always feed the URC monitor and the scheduler.
+    spawn_urc_monitor(client.clone(), peers.clone());
+    scheduler::spawn(client.clone(), Arc::new(AtomicBool::new(false)));
+    spawn_control_socket(client.clone());
 
     for incoming in listener.incoming() {
         let Ok(mut stream) = incoming else { continue };
@@ -833,7 +856,6 @@ pub fn run(args: &[String]) -> i32 {
         let client = client.clone();
         let scan = scan.clone();
         let peers = peers.clone();
-        let pdcp = pdcp.clone();
         thread::spawn(move || {
             if ws::handshake(&mut stream).is_err() {
                 return;
@@ -886,7 +908,7 @@ pub fn run(args: &[String]) -> i32 {
                                 }
                                 continue;
                             }
-                            let response = run_command(&client, &scan, &peers, &pdcp, &command);
+                            let response = run_command(&client, &scan, &peers, &command);
                             if !conn.try_send(&response.dump()) {
                                 break;
                             }
@@ -913,27 +935,11 @@ fn run_command(
     client: &Arc<AtClient>,
     scan: &Arc<ScanState>,
     peers: &Arc<Mutex<Vec<Arc<ClientConn>>>>,
-    pdcp: &Arc<PdcpState>,
     command: &str,
 ) -> Value {
     if command.trim() == "AT+CONNECT?" {
         let kind = if client.describe() == "SERIAL" { "1" } else { "0" };
         return ok_response(&format!("+CONNECT: {}\r\nOK", kind));
-    }
-    // UBUS mode: the sampling switch drives the local poller instead of the
-    // modem push (which the shared serial transport could not deliver).
-    if client.describe() == "UBUS" {
-        match parse_pdcp_command(command) {
-            Some(PdcpCmd::Stop) => {
-                pdcp.stop();
-                return ok_response("");
-            }
-            Some(PdcpCmd::Start(ms)) => {
-                pdcp.start(ms);
-                return ok_response("");
-            }
-            None => {}
-        }
     }
     if let Some(resp) = handle_schedule_command(command) {
         return resp;
@@ -962,91 +968,78 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pdcp_switch_on_variants() {
-        match parse_pdcp_command("AT^PDCPDATAINFO=1,750") {
-            Some(PdcpCmd::Start(ms)) => assert_eq!(ms, 750),
-            _ => panic!("start with interval"),
-        }
-        match parse_pdcp_command("AT^PDCPDATAINFO=1") {
-            Some(PdcpCmd::Start(ms)) => assert_eq!(ms, PDCP_DEFAULT_INTERVAL_MS),
-            _ => panic!("start default"),
-        }
-        // interval clamped into [250, 5000]
-        match parse_pdcp_command("AT^PDCPDATAINFO=1,50") {
-            Some(PdcpCmd::Start(ms)) => assert_eq!(ms, PDCP_MIN_INTERVAL_MS),
-            _ => panic!("interval clamped low"),
-        }
-        match parse_pdcp_command("AT^PDCPDATAINFO=1,99999") {
-            Some(PdcpCmd::Start(ms)) => assert_eq!(ms, PDCP_MAX_INTERVAL_MS),
-            _ => panic!("interval clamped high"),
-        }
+    fn control_unknown_command_rejected() {
+        let line = r#"{"cmd":"nope"}"#;
+        let resp = handle_control_request(
+            &Arc::new(AtClient {
+                config: DaemonConfig {
+                    connection_type: "SERIAL".into(),
+                    ..Default::default()
+                },
+                lock: Mutex::new(Stream::None),
+                rx: Arc::new(Mutex::new(VecDeque::new())),
+                in_flight: Arc::new(AtomicBool::new(false)),
+            }),
+            line,
+        );
+        let v: Value = json::parse(&resp).expect("valid json");
+        assert_eq!(v.get("ok").and_then(|x| x.as_bool()), Some(false));
     }
 
     #[test]
-    fn pdcp_switch_off_and_fallthrough() {
-        assert!(matches!(
-            parse_pdcp_command("AT^PDCPDATAINFO=0"),
-            Some(PdcpCmd::Stop)
-        ));
-        // unrelated commands pass through to the modem
-        assert!(parse_pdcp_command("AT^PDCPDATAINFO?").is_none());
-        assert!(parse_pdcp_command("AT^PDCPDATAINFO=2").is_none());
-        assert!(parse_pdcp_command("AT+CGMR").is_none());
+    fn control_send_empty_rejected() {
+        let line = r#"{"cmd":"send","command":"   "}"#;
+        let resp = handle_control_request(
+            &Arc::new(AtClient {
+                config: DaemonConfig::default(),
+                lock: Mutex::new(Stream::None),
+                rx: Arc::new(Mutex::new(VecDeque::new())),
+                in_flight: Arc::new(AtomicBool::new(false)),
+            }),
+            line,
+        );
+        let v: Value = json::parse(&resp).expect("valid json");
+        assert_eq!(v.get("ok").and_then(|x| x.as_bool()), Some(false));
     }
 
     #[test]
-    fn pdcp_poller_parses_ubus_response_text() {
-        // Shape of what client.send returns in UBUS mode.
-        let text = "\r\n^PDCPDATAINFO: 1,5,65535,0,0,0,30,0,792,0,512,1024,0,0,571749518,571748729\r\nOK\r\n";
-        let line = text
-            .lines()
-            .map(str::trim)
-            .find(|l| l.starts_with("^PDCPDATAINFO:"))
-            .expect("line found");
-        let data = crate::dispatcher::handle_pdcp(line).expect("parsed");
-        let dump = data.dump();
-        assert!(dump.contains("\"ulPdcpRate\":512"));
-        assert!(dump.contains("\"dlPdcpRate\":1024"));
-        assert!(dump.contains("\"highPriQueMaxBuffTime\":3"));
+    fn control_send_with_no_transport_errors() {
+        // Serial not connected => daemon reports ok=false with an error.
+        let mut req = std::collections::BTreeMap::new();
+        req.insert("cmd".to_string(), json::str_val("send"));
+        req.insert("command".to_string(), json::str_val("AT+CSQ"));
+        req.insert("timeout".to_string(), json::num_val(1));
+        let line = format!("{}\n", json::Value::Obj(req).dump());
+        let client = Arc::new(AtClient {
+            config: DaemonConfig::default(),
+            lock: Mutex::new(Stream::None),
+            rx: Arc::new(Mutex::new(VecDeque::new())),
+            in_flight: Arc::new(AtomicBool::new(false)),
+        });
+        let v: Value = json::parse(&handle_control_request(&client, &line)).expect("json");
+        assert_eq!(v.get("ok").and_then(|x| x.as_bool()), Some(false));
+        assert!(v
+            .get("error")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .contains("not connected"));
     }
 
     #[test]
-    fn wait_until_ready_polls_until_true() {
-        use std::sync::atomic::AtomicUsize;
-        let calls = AtomicUsize::new(0);
-        let probe = || {
-            let n = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            n >= 2 // becomes ready on the third probe
-        };
-        assert!(wait_until_ready(
-            &probe,
-            Duration::from_secs(5),
-            Duration::from_millis(1)
-        ));
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    fn resolve_serial_prefers_explicit_path() {
+        let mut c = DaemonConfig::default();
+        c.serial_port = "/dev/ttyUSB3".into();
+        assert_eq!(resolve_serial_port(&c), "/dev/ttyUSB3");
+        // "auto" falls back to system scan (host: none -> default path).
+        c.serial_port = "auto".into();
+        assert_eq!(resolve_serial_port(&c), at::PREFERRED_AT_PORT);
     }
 
     #[test]
-    fn wait_until_ready_times_out() {
-        let started = Instant::now();
-        assert!(!wait_until_ready(
-            &|| false,
-            Duration::from_millis(60),
-            Duration::from_millis(10)
-        ));
-        // must not return early, and must not hang
-        assert!(started.elapsed() >= Duration::from_millis(60));
-    }
-
-    #[test]
-    fn wait_until_ready_first_probe_success_is_immediate() {
-        let started = Instant::now();
-        assert!(wait_until_ready(
-            &|| true,
-            Duration::from_secs(5),
-            Duration::from_millis(500)
-        ));
-        assert!(started.elapsed() < Duration::from_millis(200));
+    fn syscfgex_normalization() {
+        let cmd = "AT^SYSCFGEX=\"0302\",3fffffff,1,2,7FFFFFFFFFFFFFFF,\"\",\"\"";
+        let out = normalize_syscfgex(cmd);
+        assert!(out.contains(",\"7FFFFFFFFFFFFFFF\",\"\",\"\""));
     }
 
     #[test]
