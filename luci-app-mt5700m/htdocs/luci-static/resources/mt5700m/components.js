@@ -48,13 +48,22 @@ function hero(kicker, title, desc, side, variant) {
 }
 
 function card(title, desc, body) {
-	return E('section', { 'class': 'mt-card' }, [
+	var children = [
 		E('div', { 'class': 'mt-card-head' }, [
 			E('h3', { 'class': 'mt-card-title' }, title),
 			desc ? E('p', { 'class': 'mt-card-desc' }, desc) : null
-		]),
-		body
-	]);
+		])
+	];
+
+	// LuCI E() only flattens the top-level children array; a nested array would
+	// be stringified ("[object HTMLDivElement],[object HTMLDivElement]...").
+	if (Array.isArray(body))
+		for (var i = 0; i < body.length; i++)
+			children.push(body[i]);
+	else if (body != null)
+		children.push(body);
+
+	return E('section', { 'class': 'mt-card' }, children);
 }
 
 // 数据行（label + 值/节点；值可为 DOM 节点或节点数组）
