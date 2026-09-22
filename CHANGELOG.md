@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.5.0] - 2026-09-22
+
+### Changed
+- **LuCI 前端重构为分层 ES2018+ 架构（v2.5）**：共享设计系统样式（`resources/mt5700m/style.css`）、组件库（`components.js`）、统一数据通道（`api.js`）与纯 AT 解析层（`parser.js`）；基于 LuCI2 框架，使用 `:root[data-darkmode]` 主题变量与 `L.resource()` 样式加载，要求 luci-base >= 25.12。
+
+### Fixed
+- **修复 LuCI 概览页所有卡片内容显示为 `[object HTMLDivElement]` 的问题**。根因：`components.js` 的 `card()` 把「返回数组的 body」再包进一层 children 数组，而 LuCI 的 `E()`/`dom.append` 只展平顶层 children 数组——嵌套数组会被当作标量 `String()` 强转，逐项变成逗号连接的 `[object HTMLDivElement]`。现把 body 展平进顶层 children 数组，卡片正文正常渲染。
+
 ## [2.4.8] - 2026-09-10
 
 ### Changed
