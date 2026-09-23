@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Docs
+- 「系统拓扑与多层协同架构」章节的 Mermaid 流程图替换为高清架构位图（`docs/architecture.png`），与后端独占串口、双前端共用控制通道的当前实现保持一致。
+
 ## [2.6.0] - 2026-09-22
 
 ### Changed

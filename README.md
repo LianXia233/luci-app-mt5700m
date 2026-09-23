@@ -55,36 +55,9 @@
 （TIOCEXCL + 常驻描述符），LuCI 与 WebUI 都经它访问模组，彻底避免传统工具在 Web
 与后台同时调用时出现的 TTY 串口锁死。`ubus-at-daemon` 与 `sms-tool_q` 已完全移除。
 
-```mermaid
-flowchart TD
-    subgraph Client["前端展示层 (Dual-Frontend)"]
-        LuCI["LuCI 管理页面<br/>(原生 OpenWrt 沉浸体验)"]
-        WebUI["mt5700webui 4.0 独立面板<br/>(React + Semi Design)"]
-    end
-
-    subgraph Core["Rust 高性能后端 (at-webserver 4.0)"]
-        RustBin["单静态二进制: at-webserver-rust<br/>(std-only 无外部 C 库依赖)"]
-        ModeWS["WebSocket Daemon 模式<br/>(服务 WebUI 前端 :8765)"]
-        ModeCLI["LuCI Shell 模式<br/>(对齐 mt5700m-at 命令行契约)"]
-        CtrlSock["本地控制套接字<br/>/var/run/at-webserver.sock"]
-    end
-
-    subgraph Hardware["移远 MT5700M-CN 5G 硬件模组"]
-        ModemAT["AT 控制面通道 (PCUI 串口, 独占 TIOCEXCL)"]
-        ModemData["NDIS / NCM 数据面通道 (USB 物理端点)"]
-    end
-
-    LuCI -->|执行 /usr/sbin/mt5700m-at| ModeCLI
-    WebUI -->|WebSocket 交互| ModeWS
-
-    RustBin -.-> ModeWS
-    RustBin -.-> ModeCLI
-
-    ModeCLI -->|经控制套接字排队| CtrlSock
-    CtrlSock -->|独占调度| ModemAT
-    ModeWS -->|独占调度| ModemAT
-    ModemData -->|kmod-usb-net-cdc-ncm| NetDev["网卡设备 wwan0 / usb0"]
-```
+<div align="center">
+  <img src="docs/architecture.png" alt="系统拓扑与多层协同架构：双前端经 Rust 后端独占访问 MT5700M 模组" width="880"/>
+</div>
 
 ---
 
