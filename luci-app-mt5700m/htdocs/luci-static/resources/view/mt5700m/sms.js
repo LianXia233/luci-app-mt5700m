@@ -18,10 +18,12 @@ var LEGACY_KEY = 'sms_sent_messages_cache';
 
 return view.extend({
 	load: function() {
-		return Promise.all([
+		// 请求发起即返回，不阻塞首屏；render() 等 pending 填充。
+		this.pending = Promise.all([
 			api.atSmsList().catch(function(err) { return { stdout: '', stderr: err.message || String(err) }; }),
 			api.atSmsInfo().catch(function(err) { return { stdout: '', stderr: err.message || String(err) }; })
 		]);
+		return Promise.resolve();
 	},
 
 	sentHistory: function() {
@@ -133,7 +135,23 @@ return view.extend({
 		]);
 	},
 
-	render: function(results) {
+	// 渐进渲染：骨架屏立即显示，数据到达后整体替换（后端慢不挡前端）
+	render: function() {
+		var self = this;
+		var holder = E('div', { 'class': 'mt-view' });
+		holder.appendChild(c.skeletonPage(3));
+		this.contentReady = this.pending.then(function(data) {
+			holder.replaceChildren(self.renderPage(data));
+			return data;
+		}, function(err) {
+			holder.replaceChildren(E('div', { 'class': 'mt-page' }, [
+				E('div', { 'class': 'alert-message error' }, String(err && err.message || err))
+			]));
+		});
+		return holder;
+	},
+
+	renderPage: function(results) {
 		var listResult = results[0] || {}, infoResult = results[1] || {};
 		var messages = parser.parseMessages(listResult.stdout || '');
 		var info = parser.parseInfo(infoResult.stdout || '');

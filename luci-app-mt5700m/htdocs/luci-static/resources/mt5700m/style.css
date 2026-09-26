@@ -724,3 +724,15 @@
 	.mt-beam-card-grid { grid-template-columns: repeat(4, 1fr); }
 	.mt-shortcuts { grid-template-columns: 1fr; }
 }
+
+	/* ---------- 首屏骨架屏（数据未返回时占位，不阻塞前端渲染） ---------- */
+	.mt-skeleton-hero { display: flex; flex-direction: column; gap: 12px; min-height: 118px; justify-content: center; }
+	.mt-skeleton-card { min-height: 150px; display: flex; flex-direction: column; gap: 12px; justify-content: center; }
+	.mt-skeleton-bar { height: 13px; border-radius: 7px; background: var(--mt-surface-inset); border: 1px solid var(--mt-border-soft); animation: mt-skeleton-pulse 1.4s ease-in-out infinite; }
+	.mt-skeleton-bar.w25 { width: 25%; }
+	.mt-skeleton-bar.w30 { width: 30%; }
+	.mt-skeleton-bar.w50 { width: 50%; }
+	.mt-skeleton-bar.w60 { width: 60%; }
+	.mt-skeleton-bar.w70 { width: 70%; }
+	.mt-skeleton-bar.mt-skeleton-title { height: 26px; border-radius: 8px; }
+	@keyframes mt-skeleton-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }

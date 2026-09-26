@@ -19,9 +19,47 @@ function isNode(v) {
 	return v && typeof v === 'object' && (v instanceof HTMLElement || v.nodeType === 1);
 }
 
-// 设计系统样式表（LuCI 官方静态资源引用方式）
+// 设计系统样式表：模块求值时立即注入 <head>，让 style.css 与 load() 的
+// ubus/AT 数据请求并行下载。原实现把 <link> 放在 render() 返回的 DOM 里，
+// CSS 要等数据全部返回后才开始下载，首屏必然先无样式再整体重排。
+// ?v= 须与 Makefile 的 PKG_VERSION 保持一致，升级后立即失效旧样式缓存。
+var STYLE_VERSION = '2.5.0';
+
+function injectStyle() {
+	if (!document.getElementById('mt5700m-style'))
+		document.head.appendChild(E('link', {
+			'rel': 'stylesheet',
+			'id': 'mt5700m-style',
+			'href': L.resource('mt5700m/style.css') + '?v=' + STYLE_VERSION
+		}));
+}
+
+injectStyle();
+
+// 兼容保留：样式已提前注入，render() 中无需再插入 <link>（E() 跳过 null）
 function cssLink() {
-	return E('link', { 'rel': 'stylesheet', 'href': L.resource('mt5700m/style.css') });
+	return null;
+}
+
+/* ---------- 首屏骨架屏 ---------- */
+
+// 页面先画骨架、不等 ubus/AT 数据；数据到达后由视图整体替换。
+// 骨架结构只用 mt- 设计系统类，暗色模式由令牌自动适配。
+function skeletonPage(cardCount) {
+	var cards = [], i;
+	for (i = 0; i < (cardCount || 4); i++)
+		cards.push(E('div', { 'class': 'mt-card mt-skeleton-card' }, [
+			E('div', { 'class': 'mt-skeleton-bar w30' }),
+			E('div', { 'class': 'mt-skeleton-bar w70' }),
+			E('div', { 'class': 'mt-skeleton-bar w50' })
+		]));
+	return E('div', { 'class': 'mt-page mt-skeleton-page' }, [
+		E('div', { 'class': 'mt-hero mt-skeleton-hero' }, [
+			E('div', { 'class': 'mt-skeleton-bar w25' }),
+			E('div', { 'class': 'mt-skeleton-bar mt-skeleton-title w60' })
+		]),
+		E('div', { 'class': 'mt-grid' }, cards)
+	]);
 }
 
 /* ---------- 基础标签 ---------- */
@@ -547,6 +585,7 @@ function lockPanel(title, rat, lockData) {
 return baseclass.extend({
 	isNode: isNode,
 	cssLink: cssLink,
+	skeletonPage: skeletonPage,
 	badge: badge,
 	signalBadge: signalBadge,
 	hero: hero,

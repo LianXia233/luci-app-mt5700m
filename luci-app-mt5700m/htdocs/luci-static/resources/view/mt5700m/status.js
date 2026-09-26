@@ -13,15 +13,17 @@
 
 return view.extend({
 	load: function() {
-		return api.managerStatus().catch(function() { return {}; }).then(function(manager) {
-			return Promise.all([
-				api.atStatus(),
-				api.atSession(),
-				api.trafficSummary().catch(function() { return { interfaces: [] }; })
-			]).then(function(results) {
-				return { native: results[0], session: results[1], traffic: results[2], manager: manager };
-			});
+		// 数据请求立即发起但不阻塞渲染：load() 同步返回，页面先出骨架屏，
+		// 四路数据并行到达后由 render() 填充（原先 managerStatus 还串行在前）。
+		this.pending = Promise.all([
+			api.managerStatus().catch(function() { return {}; }),
+			api.atStatus(),
+			api.atSession(),
+			api.trafficSummary().catch(function() { return { interfaces: [] }; })
+		]).then(function(results) {
+			return { manager: results[0], native: results[1], session: results[2], traffic: results[3] };
 		});
+		return Promise.resolve();
 	},
 
 	/* ---------- 信号卡 ---------- */
@@ -184,7 +186,23 @@ return view.extend({
 
 	/* ---------- 渲染 ---------- */
 
-	render: function(res) {
+	// 渐进渲染：骨架屏立即显示，数据到达后整体替换（后端慢不挡前端）
+	render: function() {
+		var self = this;
+		var holder = E('div', { 'class': 'mt-view' });
+		holder.appendChild(c.skeletonPage(6));
+		this.contentReady = this.pending.then(function(data) {
+			holder.replaceChildren(self.renderPage(data));
+			return data;
+		}, function(err) {
+			holder.replaceChildren(E('div', { 'class': 'mt-page' }, [
+				E('div', { 'class': 'alert-message error' }, String(err && err.message || err))
+			]));
+		});
+		return holder;
+	},
+
+	renderPage: function(res) {
 		var data = parser.parseStatus(res), session = parser.parseSession(res.session && res.session.stdout || '');
 		var reachable = data.reachable === '1', connected = data.connected === '1', carrierInfo = parser.carrierInfo(data);
 		var opInfo = parser.operatorInfo(data.operator);

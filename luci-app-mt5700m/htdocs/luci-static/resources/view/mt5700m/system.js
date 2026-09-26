@@ -16,7 +16,9 @@
 
 return view.extend({
 	load: function() {
-		return api.atSystem();
+		// 请求发起即返回，不阻塞首屏；render() 等 pending 填充。
+		this.pending = api.atSystem();
+		return Promise.resolve();
 	},
 
 	row: function(label, value) {
@@ -108,7 +110,23 @@ return view.extend({
 		]);
 	},
 
-	render: function(res) {
+	// 渐进渲染：骨架屏立即显示，数据到达后整体替换（后端慢不挡前端）
+	render: function() {
+		var self = this;
+		var holder = E('div', { 'class': 'mt-view' });
+		holder.appendChild(c.skeletonPage(5));
+		this.contentReady = this.pending.then(function(data) {
+			holder.replaceChildren(self.renderPage(data));
+			return data;
+		}, function(err) {
+			holder.replaceChildren(E('div', { 'class': 'mt-page' }, [
+				E('div', { 'class': 'alert-message error' }, String(err && err.message || err))
+			]));
+		});
+		return holder;
+	},
+
+	renderPage: function(res) {
 		var raw = res.stdout || '';
 		var identity = parser.section(raw, 'Identity');
 		var version = parser.section(raw, 'Version');

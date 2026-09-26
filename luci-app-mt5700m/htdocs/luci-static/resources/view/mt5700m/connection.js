@@ -17,17 +17,23 @@
 
 return view.extend({
 	load: function() {
-		return uci.load('mt5700m').then(L.bind(function() {
-			return api.managerStatus().catch(function() { return {}; }).then(L.bind(function(manager) {
-				this.manager = manager || {};
+		// AT 查询与 manager/接口状态全部并行发起，且 load() 不等待它们：
+		// 页面先渲染骨架屏，数据到达后由 render() 填充。
+		var self = this;
+		var settings = api.atConnectionSettings();
+		var session = api.atSession();
+		this.pending = uci.load('mt5700m').then(function() {
+			return api.managerStatus().catch(function() { return {}; }).then(function(manager) {
+				self.manager = manager || {};
 				return Promise.all([
-					Promise.resolve(this.manager),
-					api.deviceStatus(this.manager.network || '').catch(function() { return {}; }),
-					api.atConnectionSettings(),
-					api.atSession()
+					Promise.resolve(self.manager),
+					api.deviceStatus(self.manager.network || '').catch(function() { return {}; }),
+					settings,
+					session
 				]);
-			}, this));
-		}, this));
+			});
+		});
+		return Promise.resolve();
 	},
 
 	fact: function(label, value) {
@@ -136,7 +142,23 @@ return view.extend({
 		]);
 	},
 
-	render: function(results) {
+	// 渐进渲染：骨架屏立即显示，数据到达后整体替换（后端慢不挡前端）
+	render: function() {
+		var self = this;
+		var holder = E('div', { 'class': 'mt-view' });
+		holder.appendChild(c.skeletonPage(4));
+		this.contentReady = this.pending.then(function(data) {
+			holder.replaceChildren(self.renderPage(data));
+			return data;
+		}, function(err) {
+			holder.replaceChildren(E('div', { 'class': 'mt-page' }, [
+				E('div', { 'class': 'alert-message error' }, String(err && err.message || err))
+			]));
+		});
+		return holder;
+	},
+
+	renderPage: function(results) {
 		var manager = this.manager || results[0] || {};
 		var self = this;
 

@@ -116,10 +116,12 @@ function renderCellScan(raw) {
 
 return view.extend({
 	load: function() {
-		return Promise.all([
+		// 请求发起即返回，不阻塞首屏；render() 等 pending 填充。
+		this.pending = Promise.all([
 			api.atNetwork(),
 			api.atRadio()
 		]);
+		return Promise.resolve();
 	},
 
 	/* ---------- C) 频段勾选 / 锁频面板（组件已封装，页面仅做布局） ---------- */
@@ -234,7 +236,23 @@ return view.extend({
 		return E('div', { 'class': 'mt-row' }, [ E('span', { 'class': 'mt-muted' }, label), valueNode ]);
 	},
 
-	render: function(results) {
+	// 渐进渲染：骨架屏立即显示，数据到达后整体替换（后端慢不挡前端）
+	render: function() {
+		var self = this;
+		var holder = E('div', { 'class': 'mt-view' });
+		holder.appendChild(c.skeletonPage(5));
+		this.contentReady = this.pending.then(function(data) {
+			holder.replaceChildren(self.renderPage(data));
+			return data;
+		}, function(err) {
+			holder.replaceChildren(E('div', { 'class': 'mt-page' }, [
+				E('div', { 'class': 'alert-message error' }, String(err && err.message || err))
+			]));
+		});
+		return holder;
+	},
+
+	renderPage: function(results) {
 		var res = results[0] || {}, radioSettings = results[1] || {};
 		var raw = res.stdout || '', radioRaw = radioSettings.stdout || '';
 		var signal = parser.matchValues(parser.section(raw, 'Signal'), '^HCSQ');

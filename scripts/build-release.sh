@@ -71,6 +71,15 @@ cp -f "${rust_bin}" "${pkg_src}/root/usr/bin/at-webserver"
 chmod 0755 "${pkg_src}/root/usr/bin/at-webserver"
 cp -f "${repo_dir}/mt5700webui-openwrt-server/at-webserver/files/etc/init.d/at-webserver" "${pkg_src}/root/etc/init.d/at-webserver"
 echo "INFO: folded mt5700webui 4.0 frontend + Rust backend into package source"
+
+# Minify the LuCI frontend in place (see scripts/minify-luci-frontend.sh for
+# why luci.mk's own jsmin/csstidy stays disabled).  Runs AFTER the /5700 fold
+# and only touches luci-static/resources/{mt5700m,view/mt5700m}, so the React
+# bundle stays pristine.  esbuild + node must be on PATH (both are present on
+# the CI runners; node --check validates every minified output).
+bash "${repo_dir}/scripts/minify-luci-frontend.sh" "${pkg_src}/htdocs"
+echo "INFO: minified LuCI frontend (mt5700m views/modules/style.css)"
+
 cat > .config <<'EOF'
 CONFIG_TARGET_mediatek=y
 CONFIG_TARGET_mediatek_filogic=y

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+- **前端加载性能测量环境 `tests/perf-harness/`**：`server.js`（before/after 双资源树 + 可调路由器延迟的 ubus/AT mock，全部响应 `no-store` 保证冷首访）、`luci-shim.js`（复刻 luci.js「先取视图、逐层并行取依赖」加载时序的迷你加载器与框架垫片，标记 shell/content/style 时刻）、`page.html` 与 `measure.sh`（Playwright 批量采集 `window.__perf`）。模拟延迟（静态 6ms/文件、ubus 20~30ms、AT 150/180ms）下各跑 5 次取中位：前端可见 319ms → 82ms（−74%）、后端 5s 延迟时白屏 5119.8ms → ~70ms 出骨架、传输字节 121.6KB → 91.1KB（−25%）。
+- **`scripts/minify-luci-frontend.sh`**：用 esbuild 只压缩 `luci-static/resources/{mt5700m,view/mt5700m}`（不触碰折入同一 htdocs 的 /5700 React 包，故 `LUCI_MINIFY_*=0` 保持不变），逐文件 `node --check` 并断言 LuCI 模块加载器赖以生存的引号 `require …` 指令压缩前后数量不变；`build-release.sh` 在 `make compile` 前调用，CI 新增 “Check LuCI frontend minification” 校验步骤。应用侧 12 个静态文件 207.9KB → 147.2KB（−29%）。
+
+### Changed
+- **LuCI 六个视图改为渐进渲染，前端首屏不再等待后端数据**：`status / connection / network / system / sms / advanced` 的 `load()` 发起数据请求后立即返回，`render()` 先绘制骨架屏（`components.js` 新增 `c.skeletonPage()`；`style.css` 新增 `.mt-skeleton-*` 脉冲样式，经 `--mt-*` 令牌自动适配暗色），ubus/AT 数据到达后由原渲染函数 `renderPage()` 整体替换骨架，数据链路失败时显示错误条。模组 AT 单次 200ms~数秒的延迟只影响填充时机，不再拖住首屏（实测后端 5s 下 70ms 出骨架）。数据请求同步并行化：概览页四路数据（managerStatus / AT×2 / 流量）全并行，移动数据页两条 AT 提前到与 manager/接口状态并行，完整页面再提前一个 ubus 往返。页脚与表单时序已对照 luci.js 源码核实——`addFooter()` 在 render 后统一创建、`handleSave`/`handleReset` 点击时才扫描 `.cbi-map`，骨架期不破坏 Save/Reset 绑定；渲染函数本体未改动，内容与改造前逐像素等价。
+- **`style.css` 由 `render()` 内插入改为组件模块求值即注入 `<head>`，并携带 `?v=2.5.0` 版本戳**：原实现把 `<link>` 放在 `render()` 返回的 DOM 里，样式表排在整条数据瀑布之后（实测注入点 = 内容渲染时刻 303.7ms，比模块加载晚两波 ubus/AT 请求，内容先出现、样式后到，冷启动 34ms 无样式窗口）；现与数据请求并行下载（实测 67.9ms 注入、82ms 就绪）。模块 JS 本就走 `?v=resource_version`，`L.resource()` 的 CSS 此前无版本参数，升级后可能命中启发式缓存里的旧样式表——版本戳使包升级立即失效。
+
 ### Docs
 - 「系统拓扑与多层协同架构」章节的 Mermaid 流程图替换为高清架构位图（`docs/architecture.png`），与后端独占串口、双前端共用控制通道的当前实现保持一致。
 
