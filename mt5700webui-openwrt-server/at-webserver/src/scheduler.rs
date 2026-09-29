@@ -1,11 +1,18 @@
 //! Day/night band-lock scheduler, port of the Python `Scheduler` / Go
 //! `schedule.go` control loop. Applies AT^LTEFREQLOCK / AT^NRFREQLOCK per
 //! time-of-day, toggles airplane mode around the switch and force-unlocks
-//! after a no-service timeout. Runs for both SERIAL and NETWORK transports.
+//! after a no-service timeout.
+//!
+//! Async architecture: the scheduler is registered as a **background periodic
+//! task** on the shared `TaskManager`, so every AT exchange flows through the
+//! single arbiter. It can never contend with the WebSocket / control socket /
+//! snapshot collectors for the serial channel, and a slow modem only delays
+//! the next check — never a UI path.
 
-use crate::daemon::AtClient;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use crate::json::Value;
+use crate::task::Priority;
+use crate::task_manager::{TaskCtx, TaskManager};
+use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -301,98 +308,43 @@ struct SchedulerState {
     switch_count: u64,
 }
 
-fn run_lock_command(client: &AtClient, cmd: &str, action: &str) -> bool {
-    eprintln!("scheduler: {} -> {}", action, cmd);
-    match client.send(cmd, 5) {
-        Ok(text) => {
-            if crate::at::response_ok(&text) {
-                true
-            } else {
-                eprintln!("scheduler: {} failed: {}", action, text.trim());
-                false
+/// Register the day/night band-lock scheduler as a background periodic task.
+/// All AT traffic flows through the shared arbiter — no direct serial access —
+/// so the scheduler can never contend with the WebSocket / control socket /
+/// snapshot collectors for the channel. When scheduling is disabled the task
+/// body returns immediately without touching the modem.
+pub fn register(tasks: &TaskManager) {
+    tasks.add_periodic(
+        "sched.bandlock",
+        Duration::from_secs(15),
+        Priority::Background,
+        Some(Duration::from_secs(120)),
+        Box::new({
+            let st = Arc::new(Mutex::new(SchedulerState {
+                current_mode: String::new(),
+                applied: false,
+                last_applied_lte: -1,
+                last_applied_nr: -1,
+                last_service_at: std::time::Instant::now(),
+                switch_count: 0,
+            }));
+            move |ctx: &TaskCtx| {
+                let cfg = SchedCfg::load();
+                if !cfg.enabled {
+                    return Ok(Value::Null);
+                }
+                let mut guard = match st.lock() {
+                    Ok(g) => g,
+                    Err(_) => return Ok(Value::Null),
+                };
+                tick(ctx, &cfg, &mut guard);
+                Ok(Value::Null)
             }
-        }
-        Err(e) => {
-            eprintln!("scheduler: {} failed: {}", action, e);
-            false
-        }
-    }
+        }),
+    );
 }
 
-fn apply_lock(client: &AtClient, cfg: &SchedCfg, lte: &Lock, nr: &Lock, mode: &str) {
-    // The shared counter lives outside: use a process-wide static for parity
-    // with the Python switch_count logging.
-    use std::sync::Mutex;
-    static COUNT: Mutex<u64> = Mutex::new(0);
-    let count = {
-        let mut c = COUNT.lock().unwrap();
-        *c += 1;
-        *c
-    };
-    eprintln!("scheduler: switching to {} (#{})", mode, count);
-
-    if cfg.toggle_airplane {
-        if client.send("AT+CFUN=0", 5).map(|t| crate::at::response_ok(&t)) == Ok(true) {
-            eprintln!("scheduler: airplane mode on");
-            sleep(Duration::from_secs(2));
-        }
-    }
-
-    if let Some((cmd, action)) = lte_command(cfg, lte) {
-        run_lock_command(client, &cmd, action);
-        sleep(Duration::from_secs(1));
-    }
-    if let Some((cmd, action)) = nr_command(cfg, nr) {
-        run_lock_command(client, &cmd, action);
-        sleep(Duration::from_secs(1));
-    }
-
-    if cfg.toggle_airplane {
-        if client.send("AT+CFUN=1", 5).map(|t| crate::at::response_ok(&t)) == Ok(true) {
-            eprintln!("scheduler: airplane mode off");
-        }
-        sleep(Duration::from_secs(3));
-    }
-}
-
-fn has_service(client: &AtClient) -> bool {
-    // C5GREG covers SA, CEREG covers LTE/NSA, CREG as the last resort.
-    for cmd in ["AT+C5GREG?", "AT+CEREG?", "AT+CREG?"] {
-        if let Ok(text) = client.send(cmd, 5) {
-            if registered(&text) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-pub fn spawn(client: Arc<AtClient>, stop: Arc<AtomicBool>) {
-    std::thread::spawn(move || {
-        let mut st = SchedulerState {
-            current_mode: String::new(),
-            applied: false,
-            last_applied_lte: -1,
-            last_applied_nr: -1,
-            last_service_at: std::time::Instant::now(),
-            switch_count: 0,
-        };
-        loop {
-            if stop.load(Ordering::SeqCst) {
-                return;
-            }
-            let cfg = SchedCfg::load();
-            if !cfg.enabled {
-                sleep(Duration::from_secs(30));
-                continue;
-            }
-            tick(&client, &cfg, &mut st);
-            sleep(Duration::from_secs(cfg.check_interval));
-        }
-    });
-}
-
-fn tick(client: &Arc<AtClient>, cfg: &SchedCfg, st: &mut SchedulerState) {
+fn tick(ctx: &TaskCtx, cfg: &SchedCfg, st: &mut SchedulerState) {
     let target = target_mode(cfg);
     let (want_lte, want_nr) = match target {
         "夜间" => (cfg.night.lte.clone(), cfg.night.nr.clone()),
@@ -402,10 +354,10 @@ fn tick(client: &Arc<AtClient>, cfg: &SchedCfg, st: &mut SchedulerState) {
 
     if target != st.current_mode || !st.applied {
         if !target.is_empty() {
-            apply_lock(client, cfg, &want_lte, &want_nr, target);
+            apply_lock(ctx, cfg, &want_lte, &want_nr, target);
         } else if st.applied {
             eprintln!("scheduler: leaving period, unlocking");
-            apply_lock(client, cfg, &Lock::default(), &Lock::default(), "解锁");
+            apply_lock(ctx, cfg, &Lock::default(), &Lock::default(), "解锁");
         }
         st.current_mode = target.to_string();
         st.last_applied_lte = want_lte.ltype;
@@ -413,7 +365,7 @@ fn tick(client: &Arc<AtClient>, cfg: &SchedCfg, st: &mut SchedulerState) {
         st.applied = true;
     }
 
-    if has_service(client) {
+    if has_service(ctx) {
         st.last_service_at = std::time::Instant::now();
         return;
     }
@@ -423,8 +375,74 @@ fn tick(client: &Arc<AtClient>, cfg: &SchedCfg, st: &mut SchedulerState) {
     }
     // Locked onto a band with no coverage: unlocking beats waiting.
     eprintln!("scheduler: no service for {}s, force unlock", down);
-    apply_lock(client, cfg, &Lock::default(), &Lock::default(), "恢复");
+    apply_lock(ctx, cfg, &Lock::default(), &Lock::default(), "恢复");
     st.last_service_at = std::time::Instant::now();
+}
+
+fn run_lock_command(ctx: &TaskCtx, cmd: &str, action: &str) -> bool {
+    eprintln!("scheduler: {} -> {}", action, cmd);
+    match ctx.action(cmd) {
+        Ok(text) => {
+            if crate::at::response_ok(&text) {
+                true
+            } else {
+                eprintln!("scheduler: {} failed: {}", action, text.trim());
+                false
+            }
+        }
+        Err(e) => {
+            eprintln!("scheduler: {} failed: {}", action, e.message());
+            false
+        }
+    }
+}
+
+fn apply_lock(ctx: &TaskCtx, cfg: &SchedCfg, lte: &Lock, nr: &Lock, mode: &str) {
+    // The shared counter lives outside: use a process-wide static for parity
+    // with the Python switch_count logging.
+    use std::sync::Mutex as CounterMutex;
+    static COUNT: CounterMutex<u64> = CounterMutex::new(0);
+    let count = {
+        let mut c = COUNT.lock().unwrap();
+        *c += 1;
+        *c
+    };
+    eprintln!("scheduler: switching to {} (#{})", mode, count);
+
+    if cfg.toggle_airplane {
+        if ctx.action("AT+CFUN=0").map(|t| crate::at::response_ok(&t)) == Ok(true) {
+            eprintln!("scheduler: airplane mode on");
+            sleep(Duration::from_secs(2));
+        }
+    }
+
+    if let Some((cmd, action)) = lte_command(cfg, lte) {
+        run_lock_command(ctx, &cmd, action);
+        sleep(Duration::from_secs(1));
+    }
+    if let Some((cmd, action)) = nr_command(cfg, nr) {
+        run_lock_command(ctx, &cmd, action);
+        sleep(Duration::from_secs(1));
+    }
+
+    if cfg.toggle_airplane {
+        if ctx.action("AT+CFUN=1").map(|t| crate::at::response_ok(&t)) == Ok(true) {
+            eprintln!("scheduler: airplane mode off");
+        }
+        sleep(Duration::from_secs(3));
+    }
+}
+
+fn has_service(ctx: &TaskCtx) -> bool {
+    // C5GREG covers SA, CEREG covers LTE/NSA, CREG as the last resort.
+    for cmd in ["AT+C5GREG?", "AT+CEREG?", "AT+CREG?"] {
+        if let Ok(text) = ctx.query(cmd) {
+            if registered(&text) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]

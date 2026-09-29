@@ -2,3 +2,4 @@ dist-release/
 dist/
 .DS_Store
 __pycache__/
+.trae-html-share-packages/

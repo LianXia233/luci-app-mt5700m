@@ -115,6 +115,27 @@ pub fn daemon_sms(number: &str, text: &str) -> Result<String, ControlError> {
         .ok_or_else(|| ControlError::BadResponse("missing response field".into()))
 }
 
+/// Request the daemon's cached state snapshot (no AT traffic at all).
+/// The snapshot is produced by the background collectors; the LuCI status
+/// page can render it immediately instead of waiting for the modem.
+pub fn daemon_cached() -> Result<json::Value, ControlError> {
+    let mut map = std::collections::BTreeMap::new();
+    map.insert("cmd".to_string(), json::str_val("cached"));
+    let resp = request(&json::Value::Obj(map))?;
+    let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !ok {
+        let err = resp
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown error")
+            .to_string();
+        return Err(ControlError::BadResponse(err));
+    }
+    resp.get("snapshot")
+        .cloned()
+        .ok_or_else(|| ControlError::BadResponse("missing snapshot field".into()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -39,6 +39,28 @@ function atSafe(args) {
 	});
 }
 
+/*
+ * cachedSnapshot —— Async Architecture 缓存优先（SWR）快照。
+ * 走 mt5700m-at cached 子命令（本地控制 socket → daemon StateCache）：
+ * 零 AT 流量、毫秒级返回，即使模组离线 / AT 卡住也能立即拿到最近一次
+ * 后台采集器写入的状态。永不 reject：daemon 未运行或解析失败时返回 null，
+ * 调用方回退到常规查询帧。
+ *
+ * 返回形状（每 topic 一项）：
+ *   { "signal": { "value": { "rsrp": -86, ... }, "fresh": true,
+ *                 "age_ms": 42, "source": "snapshot" }, ... }
+ */
+function cachedSnapshot() {
+	return atSafe([ 'cached' ]).then(function(result) {
+		try {
+			var parsed = JSON.parse(result.stdout || '');
+			if (parsed && parsed.ok === true && parsed.snapshot && typeof parsed.snapshot === 'object')
+				return parsed.snapshot;
+		} catch (e) { /* 快照不可解析：忽略，走常规查询帧 */ }
+		return null;
+	});
+}
+
 /* ---------- AT 子命令速记 ---------- */
 
 function atStatus()            { return atSafe([ 'status' ]); }
@@ -67,6 +89,7 @@ return baseclass.extend({
 	/* fs.exec（AT） */
 	at: at,
 	atSafe: atSafe,
+	cachedSnapshot: cachedSnapshot,
 	atStatus: atStatus,
 	atSession: atSession,
 	atNetwork: atNetwork,

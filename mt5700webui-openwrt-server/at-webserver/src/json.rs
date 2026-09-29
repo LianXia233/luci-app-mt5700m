@@ -40,6 +40,20 @@ impl Value {
         }
     }
 
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            Value::Num(n) => n.parse().ok(),
+            _ => None,
+        }
+    }
+
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Value::Num(n) => n.parse().ok(),
+            _ => None,
+        }
+    }
+
     pub fn as_bool(&self) -> Option<bool> {
         match self {
             Value::Bool(b) => Some(*b),
@@ -112,6 +126,10 @@ pub fn escape(s: &str) -> String {
 
 pub fn str_val(s: &str) -> Value {
     Value::Str(s.to_string())
+}
+
+pub fn bool_val(b: bool) -> Value {
+    Value::Bool(b)
 }
 
 pub fn num_val<T: std::fmt::Display>(n: T) -> Value {

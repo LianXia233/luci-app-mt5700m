@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Banner,
   Button,
@@ -14,7 +14,7 @@ import {
   Toast,
   Typography,
 } from '@douyinfe/semi-ui';
-import { ATService } from '@/services/at';
+import { ATService, type ATResponse } from '@/services/at';
 import { useATReady } from '@/hooks/useATReady';
 import { extractATData } from '@/modem/parse';
 import { sleep } from '@/modem/atx';
@@ -904,6 +904,40 @@ const SystemInfo: React.FC = () => {
   };
 
   useATReady(loadAll);
+
+  // ---- Async Architecture：SWR 首屏 + modem.info 事件 ----
+  // 后端把 ATI/CGSN 采集进 StateCache（60s TTL）并通过 EventBus 推送
+  // modem.info，这里先渲染缓存值，再由 loadAll 的命令查询补齐其它配置。
+  // 设备信息随事件自动刷新，不需要页面自己轮询。
+  useEffect(() => {
+    void at()
+      .requestSnapshot()
+      .then((snap) => {
+        const v = snap?.modem?.value;
+        if (v && typeof v === 'object') {
+          const m = v as Record<string, unknown>;
+          setDeviceInfo((prev) => ({
+            manufacturer: typeof m.manufacturer === 'string' ? m.manufacturer : prev.manufacturer,
+            model: typeof m.model === 'string' ? m.model : prev.model,
+            revision: typeof m.revision === 'string' ? m.revision : prev.revision,
+          }));
+          if (typeof m.imei === 'string') setImei(m.imei);
+        }
+      });
+
+    const handle = (response: ATResponse) => {
+      if (!('type' in response) || response.type !== 'modem.info') return;
+      const m = response.data as Record<string, unknown>;
+      setDeviceInfo((prev) => ({
+        manufacturer: typeof m.manufacturer === 'string' ? m.manufacturer : prev.manufacturer,
+        model: typeof m.model === 'string' ? m.model : prev.model,
+        revision: typeof m.revision === 'string' ? m.revision : prev.revision,
+      }));
+      if (typeof m.imei === 'string') setImei(m.imei);
+    };
+    at().subscribe(handle);
+    return () => at().unsubscribe(handle);
+  }, []);
 
   const pinPlaceholder =
     pinOperation === 'verify'

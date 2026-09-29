@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Banner, Button, InputNumber, Modal, Space, Spin, Switch, Tag, Toast, Typography } from '@douyinfe/semi-ui';
 import { IconArrowDown, IconArrowUp, IconSetting } from '@douyinfe/semi-icons';
-import { ATResponse, ATService, PDCPData, URCData } from '@/services/at';
+import { ATResponse, ATService, PDCPData, StateSnapshot, URCData } from '@/services/at';
 import { useATReady } from '@/hooks/useATReady';
 import { useCommandQueue } from '@/hooks/useCommandQueue';
 import {
@@ -149,6 +149,86 @@ const NetworkInfo: React.FC = () => {
   const activeCidRef = useRef<number | null>(null);
   const pdcpOnRef = useRef(false);
   pdcpOnRef.current = pdcpOn;
+
+  // ---- Async Architecture：事件 / 快照 -> 页面状态的统一映射 ----
+  // 后端采集器写入 StateCache 并推送 *.updated 事件，字段已是物理值
+  // （RSRP 单位 dBm、SINR/RSRQ 单位 dB），与页面模型一致，这里只做存在性
+  // 判断，不做二次换算。后端每 2s 采一次信号、每 5s 采一次温度/流量，
+  // 页面据此实时刷新，不再需要自己 setInterval 轮询这些项。
+  const applySignalEvent = (value: Record<string, unknown>) => {
+    const sig = (v: unknown): number | null =>
+      typeof v === 'number' && Number.isFinite(v) && v !== 0 ? v : null;
+    const rsrp = sig(value.rsrp);
+    setCell((prev) => {
+      const next = {
+        ...prev,
+        rscp: rsrp ?? prev.rscp,
+        ecio: sig(value.rsrq) ?? prev.ecio,
+        sinr: sig(value.sinr) ?? prev.sinr,
+        rssi: sig(value.rssi) ?? prev.rssi,
+        signalPercent: rsrp ? calculateSignalPercent(rsrp) : prev.signalPercent,
+        sysMode:
+          typeof value.sysmode === 'string' && value.sysmode
+            ? (value.sysmode as string)
+            : prev.sysMode,
+      };
+      // 事件值同样入曲线，保持调天线时能看趋势。
+      if (rsrp && rsrp < 0) {
+        setSignalHistory((hist) => trimHistory([...hist, { rsrp, sinr: next.sinr ?? 0 }]));
+      }
+      return next;
+    });
+  };
+
+  const applyTempsEvent = (value: Record<string, unknown>) => {
+    const pick = (k: string): number | null => numOrNull(value[k]);
+    setTemps((prev) => ({
+      ...prev,
+      sub3GPA: pick('sub3GPA') ?? prev.sub3GPA,
+      sub6GPA: pick('sub6GPA') ?? prev.sub6GPA,
+      mimoPa: pick('mimoPa') ?? prev.mimoPa,
+      tcxo: pick('tcxo') ?? prev.tcxo,
+      ap1: pick('ap1') ?? prev.ap1,
+      ap2: pick('ap2') ?? prev.ap2,
+      modem1: pick('modem1') ?? prev.modem1,
+    }));
+  };
+
+  const applyTrafficEvent = (data: Partial<PDCPData>) => {
+    const up = Number(data.ulPdcpRate || 0);
+    const down = Number(data.dlPdcpRate || 0);
+    if (up <= 0 && down <= 0) return;
+    setPdcp(data as PDCPData);
+    setLastPdcp(data as PDCPData);
+    setSpeedHistory((prev) =>
+      trimHistory([
+        ...prev,
+        {
+          up: Number(((up * 8) / 1_000_000).toFixed(2)),
+          down: Number(((down * 8) / 1_000_000).toFixed(2)),
+        },
+      ]),
+    );
+  };
+
+  // SWR 首屏：请求 StateCache 快照（零 AT 流量）先渲染最近一次后台状态，
+  // 详细数据由 loadAll 里的命令在后台补齐；快照拿不到时静默回退。
+  const applySnapshot = (snap: StateSnapshot) => {
+    const pick = (topic: string): Record<string, unknown> | null => {
+      const v = snap[topic]?.value;
+      return v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
+    };
+    const sig = pick('signal');
+    if (sig) applySignalEvent(sig);
+    const net = pick('network');
+    if (net && typeof net.operator === 'string' && net.operator) setOperator(net.operator);
+    const reg = pick('registration');
+    if (reg && typeof reg.state === 'number') setNetworkStatus(psRegText(reg.state));
+    const temp = pick('temperature');
+    if (temp) applyTempsEvent(temp);
+    const traffic = pick('traffic');
+    if (traffic) applyTrafficEvent(traffic as Partial<PDCPData>);
+  };
 
   const getPSReg = async () => {
     const response = await at().getPSRegStatus();
@@ -398,8 +478,39 @@ const NetworkInfo: React.FC = () => {
   useATReady(loadAll);
 
   useEffect(() => {
+    // ---- Async Architecture：SWR 首屏 ----
+    // 请求 StateCache 快照（零 AT 流量）先渲染最近一次后台状态，再等
+    // loadAll 的命令查询和事件推送把详细数据补齐。模组离线也能秒开。
+    void at().requestSnapshot().then((snap) => {
+      if (snap) applySnapshot(snap);
+    });
+
     const handle = (response: ATResponse) => {
       if (!('type' in response)) return;
+      // Async Architecture：事件总线推送的状态事件（后台采集器写入
+      // StateCache 后发布），页面直接消费，不再需要自己轮询模组。
+      if (response.type === 'signal.updated') {
+        applySignalEvent(response.data as Record<string, unknown>);
+        return;
+      }
+      if (response.type === 'network.updated') {
+        const v = response.data as Record<string, unknown>;
+        if (typeof v.operator === 'string' && v.operator) setOperator(v.operator);
+        return;
+      }
+      if (response.type === 'registration.updated') {
+        const v = response.data as Record<string, unknown>;
+        if (typeof v.state === 'number') setNetworkStatus(psRegText(v.state));
+        return;
+      }
+      if (response.type === 'temperature.updated') {
+        applyTempsEvent(response.data as Record<string, unknown>);
+        return;
+      }
+      if (response.type === 'traffic.updated') {
+        applyTrafficEvent(response.data as Partial<PDCPData>);
+        return;
+      }
       if (response.type === 'pdcp_data' && 'data' in response) {
         const data = response.data as PDCPData;
         setPdcpOn(true);

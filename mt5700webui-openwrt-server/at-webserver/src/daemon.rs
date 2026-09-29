@@ -10,10 +10,17 @@
 //! and `sms-tool_q` are no longer used.
 
 use crate::at;
+use crate::at_queue::{AtArbiter, AtRequestSpec, AtResult, AtTransport};
+use crate::device_monitor::DeviceMonitor;
 use crate::dispatcher::Dispatcher;
+use crate::error::BackendError;
+use crate::event_bus::{Event, EventBus, Subscription, DEFAULT_TOPICS};
 use crate::json::{self, Value};
 use crate::scheduler;
 use crate::serial;
+use crate::state_cache::StateCache;
+use crate::task::{Priority, TaskKind};
+use crate::task_manager::{TaskCtx, TaskManager};
 use crate::ws::{self, WsError};
 use std::collections::VecDeque;
 use std::io::{Read, Write};
@@ -211,9 +218,10 @@ impl AtClient {
         }
     }
 
-    /// Send one AT command and wait for the final result. Serialized behind
-    /// the exclusive serial lock (acquired inside `stream_command`).
-    pub fn send(&self, command: &str, timeout: u64) -> Result<String, String> {
+    /// Send one AT command and wait for the final result (u64 seconds —
+    /// legacy one-shot paths). Serialized behind the exclusive serial lock
+    /// (acquired inside `stream_command`).
+    pub fn send_blocking(&self, command: &str, timeout: u64) -> Result<String, String> {
         match self.config.connection_type.as_str() {
             "SERIAL" | "NETWORK" => self.stream_command(command, timeout),
             _ => Err("unknown connection type".into()),
@@ -366,6 +374,121 @@ impl AtClient {
     }
 }
 
+// ---------------------------------------------------------------- AtTransport impl
+//
+// The daemon transport plugged into the single AT arbiter. Every command in
+// the backend (WebSocket, control socket, snapshot collectors, band-lock
+// scheduler) now flows through `AtArbiter`, which serialises the channel,
+// deduplicates reads and applies timeouts/retries.
+
+impl AtTransport for AtClient {
+    fn send(&self, command: &str, timeout: Duration) -> AtResult {
+        match self.config.connection_type.as_str() {
+            "SERIAL" | "NETWORK" => {
+                let text = self
+                    .stream_command(command, timeout.as_secs().max(2))
+                    .map_err(BackendError::TransportError)?;
+                classify_response(&text)
+            }
+            _ => Err(BackendError::TransportError("unknown connection type".into())),
+        }
+    }
+
+    fn send_interruptible(
+        &self,
+        command: &str,
+        timeout: Duration,
+        cancel: &AtomicBool,
+        abort_wire: Option<&[u8]>,
+    ) -> AtResult {
+        self.in_flight.store(true, Ordering::SeqCst);
+        // Drain pending input first so stale bytes do not pollute the reply.
+        self.rx.lock().unwrap().clear();
+        {
+            let mut guard = self
+                .lock
+                .lock()
+                .map_err(|_| BackendError::TransportError("client lock poisoned".into()))?;
+            let wire = format!("{}\r", command);
+            if let Err(e) = self.write_locked(&mut guard, wire.as_bytes()) {
+                self.in_flight.store(false, Ordering::SeqCst);
+                return Err(BackendError::TransportError(e));
+            }
+        }
+        let deadline = std::time::Instant::now() + timeout.max(Duration::from_secs(2));
+        let mut acc = String::new();
+        let mut aborted = false;
+        loop {
+            // Cooperative cancellation: inject the abort token once, then keep
+            // draining until the modem settles (or the deadline expires).
+            if cancel.load(Ordering::SeqCst) && !aborted {
+                aborted = true;
+                if let Some(wire) = abort_wire {
+                    if let Ok(mut guard) = self.lock.lock() {
+                        let _ = self.write_locked(&mut guard, &[wire, b"\r"].concat());
+                    }
+                }
+            }
+            let drained: String = {
+                let mut rx = self.rx.lock().unwrap();
+                let out: Vec<u8> = rx.drain(..).collect();
+                String::from_utf8_lossy(&out).replace('\r', "")
+            };
+            acc.push_str(&drained);
+            let done = has_result(&acc);
+            let timed_out = std::time::Instant::now() >= deadline;
+            if done || timed_out {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        self.in_flight.store(false, Ordering::SeqCst);
+        if aborted {
+            return Err(BackendError::TaskCancelled);
+        }
+        classify_response(&acc)
+    }
+
+    fn connected(&self) -> bool {
+        match self.lock.lock() {
+            Ok(g) => matches!(&*g, Stream::Serial(_) | Stream::Tcp(_)),
+            Err(_) => false,
+        }
+    }
+
+    fn send_sms(&self, number: &str, text: &str) -> Result<String, BackendError> {
+        let pdus = crate::sms::encode(number, text);
+        let mut last = String::new();
+        for pdu in &pdus {
+            last = self
+                .send_pdu(pdu, self.config.serial_timeout)
+                .map_err(BackendError::TransportError)?;
+        }
+        Ok(last)
+    }
+}
+
+/// Classify a raw stream reply into Ok(text) / AtRejected / AtTimeout.
+/// A reply without any OK/ERROR marker is treated as a timeout so a slow or
+/// silent modem can never hang the arbiter.
+fn classify_response(text: &str) -> AtResult {
+    let t = text.trim();
+    if t.is_empty() {
+        return Err(BackendError::AtTimeout);
+    }
+    let rejected = t.lines().any(|l| {
+        let l = l.trim();
+        l == "ERROR" || l.starts_with("+CME ERROR:") || l.starts_with("+CMS ERROR:")
+    });
+    if rejected {
+        return Err(BackendError::AtRejected(t.to_string()));
+    }
+    if t.lines().any(|l| l.trim() == "OK") {
+        return Ok(text.to_string());
+    }
+    Err(BackendError::AtTimeout)
+}
+
 #[cfg_attr(not(unix), allow(dead_code))]
 fn has_result(t: &str) -> bool {
     t.lines().any(|l| {
@@ -374,46 +497,26 @@ fn has_result(t: &str) -> bool {
     })
 }
 
-// ---------------------------------------------------------------- Broadcast
-
-fn broadcast(peers: &Arc<Mutex<Vec<Arc<ClientConn>>>>, msg_type: &str, data: &Value) {
-    // Protocol-compatible with the Python backend's `ws.broadcast(type,
-    // data)`: the payload rides in a nested "data" field. The frontend
-    // consumes `msg.data.xxx` (and expects `typeof data == "string"` for
-    // raw_data), so a top-level merge would break every event consumer.
-    let mut merged = std::collections::BTreeMap::new();
-    merged.insert("type".to_string(), json::str_val(msg_type));
-    merged.insert("data".to_string(), data.clone());
-    let msg = Value::Obj(merged).dump();
-    let mut list = peers.lock().unwrap();
-    list.retain(|p| p.try_send(&msg));
-}
-
 // ---------------------------------------------------------------- Cellscan (async path)
+//
+// Scans are exclusive long-running tasks: they own the AT channel, report
+// progress via `task.*` events and publish the protocol-compatible
+// `cellscan` broadcast when done. The WebSocket/HTTP caller only ever gets
+// an immediate `{success:true}` — the actual result arrives asynchronously.
 
-struct ScanState {
-    in_progress: AtomicBool,
-    abort: AtomicBool,
-}
-
-fn handle_cellscan(
-    client: &Arc<AtClient>,
-    scan: &Arc<ScanState>,
-    command: &str,
-    peers: &Arc<Mutex<Vec<Arc<ClientConn>>>>,
-) -> Option<Value> {
+fn handle_cellscan(tasks: &Arc<TaskManager>, command: &str) -> Option<Value> {
     let cmd = command.trim();
     if cmd == "AT^CELLSCAN=ABORT" || cmd == "AT^CELLSCAN=ABORTED" {
-        if scan.in_progress.load(Ordering::SeqCst) {
-            scan.abort.store(true, Ordering::SeqCst);
-            // The documented interrupt token; harmless on transports that
-            // cannot inject it.
-            let _ = client.send("abcd", 2);
+        // Cancelling the exclusive task also injects the abort token on the
+        // wire (the request's abort_wire), freeing the AT channel.
+        let cancelled = tasks.cancel_active(&[TaskKind::Exclusive]);
+        if cancelled == 0 {
+            return Some(err_response("no scan in progress"));
         }
         return Some(ok_response(""));
     }
     if cmd == "AT^CELLSCAN=STATE" {
-        let state = if scan.in_progress.load(Ordering::SeqCst) {
+        let state = if tasks.has_active(&[TaskKind::Exclusive]) {
             "scanning"
         } else {
             "idle"
@@ -421,30 +524,38 @@ fn handle_cellscan(
         return Some(ok_response(&format!("+CELLSCAN: {}", state)));
     }
     if cmd == "AT^CELLSCAN" {
-        if scan.in_progress.load(Ordering::SeqCst) {
+        if tasks.has_active(&[TaskKind::Exclusive]) {
             return Some(err_response("scan already in progress"));
         }
-        scan.in_progress.store(true, Ordering::SeqCst);
-        scan.abort.store(false, Ordering::SeqCst);
-        let client = client.clone();
-        let scan = scan.clone();
-        let peers = peers.clone();
-        thread::spawn(move || {
-            let result = client.send("AT^CELLSCAN", 180);
-            scan.in_progress.store(false, Ordering::SeqCst);
-            let mut obj = std::collections::BTreeMap::new();
-            match result {
-                Ok(text) => {
-                    obj.insert("state".to_string(), json::str_val("done"));
-                    obj.insert("result".to_string(), json::str_val(text.trim()));
+        let spec = AtRequestSpec::long_exclusive(
+            "AT^CELLSCAN",
+            Duration::from_secs(180),
+            b"abcd",
+        );
+        tasks.submit(
+            "scan.cell",
+            TaskKind::Exclusive,
+            Priority::Critical,
+            Some(Duration::from_secs(190)),
+            Box::new(move |ctx: &TaskCtx| {
+                let result = ctx.at_request(spec);
+                let mut obj = std::collections::BTreeMap::new();
+                match &result {
+                    Ok(text) => {
+                        obj.insert("state".to_string(), json::str_val("done"));
+                        obj.insert("result".to_string(), json::str_val(text.trim()));
+                    }
+                    Err(e) => {
+                        obj.insert("state".to_string(), json::str_val("error"));
+                        obj.insert("error".to_string(), json::str_val(&e.message()));
+                    }
                 }
-                Err(e) => {
-                    obj.insert("state".to_string(), json::str_val("error"));
-                    obj.insert("error".to_string(), json::str_val(&e));
-                }
-            }
-            broadcast(&peers, "cellscan", &Value::Obj(obj));
-        });
+                // Protocol-compatible `cellscan` broadcast (WebUI parity).
+                ctx.bus
+                    .publish_now(crate::event_bus::TOPIC_SCAN, "cellscan", Value::Obj(obj.clone()));
+                result.map(|_| Value::Obj(obj))
+            }),
+        );
         return Some(ok_response(""));
     }
     None
@@ -577,8 +688,15 @@ fn sched_json() -> String {
 // touches /dev/ttyUSB* itself.
 
 /// Handle one control-socket request line and return the JSON response line.
+/// Every AT exchange goes through the single arbiter — the LuCI CLI can
+/// never contend with the WebSocket or the background collectors for the
+/// serial port.
 #[cfg_attr(not(unix), allow(dead_code))]
-fn handle_control_request(client: &Arc<AtClient>, line: &str) -> String {
+fn handle_control_request(
+    arbiter: &Arc<AtArbiter>,
+    cache: &Arc<StateCache>,
+    line: &str,
+) -> String {
     let parsed = json::parse(line);
     let cmd = parsed
         .as_ref()
@@ -598,19 +716,30 @@ fn handle_control_request(client: &Arc<AtClient>, line: &str) -> String {
                 .as_ref()
                 .and_then(|v| v.get("timeout"))
                 .and_then(|v| v.as_u64())
-                .unwrap_or(2);
+                .unwrap_or(5);
             if command.is_empty() {
                 ok.insert("ok".to_string(), Value::Bool(false));
                 ok.insert("error".to_string(), json::str_val("empty command"));
             } else {
-                match client.send(&command, timeout) {
+                // Reads deduplicate with the WebSocket/collector traffic;
+                // writes are serialised as interactive actions.
+                let mut spec = if command.ends_with('?') {
+                    AtRequestSpec::fast_query(&command)
+                } else {
+                    AtRequestSpec::interactive(&command)
+                };
+                spec.timeout = Duration::from_secs(timeout.max(2));
+                spec.queued_timeout = spec
+                    .queued_timeout
+                    .max(Duration::from_secs(timeout + 2));
+                match await_request(arbiter, spec) {
                     Ok(text) => {
                         ok.insert("ok".to_string(), Value::Bool(true));
                         ok.insert("response".to_string(), json::str_val(text.trim()));
                     }
                     Err(e) => {
                         ok.insert("ok".to_string(), Value::Bool(false));
-                        ok.insert("error".to_string(), json::str_val(&e));
+                        ok.insert("error".to_string(), json::str_val(&e.message()));
                     }
                 }
             }
@@ -632,17 +761,24 @@ fn handle_control_request(client: &Arc<AtClient>, line: &str) -> String {
                 ok.insert("ok".to_string(), Value::Bool(false));
                 ok.insert("error".to_string(), json::str_val("empty number or text"));
             } else {
-                match client.send_sms(&number, &text) {
+                let spec = AtRequestSpec::sms_send(&number, &text);
+                match await_request(arbiter, spec) {
                     Ok(resp) => {
                         ok.insert("ok".to_string(), Value::Bool(true));
-                        ok.insert("response".to_string(), json::str_val(&resp));
+                        ok.insert("response".to_string(), json::str_val(resp.trim()));
                     }
                     Err(e) => {
                         ok.insert("ok".to_string(), Value::Bool(false));
-                        ok.insert("error".to_string(), json::str_val(&e));
+                        ok.insert("error".to_string(), json::str_val(&e.message()));
                     }
                 }
             }
+        }
+        "cached" => {
+            // Fast-path state dump (SWR snapshot) for the LuCI CLI `cached`
+            // subcommand — no AT traffic at all.
+            ok.insert("ok".to_string(), Value::Bool(true));
+            ok.insert("snapshot".to_string(), cache.snapshot());
         }
         "scan" => {
             let ports: Vec<Value> = at::scan_serial_ports()
@@ -670,8 +806,19 @@ fn handle_control_request(client: &Arc<AtClient>, line: &str) -> String {
     format!("{}\n", resp.dump())
 }
 
+/// Submit a request to the arbiter and wait (bounded) for the result. Used
+/// by the control socket which keeps request -> result semantics.
+fn await_request(arbiter: &Arc<AtArbiter>, spec: AtRequestSpec) -> Result<String, BackendError> {
+    let budget = spec.queued_timeout + spec.timeout + Duration::from_secs(2);
+    let rx = arbiter.submit(spec);
+    match rx.recv_timeout(budget) {
+        Ok(r) => r,
+        Err(_) => Err(BackendError::TaskTimeout),
+    }
+}
+
 /// Bind the Unix control socket and service `mt5700m-at` requests.
-fn spawn_control_socket(client: Arc<AtClient>) {
+fn spawn_control_socket(arbiter: Arc<AtArbiter>, cache: Arc<StateCache>) {
     #[cfg(unix)]
     {
         use std::io::BufRead;
@@ -698,21 +845,26 @@ fn spawn_control_socket(client: Arc<AtClient>) {
         thread::spawn(move || {
             for incoming in listener.incoming() {
                 let Ok(stream) = incoming else { continue };
-                let client = client.clone();
+                let arbiter = arbiter.clone();
+                let cache = cache.clone();
                 thread::spawn(move || {
-                    handle_control_conn(&client, stream);
+                    handle_control_conn(&arbiter, &cache, stream);
                 });
             }
         });
     }
     #[cfg(not(unix))]
     {
-        let _ = client;
+        let _ = (arbiter, cache);
     }
 }
 
 #[cfg(unix)]
-fn handle_control_conn(client: &Arc<AtClient>, mut stream: std::os::unix::net::UnixStream) {
+fn handle_control_conn(
+    arbiter: &Arc<AtArbiter>,
+    cache: &Arc<StateCache>,
+    mut stream: std::os::unix::net::UnixStream,
+) {
     use std::io::BufRead;
     use std::io::Write;
     let mut line = String::new();
@@ -724,7 +876,7 @@ fn handle_control_conn(client: &Arc<AtClient>, mut stream: std::os::unix::net::U
     {
         return;
     }
-    let resp = handle_control_request(client, &line);
+    let resp = handle_control_request(arbiter, cache, &line);
     let _ = stream.write_all(resp.as_bytes());
     let _ = stream.flush();
 }
@@ -777,8 +929,12 @@ impl ClientConn {
 }
 
 // ---------------------------------------------------------------- Idle URC monitor
+//
+// Unsolicited modem lines (calls, SMS, signal, PDCP stats) are published on
+// the event bus; every WebSocket subscriber receives them as `{type,data}`
+// frames — no per-connection polling, no shared broadcast list.
 
-fn spawn_urc_monitor(client: Arc<AtClient>, peers: Arc<Mutex<Vec<Arc<ClientConn>>>>) {
+fn spawn_urc_monitor(client: Arc<AtClient>, bus: Arc<EventBus>) {
     thread::spawn(move || {
         let mut dispatcher = Dispatcher::new();
         let mut leftover = String::new();
@@ -804,7 +960,13 @@ fn spawn_urc_monitor(client: Arc<AtClient>, peers: Arc<Mutex<Vec<Arc<ClientConn>
                     continue;
                 }
                 for (msg_type, data) in dispatcher.handle_line(&line) {
-                    broadcast(&peers, msg_type, &data);
+                    let topic = match msg_type {
+                        "new_sms" | "memory_full" => crate::event_bus::TOPIC_SMS,
+                        "signal" => crate::event_bus::TOPIC_SIGNAL,
+                        "pdcp_data" => crate::event_bus::TOPIC_TRAFFIC,
+                        _ => crate::event_bus::TOPIC_MODEM,
+                    };
+                    bus.publish_now(topic, msg_type, data);
                 }
             }
         }
@@ -833,11 +995,35 @@ pub fn run(args: &[String]) -> i32 {
         }
     };
     let client = AtClient::new(config.clone());
-    let scan = Arc::new(ScanState {
-        in_progress: AtomicBool::new(false),
-        abort: AtomicBool::new(false),
-    });
-    let peers: Arc<Mutex<Vec<Arc<ClientConn>>>> = Arc::new(Mutex::new(Vec::new()));
+
+    // ------------------------------------------------------------------ Async core
+    //
+    // Wires: StateCache + EventBus + TaskManager + AtArbiter. Every AT exchange
+    // in the backend (WebSocket command path, LuCI control socket, snapshot
+    // collectors, band-lock scheduler, cell scans) flows through the single
+    // arbiter, so nothing can contend for the serial channel and a slow modem
+    // never blocks a UI path.
+    let bus = EventBus::new();
+    let cache = Arc::new(StateCache::new());
+    let arbiter = AtArbiter::new(client.clone());
+    let tasks = TaskManager::new(arbiter.clone(), cache.clone(), bus.clone());
+
+    // Background collectors (signal/network/registration/temperature/traffic/
+    // cell/sim/modem_info) + the day/night band-lock scheduler run as periodic
+    // tasks, so the cache is warm before the first page load.
+    crate::snapshot::spawn_all(&tasks);
+    scheduler::register(&tasks);
+
+    // USB hotplug: presence transitions invalidate the cache, cancel modem
+    // tasks and push `usb.*` / `modem.*` events.
+    let monitor = DeviceMonitor::new(cache.clone(), bus.clone(), tasks.clone());
+    monitor.start();
+
+    // URCs from the serial stream -> event bus (fanned out to subscribers).
+    spawn_urc_monitor(client.clone(), bus.clone());
+
+    // LuCI CLI control socket -> arbiter (request -> result semantics).
+    spawn_control_socket(arbiter.clone(), cache.clone());
 
     eprintln!(
         "at-webserver-rs listening on {} via {}",
@@ -845,96 +1031,175 @@ pub fn run(args: &[String]) -> i32 {
         client.describe()
     );
 
-    // Persistent transports always feed the URC monitor and the scheduler.
-    spawn_urc_monitor(client.clone(), peers.clone());
-    scheduler::spawn(client.clone(), Arc::new(AtomicBool::new(false)));
-    spawn_control_socket(client.clone());
-
     for incoming in listener.incoming() {
         let Ok(mut stream) = incoming else { continue };
         let _ = stream.set_nodelay(true);
         let client = client.clone();
-        let scan = scan.clone();
-        let peers = peers.clone();
+        let arbiter = arbiter.clone();
+        let tasks = tasks.clone();
+        let bus = bus.clone();
+        let cache = cache.clone();
         thread::spawn(move || {
-            if ws::handshake(&mut stream).is_err() {
-                return;
-            }
-            // AUTH: first frame must carry {"auth_key": ...} within 10s.
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(WS_AUTH_TIMEOUT)));
-            let auth_ok = match ws::read_frame(&mut stream) {
-                Ok(frame) if frame.opcode == ws::OP_TEXT => {
-                    let text = ws::payload_to_string(&frame.payload);
-                    json::parse(&text)
-                        .and_then(|v| v.get("auth_key").and_then(|k| k.as_str()).map(String::from))
-                        .map(|k| k == client.config.websocket_auth_key)
-                        .unwrap_or_else(|| {
-                            // No auth key configured on either side: allow.
-                            client.config.websocket_auth_key.is_empty()
-                        })
-                }
-                _ => false,
-            };
-            if !auth_ok {
-                let msg = r#"{"error":"Authentication failed","message":"密钥验证失败"}"#;
-                let _ = ws::write_frame(&mut stream, ws::OP_TEXT, msg.as_bytes());
-                return;
-            }
-            let ok_msg = r#"{"success":true,"message":"认证成功"}"#;
-            let _ = ws::write_frame(&mut stream, ws::OP_TEXT, ok_msg.as_bytes());
-
-            let conn = Arc::new(ClientConn {
-                out: Mutex::new(VecDeque::new()),
-                cond: Condvar::new(),
-                alive: AtomicBool::new(true),
-            });
-            peers.lock().unwrap().push(conn.clone());
-            {
-                let writer_stream = stream.try_clone().expect("clone ws stream");
-                let conn_weak = conn.clone();
-                thread::spawn(move || conn_weak.writer_loop(writer_stream));
-            }
-
-            let _ = stream.set_read_timeout(None);
-            // Serial read loop: ordered matching, one command at a time.
-            loop {
-                match ws::read_frame(&mut stream) {
-                    Ok(frame) => match frame.opcode {
-                        ws::OP_TEXT => {
-                            let command = ws::payload_to_string(&frame.payload);
-                            if command == "ping" {
-                                if !conn.try_send("pong") {
-                                    break;
-                                }
-                                continue;
-                            }
-                            let response = run_command(&client, &scan, &peers, &command);
-                            if !conn.try_send(&response.dump()) {
-                                break;
-                            }
-                        }
-                        ws::OP_PING => {
-                            let _ = ws::write_frame(&mut stream, ws::OP_PONG, &frame.payload);
-                        }
-                        ws::OP_CLOSE => break,
-                        _ => {}
-                    },
-                    Err(WsError::Closed) => break,
-                    Err(WsError::Protocol(_)) | Err(WsError::Io(_)) => break,
-                }
-            }
-            conn.alive.store(false, Ordering::SeqCst);
-            conn.cond.notify_all();
-            peers.lock().unwrap().retain(|p| !Arc::ptr_eq(p, &conn));
+            handle_ws_conn(&mut stream, &client, &arbiter, &tasks, &bus, &cache);
         });
     }
     0
 }
 
+/// Serve one WebSocket connection: auth, then an **event-driven subscription
+/// pump** (bus events -> `{type,data,timestamp}` frames) plus a serial command
+/// loop for raw AT commands and `subscribe/unsubscribe/snapshot` control
+/// frames. The command path goes through the arbiter; nothing here blocks on
+/// the modem beyond the arbiter's own bounded wait.
+fn handle_ws_conn(
+    stream: &mut TcpStream,
+    client: &Arc<AtClient>,
+    arbiter: &Arc<AtArbiter>,
+    tasks: &Arc<TaskManager>,
+    bus: &Arc<EventBus>,
+    cache: &Arc<StateCache>,
+) {
+    if ws::handshake(stream).is_err() {
+        return;
+    }
+    // AUTH: first frame must carry {"auth_key": ...} within 10s.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(WS_AUTH_TIMEOUT)));
+    let auth_ok = match ws::read_frame(stream) {
+        Ok(frame) if frame.opcode == ws::OP_TEXT => {
+            let text = ws::payload_to_string(&frame.payload);
+            json::parse(&text)
+                .and_then(|v| v.get("auth_key").and_then(|k| k.as_str()).map(String::from))
+                .map(|k| k == client.config.websocket_auth_key)
+                .unwrap_or_else(|| client.config.websocket_auth_key.is_empty())
+        }
+        _ => false,
+    };
+    if !auth_ok {
+        let msg = r#"{"error":"Authentication failed","message":"密钥验证失败"}"#;
+        let _ = ws::write_frame(stream, ws::OP_TEXT, msg.as_bytes());
+        return;
+    }
+    let ok_msg = r#"{"success":true,"message":"认证成功"}"#;
+    let _ = ws::write_frame(stream, ws::OP_TEXT, ok_msg.as_bytes());
+
+    let conn = Arc::new(ClientConn {
+        out: Mutex::new(VecDeque::new()),
+        cond: Condvar::new(),
+        alive: AtomicBool::new(true),
+    });
+
+    // Event-driven subscription pump: subscribe to the default topics and
+    // stream bus events to this connection. `subscribe/unsubscribe` control
+    // frames adjust the topic set at runtime; `snapshot` returns cached state.
+    let topics: Vec<String> = DEFAULT_TOPICS.iter().map(|s| s.to_string()).collect();
+    let (event_rx, sub) = bus.subscribe(&topics);
+    {
+        let conn_ev = conn.clone();
+        thread::spawn(move || {
+            while let Ok(ev) = event_rx.recv() {
+                let msg = ev.to_json().dump();
+                if !conn_ev.try_send(&msg) {
+                    break;
+                }
+            }
+        });
+    }
+
+    {
+        let writer_stream = stream.try_clone().expect("clone ws stream");
+        let conn_weak = conn.clone();
+        thread::spawn(move || conn_weak.writer_loop(writer_stream));
+    }
+
+    let _ = stream.set_read_timeout(None);
+    // Serial read loop: ordered matching, one command at a time.
+    loop {
+        match ws::read_frame(stream) {
+            Ok(frame) => match frame.opcode {
+                ws::OP_TEXT => {
+                    let text = ws::payload_to_string(&frame.payload);
+                    if text == "ping" {
+                        if !conn.try_send("pong") {
+                            break;
+                        }
+                        continue;
+                    }
+                    // Control frames: subscription / snapshot management.
+                    if let Some(resp) = handle_ws_control(bus, cache, &sub, &text) {
+                        if !conn.try_send(&resp.dump()) {
+                            break;
+                        }
+                        continue;
+                    }
+                    let response = run_command(client, arbiter, tasks, bus, &text);
+                    if !conn.try_send(&response.dump()) {
+                        break;
+                    }
+                }
+                ws::OP_PING => {
+                    let _ = ws::write_frame(stream, ws::OP_PONG, &frame.payload);
+                }
+                ws::OP_CLOSE => break,
+                _ => {}
+            },
+            Err(WsError::Closed) => break,
+            Err(WsError::Protocol(_)) | Err(WsError::Io(_)) => break,
+        }
+    }
+    conn.alive.store(false, Ordering::SeqCst);
+    conn.cond.notify_all();
+    bus.unsubscribe(&sub);
+}
+
+/// Handle `subscribe` / `unsubscribe` / `snapshot` control frames. Returns
+/// `Some(response)` when the frame was a control frame (not an AT command).
+fn handle_ws_control(
+    bus: &Arc<EventBus>,
+    cache: &Arc<StateCache>,
+    sub: &Subscription,
+    text: &str,
+) -> Option<Value> {
+    let parsed = json::parse(text)?;
+    let action = parsed.get("action").and_then(|v| v.as_str())?;
+    let topic_list = |v: &Value| -> Vec<String> {
+        match v {
+            Value::Arr(items) => items
+                .iter()
+                .filter_map(|i| i.as_str().map(String::from))
+                .collect(),
+            _ => Vec::new(),
+        }
+    };
+    match action {
+        "subscribe" => {
+            let topics = parsed.get("topics").map(&topic_list).unwrap_or_default();
+            if topics.is_empty() {
+                return Some(err_response("subscribe requires topics"));
+            }
+            bus.add_topics(sub, &topics);
+            Some(ok_response("subscribed"))
+        }
+        "unsubscribe" => {
+            let topics = parsed.get("topics").map(&topic_list).unwrap_or_default();
+            bus.remove_topics(sub, &topics);
+            Some(ok_response("unsubscribed"))
+        }
+        "snapshot" => {
+            // SWR snapshot: return cached state immediately, no AT traffic.
+            let mut m = std::collections::BTreeMap::new();
+            m.insert("success".to_string(), Value::Bool(true));
+            m.insert("snapshot".to_string(), cache.snapshot());
+            Some(Value::Obj(m))
+        }
+        _ => None,
+    }
+}
+
 fn run_command(
     client: &Arc<AtClient>,
-    scan: &Arc<ScanState>,
-    peers: &Arc<Mutex<Vec<Arc<ClientConn>>>>,
+    arbiter: &Arc<AtArbiter>,
+    tasks: &Arc<TaskManager>,
+    bus: &Arc<EventBus>,
     command: &str,
 ) -> Value {
     if command.trim() == "AT+CONNECT?" {
@@ -944,14 +1209,18 @@ fn run_command(
     if let Some(resp) = handle_schedule_command(command) {
         return resp;
     }
-    if let Some(resp) = handle_cellscan(client, scan, command, peers) {
+    if let Some(resp) = handle_cellscan(tasks, command) {
         return resp;
     }
-    if scan.in_progress.load(Ordering::SeqCst) {
-        return err_response("正在扫频，模组暂时无法响应其它命令，请先取消扫频");
-    }
     let command = normalize_syscfgex(command);
-    match client.send(&command, 2) {
+    // Reads deduplicate with the snapshot collectors; writes are serialised
+    // as interactive actions. Never blocks beyond the arbiter's bounded wait.
+    let spec = if command.ends_with('?') {
+        AtRequestSpec::fast_query(&command)
+    } else {
+        AtRequestSpec::interactive(&command)
+    };
+    match await_request(arbiter, spec) {
         Ok(text) => {
             if at::response_ok(&text) {
                 ok_response(text.trim())
@@ -959,7 +1228,7 @@ fn run_command(
                 err_response(text.trim())
             }
         }
-        Err(e) => err_response(&e),
+        Err(e) => err_response(&e.message()),
     }
 }
 
@@ -967,21 +1236,23 @@ fn run_command(
 mod tests {
     use super::*;
 
+    /// Arbiter backed by a disconnected transport (Stream::None): every
+    /// request fails fast with a transport error instead of touching a modem.
+    fn test_arbiter() -> Arc<AtArbiter> {
+        AtArbiter::new(Arc::new(AtClient {
+            config: DaemonConfig::default(),
+            lock: Mutex::new(Stream::None),
+            rx: Arc::new(Mutex::new(VecDeque::new())),
+            in_flight: Arc::new(AtomicBool::new(false)),
+        }))
+    }
+
     #[test]
     fn control_unknown_command_rejected() {
         let line = r#"{"cmd":"nope"}"#;
-        let resp = handle_control_request(
-            &Arc::new(AtClient {
-                config: DaemonConfig {
-                    connection_type: "SERIAL".into(),
-                    ..Default::default()
-                },
-                lock: Mutex::new(Stream::None),
-                rx: Arc::new(Mutex::new(VecDeque::new())),
-                in_flight: Arc::new(AtomicBool::new(false)),
-            }),
-            line,
-        );
+        let arbiter = test_arbiter();
+        let cache = Arc::new(StateCache::new());
+        let resp = handle_control_request(&arbiter, &cache, line);
         let v: Value = json::parse(&resp).expect("valid json");
         assert_eq!(v.get("ok").and_then(|x| x.as_bool()), Some(false));
     }
@@ -989,15 +1260,9 @@ mod tests {
     #[test]
     fn control_send_empty_rejected() {
         let line = r#"{"cmd":"send","command":"   "}"#;
-        let resp = handle_control_request(
-            &Arc::new(AtClient {
-                config: DaemonConfig::default(),
-                lock: Mutex::new(Stream::None),
-                rx: Arc::new(Mutex::new(VecDeque::new())),
-                in_flight: Arc::new(AtomicBool::new(false)),
-            }),
-            line,
-        );
+        let arbiter = test_arbiter();
+        let cache = Arc::new(StateCache::new());
+        let resp = handle_control_request(&arbiter, &cache, line);
         let v: Value = json::parse(&resp).expect("valid json");
         assert_eq!(v.get("ok").and_then(|x| x.as_bool()), Some(false));
     }
@@ -1010,19 +1275,44 @@ mod tests {
         req.insert("command".to_string(), json::str_val("AT+CSQ"));
         req.insert("timeout".to_string(), json::num_val(1));
         let line = format!("{}\n", json::Value::Obj(req).dump());
-        let client = Arc::new(AtClient {
-            config: DaemonConfig::default(),
-            lock: Mutex::new(Stream::None),
-            rx: Arc::new(Mutex::new(VecDeque::new())),
-            in_flight: Arc::new(AtomicBool::new(false)),
-        });
-        let v: Value = json::parse(&handle_control_request(&client, &line)).expect("json");
+        let arbiter = test_arbiter();
+        let cache = Arc::new(StateCache::new());
+        let v: Value = json::parse(&handle_control_request(&arbiter, &cache, &line)).expect("json");
         assert_eq!(v.get("ok").and_then(|x| x.as_bool()), Some(false));
         assert!(v
             .get("error")
             .and_then(|x| x.as_str())
             .unwrap_or("")
             .contains("not connected"));
+    }
+
+    #[test]
+    fn control_cached_returns_snapshot() {
+        let arbiter = test_arbiter();
+        let cache = Arc::new(StateCache::new());
+        cache.set("signal", json::str_val("warm"), "test");
+        let line = r#"{"cmd":"cached"}"#;
+        let resp = handle_control_request(&arbiter, &cache, line);
+        let v: Value = json::parse(&resp).expect("json");
+        assert_eq!(v.get("ok").and_then(|x| x.as_bool()), Some(true));
+        assert!(v.get("snapshot").is_some());
+    }
+
+    #[test]
+    fn ws_control_subscribe_and_snapshot() {
+        let bus = EventBus::new();
+        let cache = Arc::new(StateCache::new());
+        let (_, sub) = bus.subscribe(&["signal".to_string()]);
+        let line = r#"{"action":"subscribe","topics":["network","cell"]}"#;
+        let resp = handle_ws_control(&bus, &cache, &sub, line).expect("control handled");
+        assert_eq!(resp.get("success").and_then(|x| x.as_bool()), Some(true));
+        // snapshot returns cached state without any AT traffic
+        let line2 = r#"{"action":"snapshot"}"#;
+        let resp2 = handle_ws_control(&bus, &cache, &sub, line2).expect("control handled");
+        assert!(resp2.get("snapshot").is_some());
+        // non-control frames are treated as AT commands
+        assert!(handle_ws_control(&bus, &cache, &sub, "AT+CSQ").is_none());
+        bus.unsubscribe(&sub);
     }
 
     #[test]
@@ -1043,23 +1333,33 @@ mod tests {
     }
 
     #[test]
-    fn broadcast_envelope_is_nested_data() {
+    fn event_envelope_is_nested_data() {
         // The frontend consumes msg.data.xxx (Python ws.broadcast parity);
-        // a top-level merge would break every event consumer.
+        // the event bridge adds a timestamp without breaking that shape.
         let data = crate::dispatcher::handle_pdcp(
             "^PDCPDATAINFO: 1,5,65535,0,0,0,0,0,0,0,0,512,0,0,1,2",
         )
         .unwrap();
-        let mut merged = std::collections::BTreeMap::new();
-        merged.insert("type".to_string(), json::str_val("pdcp_data"));
-        merged.insert("data".to_string(), data);
-        let msg = Value::Obj(merged).dump();
-        let ev: Value = json::parse(&msg).unwrap();
-        assert_eq!(ev.get("type").and_then(|v| v.as_str()), Some("pdcp_data"));
-        let inner = ev.get("data").expect("nested data object");
+        let ev = Event {
+            topic: "traffic".into(),
+            event: "pdcp_data".into(),
+            data,
+            timestamp: 1234567890,
+        };
+        let msg = ev.to_json().dump();
+        let parsed: Value = json::parse(&msg).unwrap();
+        assert_eq!(
+            parsed.get("type").and_then(|v| v.as_str()),
+            Some("pdcp_data")
+        );
+        let inner = parsed.get("data").expect("nested data object");
         assert!(inner
             .get("ulPdcpRate")
             .and_then(|v| v.as_u64())
             .is_some());
+        assert_eq!(
+            parsed.get("timestamp").and_then(|v| v.as_u64()),
+            Some(1234567890)
+        );
     }
 }

@@ -8,13 +8,20 @@
  * MT5700M LuCI — 概览（status）
  * ---------------------------------------------
  * 数据：mt5700m status（manager）+ fs.exec status / advanced session + mt5700m-traffic summary
+ * + mt5700m-at cached（StateCache 快照，SWR 首屏）。
  * 无内联样式；信号/载波/地址/模块/SIM/流量/快捷入口全部由组件拼装。
+ *
+ * 渲染策略（Async Architecture）：
+ *   1) 骨架屏立即出（不等待任何后端）；
+ *   2) cached 快照帧：零 AT 流量、毫秒级到达，先渲染最近一次后台采集的状态；
+ *   3) 完整帧：manager + AT + session + traffic 并行到达后整体替换。
+ * 模组离线 / AT 卡住时页面依然秒开，数据由后台采集器 + 事件推送持续更新。
  */
 
 return view.extend({
 	load: function() {
-		// 数据请求立即发起但不阻塞渲染：load() 同步返回，页面先出骨架屏，
-		// 四路数据并行到达后由 render() 填充（原先 managerStatus 还串行在前）。
+		// 完整帧并行发起但不阻塞渲染：load() 同步返回，页面先出骨架屏，
+		// 快照帧 / 完整帧由 render() 分阶段填充。
 		this.pending = Promise.all([
 			api.managerStatus().catch(function() { return {}; }),
 			api.atStatus(),
@@ -24,6 +31,33 @@ return view.extend({
 			return { manager: results[0], native: results[1], session: results[2], traffic: results[3] };
 		});
 		return Promise.resolve();
+	},
+
+	/*
+	 * 把 StateCache 快照折叠成 parseStatus 可消费的 key=value 行。
+	 * 仅映射既有 UI 字段，且跳过空值 —— parseStatus 之后照常做
+	 * temperature 清洗、connected 推导等，行为与完整帧一致。
+	 */
+	snapshotLines: function(snapshot) {
+		var map = {
+			signal: { sysmode: 'sysmode', rsrp: 'rsrp', rsrq: 'rsrq', sinr: 'sinr', rssi: 'rssi' },
+			network: { operator: 'operator', sysmode: 'sysmode', sysmode_detail: 'sysmode_detail' },
+			temperature: { average: 'temperature' },
+			modem: { manufacturer: 'manufacturer', model: 'model', revision: 'revision', imei: 'imei' },
+			sim: { status: 'sim', iccid: 'iccid', imsi: 'imsi' }
+		};
+		var lines = [];
+		Object.keys(map).forEach(function(topic) {
+			var value = snapshot[topic] && snapshot[topic].value;
+			if (!value || typeof value !== 'object') return;
+			var fields = map[topic];
+			Object.keys(fields).forEach(function(src) {
+				var val = value[src];
+				if (val === undefined || val === null || val === '') return;
+				lines.push(fields[src] + '=' + val);
+			});
+		});
+		return lines;
 	},
 
 	/* ---------- 信号卡 ---------- */
@@ -186,14 +220,28 @@ return view.extend({
 
 	/* ---------- 渲染 ---------- */
 
-	// 渐进渲染：骨架屏立即显示，数据到达后整体替换（后端慢不挡前端）
+	// 渐进渲染（SWR）：骨架屏 → 快照帧（零 AT，秒开）→ 完整帧整体替换
 	render: function() {
 		var self = this;
 		var holder = E('div', { 'class': 'mt-view' });
 		holder.appendChild(c.skeletonPage(6));
-		this.contentReady = this.pending.then(function(data) {
+
+		// 快照帧：StateCache 快照（无 AT 流量）先渲染最近一次后台状态。
+		// daemon 未运行 / 快照为空时静默跳过，直接等完整帧。
+		api.cachedSnapshot().then(function(snapshot) {
+			if (!snapshot) return;
+			var lines = self.snapshotLines(snapshot).join('\n');
+			holder.replaceChildren(self.renderPage({
+				manager: {},
+				native: { stdout: lines, stderr: '' },
+				session: { stdout: '', stderr: '' },
+				traffic: { interfaces: [] }
+			}));
+		}, function() { /* 快照不可用：等完整帧 */ });
+
+		// 完整帧：manager + AT + session + traffic 并行到达后整体替换
+		this.pending.then(function(data) {
 			holder.replaceChildren(self.renderPage(data));
-			return data;
 		}, function(err) {
 			holder.replaceChildren(E('div', { 'class': 'mt-page' }, [
 				E('div', { 'class': 'alert-message error' }, String(err && err.message || err))

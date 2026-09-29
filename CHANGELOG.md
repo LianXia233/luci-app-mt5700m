@@ -1,6 +1,32 @@
 # Changelog
 
-## [Unreleased]
+## [2.7.0] - 2026-09-29
+
+### Added
+- **Rust 后端升级为异步化架构（Async Architecture）**：在「独占 AT 通道」基础上重构为**事件驱动 + 异步任务调度 + 状态缓存 + 实时事件推送**。任何单个慢 AT 操作都不能阻塞 LuCI / WebUI / WebSocket，页面打开不再等待模组，多个页面共享缓存、不再重复请求，后台轮询统一收敛。新增模块：
+  - `error.rs` 统一错误模型：`BackendError`（含 `retryable` 标记的机器可读 `code` + 人类可读 `message`），错误码 `AT_TIMEOUT / AT_REJECTED / BUSY / MODEM_UNAVAILABLE / TRANSPORT_ERROR / TASK_TIMEOUT / TASK_CANCELLED / INTERNAL_ERROR` 等，禁止打印敏感数据。
+  - `task.rs` 任务模型：任务生命周期 `Queued → Running → (Completed | Failed | Cancelled | Timeout)`，含 `Priority`；按耗时档次（Fast/Normal/Network/Scan/Long）使用不同超时与重试策略。
+  - `task_manager.rs` 任务调度中心：注册/跟踪/取消/超时/周期任务，发布 `task.*` 生命周期事件，记录裁剪与不重叠执行，后台采集统一在固定间隔运行且不互相竞争。
+  - `at_queue.rs` 统一 **AtArbiter**（AT 请求队列/仲裁器）：单执行线程串行化所有 AT 交换（WebSocket 命令、LuCI 控制套接字、后台采集、扫频、锁频），支持优先级调度、请求去重、超时、统一重试、独占通道、协作取消、背压。
+  - `state_cache.rs` 状态缓存（SWR）：signal / network / registration / temperature / traffic / cell / sim / modem / usb 等每项含 `value + timestamp + ttl + source + status`；页面读到过期值立即返回（Stale-While-Revalidate），同时后台刷新。
+  - `event_bus.rs` 事件总线：主题订阅/发布，高频遥测 100ms 窗口合并（coalescing），task / usb / modem / sms / scan 即时直推。
+  - `snapshot.rs` 后台状态采集器：定期经 AT 抓取快照写入 StateCache，开机预热水军一次采集多个缓存项。
+  - `device_monitor.rs` USBNotify 热插拔监视：USB add/remove 时 invalidate cache、取消无效任务、重连 transport、刷新模组状态并推事件。
+  - `runtime.rs` 轻量线程运行时工具：`spawn_thread`、`next_id`、`now_ms`，保持 std-only 极低依赖、静态链接与 OpenWrt 交叉编译稳定。
+- **CLI 新增 `cached` 子命令（加法兼容）**：`mt5700m-at cached [range]` 从 StateCache 读取最近状态快照，模组不可用时也能秒回；既有 CLI 契约不变。
+
+### Changed
+- **重接线 `daemon.rs`**：HTTP/控制套接字/WebSocket 全部改为「读缓存快照 + 下发任务」模式，不再同步等待 AT；即时写操作进入任务队列返回 `task_id`，慢操作后台执行，事件经 EventBus→WebSocket 推送。
+- **重接线 `scheduler.rs`（band-lock 锁频）**：锁频过渡作为任务进入仲裁器，独占 AT 通道，不再与页面查询争抢。
+- **WebSocket 改为事件驱动**：新增 `subscribe` / `unsubscribe` / `snapshot` 控制帧；前端可订阅主题，服务器按订阅推送 `{type, data, timestamp}` 事件，支持断线重连后重新订阅并拉取快照恢复。
+- **LuCI 前端缓存优先 + 事件订阅**（`api.js` 新增 `cachedSnapshot()`、`status.js` 双阶段 SWR 渲染）：首屏优先读 StateCache 快照零 AT 秒开，再经 WebSocket 事件自动更新。
+- **WebUI（React）事件驱动 + snapshot fallback**：`services/at.ts` 支持 `requestSnapshot()` 与状态事件；`network/Info`、`system/Info`、`NotificationHandler` 改为接状态事件并优先用快照渲染首屏。
+
+### Performance
+- 缓存命中 <1ms，页面打开不再等待 AT；空闲时后台轮询统一收敛、减少串口与 CPU 占用；重复请求合并为单次 AT。
+
+### Docs
+- `README.md` 新增「异步化架构（Async Architecture）」章节：总体分层、关键机制（统一 AT 仲裁器/去重/StateCache SWR/事件总线）与前端配合方案。
 
 ### Added
 - **前端加载性能测量环境 `tests/perf-harness/`**：`server.js`（before/after 双资源树 + 可调路由器延迟的 ubus/AT mock，全部响应 `no-store` 保证冷首访）、`luci-shim.js`（复刻 luci.js「先取视图、逐层并行取依赖」加载时序的迷你加载器与框架垫片，标记 shell/content/style 时刻）、`page.html` 与 `measure.sh`（Playwright 批量采集 `window.__perf`）。模拟延迟（静态 6ms/文件、ubus 20~30ms、AT 150/180ms）下各跑 5 次取中位：前端可见 319ms → 82ms（−74%）、后端 5s 延迟时白屏 5119.8ms → ~70ms 出骨架、传输字节 121.6KB → 91.1KB（−25%）。

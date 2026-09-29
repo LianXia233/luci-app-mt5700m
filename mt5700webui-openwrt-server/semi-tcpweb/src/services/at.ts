@@ -49,21 +49,72 @@ interface SignalData {
   networkMode?: string; // 'LTE' | 'NR' | 'WCDMA'
 }
 
+// 服务端事件总线推送的类型。命令应答没有 type 字段（见 CommandATResponse），
+// 事件帧一律是 {type, data, timestamp} 结构，data 为结构化对象。
+// Async Architecture：后台采集器把状态写入 StateCache 后通过 EventBus 推给
+// 已订阅的 WebSocket，事件名即 type（signal.updated / network.updated /
+// temperature.updated / traffic.updated / usb.* / task.* / scan.* ...）。
+export type PushEventType =
+  | 'incoming_call'
+  | 'new_sms'
+  | 'pdcp_data'
+  | 'memory_full'
+  | 'signal_data'
+  | 'urc_data'
+  | 'cellscan'
+  | 'signal'
+  | 'signal.updated'
+  | 'network.updated'
+  | 'cell.updated'
+  | 'temperature.updated'
+  | 'traffic.updated'
+  | 'registration.updated'
+  | 'sim.updated'
+  | 'modem.info'
+  | `usb.${string}`
+  | `modem.${string}`
+  | `task.${string}`
+  | `scan.${string}`
+  | `beam.${string}`
+  | `sms.${string}`;
+
 interface PushATResponse extends BaseATResponse {
-  type:
-    | 'incoming_call'
-    | 'new_sms'
-    | 'pdcp_data'
-    | 'memory_full'
-    | 'signal_data'
-    | 'urc_data'
-    | 'cellscan';
-  data: PushEventData | PDCPData | SignalData | URCData | ScanPush;
+  type: PushEventType;
+  data: PushEventData | PDCPData | SignalData | URCData | ScanPush | Record<string, unknown>;
 }
 
 // 服务端推送的类型，data 已经是结构化对象，直接转发给订阅者。
 // cellscan 是扫频进度：这条命令要跑几分钟，服务端异步执行、边扫边推。
 const PUSH_TYPES = ['incoming_call', 'new_sms', 'pdcp_data', 'memory_full', 'cellscan'] as const;
+
+// StateCache 快照（SWR 首屏）：{ topic: { value, fresh, age_ms, source } }。
+// 零 AT 流量；fresh 为 false 表示过期但仍有最近一次后台采集值，页面可先渲染。
+export interface StateEntry {
+  value: Record<string, unknown>;
+  fresh: boolean;
+  age_ms: number;
+  source: string;
+}
+export type StateSnapshot = Record<string, StateEntry>;
+
+// Async Architecture：事件总线推送的状态事件 type 白名单。命令应答没有 type
+// 字段（或 data 为字符串），这里只认“结构化对象 data”的事件帧，转发给订阅者
+// 的同时绝不会拿去匹配等待中的命令应答。
+const STATE_EVENT_TYPES = [
+  'signal',
+  'signal.updated',
+  'network.updated',
+  'cell.updated',
+  'temperature.updated',
+  'traffic.updated',
+  'registration.updated',
+  'sim.updated',
+  'modem.info',
+] as const;
+
+const isStateEventType = (type: string): boolean =>
+  (STATE_EVENT_TYPES as readonly string[]).includes(type) ||
+  /^(usb|modem|task|scan|beam|sms)\./.test(type);
 
 // 服务端拒绝未认证连接时的固定应答，命令应答不会长这样。
 const AUTH_REJECTIONS = ['Authentication failed', 'Authentication timeout', 'Invalid authentication'];
@@ -111,6 +162,9 @@ export interface ATAdapter {
   disconnect(): Promise<void>;
   subscribeSMS?(callback: (response: ATResponse) => void): void;
   unsubscribeSMS?(callback: (response: ATResponse) => void): void;
+  // Async Architecture：SWR 首屏快照（零 AT 流量）。返回 StateCache 最近一次
+  // 后台采集状态；模组离线 / 未连接时返回 null，调用方回退到命令查询。
+  requestSnapshot?(): Promise<StateSnapshot | null>;
 }
 
 // WebSocket AT指令适配器实现
@@ -157,6 +211,11 @@ export class WebSocketATAdapter implements ATAdapter {
   };
   private configReady: Promise<void>;
   private commandQueue: Promise<any> = Promise.resolve(); // 命令队列，确保命令串行执行
+  // snapshot 控制帧的一次性应答（{action:"snapshot"} -> {success,snapshot}），
+  // 与命令应答不同路：不占用 pendingCommands，也不与 AT 队列抢道。
+  private snapshotPending: { resolve: (v: StateSnapshot | null) => void; timer: NodeJS.Timeout } | null =
+    null;
+  private snapshotPromise: Promise<StateSnapshot | null> | null = null;
 
   constructor(options: { skipConfig?: boolean } = {}) {
     if (options.skipConfig) {
@@ -475,6 +534,12 @@ export class WebSocketATAdapter implements ATAdapter {
       });
     });
     this.pendingCommands.clear();
+    // 断线时快照请求同样作废，页面回退到命令查询。
+    if (this.snapshotPending) {
+      clearTimeout(this.snapshotPending.timer);
+      this.snapshotPending.resolve(null);
+      this.snapshotPending = null;
+    }
   }
 
   private handleResponse(response: any): void {
@@ -681,6 +746,29 @@ export class WebSocketATAdapter implements ATAdapter {
     }
   }
 
+  // 请求一次 StateCache 快照（SWR 首屏）：零 AT 流量，模组离线也能秒回缓存。
+  // 走服务端 snapshot 控制帧，不经 AT 队列；多个页面同时挂载会合并成同一请求。
+  public async requestSnapshot(): Promise<StateSnapshot | null> {
+    if (!this.connected || !this.ws) return null;
+    if (this.snapshotPromise) return this.snapshotPromise;
+    const p = new Promise<StateSnapshot | null>((resolve) => {
+      const timer = setTimeout(() => {
+        if (this.snapshotPending) {
+          this.snapshotPending.resolve(null);
+          this.snapshotPending = null;
+        }
+        resolve(null);
+      }, this.commandTimeout);
+      this.snapshotPending = { resolve, timer };
+      this.ws?.send(JSON.stringify({ action: 'snapshot' }));
+    });
+    this.snapshotPromise = p;
+    void p.then(() => {
+      if (this.snapshotPromise === p) this.snapshotPromise = null;
+    });
+    return p;
+  }
+
   async sendCommand(command: string): Promise<ATResponse> {
     // 🔒 使用队列确保命令串行执行，避免 PDCP 等主动上报数据干扰
     return this.commandQueue = this.commandQueue
@@ -791,9 +879,33 @@ export class WebSocketATAdapter implements ATAdapter {
       return;
     }
 
+    // snapshot 控制帧应答 {success, snapshot}：不同路于命令应答，直接结算。
+    if (parsedData.snapshot && typeof parsedData.snapshot === 'object') {
+      const pending = this.snapshotPending;
+      this.snapshotPending = null;
+      if (pending) {
+        clearTimeout(pending.timer);
+        pending.resolve(parsedData.snapshot as StateSnapshot);
+      }
+      return;
+    }
+
     // 服务端已经把这几类上报解析成结构化数据，直接转发给订阅者。
     if (PUSH_TYPES.includes(parsedData.type)) {
       this.emitPush({ success: true, type: parsedData.type, data: parsedData.data });
+      return;
+    }
+
+    // Async Architecture：事件总线推送的状态事件帧 {type,data,timestamp}。
+    // data 是结构化对象，绝不拿去匹配等待中的命令，只转发给订阅者 ——
+    // 页面据此更新视图，不再需要自己轮询模组。
+    if (
+      typeof parsedData.type === 'string' &&
+      isStateEventType(parsedData.type) &&
+      parsedData.data &&
+      typeof parsedData.data === 'object'
+    ) {
+      this.emitPush({ success: true, type: parsedData.type as PushEventType, data: parsedData.data });
       return;
     }
 
@@ -1207,6 +1319,39 @@ class MockWebSocketATAdapter extends WebSocketATAdapter {
     this.setMockConnectionState('disconnected');
   }
 
+  // 演示模式也提供快照：真机由后台采集器填 StateCache，这里直接给一份
+  // 结构一致的缓存帧，页面 SWR 首屏逻辑照常工作。
+  public async requestSnapshot(): Promise<StateSnapshot | null> {
+    if (!this.mockConnected) return null;
+    return {
+      signal: {
+        value: { sysmode: 'NR', rsrp: Math.round(this.mockSignalRsrp), rsrq: -11, sinr: 15, rssi: -70 },
+        fresh: true,
+        age_ms: 0,
+        source: 'snapshot',
+      },
+      network: {
+        value: { operator: 'CHN-UNICOM', sysmode: 'NR', sysmode_detail: 'SA' },
+        fresh: true,
+        age_ms: 0,
+        source: 'snapshot',
+      },
+      registration: { value: { state: 1 }, fresh: true, age_ms: 0, source: 'snapshot' },
+      temperature: {
+        value: { average: 42, sub3GPA: 42, sub6GPA: 43, mimoPa: 44, tcxo: 40, ap1: 45, ap2: 46, modem1: 47 },
+        fresh: true,
+        age_ms: 0,
+        source: 'snapshot',
+      },
+      modem: {
+        value: { manufacturer: 'Quectel', model: 'MT5700M', revision: 'r01' },
+        fresh: true,
+        age_ms: 0,
+        source: 'snapshot',
+      },
+    };
+  }
+
   public async sendCommand(command: string): Promise<ATResponse> {
     const execution = this.mockCommandQueue.then(async () => {
       if (!this.mockConnected) {
@@ -1347,6 +1492,18 @@ export class ATService {
       return (this.adapter as WebSocketATAdapter).isReady();
     }
     return false;
+  }
+
+  // Async Architecture：SWR 首屏快照（零 AT 流量）。页面挂载时调用一次，
+  // 立即拿到 StateCache 最近一次后台采集状态，之后靠事件推送保持更新。
+  public async requestSnapshot(): Promise<StateSnapshot | null> {
+    if (this.adapter instanceof WebSocketATAdapter) {
+      return (this.adapter as WebSocketATAdapter).requestSnapshot();
+    }
+    if (this.adapter instanceof MockWebSocketATAdapter) {
+      return (this.adapter as MockWebSocketATAdapter).requestSnapshot();
+    }
+    return null;
   }
 
   public getConnectionState(): ATConnectionState {

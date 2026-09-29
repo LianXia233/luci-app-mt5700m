@@ -61,6 +61,64 @@
 
 ---
 
+## 异步化架构（Async Architecture）
+
+从 v2.7 起，Rust 后端在「独占 AT 通道」基础上进一步升级为**事件驱动 + 异步任务调度 + 状态缓存 + 实时事件推送**架构。核心目标：**任何单个慢 AT 操作都不能阻塞 LuCI / WebUI / WebSocket**，页面打开不等待模组，多个页面共享缓存、不再重复请求，后台轮询统一收敛、不再浪费串口与 CPU。
+
+### 总体分层
+
+```
+┌──────────────────────────┐   LuCI / WebUI 前端
+│  快速读缓存 / 下发任务    │   读取 StateCache 快照（SWR），订阅事件
+└────────────┬─────────────┘
+             ▼
+┌──────────────────────────┐
+│  WebSocket（事件驱动）    │   subscribe / unsubscribe / snapshot 控制帧
+└────────────┬─────────────┘   实时推送 {type, data, timestamp} 事件
+             ▼
+┌──────────────────────────────────────────────────────────┐
+│ Async Application Core                                     │
+│   ┌───────────┐ ┌──────────────┐ ┌────────────────────┐  │
+│   │ StateCache │ │ TaskManager  │ │ EventBus           │  │
+│   │  (SWR/TTL) │ │ 生命周期/周期 │ │ (主题/合并/即时)    │  │
+│   └─────┬─────┘ └──────┬───────┘ └─────────┬──────────┘  │
+└─────────┼──────────────┼──────────────────┼──────────────┘
+          │              │                  │
+          └──────────────┼──────────────────┘
+                         ▼
+┌────────────────────────────────────────┐
+│ AtArbiter：AT 请求队列 / 仲裁器          │  单执行线程 · 优先级 · 去重 ·
+│ 超时 · 重试 · 独占 · 背压 · 协作取消     │  慢 AT 不再卡死任何路径
+└──────────────────┬─────────────────────┘
+                   ▼
+┌────────────────────────────────────────┐
+│ AtTransport：串口(TIOCEXCL) / 网络 AT    │
+└──────────────────┬─────────────────────┘
+                   ▼
+              MT5700M 模组
+```
+
+### 关键机制
+
+| 机制 | 说明 |
+|:---|:---|
+| **统一 AT 仲裁器** | 所有 AT 交换（WebSocket 命令、LuCI 控制套接字、后台采集、扫频、锁频调度）都经 `AtArbiter` 单执行线程串行化：一次一条命令，响应不交错；优先级（Critical > Interactive > High > Normal > Background）保证用户操作不被后台轮询饿死 |
+| **请求去重** | 同一时间相同只读请求（如多个页面同时 `AT+CSQ`）合并为一次 AT 交换，结果共享 |
+| **StateCache（SWR）** | 后台采集器周期性把 signal / network / registration / temperature / traffic / cell / sim / modem 写入缓存，每项含 `value + timestamp + ttl + source`；页面读到过期值仍立即返回（Stale-While-Revalidate），同时后台刷新 |
+| **事件总线 EventBus** | 主题订阅/发布，高频遥测 100ms 窗口合并（coalescing），task / usb / modem / sms / scan 即时直推；状态变化 → 事件 → WebSocket → 订阅前端，前端不再自己轮询 |
+| **TaskManager** | 统一任务模型 `Queued → Running → Completed/Failed/Cancelled/Timeout`；支持进度事件、取消（注入线缆上的 abort）、看门狗超时、周期任务（互不重叠、后台优先级、记录上限 512 / 300s TTL） |
+| **周期采集** | signal 2s、registration 3s、network 3s、temperature 5s、traffic 5s、cell 10s、sim 30s、modem info 60s——全部 Background 优先级，经 AT 仲裁器去重排队，约 93 次快查询/分钟，远低于一次串行交换每秒 |
+| **USB 热插拔** | DeviceMonitor 监听 USB 增删/重置，变化时：失效缓存 → 取消失效任务 → 重连 transport → 刷新状态 → 推送 `usb.*` / `modem.*` 事件 |
+| **慢任务隔离** | 扫频、短信收发、PDP 操作、网络恢复等一律后台执行；HTTP/WS 请求立即返回 `task_id`，结果通过 `task.*` 事件推送 |
+| **错误模型与重试** | 统一 `ModemUnavailable / TransportError / AtTimeout / AtRejected / Busy / TaskCancelled / TaskTimeout / InvalidParameter / PermissionDenied / UsbDisconnected / InternalError`，机器可读 `code` + 人类可读 `message` + `retryable`；超时/传输瞬时故障带退避重试，参数错误/模组明确拒绝绝不盲目重试 |
+
+### 前端配合（零轮询）
+
+- **LuCI**：`mt5700m-at cached` 子命令 + `/var/run/at-webserver.sock` 读取 StateCache 快照，状态页 `status.js` 双阶段渲染（缓存秒开 → 事件/命令补齐）。
+- **WebUI**：连接后先请求 `{action:"snapshot"}` 控制帧拿到缓存快照（零 AT 流量秒开），再订阅 `subscribe` 主题；`signal.updated / network.updated / registration.updated / temperature.updated / traffic.updated / cell.updated / sim.updated / modem.info / usb.* / task.* / scan.* / sms.*` 事件实时更新页面；断线重连后自动重新订阅 + 拉快照，无需刷新页面。
+
+> 兼容性：LuCI CLI 子命令契约、WebSocket 命令/应答协议、`AT+SCHED?`/`AT^CELLSCAN` 伪命令全部保持不变；新增的控制帧（`subscribe/unsubscribe/snapshot`）与 `cached` 子命令均为增量扩展，旧前端零改动即可继续工作。
+
 ## 硬件工作模式识别模型
 
 应用根据移远 MT5700M 官方工程手册规范，实时探测 USB 枚举状态，动态判定当前硬件生命周期模式并显示对应的维护建议：

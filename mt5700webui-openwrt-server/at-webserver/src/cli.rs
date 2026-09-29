@@ -1356,6 +1356,23 @@ fn text_mode_sms_network(settings: &Settings, number: &str, text: &str) -> Resul
 
 // ---------------------------------------------------------------- Status
 
+/// `mt5700m-at cached`: dump the daemon's cached state snapshot. This is the
+/// async fast-path for LuCI pages — zero AT traffic, returns whatever the
+/// background collectors last wrote (stale values included), so a slow or
+/// absent modem can never block the page.
+fn cmd_cached() -> i32 {
+    match crate::sock::daemon_cached() {
+        Ok(v) => {
+            println!("{}", v.dump());
+            0
+        }
+        Err(e) => {
+            eprintln!("cached: {}", e.message());
+            1
+        }
+    }
+}
+
 fn cmd_status(settings: &Settings) -> i32 {
     let mut settings = settings.clone();
     // Keep LuCI status below rpcd's execution timeout.
@@ -1909,6 +1926,7 @@ pub fn run(args: &[String]) -> i32 {
 
     match first {
         "status" => cmd_status(&settings),
+        "cached" => cmd_cached(),
         "scan" => cmd_scan(),
         "port" => cmd_port(&settings, &rest),
         "temperature" => {

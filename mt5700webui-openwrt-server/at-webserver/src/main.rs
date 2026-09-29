@@ -9,15 +9,24 @@
 //!   /usr/sbin/mt5700m-at -> /usr/bin/at-webserver   (symlink, LuCI path)
 
 mod at;
+mod at_queue;
 mod cli;
 mod daemon;
+mod device_monitor;
 mod dispatcher;
+mod error;
+mod event_bus;
 mod json;
+mod runtime;
 mod scheduler;
 mod serial;
 mod sha1;
 mod sms;
+mod snapshot;
 mod sock;
+mod state_cache;
+mod task;
+mod task_manager;
 mod ws;
 
 use std::path::Path;
