@@ -156,6 +156,18 @@ while IFS= read -r js; do
 done < <(find staging_dir/target-*/root-*/www/5700 -name '*.js' -type f 2>/dev/null)
 
 find bin -type f \( -name 'luci-app-mt5700m-*.apk' -o -name 'luci-app-mt5700m_*.ipk' -o -name 'luci-i18n-mt5700m-zh-cn-*.apk' -o -name 'luci-i18n-mt5700m-zh-cn_*.ipk' \) -exec cp -f {} "${output_dir}/" \;
-test "$(find "${output_dir}" -type f \( -name '*.apk' -o -name '*.ipk' \) | wc -l)" -ge 4
+# v2.6 removed the ubus-at-daemon / sms-tool_q third-party packages, so the
+# release now ships exactly two packages (LuCI app + zh-cn i18n). Verify both
+# reached the output instead of hard-coding a legacy artifact count (was -ge 4
+# when two extra packages still existed), which would fail silently under
+# `set -e` on any future artifact change.
+if ! ls "${output_dir}"/luci-app-mt5700m-*.apk "${output_dir}"/luci-app-mt5700m_*.ipk >/dev/null 2>&1; then
+  echo "ERROR: build output is missing the luci-app-mt5700m package (no .apk/.ipk)" >&2
+  exit 1
+fi
+if ! ls "${output_dir}"/luci-i18n-mt5700m-zh-cn-*.apk "${output_dir}"/luci-i18n-mt5700m-zh-cn_*.ipk >/dev/null 2>&1; then
+  echo "ERROR: build output is missing the luci-i18n-mt5700m-zh-cn package (no .apk/.ipk)" >&2
+  exit 1
+fi
 cp -f public-key.pem "${output_dir}/openwrt-sdk-build.pem" 2>/dev/null || true
 (cd "${output_dir}" && find . -maxdepth 1 -type f \( -name '*.apk' -o -name '*.ipk' -o -name 'openwrt-sdk-build.pem' \) -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
