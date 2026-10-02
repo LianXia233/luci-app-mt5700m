@@ -173,11 +173,14 @@ return view.extend({
 			c.cssLink(),
 			res.stderr ? E('div', { 'class': 'alert-message warning' }, res.stderr) : null,
 			c.hero(_('MT5700M SYSTEM'), model, revision || _('Module information'), [
-				E('div', { 'style': 'min-width:96px;text-align:center;padding:11px 14px;border-radius:12px;background:rgba(255,255,255,.14)' }, [
-					E('strong', { 'style': 'display:block;font-size:24px' }, temperature ? temperature + '°' : '--'),
-					E('span', { 'style': 'font-size:11px;opacity:.8' }, _('Peak sensor temperature'))
+				E('div', { 'style': 'min-width:104px;text-align:center;padding:11px 14px;border-radius:12px;background:rgba(255,255,255,.14);display:flex;flex-direction:column;align-items:center;gap:4px' }, [
+					E('div', { 'style': 'display:flex;align-items:center;gap:6px' }, [
+						c.svgStatusPulse(temperature && Number(temperature) > 70 ? 'warn' : 'ok', 12),
+						E('strong', { 'style': 'font-size:24px;line-height:1' }, temperature ? temperature + '°' : '--')
+					]),
+					E('span', { 'style': 'font-size:11px;opacity:.85' }, _('Peak sensor temperature'))
 				])
-			], 'slate'),
+			], 'slate', c.svgChip(68, 'indigo')),
 			E('div', { 'class': 'mt-grid' }, [
 				E('section', { 'class': 'mt-card' }, [ E('h3', { 'class': 'mt-card-title' }, _('Module information')), this.row(_('Model'), model), this.row(_('Firmware version'), software || revision), this.row(_('Hardware version'), hardware), this.row('IMEI', imei), this.row(_('Build date'), buildDate) ]),
 				E('section', { 'class': 'mt-card' }, [ E('h3', { 'class': 'mt-card-title' }, _('SIM and subscription')), this.row(_('Phone Number'), phone), this.row('ICCID', iccid), this.row('IMSI', imsi), this.row(_('Subscription downlink'), parser.subscriptionRate(subscription[1])), this.row(_('Subscription uplink'), parser.subscriptionRate(subscription[2])), E('div', { 'class': 'mt-scan-note' }, _('Device and SIM identifiers are displayed only in this local management page.')) ]),

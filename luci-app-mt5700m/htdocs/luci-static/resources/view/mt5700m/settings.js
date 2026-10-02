@@ -56,9 +56,12 @@ return view.extend({
 		return m.render().then(function(formNode) {
 			return E('div', { 'class': 'mt-page', 'style': 'max-width:900px;margin:0 auto' }, [
 				c.cssLink(),
-				c.hero(null, _('Communication diagnostics'), _('Low-level AT channel settings for troubleshooting module communication.'), [
-					c.badge(_('Automatic mode recommended'), 'primary')
-				], 'slate'),
+				c.hero(_('SETTINGS'), _('Communication diagnostics'), _('Low-level AT channel settings for troubleshooting module communication.'), [
+					E('div', { 'class': 'mt-conn-state' }, [
+						c.svgStatusPulse('ok', 14),
+						c.badge(_('Automatic mode recommended'), 'primary')
+					])
+				], 'slate', c.svgChip(64, 'slate')),
 				c.card(_('AT communication'), _('These settings do not change APN or mobile data. Leave them unchanged unless automatic detection fails.'), formNode),
 				E('div', { 'class': 'mt-advanced-actions', 'style': 'margin-top:14px;justify-content:flex-start' },
 					E('a', { 'class': 'btn', 'href': L.url('admin/modem/mt5700m/system') }, _('Back to Device and SIM')))

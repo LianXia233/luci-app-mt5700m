@@ -63,7 +63,12 @@ return view.extend({
 
 		return E('div', { 'class': 'mt-page' }, [
 			c.cssLink(),
-			c.hero(_('ADVANCED'), _('Advanced Settings'), _('Hardware interfaces, safeguards and diagnostic tools for experienced users. Normal operation does not require changes on this page.'), null, 'slate'),
+			c.hero(_('ADVANCED'), _('Advanced Settings'), _('Hardware interfaces, safeguards and diagnostic tools for experienced users. Normal operation does not require changes on this page.'), [
+				E('div', { 'class': 'mt-conn-state' }, [
+					c.svgStatusPulse('ok', 14),
+					E('span', { 'class': 'mt-badge mt-badge--primary' }, _('Hardware'))
+				])
+			], 'slate', c.svgChip(64, 'slate')),
 			res.stderr ? E('div', { 'class': 'alert-message warning', 'style': 'margin-bottom:14px' }, res.stderr) : null,
 			E('div', { 'class': 'alert-message warning', 'style': 'margin-bottom:14px' }, _('Changing an interface profile can interrupt both mobile data and module management. Record the current value before applying a change.')),
 			E('section', { 'class': 'mt-card' }, [

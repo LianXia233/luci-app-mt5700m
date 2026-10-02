@@ -71,10 +71,10 @@ return view.extend({
 			]),
 			E('div', { 'class': 'mt-gauge-value', 'style': 'font-size:31px;margin:6px 0 10px' }, isNaN(rsrp) ? '--' : String(data.rsrp)),
 			c.signalBars(quality.percentage, quality.cls),
-			E('div', { 'class': 'mt-details-body' }, [
-				c.gauge('RSRQ', 'rsrq', data.rsrq, ' dB', '-25', '-3'),
-				c.gauge('SINR', 'sinr', data.sinr, ' dB', '-10', '30'),
-				c.gauge(_('Temperature'), 'temp', data.temperature, '°C', '20', '80')
+			E('div', { 'class': 'mt-circular-gauges-grid' }, [
+				c.svgCircularGauge(data.rsrq, -25, -3, ' dB', 'RSRQ', quality.cls),
+				c.svgCircularGauge(data.sinr, -10, 30, ' dB', 'SINR', quality.cls),
+				c.svgCircularGauge(data.temperature, 20, 80, '°C', _('Temperature'), 'accent')
 			])
 		]);
 	},
@@ -96,9 +96,18 @@ return view.extend({
 			}));
 		}
 
+		var primaryBand = info.carriers[0] ? info.carriers[0].band : '5G';
+		var carrierSvg = c.svgCarrier(primaryBand, info.carriers.length);
+
 		return c.card(_('Carrier status'), _('Carrier aggregation and bandwidth'), [
-			E('div', { 'class': 'mt-gauge-head' }, [
-				E('span', {}, [ E('span', { 'class': 'mt-gauge-value', 'style': 'font-size:24px' }, headline), E('div', { 'class': 'mt-muted' }, info.mode || _('Mobile network')) ]),
+			E('div', { 'class': 'mt-gauge-head', 'style': 'align-items:center' }, [
+				E('div', { 'style': 'display:flex;align-items:center;gap:12px' }, [
+					carrierSvg,
+					E('div', {}, [
+						E('span', { 'class': 'mt-gauge-value', 'style': 'font-size:24px' }, headline),
+						E('div', { 'class': 'mt-muted' }, info.mode || _('Mobile network'))
+					])
+				]),
 				c.badge(badgeText, badgeCls)
 			]),
 			info.carriers.length ? E('div', { 'class': 'mt-carrier-grid', 'style': 'margin:10px 0 12px' }, info.carriers.map(function(item) {
@@ -206,8 +215,11 @@ return view.extend({
 		}
 
 		return c.card(_('Traffic Statistics'), _('Local usage recorded only for the MT5700M data interface'), [
-			E('div', { 'class': 'mt-gauge-head', 'style': 'margin-bottom:10px' }, [
-				E('span', { 'class': 'mt-scan-note' }, _('Last updated') + ' · ' + parser.trafficUpdated(iface)),
+			E('div', { 'class': 'mt-gauge-head', 'style': 'margin-bottom:10px;align-items:center' }, [
+				E('div', { 'style': 'display:flex;align-items:center;gap:10px' }, [
+					c.svgTrafficArrows(),
+					E('span', { 'class': 'mt-scan-note' }, _('Last updated') + ' · ' + parser.trafficUpdated(iface))
+				]),
 				E('span', { 'class': 'mt-traffic-legend' }, [
 					E('span', {}, [ E('i', { 'class': 'mt-traffic-legend-dot' }), _('Download') ]),
 					E('span', {}, [ E('i', { 'class': 'mt-traffic-legend-dot active' }), _('Upload') ])
@@ -265,16 +277,18 @@ return view.extend({
 			data.error ? E('div', { 'class': 'alert-message warning' }, data.error) : null,
 			res.session && res.session.stderr ? E('div', { 'class': 'alert-message warning' }, res.session.stderr) : null,
 			abnormalUsb ? E('div', { 'class': 'alert-message warning' }, _('The MT5700M is in %s. Mobile data and AT management are unavailable until normal mode returns.').format(usbNames[data.usb_state])) : null,
-			c.hero(null, _('MT5700M Module'),
+			c.hero(_('OVERVIEW'), _('MT5700M Module'),
 				!reachable ? _('The modem did not respond. Check the module connection.') : connected ? _('Mobile network is connected and ready.') : _('The module is online, but mobile data is not connected.'),
 				[
 					E('div', { 'class': 'mt-conn-state' }, [
-						E('span', { 'class': 'mt-conn-state-dot' + (connected ? ' on' : '') }),
+						c.svgStatusPulse(connected ? 'ok' : reachable ? 'warn' : 'bad', 18),
 						E('span', { 'class': 'mt-conn-state-text' }, connected ? _('Connected') : reachable ? _('Module online') : _('Unavailable'))
 					]),
-					E('a', { 'class': 'mt-hero-btn', 'href': '/5700/', 'target': '_blank', 'rel': 'noopener' }, [ _('WebUI'), ' ↗' ]),
-					E('button', { 'class': 'mt-hero-btn mt-hero-refresh', 'click': function() { window.location.reload(); } }, _('Refresh'))
-				]),
+					E('a', { 'class': 'mt-hero-btn', 'href': '/5700/', 'target': '_blank', 'rel': 'noopener' }, [ c.svgWebUiIcon(), _('WebUI') ]),
+					E('button', { 'class': 'mt-hero-btn mt-hero-refresh', 'click': function() { window.location.reload(); } }, [ c.svgRefreshIcon(), _('Refresh') ])
+				],
+				null,
+				c.svgTower({ active: reachable, status: connected ? 'ok' : reachable ? 'warn' : 'bad' })),
 			E('div', { 'class': 'mt-facts-grid', 'style': 'margin-bottom:14px' }, [
 				E('div', { 'class': 'mt-facts-cell' }, [
 					E('div', { 'class': 'mt-facts-label' }, _('Network Mode')),

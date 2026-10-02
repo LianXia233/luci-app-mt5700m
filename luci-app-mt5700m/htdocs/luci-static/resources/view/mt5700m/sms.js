@@ -207,7 +207,7 @@ return view.extend({
 		}
 		var composeInput = E('input', { 'class': 'mt-sms-compose-input', 'type': 'tel', 'placeholder': _('Phone number…') });
 		var composeText = E('input', { 'class': 'mt-sms-compose-input', 'type': 'text', 'placeholder': _('Write a message…') });
-		var sendBtn = E('button', { 'type': 'button', 'class': 'mt-sms-compose-action mt-sms-toolbar-action' }, _('Send'));
+		var sendBtn = E('button', { 'type': 'button', 'class': 'mt-sms-compose-action mt-sms-toolbar-action', 'style': 'display:inline-flex;align-items:center;gap:6px' }, [ c.svgSendIcon(), document.createTextNode(_('Send')) ]);
 		var compose = E('div', { 'class': 'mt-sms-compose' }, [
 			composeInput,
 			E('div', { 'class': 'mt-sms-compose-actions' }, [ composeText, sendBtn ])
@@ -285,8 +285,11 @@ return view.extend({
 			c.cssLink(),
 			listResult.stderr ? E('div', { 'class': 'alert-message warning' }, listResult.stderr) : null,
 			c.hero(_('MESSAGING'), _('Messages'), _('Conversations using the SIM installed in the MT5700M.'), [
-				E('span', { 'class': 'mt-badge mt-badge--primary' }, slots)
-			], 'teal'),
+				E('div', { 'style': 'display:flex;align-items:center;gap:8px' }, [
+					c.svgStatusPulse('ok', 14),
+					E('span', { 'class': 'mt-badge mt-badge--primary' }, slots)
+				])
+			], 'teal', c.svgChip(64, 'teal')),
 			E('div', { 'class': 'mt-sms-shell' }, [
 				E('div', { 'class': 'mt-sms-sidebar' }, [
 					toolbar,
