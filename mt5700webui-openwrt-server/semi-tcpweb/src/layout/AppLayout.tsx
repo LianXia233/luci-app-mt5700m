@@ -16,6 +16,7 @@ import { useMediaQuery } from '@/hooks/useMediaQuery';
 import AuthHandler from '@/components/AuthHandler';
 import NotificationHandler from '@/components/NotificationHandler';
 import SimPinHandler from '@/components/SimPinHandler';
+import { SvgAmbientMesh, SvgBrandLogo, SvgConnectionPulse } from '@/ui/svgVisuals';
 
 const { Header, Sider, Content, Footer } = Layout;
 
@@ -180,102 +181,105 @@ const AppLayout: React.FC = () => {
   };
 
   return (
-    <Layout className="app-shell">
-      <Sider
-        className={[
-          'app-sider',
-          isMobile ? 'app-sider--mobile' : '',
-          isMobile && mobileOpen ? 'app-sider--open' : '',
-        ]
-          .filter(Boolean)
-          .join(' ')}
-        style={{ width: siderWidth }}
-      >
-        <div className="app-brand">
-          <div className="app-brand-mark">
-            <img src="/5700/logo.svg" alt="MT5700" />
-          </div>
-          <div className="app-brand-copy">
-            <div className="app-brand-title">MT5700M-CN</div>
-            <div className="app-brand-sub">5G CPE · V3.0.0</div>
-          </div>
-        </div>
-        <Nav
-          style={{ maxWidth: siderWidth, height: 'calc(100vh - 76px)' }}
-          items={NAV_ITEMS}
-          selectedKeys={selectedKeys}
-          openKeys={['network', 'system', 'sms']}
-          isCollapsed={false}
-          onSelect={(data) => {
-            const key = String(data.itemKey);
-            if (key.startsWith('/')) {
-              navigate(key);
-              setMobileOpen(false);
-            }
-          }}
-        />
-      </Sider>
-
-      {isMobile && mobileOpen ? (
-        <div className="app-scrim" aria-hidden="true" onClick={() => setMobileOpen(false)} />
-      ) : null}
-
-      <Layout>
-        <Header className="app-header">
-          <div className="app-header-left">
-            {isMobile ? (
-              <Button
-                className="app-icon-button"
-                theme="borderless"
-                icon={<IconMenu />}
-                onClick={toggleNavigation}
-                aria-label={mobileOpen ? '关闭导航' : '打开导航'}
-              />
-            ) : null}
-            <div className="app-header-title">
-              <div className="app-header-eyebrow">{page.group}</div>
-              <div className="app-header-name">{page.title}</div>
+    <div className="app-viewport">
+      <SvgAmbientMesh />
+      <Layout className="app-shell">
+        <Sider
+          className={[
+            'app-sider',
+            isMobile ? 'app-sider--mobile' : '',
+            isMobile && mobileOpen ? 'app-sider--open' : '',
+          ]
+            .filter(Boolean)
+            .join(' ')}
+          style={{ width: siderWidth }}
+        >
+          <div className="app-brand">
+            <div className="app-brand-mark">
+              <SvgBrandLogo size={32} />
+            </div>
+            <div className="app-brand-copy">
+              <div className="app-brand-title">MT5700M-CN</div>
+              <div className="app-brand-sub">5G CPE · V3.0.0</div>
             </div>
           </div>
-          <div className="app-header-right">
-            <span
-              className={`at-status at-status--${connection.state}`}
-              title={connectionView.title}
-              role="status"
-              aria-live="polite"
-              aria-label={connectionView.title}
-            >
+          <Nav
+            style={{ maxWidth: siderWidth, height: 'calc(100vh - 76px)' }}
+            items={NAV_ITEMS}
+            selectedKeys={selectedKeys}
+            openKeys={['network', 'system', 'sms']}
+            isCollapsed={false}
+            onSelect={(data) => {
+              const key = String(data.itemKey);
+              if (key.startsWith('/')) {
+                navigate(key);
+                setMobileOpen(false);
+              }
+            }}
+          />
+        </Sider>
+
+        {isMobile && mobileOpen ? (
+          <div className="app-scrim" aria-hidden="true" onClick={() => setMobileOpen(false)} />
+        ) : null}
+
+        <Layout>
+          <Header className="app-header">
+            <div className="app-header-left">
+              {isMobile ? (
+                <Button
+                  className="app-icon-button"
+                  theme="borderless"
+                  icon={<IconMenu />}
+                  onClick={toggleNavigation}
+                  aria-label={mobileOpen ? '关闭导航' : '打开导航'}
+                />
+              ) : null}
+              <div className="app-header-title">
+                <div className="app-header-eyebrow">{page.group}</div>
+                <div className="app-header-name">{page.title}</div>
+              </div>
+            </div>
+            <div className="app-header-right">
               <span
-                className={`status-dot ${connectionView.tone}${connectionView.busy ? ' busy' : ''}`}
-                aria-hidden="true"
-              />
-              <span className="at-status-label at-status-label--full" aria-hidden="true">
-                {connectionView.label}
+                className={`at-status at-status--${connection.state}`}
+                title={connectionView.title}
+                role="status"
+                aria-live="polite"
+                aria-label={connectionView.title}
+              >
+                <SvgConnectionPulse
+                  tone={connectionView.tone as 'ok' | 'warn' | 'err'}
+                  busy={connectionView.busy}
+                />
+                <span className="at-status-label at-status-label--full" aria-hidden="true">
+                  {connectionView.label}
+                </span>
+                <span className="at-status-label at-status-label--compact" aria-hidden="true">
+                  {connectionView.compactLabel}
+                </span>
               </span>
-              <span className="at-status-label at-status-label--compact" aria-hidden="true">
-                {connectionView.compactLabel}
-              </span>
-            </span>
-            <Tooltip content={dark ? '切换浅色' : '切换深色'}>
-              <Button
-                className="app-icon-button"
-                theme="borderless"
-                icon={dark ? <IconSun /> : <IconMoon />}
-                onClick={toggleTheme}
-                aria-label="切换主题"
-              />
-            </Tooltip>
-          </div>
-        </Header>
-        <Content className="app-content">
-          <Outlet />
-        </Content>
-        <Footer className="app-footer">MT5700M-CN · 5G CPE Management · V3.0.0</Footer>
+              <Tooltip content={dark ? '切换浅色' : '切换深色'}>
+                <Button
+                  className="app-icon-button"
+                  theme="borderless"
+                  icon={dark ? <IconSun /> : <IconMoon />}
+                  onClick={toggleTheme}
+                  aria-label="切换主题"
+                />
+              </Tooltip>
+            </div>
+          </Header>
+          <Content className="app-content">
+            <Outlet />
+          </Content>
+          <Footer className="app-footer">MT5700M-CN · 5G CPE Management · V3.0.0</Footer>
+        </Layout>
+        <AuthHandler />
+        <NotificationHandler />
+        <SimPinHandler />
       </Layout>
-      <AuthHandler />
-      <NotificationHandler />
-      <SimPinHandler />
-    </Layout>
+    </div>
   );
 };
 

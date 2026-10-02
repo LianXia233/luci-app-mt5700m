@@ -16,6 +16,7 @@ import {
 } from '@/modem/cellscan';
 import { LTE_BANDS, NR_BANDS, SCS_TYPES } from '@/modem/lock';
 import { Field, PageCard, TwoCol } from '@/ui/widgets';
+import { SvgRadarScanner } from '@/ui/svgVisuals';
 
 const at = () => ATService.getInstance();
 
@@ -301,6 +302,10 @@ export const ScanPanel: React.FC<Props> = ({ onLock, onScanningChange, disabled 
           </Field>
         ) : null}
       </TwoCol>
+
+      <div className="scan-radar-banner">
+        <SvgRadarScanner scanning={scanning} cellCount={cells.length} />
+      </div>
 
       {scanning ? <Progress percent={100} stroke="var(--semi-color-primary)" showInfo={false} /> : null}
       {note ? (

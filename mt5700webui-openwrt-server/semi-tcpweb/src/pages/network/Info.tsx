@@ -4,6 +4,7 @@ import { IconArrowDown, IconArrowUp, IconSetting } from '@douyinfe/semi-icons';
 import { ATResponse, ATService, PDCPData, StateSnapshot, URCData } from '@/services/at';
 import { useATReady } from '@/hooks/useATReady';
 import { useCommandQueue } from '@/hooks/useCommandQueue';
+import { SvgSignalTower, SvgDataStream } from '@/ui/svgVisuals';
 import {
   calculateSignalPercent,
   convertRsrp,
@@ -683,6 +684,12 @@ const NetworkInfo: React.FC = () => {
               </div>
               <div>
                 <div className="signal-overview">
+                  <div className="signal-tower-wrapper">
+                    <SvgSignalTower
+                      percent={cell.signalPercent ? parseInt(cell.signalPercent, 10) : 0}
+                      is5G={nr}
+                    />
+                  </div>
                   <RingGauge
                     percent={cell.signalPercent ? parseInt(cell.signalPercent, 10) : null}
                     label="信号质量"
@@ -910,6 +917,13 @@ const NetworkInfo: React.FC = () => {
             }
           >
             <div className="speed-dashboard">
+              <div className="speed-datastream-banner">
+                <SvgDataStream
+                  active={Boolean(pdcpOn && (ulRate > 0 || dlRate > 0))}
+                  downMbps={Number(downSplit.value) * (downSplit.unit === 'Gbps' ? 1000 : downSplit.unit === 'Kbps' ? 0.001 : 1)}
+                  upMbps={Number(upSplit.value) * (upSplit.unit === 'Gbps' ? 1000 : upSplit.unit === 'Kbps' ? 0.001 : 1)}
+                />
+              </div>
               <div className="speed-stat-grid">
                 <div className="speed-stat-card speed-stat-card--down">
                   <div className="speed-stat-head">
