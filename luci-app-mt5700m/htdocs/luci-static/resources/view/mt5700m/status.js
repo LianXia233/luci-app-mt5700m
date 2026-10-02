@@ -277,7 +277,7 @@ return view.extend({
 			data.error ? E('div', { 'class': 'alert-message warning' }, data.error) : null,
 			res.session && res.session.stderr ? E('div', { 'class': 'alert-message warning' }, res.session.stderr) : null,
 			abnormalUsb ? E('div', { 'class': 'alert-message warning' }, _('The MT5700M is in %s. Mobile data and AT management are unavailable until normal mode returns.').format(usbNames[data.usb_state])) : null,
-			c.hero(null, _('MT5700M Module'),
+			c.hero(_('OVERVIEW'), _('MT5700M Module'),
 				!reachable ? _('The modem did not respond. Check the module connection.') : connected ? _('Mobile network is connected and ready.') : _('The module is online, but mobile data is not connected.'),
 				[
 					E('div', { 'class': 'mt-conn-state' }, [

@@ -56,7 +56,7 @@ return view.extend({
 		return m.render().then(function(formNode) {
 			return E('div', { 'class': 'mt-page', 'style': 'max-width:900px;margin:0 auto' }, [
 				c.cssLink(),
-				c.hero(null, _('Communication diagnostics'), _('Low-level AT channel settings for troubleshooting module communication.'), [
+				c.hero(_('SETTINGS'), _('Communication diagnostics'), _('Low-level AT channel settings for troubleshooting module communication.'), [
 					E('div', { 'class': 'mt-conn-state' }, [
 						c.svgStatusPulse('ok', 14),
 						c.badge(_('Automatic mode recommended'), 'primary')

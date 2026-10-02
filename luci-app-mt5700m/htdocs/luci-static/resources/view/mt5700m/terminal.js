@@ -114,10 +114,10 @@ return view.extend({
 
 		return E('div', { 'class': 'mt-page' }, [
 			c.cssLink(),
-			c.hero(null, _('MT5700M AT command console'), _('Diagnostic console for advanced users. Commands are sent directly to the MT5700M and are not automatically validated.'), [
+			c.hero(_('TERMINAL'), _('MT5700M AT command console'), _('Diagnostic console for advanced users. Commands are sent directly to the MT5700M and are not automatically validated.'), [
 				E('div', { 'class': 'mt-conn-state' }, [
 					c.svgStatusPulse('ok', 14),
-					E('span', { 'class': 'mt-badge mt-badge--primary' }, 'AT Console')
+					E('span', { 'class': 'mt-badge mt-badge--primary' }, _('AT Console'))
 				])
 			], 'slate', c.svgTerminalPrompt(64)),
 			E('section', { 'class': 'mt-card' }, [

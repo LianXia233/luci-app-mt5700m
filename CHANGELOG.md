@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.8.0] - 2026-10-02
+
+### Added
+- **全新现代白色毛玻璃（Glassmorphism）视觉设计系统与全页面 UI 重构**：
+  - 重构全部 8 个 LuCI 视图（`status` 概览、`connection` 移动数据、`network` 网络与小区、`sms` 短信、`system` 系统信息、`terminal` AT 终端、`advanced` 高级设置、`settings` 通信诊断），打造精致统一的白色半透明磨砂毛玻璃卡片质感（`backdrop-filter: blur(16px)`、半透明白底、双层立体光影微边框与悬浮微升交互）。
+  - 新增环境流光背景网格（`mt-ambient-mesh`）与页面背景融合渲染，提升界面空间层次与现代科技感。
+  - AT 终端升级为 macOS 亚克力磨砂终端窗口风格，集成红黄绿三色控制按钮、磨砂顶栏与专用等宽终端控制台。
+- **高品质动态动画 SVG 矢量组件系统**：
+  - `svgTower`：动态 5G 信号塔，具备 3 级同心射频波纹循环发射动画与高光信号脉冲。
+  - `svgCircularGauge`：仪表级环形 SVG 进度环，带平滑渐变与动态旋转光晕，用于 5G/4G RSRP/RSRQ/SINR 信号质量与硬件温度监控。
+  - `svgChip`：硬件 SoC 核心芯片矢量图形，内部配备呼吸流光与动态引脚脉冲，应用于系统、硬件及高级配置页面。
+  - `svgCarrier`：多载波聚合（CA）轨道动态指示器，主辅载波环绕卫星轨道动态旋转。
+  - `svgTrafficArrows`：双向收发流量动态光流箭头，直观指示当前实时数据上下行吞吐。
+  - 动态状态呼吸光球（`svgStatusPulse`）、纸飞机发送图标（`svgSendIcon`）、旋转刷新图标（`svgRefreshIcon`）与 WebUI 跳转图标（`svgWebUiIcon`）。
+- **LuCI 前端 100% 完整中文化（Localization）**：
+  - 补充补全 `po/zh_Hans/mt5700m.po` 中所有缺失的翻译词条（`OVERVIEW`、`MESSAGING`、`ADVANCED`、`TERMINAL`、`DIAGNOSTICS`、`SETTINGS`、`WebUI`、`No messages yet.`、`Phone number…`、`Received`、`Sent` 等）。
+  - 规范并包裹所有前端视图中的用户可见文本与 Badge 标识（如 `_('AT Console')`、各页面 Kicker 导航标签），修复 PO 文件中多处格式换行缺失问题，实现前端界面 0 缺漏中文化覆盖。
+
+### Changed
+- 样式表版本号升级为 `2.8.0`（`style.css?v=2.8.0`），确保客户端升级后即时刷新样式缓存。
+- `PKG_VERSION` 升级为 `2.8.0`。
+
 ## [2.7.0] - 2026-09-29
 
 ### Added

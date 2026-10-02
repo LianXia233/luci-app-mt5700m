@@ -2141,6 +2141,7 @@ msgstr "删除"
 
 msgid "Save"
 msgstr "保存"
+
 msgid "5G access architecture"
 msgstr "5G 接入架构"
 
@@ -2674,3 +2675,37 @@ msgstr "用户标识与签约套餐"
 
 msgid "No scan data received."
 msgstr "未收到扫描数据。"
+
+msgid "ADVANCED"
+msgstr "高级设置"
+
+msgid "MESSAGING"
+msgstr "短信管理"
+
+msgid "OVERVIEW"
+msgstr "概览"
+
+msgid "TERMINAL"
+msgstr "AT 终端"
+
+msgid "DIAGNOSTICS"
+msgstr "通信诊断"
+
+msgid "SETTINGS"
+msgstr "设置"
+
+msgid "No messages yet."
+msgstr "暂无短信。"
+
+msgid "Phone number…"
+msgstr "电话号码…"
+
+msgid "Received"
+msgstr "已接收"
+
+msgid "Sent"
+msgstr "已发送"
+
+msgid "WebUI"
+msgstr "模块 WebUI"
+
