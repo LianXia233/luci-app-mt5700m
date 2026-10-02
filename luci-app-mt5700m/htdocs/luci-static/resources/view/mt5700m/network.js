@@ -376,13 +376,16 @@ return view.extend({
 			c.cssLink(),
 			res.stderr ? E('div', { 'class': 'alert-message warning' }, res.stderr) : null,
 			c.hero(_('NETWORK AND CELL'), operatorName, _('Serving-cell and registration information reported by the modem.'), [
-				c.badge(registered ? _('Registered') : _('Not registered'), registered ? 'ok' : 'warn')
-			]),
-			E('div', { 'class': 'mt-facts-grid', 'style': 'margin-bottom:14px' }, [
-				c.gauge(cell.metrics[0].label, 'rsrp', cell.metrics[0].value, ' dBm', '-120', '-70'),
-				c.gauge(cell.metrics[1].label, 'rsrq', cell.metrics[1].value, ' dB', '-25', '-3'),
-				c.gauge(cell.metrics[2].label, 'sinr', cell.metrics[2].value, ' dB', '-10', '30'),
-				c.gauge(_('Temperature'), 'temp', temperature, '°C', '20', '80')
+				E('div', { 'class': 'mt-conn-state' }, [
+					c.svgStatusPulse(registered ? 'ok' : 'bad', 18),
+					c.badge(registered ? _('Registered') : _('Not registered'), registered ? 'ok' : 'warn')
+				])
+			], null, c.svgTower({ active: registered, status: registered ? 'ok' : 'bad' })),
+			E('div', { 'class': 'mt-circular-gauges-grid', 'style': 'margin-bottom:18px' }, [
+				c.circularGaugeCard(cell.metrics[0].label, cell.metrics[0].value, 'dBm', 'rsrp', -120, -70),
+				c.circularGaugeCard(cell.metrics[1].label, cell.metrics[1].value, 'dB', 'rsrq', -25, -3),
+				c.circularGaugeCard(cell.metrics[2].label, cell.metrics[2].value, 'dB', 'sinr', -10, 30),
+				c.circularGaugeCard(_('Temperature'), temperature, '°C', 'temp', 20, 80)
 			]),
 			E('div', { 'class': 'mt-grid' }, [
 				E('section', { 'class': 'mt-card' }, [

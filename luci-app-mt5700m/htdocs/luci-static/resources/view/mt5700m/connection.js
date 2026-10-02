@@ -70,9 +70,9 @@ return view.extend({
 				E('div', { 'class': 'mt-session-columns', 'style': 'display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 18px' }, addressRows)
 			]),
 			E('section', { 'class': 'mt-card' }, [
-				E('div', { 'class': 'mt-gauge-head', 'style': 'margin-bottom:6px' }, [
+				E('div', { 'class': 'mt-gauge-head', 'style': 'margin-bottom:6px;align-items:center' }, [
 					E('div', {}, [ E('h3', { 'class': 'mt-card-title', 'style': 'margin:0 0 4px' }, _('Module traffic counters')), E('p', { 'class': 'mt-card-desc', 'style': 'margin:0' }, _('Counters maintained by the modem firmware for the current and accumulated sessions.')) ]),
-					c.badge(_('Module'), 'primary')
+					c.svgTrafficArrows()
 				]),
 				self.sessionRow(_('Current duration'), parser.formatDuration(session.currentDuration)),
 				self.sessionRow(_('Current total'), parser.formatBytes(session.currentRx + session.currentTx)),
@@ -313,11 +313,11 @@ return view.extend({
 				c.cssLink(),
 				manager.usb_state && manager.usb_state !== 'normal' ? E('div', { 'class': 'alert-message warning' }, _('The MT5700M is not in normal USB mode. Connection settings remain available, but dialing cannot start.')) : null,
 				c.hero(_('Mobile Data'), _('Mobile data'), _('Configure how the MT5700M connects to the mobile network.'), [
-					E('div', { 'class': 'mt-conn-state' + (online ? ' online' : '') }, [
-						E('span', { 'class': 'mt-conn-dot' }),
-						online ? _('Connected') : _('Disconnected')
+					E('div', { 'class': 'mt-conn-state' }, [
+						c.svgStatusPulse(online ? 'ok' : 'bad', 18),
+						E('span', { 'class': 'mt-conn-state-text' }, online ? _('Connected') : _('Disconnected'))
 					])
-				]),
+				], null, c.svgTower({ active: online, status: online ? 'ok' : 'bad' })),
 				E('div', { 'class': 'mt-facts-grid', 'style': 'margin-bottom:14px' }, [
 					self.fact(_('Automatic dialing'), uci.get('mt5700m', 'connection', 'enabled') === '0' ? _('Disabled') : _('Enabled')),
 					self.fact(_('Network interface'), manager.network),

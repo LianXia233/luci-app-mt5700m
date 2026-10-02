@@ -99,15 +99,33 @@ return view.extend({
 		});
 		window.setTimeout(function() { self.renderSaved(saved, input, output); }, 0);
 
+		var terminalWindow = E('div', { 'class': 'mt-terminal-window' }, [
+			E('div', { 'class': 'mt-terminal-bar' }, [
+				E('div', { 'class': 'mt-terminal-dots' }, [
+					E('span', { 'class': 'mt-term-dot red' }),
+					E('span', { 'class': 'mt-term-dot yellow' }),
+					E('span', { 'class': 'mt-term-dot green' })
+				]),
+				E('div', { 'class': 'mt-terminal-bar-title' }, 'mt5700m ~ serial /dev/ttyUSB2'),
+				E('div', { 'style': 'width:42px' })
+			]),
+			output
+		]);
+
 		return E('div', { 'class': 'mt-page' }, [
 			c.cssLink(),
-			c.hero(null, _('MT5700M AT command console'), _('Diagnostic console for advanced users. Commands are sent directly to the MT5700M and are not automatically validated.'), null, 'slate'),
+			c.hero(null, _('MT5700M AT command console'), _('Diagnostic console for advanced users. Commands are sent directly to the MT5700M and are not automatically validated.'), [
+				E('div', { 'class': 'mt-conn-state' }, [
+					c.svgStatusPulse('ok', 14),
+					E('span', { 'class': 'mt-badge mt-badge--primary' }, 'AT Console')
+				])
+			], 'slate', c.svgTerminalPrompt(64)),
 			E('section', { 'class': 'mt-card' }, [
 				E('div', { 'class': 'alert-message warning' }, _('Use query commands whenever possible. Configuration and reset commands may interrupt mobile connectivity.')),
 				E('div', { 'class': 'mt-terminal-input' }, [
 					E('div', { 'class': 'mt-terminal-input-field', 'style': 'flex:1' }, input),
 					E('div', { 'class': 'mt-terminal-input-actions' }, [
-						E('button', { 'class': 'btn cbi-button-apply', 'click': function() { self.sendCommand(output, input); } }, _('Send')),
+						E('button', { 'class': 'btn cbi-button-apply', 'style': 'display:inline-flex;align-items:center;gap:6px', 'click': function() { self.sendCommand(output, input); } }, [ c.svgSendIcon(), document.createTextNode(_('Send')) ]),
 						E('button', { 'class': 'btn', 'click': function() { output.textContent = ''; } }, _('Clear')),
 						E('button', { 'class': 'btn', 'click': function() { self.saveCommand(input, saved, output); } }, _('Save command'))
 					])
@@ -124,7 +142,7 @@ return view.extend({
 					this.quickButton(_('LTE Lock'), 'AT^LTEFREQLOCK?', input, output)
 				]),
 				saved,
-				output
+				terminalWindow
 			])
 		]);
 	}

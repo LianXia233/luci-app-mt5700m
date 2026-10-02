@@ -74,8 +74,210 @@ function signalBadge(quality) {
 	return badge(quality.label, map[quality.cls] || 'slate');
 }
 
-function hero(kicker, title, desc, side, variant) {
+/* ---------- 动态 SVG 与图标库 ---------- */
+
+function createSvg(markup) {
+	try {
+		if (typeof DOMParser !== 'undefined') {
+			var doc = new DOMParser().parseFromString(markup, 'image/svg+xml');
+			var el = doc.documentElement;
+			if (el && el.tagName && el.tagName.toLowerCase() === 'svg')
+				return document.importNode(el, true);
+		}
+	} catch (e) { /* fallback */ }
+	var div = document.createElement('div');
+	div.innerHTML = markup;
+	return div.firstElementChild || div;
+}
+
+// 动态 5G 信号塔（发射电磁波脉冲、信标闪烁）
+function svgTower(opts) {
+	opts = opts || {};
+	var active = opts.active !== false;
+	var isWarn = opts.status === 'warn';
+	var isBad = opts.status === 'bad';
+	var beaconClass = isBad ? 'bad' : isWarn ? 'warn' : 'ok';
+	var waveColor = isBad ? 'rgba(239, 68, 68, 0.7)' : isWarn ? 'rgba(245, 158, 11, 0.7)' : 'rgba(56, 189, 248, 0.85)';
+	var towerColor = 'rgba(255, 255, 255, 0.9)';
+	var beaconFill = isBad ? '#ef4444' : isWarn ? '#f59e0b' : '#34d399';
+
+	var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 110 110" width="84" height="84" style="overflow:visible">'
+		+ '<defs>'
+		+ '<linearGradient id="mt-tow-grad" x1="0%" y1="0%" x2="100%" y2="100%">'
+		+ '<stop offset="0%" stop-color="#ffffff" stop-opacity="0.95"/>'
+		+ '<stop offset="100%" stop-color="#93c5fd" stop-opacity="0.75"/>'
+		+ '</linearGradient>'
+		+ '</defs>'
+		+ (active ? (
+			'<circle cx="55" cy="24" r="14" fill="none" stroke="' + waveColor + '" class="mt-svg-pulse-ring-1"/>'
+			+ '<circle cx="55" cy="24" r="14" fill="none" stroke="' + waveColor + '" class="mt-svg-pulse-ring-2"/>'
+			+ '<circle cx="55" cy="24" r="14" fill="none" stroke="' + waveColor + '" class="mt-svg-pulse-ring-3"/>'
+		) : '')
+		// 塔体桁架
+		+ '<path d="M42 96 L52 28 M68 96 L58 28" stroke="' + towerColor + '" stroke-width="2.5" stroke-linecap="round"/>'
+		+ '<line x1="44" y1="82" x2="66" y2="82" stroke="' + towerColor + '" stroke-width="2"/>'
+		+ '<line x1="47" y1="64" x2="63" y2="64" stroke="' + towerColor + '" stroke-width="2"/>'
+		+ '<line x1="50" y1="46" x2="60" y2="46" stroke="' + towerColor + '" stroke-width="2"/>'
+		+ '<line x1="44" y1="82" x2="63" y2="64" stroke="' + towerColor + '" stroke-width="1.2" opacity="0.7"/>'
+		+ '<line x1="66" y1="82" x2="47" y2="64" stroke="' + towerColor + '" stroke-width="1.2" opacity="0.7"/>'
+		+ '<line x1="47" y1="64" x2="60" y2="46" stroke="' + towerColor + '" stroke-width="1.2" opacity="0.7"/>'
+		+ '<line x1="63" y1="64" x2="50" y2="46" stroke="' + towerColor + '" stroke-width="1.2" opacity="0.7"/>'
+		// 塔顶天线阵面
+		+ '<line x1="55" y1="28" x2="55" y2="15" stroke="' + towerColor + '" stroke-width="2.8" stroke-linecap="round"/>'
+		+ '<line x1="46" y1="21" x2="64" y2="21" stroke="' + towerColor + '" stroke-width="2" stroke-linecap="round"/>'
+		+ '<circle cx="55" cy="15" r="4" fill="' + beaconFill + '" class="mt-svg-beacon-dot ' + beaconClass + '"/>'
+		+ '</svg>';
+	return createSvg(svg);
+}
+
+// 动态状态呼吸光环
+function svgStatusPulse(status, size) {
+	size = size || 16;
+	var isOk = status === 'ok' || status === 'connected' || status === true;
+	var isWarn = status === 'warn';
+	var col = isOk ? 'var(--mt-ok)' : isWarn ? 'var(--mt-warn)' : 'var(--mt-bad)';
+	var cls = isOk ? '' : isWarn ? 'warn' : 'bad';
+	var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="' + size + '" height="' + size + '" style="vertical-align:middle;overflow:visible">'
+		+ '<circle cx="12" cy="12" r="7" fill="none" stroke="' + col + '" class="mt-svg-pulse-ring-1"/>'
+		+ '<circle cx="12" cy="12" r="4.5" fill="' + col + '" class="mt-svg-beacon-dot ' + cls + '"/>'
+		+ '</svg>';
+	return createSvg(svg);
+}
+
+// 圆形 SVG 渐变进度仪表（用于 RSRP / RSRQ / SINR / 温度）
+function svgCircularGauge(val, min, max, unit, label, cls) {
+	val = typeof val === 'number' ? val : parseFloat(val);
+	var valid = !isNaN(val);
+	var pct = 0;
+	if (valid && max > min) {
+		pct = Math.max(0, Math.min(100, ((val - min) / (max - min)) * 100));
+	}
+	var circum = 207.34;
+	var offset = circum - (circum * pct / 100);
+	var colorVar = cls === 'excellent' ? 'var(--mt-ok)' :
+		cls === 'good' ? 'var(--mt-accent-2)' :
+		cls === 'fair' ? 'var(--mt-warn)' :
+		cls === 'weak' ? 'var(--mt-bad)' : 'var(--mt-accent)';
+
+	var safeId = 'mt-cg-' + label.replace(/[^a-zA-Z0-9]/g, '');
+	var svg = '<svg class="mt-circular-gauge-svg" viewBox="0 0 84 84">'
+		+ '<defs>'
+		+ '<linearGradient id="' + safeId + '" x1="0%" y1="0%" x2="100%" y2="100%">'
+		+ '<stop offset="0%" stop-color="' + colorVar + '" stop-opacity="0.8"/>'
+		+ '<stop offset="100%" stop-color="' + colorVar + '" stop-opacity="1"/>'
+		+ '</linearGradient>'
+		+ '</defs>'
+		+ '<circle cx="42" cy="42" r="33" fill="none" stroke="var(--mt-border-soft)" stroke-width="6.5" opacity="0.6"/>'
+		+ (valid ? (
+			'<circle cx="42" cy="42" r="33" fill="none" stroke="url(#' + safeId + ')" stroke-width="6.5" '
+			+ 'stroke-dasharray="' + circum + '" stroke-dashoffset="' + offset.toFixed(1) + '" '
+			+ 'stroke-linecap="round" transform="rotate(-90 42 42)" style="transition:stroke-dashoffset 0.6s ease"/>'
+		) : '')
+		+ '</svg>';
+
+	return E('div', { 'class': 'mt-circular-gauge-card' }, [
+		createSvg(svg),
+		E('div', { 'class': 'mt-circular-gauge-val' }, [
+			valid ? String(val) : '--',
+			unit ? E('span', { 'class': 'mt-circular-gauge-unit' }, unit) : null
+		]),
+		E('div', { 'class': 'mt-circular-gauge-lbl' }, label)
+	]);
+}
+
+// 动态芯片 SVG（电路引脚 + 激光扫描线）
+function svgChip(opts) {
+	opts = opts || {};
+	var size = opts.size || 52;
+	var color = 'rgba(255, 255, 255, 0.9)';
+	var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="' + size + '" height="' + size + '">'
+		+ '<rect x="14" y="14" width="36" height="36" rx="6" fill="rgba(18, 100, 216, 0.25)" stroke="' + color + '" stroke-width="2"/>'
+		+ '<rect x="22" y="22" width="20" height="20" rx="3" fill="rgba(7, 152, 142, 0.4)" stroke="rgba(255,255,255,0.7)" stroke-width="1.2"/>'
+		// 引脚
+		+ '<line x1="22" y1="8" x2="22" y2="14" stroke="' + color + '" stroke-width="2" stroke-linecap="round"/>'
+		+ '<line x1="32" y1="8" x2="32" y2="14" stroke="' + color + '" stroke-width="2" stroke-linecap="round"/>'
+		+ '<line x1="42" y1="8" x2="42" y2="14" stroke="' + color + '" stroke-width="2" stroke-linecap="round"/>'
+		+ '<line x1="22" y1="50" x2="22" y2="56" stroke="' + color + '" stroke-width="2" stroke-linecap="round"/>'
+		+ '<line x1="32" y1="50" x2="32" y2="56" stroke="' + color + '" stroke-width="2" stroke-linecap="round"/>'
+		+ '<line x1="42" y1="50" x2="42" y2="56" stroke="' + color + '" stroke-width="2" stroke-linecap="round"/>'
+		+ '<line x1="8" y1="22" x2="14" y2="22" stroke="' + color + '" stroke-width="2" stroke-linecap="round"/>'
+		+ '<line x1="8" y1="32" x2="14" y2="32" stroke="' + color + '" stroke-width="2" stroke-linecap="round"/>'
+		+ '<line x1="8" y1="42" x2="14" y2="42" stroke="' + color + '" stroke-width="2" stroke-linecap="round"/>'
+		+ '<line x1="50" y1="22" x2="56" y2="22" stroke="' + color + '" stroke-width="2" stroke-linecap="round"/>'
+		+ '<line x1="50" y1="32" x2="56" y2="32" stroke="' + color + '" stroke-width="2" stroke-linecap="round"/>'
+		+ '<line x1="50" y1="42" x2="56" y2="42" stroke="' + color + '" stroke-width="2" stroke-linecap="round"/>'
+		// 动态扫描激光线
+		+ '<line x1="16" y1="32" x2="48" y2="32" stroke="#38bdf8" stroke-width="2" class="mt-svg-chip-laser"/>'
+		+ '</svg>';
+	return createSvg(svg);
+}
+
+// 动态载波聚合轨道 SVG
+function svgCarrier(primaryBand, caCount) {
+	caCount = caCount || 1;
+	var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="72" height="72">'
+		+ '<circle cx="50" cy="50" r="38" fill="none" stroke="var(--mt-border-soft)" stroke-width="1.5" stroke-dasharray="3 3"/>'
+		+ '<circle cx="50" cy="50" r="24" fill="none" stroke="var(--mt-border)" stroke-width="1.5"/>'
+		+ '<g class="mt-svg-orbit">'
+		+ '<circle cx="50" cy="12" r="5" fill="var(--mt-accent-2)"/>'
+		+ (caCount > 1 ? '<circle cx="88" cy="50" r="4" fill="var(--mt-ok)"/>' : '')
+		+ (caCount > 2 ? '<circle cx="50" cy="88" r="4" fill="var(--mt-warn)"/>' : '')
+		+ '</g>'
+		+ '<circle cx="50" cy="50" r="14" fill="var(--mt-accent)"/>'
+		+ '<text x="50" y="54" fill="#fff" font-size="9" font-weight="800" text-anchor="middle">' + (primaryBand || '5G') + '</text>'
+		+ '</svg>';
+	return createSvg(svg);
+}
+
+// 动态流量吞吐双向流动箭头 SVG
+function svgTrafficArrows() {
+	var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 28" width="54" height="25" style="vertical-align:middle">'
+		+ '<path d="M4 8 L54 8" stroke="var(--mt-accent)" stroke-width="2.5" stroke-linecap="round" class="mt-svg-flow-line"/>'
+		+ '<polyline points="48,4 55,8 48,12" fill="none" stroke="var(--mt-accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>'
+		+ '<path d="M54 20 L4 20" stroke="var(--mt-accent-2)" stroke-width="2.5" stroke-linecap="round" class="mt-svg-flow-line-rev"/>'
+		+ '<polyline points="10,16 3,20 10,24" fill="none" stroke="var(--mt-accent-2)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>'
+		+ '</svg>';
+	return createSvg(svg);
+}
+
+// 常用动作 SVG 图标
+function svgRefreshIcon() {
+	var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+		+ '<polyline points="23 4 23 10 17 10"></polyline>'
+		+ '<polyline points="1 20 1 14 7 14"></polyline>'
+		+ '<path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>'
+		+ '</svg>';
+	return createSvg(svg);
+}
+
+function svgWebUiIcon() {
+	var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+		+ '<circle cx="12" cy="12" r="10"></circle>'
+		+ '<line x1="2" y1="12" x2="22" y2="12"></line>'
+		+ '<path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>'
+		+ '</svg>';
+	return createSvg(svg);
+}
+
+function svgSendIcon() {
+	var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+		+ '<line x1="22" y1="2" x2="11" y2="13"></line>'
+		+ '<polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>'
+		+ '</svg>';
+	return createSvg(svg);
+}
+
+function svgTerminalPrompt() {
+	var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+		+ '<polyline points="4 17 10 11 4 5"></polyline>'
+		+ '<line x1="12" y1="19" x2="20" y2="19"></line>'
+		+ '</svg>';
+	return createSvg(svg);
+}
+
+function hero(kicker, title, desc, side, variant, heroSvg) {
 	return E('section', { 'class': 'mt-hero' + (variant ? ' mt-hero--' + variant : '') }, [
+		heroSvg ? E('div', { 'class': 'mt-hero-illustration' }, heroSvg) : null,
 		E('div', { 'class': 'mt-hero-main' }, [
 			kicker ? E('div', { 'class': 'mt-hero-kicker' }, kicker) : null,
 			E('h2', { 'class': 'mt-hero-title' }, title),
@@ -588,6 +790,17 @@ return baseclass.extend({
 	skeletonPage: skeletonPage,
 	badge: badge,
 	signalBadge: signalBadge,
+	createSvg: createSvg,
+	svgTower: svgTower,
+	svgStatusPulse: svgStatusPulse,
+	svgCircularGauge: svgCircularGauge,
+	svgChip: svgChip,
+	svgCarrier: svgCarrier,
+	svgTrafficArrows: svgTrafficArrows,
+	svgRefreshIcon: svgRefreshIcon,
+	svgWebUiIcon: svgWebUiIcon,
+	svgSendIcon: svgSendIcon,
+	svgTerminalPrompt: svgTerminalPrompt,
 	hero: hero,
 	card: card,
 	row: row,
