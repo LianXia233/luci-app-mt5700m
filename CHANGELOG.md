@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.8.1] - 2026-10-02
+
+### Chore
+- `PKG_VERSION` 提升至 `2.8.1`，作为 2.8.0（玻璃拟态 UI 重构）的补丁级发布；前端样式表版本戳同步更新为 `style.css?v=2.8.1`，客户端升级后即时刷新样式缓存。
+- 仓库维护：清理 GitHub 历史 Releases（删除旧 `manual-v2.7.0-*` 快照及关联 git tag）与陈旧分支（已合并 PR 的工作分支 `arena/01a0867a-*`、`copilot/refactor-*`、`refactor/luci-frontend-v25`、`fix-apn-dash-display`），仅保留 `main`。
+
 ## [2.8.0] - 2026-10-02
 
 ### Added
