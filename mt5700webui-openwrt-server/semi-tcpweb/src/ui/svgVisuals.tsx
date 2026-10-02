@@ -1,466 +1,468 @@
 import React, { useId } from 'react';
 
+/**
+ * Kawaii Minimal Dynamic SVG Visuals
+ * Soft pastel palette:
+ * - Primary Soft Pink: #F9A8D4 / #F472B6
+ * - Secondary Soft Purple: #A78BFA
+ * - Tertiary Soft Cyan: #67E8F9
+ * - Accent Soft Yellow: #FDE68A
+ * - Warm White: #FFF7ED
+ *
+ * Micro-interactions: jelly bounce, squishy press, gentle floating.
+ * No neon/glow effects, no harsh dark shadows.
+ */
+
 // ============================================================================
-// 1. SvgAmbientMesh: 动态柔光背景网格与流动色斑
-// 白色毛玻璃需要背景中有色彩流动与深度衬托，才能透出晶莹剔透的磨砂质感
+// 1. SvgAmbientMesh: 暖白与粉彩浮动气泡/柔和云朵背景
 // ============================================================================
 export const SvgAmbientMesh: React.FC = () => {
   return (
-    <div className="ambient-mesh-canvas" aria-hidden="true">
+    <div className="kawaii-ambient-mesh" aria-hidden="true">
       <svg
-        className="ambient-mesh-svg"
+        className="kawaii-ambient-svg"
         viewBox="0 0 1440 900"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
         preserveAspectRatio="xMidYMid slice"
       >
         <defs>
-          <filter id="ambient-blur-filter" x="-20%" y="-20%" width="140%" height="140%">
-            <feGaussianBlur stdDeviation="90" result="blur" />
+          <filter id="kawaii-blur-soft" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur stdDeviation="40" />
           </filter>
-          <linearGradient id="orb-grad-1" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stopColor="#38bdf8" stopOpacity="0.45" />
-            <stop offset="50%" stopColor="#818cf8" stopOpacity="0.35" />
-            <stop offset="100%" stopColor="#c084fc" stopOpacity="0.15" />
-          </linearGradient>
-          <linearGradient id="orb-grad-2" x1="100%" y1="0%" x2="0%" y2="100%">
-            <stop offset="0%" stopColor="#fb7185" stopOpacity="0.38" />
-            <stop offset="50%" stopColor="#f43f5e" stopOpacity="0.22" />
-            <stop offset="100%" stopColor="#fbcfe8" stopOpacity="0.1" />
-          </linearGradient>
-          <linearGradient id="orb-grad-3" x1="0%" y1="100%" x2="100%" y2="0%">
-            <stop offset="0%" stopColor="#34d399" stopOpacity="0.3" />
-            <stop offset="60%" stopColor="#38bdf8" stopOpacity="0.25" />
-            <stop offset="100%" stopColor="#a7f3d0" stopOpacity="0.05" />
-          </linearGradient>
-          <linearGradient id="orb-grad-4" x1="50%" y1="0%" x2="50%" y2="100%">
-            <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.22" />
-            <stop offset="100%" stopColor="#fbbf24" stopOpacity="0.06" />
-          </linearGradient>
-
-          {/* 细密科技网格纹理 */}
-          <pattern id="ambient-grid-pattern" width="48" height="48" patternUnits="userSpaceOnUse">
-            <path
-              d="M 48 0 L 0 0 0 48"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="0.8"
-              className="ambient-grid-line"
-            />
-            <circle cx="48" cy="0" r="1.2" fill="currentColor" className="ambient-grid-dot" />
-          </pattern>
         </defs>
 
-        {/* 呼吸流动的弥散光球层 */}
-        <g filter="url(#ambient-blur-filter)">
-          <circle className="ambient-orb ambient-orb--1" cx="240" cy="180" r="280" fill="url(#orb-grad-1)" />
-          <circle className="ambient-orb ambient-orb--2" cx="1200" cy="220" r="320" fill="url(#orb-grad-2)" />
-          <circle className="ambient-orb ambient-orb--3" cx="680" cy="740" r="340" fill="url(#orb-grad-3)" />
-          <circle className="ambient-orb ambient-orb--4" cx="1320" cy="800" r="260" fill="url(#orb-grad-4)" />
-        </g>
-
-        {/* 科技微点阵背景 */}
-        <rect width="100%" height="100%" fill="url(#ambient-grid-pattern)" opacity="0.32" />
+        {/* 柔和飘动粉彩色块 */}
+        <circle
+          cx="220"
+          cy="180"
+          r="160"
+          fill="#FDE68A"
+          opacity="0.32"
+          filter="url(#kawaii-blur-soft)"
+          className="kawaii-bubble-float kawaii-bubble-float--1"
+        />
+        <circle
+          cx="1260"
+          cy="260"
+          r="210"
+          fill="#F9A8D4"
+          opacity="0.28"
+          filter="url(#kawaii-blur-soft)"
+          className="kawaii-bubble-float kawaii-bubble-float--2"
+        />
+        <circle
+          cx="880"
+          cy="780"
+          r="240"
+          fill="#A78BFA"
+          opacity="0.22"
+          filter="url(#kawaii-blur-soft)"
+          className="kawaii-bubble-float kawaii-bubble-float--3"
+        />
+        <circle
+          cx="340"
+          cy="720"
+          r="180"
+          fill="#67E8F9"
+          opacity="0.25"
+          filter="url(#kawaii-blur-soft)"
+          className="kawaii-bubble-float kawaii-bubble-float--4"
+        />
       </svg>
     </div>
   );
 };
 
 // ============================================================================
-// 2. SvgBrandLogo: 动态 5G 调制解调器天线与信号波徽标
-// 侧边栏品牌区域展示，多层向外律动扩散的动态无线电波
+// 2. SvgBrandLogo: 可爱极简风 5G 路由器/信号基站 Logo
 // ============================================================================
-export const SvgBrandLogo: React.FC<{ size?: number; className?: string }> = ({ size = 32, className = '' }) => {
-  const id = useId();
+export const SvgBrandLogo: React.FC<{ size?: number; className?: string }> = ({
+  size = 36,
+  className = '',
+}) => {
+  const id = useId().replace(/:/g, '');
+
   return (
     <svg
-      className={`svg-brand-logo ${className}`}
       width={size}
       height={size}
       viewBox="0 0 48 48"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
-      role="img"
-      aria-label="MT5700 5G CPE"
+      className={`kawaii-brand-logo ${className}`}
     >
       <defs>
-        <linearGradient id={`${id}-core-grad`} x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#ff4d4f" />
-          <stop offset="100%" stopColor="#c7000b" />
-        </linearGradient>
-        <linearGradient id={`${id}-glow-grad`} x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#ff7875" stopOpacity="0.8" />
-          <stop offset="100%" stopColor="#c7000b" stopOpacity="0" />
+        <linearGradient id={`${id}-grad`} x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#F9A8D4" />
+          <stop offset="100%" stopColor="#A78BFA" />
         </linearGradient>
       </defs>
 
-      {/* 外圈脉冲动态扩散波 */}
-      <circle className="brand-wave brand-wave--3" cx="24" cy="24" r="20" stroke="url(#orb-grad-1)" strokeWidth="1.2" strokeDasharray="3 3" />
-      <circle className="brand-wave brand-wave--2" cx="24" cy="24" r="15" stroke="var(--app-accent-500)" strokeWidth="1.5" />
-      <circle className="brand-wave brand-wave--1" cx="24" cy="24" r="10" stroke="var(--app-accent-600)" strokeWidth="1.8" />
-
-      {/* 5G 天线塔基立柱 */}
-      <path
-        d="M24 10 L28 36 H20 L24 10 Z"
-        fill="url(#${id}-core-grad)"
-        opacity="0.9"
+      {/* 圆润饱满的糖果底座卡片 */}
+      <rect
+        x="3"
+        y="3"
+        width="42"
+        height="42"
+        rx="14"
+        fill={`url(#${id}-grad)`}
       />
-      {/* 塔顶放射光针 */}
-      <line x1="24" y1="6" x2="24" y2="12" stroke="#ff4d4f" strokeWidth="2.5" strokeLinecap="round" />
 
-      {/* 核心信号发光点 */}
-      <circle className="brand-core-pulse" cx="24" cy="8" r="3.2" fill="#ffffff" stroke="#c7000b" strokeWidth="1.5" />
-      
-      {/* 塔身横梁科技装饰 */}
-      <line x1="21.5" y1="22" x2="26.5" y2="22" stroke="#ffffff" strokeWidth="1.2" strokeLinecap="round" opacity="0.9" />
-      <line x1="20" y1="29" x2="28" y2="29" stroke="#ffffff" strokeWidth="1.2" strokeLinecap="round" opacity="0.9" />
+      {/* 柔和小天线 */}
+      <line x1="16" y1="12" x2="16" y2="20" stroke="#FFFFFF" strokeWidth="2.5" strokeLinecap="round" />
+      <circle cx="16" cy="11" r="2.2" fill="#FDE68A" />
 
-      {/* 底部稳定基座圆环 */}
-      <ellipse cx="24" cy="38" rx="8" ry="2.5" fill="none" stroke="var(--app-accent-500)" strokeWidth="1.2" opacity="0.7" />
+      <line x1="32" y1="12" x2="32" y2="20" stroke="#FFFFFF" strokeWidth="2.5" strokeLinecap="round" />
+      <circle cx="32" cy="11" r="2.2" fill="#67E8F9" />
+
+      {/* 可爱小路由器主体 */}
+      <rect x="10" y="20" width="28" height="18" rx="7" fill="#FFFFFF" />
+
+      {/* 路由器笑脸信号点 */}
+      <circle cx="17" cy="28" r="2" fill="#F472B6" />
+      <circle cx="31" cy="28" r="2" fill="#F472B6" />
+      <path
+        d="M21 31 Q24 33.5 27 31"
+        stroke="#F472B6"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        fill="none"
+      />
     </svg>
   );
 };
 
 // ============================================================================
-// 3. SvgConnectionPulse: 顶栏动态连接状态雷达/脉冲光环
-// 根据连接状态展示翡翠绿脉冲、琥珀黄雷达扫掠、警示红心跳
+// 3. SvgConnectionPulse: 柔和粉彩果冻弹跳状态指示器
 // ============================================================================
 export const SvgConnectionPulse: React.FC<{
   tone: 'ok' | 'warn' | 'err';
   busy?: boolean;
 }> = ({ tone, busy }) => {
   const colorMap = {
-    ok: { main: '#10b981', wave: 'rgba(16, 185, 129, 0.45)', glow: 'rgba(16, 185, 129, 0.2)' },
-    warn: { main: '#f59e0b', wave: 'rgba(245, 158, 11, 0.45)', glow: 'rgba(245, 158, 11, 0.2)' },
-    err: { main: '#f43f5e', wave: 'rgba(244, 63, 94, 0.45)', glow: 'rgba(244, 63, 94, 0.2)' },
+    ok: { main: '#34D399', bg: '#D1FAE5', border: '#A7F3D0' },
+    warn: { main: '#FBBF24', bg: '#FEF3C7', border: '#FDE68A' },
+    err: { main: '#F87171', bg: '#FEE2E2', border: '#FECACA' },
   };
   const theme = colorMap[tone] || colorMap.err;
 
   return (
-    <span className="svg-conn-pulse-wrapper" aria-hidden="true">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        {/* 外圈扩散波纹 */}
+    <span className="kawaii-conn-pulse" aria-hidden="true">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        {/* 外圈柔和粉彩波纹 */}
         <circle
-          className={`conn-pulse-ring ${busy ? 'conn-pulse-ring--busy' : 'conn-pulse-ring--steady'}`}
+          className={`kawaii-pulse-ring ${busy ? 'is-busy' : ''}`}
           cx="12"
           cy="12"
-          r="8"
-          stroke={theme.wave}
-          strokeWidth="1.6"
+          r="9"
+          fill={theme.bg}
+          stroke={theme.border}
+          strokeWidth="1.5"
         />
-        {/* 内发光光晕 */}
-        <circle cx="12" cy="12" r="5" fill={theme.glow} />
-        {/* 核心实体圆点 */}
-        <circle cx="12" cy="12" r="3.2" fill={theme.main} />
+        {/* 核心糖果圆点 */}
+        <circle
+          className="kawaii-pulse-dot"
+          cx="12"
+          cy="12"
+          r="4.5"
+          fill={theme.main}
+        />
       </svg>
     </span>
   );
 };
 
 // ============================================================================
-// 4. SvgSignalTower: 动态 5G 基站与信号强度全息可视化
-// 包含 5G 信号塔骨架、向外发射的高频微波束、5 阶动态发光信号阶梯
+// 4. SvgSignalTower: 可爱极简 5G 基站 & 圆角糖果信号阶梯
 // ============================================================================
 export const SvgSignalTower: React.FC<{
   percent: number | null;
+  is5G?: boolean;
   mode?: string;
   rsrp?: number | null;
   sinr?: number | null;
-}> = ({ percent, mode = '5G NR', rsrp, sinr }) => {
+}> = ({ percent, is5G = true, mode, rsrp, sinr }) => {
   const p = percent ?? 0;
-  // 计算亮起的信号格数 (0 ~ 5)
   const activeBars = p >= 80 ? 5 : p >= 60 ? 4 : p >= 40 ? 3 : p >= 20 ? 2 : p > 0 ? 1 : 0;
-  const isGood = p >= 60;
-  const isWarn = p >= 35 && p < 60;
-  const toneColor = isGood ? '#10b981' : isWarn ? '#f59e0b' : '#f43f5e';
+  const displayMode = mode || (is5G ? '5G NR' : '4G LTE');
+
+  // 柔和糖果配色
+  const barColors = ['#FDE68A', '#67E8F9', '#93C5FD', '#A78BFA', '#F9A8D4'];
 
   return (
-    <div className="svg-signal-tower-card">
-      <div className="signal-tower-graphic">
+    <div className="kawaii-signal-tower-card">
+      <div className="kawaii-tower-graphic">
         <svg
-          className="signal-tower-svg"
-          viewBox="0 0 160 120"
+          className="kawaii-tower-svg"
+          viewBox="0 0 160 110"
           fill="none"
           xmlns="http://www.w3.org/2000/svg"
         >
-          <defs>
-            <linearGradient id="tower-beam-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stopColor={toneColor} stopOpacity="0.8" />
-              <stop offset="100%" stopColor={toneColor} stopOpacity="0.05" />
-            </linearGradient>
-            <linearGradient id="bar-active-grad" x1="0%" y1="100%" x2="0%" y2="0%">
-              <stop offset="0%" stopColor="#0ea5e9" />
-              <stop offset="100%" stopColor={toneColor} />
-            </linearGradient>
-          </defs>
-
-          {/* 动态微波束辐射弧线 */}
-          <g className="tower-radiation-waves">
+          {/* 柔和云朵装饰 */}
+          <g className="kawaii-cloud-float" opacity="0.8">
             <path
-              d="M 45 32 A 20 20 0 0 1 65 32"
-              stroke={toneColor}
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              fill="none"
-              className="radiation-wave radiation-wave--1"
-            />
-            <path
-              d="M 38 24 A 32 32 0 0 1 72 24"
-              stroke={toneColor}
-              strokeWidth="1.6"
-              strokeLinecap="round"
-              fill="none"
-              className="radiation-wave radiation-wave--2"
-            />
-            <path
-              d="M 30 16 A 44 44 0 0 1 80 16"
-              stroke={toneColor}
-              strokeWidth="1.4"
-              strokeDasharray="4 2"
-              strokeLinecap="round"
-              fill="none"
-              className="radiation-wave radiation-wave--3"
+              d="M18 42 C18 36 24 33 28 35 C31 30 39 30 42 35 C46 33 51 36 50 42 Z"
+              fill="#FFFFFF"
+              stroke="#FBCFE8"
+              strokeWidth="1.5"
             />
           </g>
 
-          {/* 基站铁塔骨架 */}
-          <g className="tower-structure" stroke="currentColor" opacity="0.85">
-            <line x1="55" y1="36" x2="40" y2="105" strokeWidth="2.2" strokeLinecap="round" />
-            <line x1="55" y1="36" x2="70" y2="105" strokeWidth="2.2" strokeLinecap="round" />
-            {/* 桁架 X 撑 */}
-            <line x1="44" y1="88" x2="66" y2="88" strokeWidth="1.5" />
-            <line x1="48" y1="68" x2="62" y2="68" strokeWidth="1.4" />
-            <line x1="51" y1="50" x2="59" y2="50" strokeWidth="1.2" />
-            <line x1="44" y1="88" x2="62" y2="68" strokeWidth="1" strokeDasharray="2 2" opacity="0.6" />
-            <line x1="66" y1="88" x2="48" y2="68" strokeWidth="1" strokeDasharray="2 2" opacity="0.6" />
-            <line x1="48" y1="68" x2="59" y2="50" strokeWidth="1" strokeDasharray="2 2" opacity="0.6" />
-            <line x1="62" y1="68" x2="51" y2="50" strokeWidth="1" strokeDasharray="2 2" opacity="0.6" />
-            {/* 基座横杆 */}
-            <line x1="34" y1="105" x2="76" y2="105" strokeWidth="2.5" strokeLinecap="round" />
-            {/* 避雷针与射频发射机天线顶端 */}
-            <line x1="55" y1="28" x2="55" y2="38" strokeWidth="2.5" strokeLinecap="round" stroke={toneColor} />
-            <circle cx="55" cy="27" r="3" fill="#ffffff" stroke={toneColor} strokeWidth="2" className="tower-top-pulse" />
+          {/* 顶部发射信号波纹弧线 */}
+          <g className="kawaii-tower-ripples">
+            <path
+              d="M 48 30 A 14 14 0 0 1 68 30"
+              stroke="#F472B6"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              fill="none"
+              className="kawaii-ripple-1"
+            />
+            <path
+              d="M 42 22 A 22 22 0 0 1 74 22"
+              stroke="#A78BFA"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              fill="none"
+              className="kawaii-ripple-2"
+            />
+            <path
+              d="M 36 14 A 30 30 0 0 1 80 14"
+              stroke="#67E8F9"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeDasharray="4 3"
+              fill="none"
+              className="kawaii-ripple-3"
+            />
           </g>
 
-          {/* 右侧：5 阶动态发光信号阶梯柱 */}
-          <g className="signal-level-bars" transform="translate(92, 42)">
+          {/* 可爱圆润天线塔 */}
+          <g className="kawaii-tower-body">
+            {/* 塔顶星星/爱心 */}
+            <circle cx="58" cy="30" r="5" fill="#FDE68A" stroke="#F59E0B" strokeWidth="1.5" />
+            <line x1="58" y1="35" x2="58" y2="44" stroke="#F472B6" strokeWidth="3" strokeLinecap="round" />
+
+            {/* 圆角支架 */}
+            <line x1="58" y1="44" x2="42" y2="98" stroke="#94A3B8" strokeWidth="3" strokeLinecap="round" />
+            <line x1="58" y1="44" x2="74" y2="98" stroke="#94A3B8" strokeWidth="3" strokeLinecap="round" />
+            
+            {/* 横向圆润支撑 */}
+            <line x1="48" y1="78" x2="68" y2="78" stroke="#CBD5E1" strokeWidth="2.5" strokeLinecap="round" />
+            <line x1="52" y1="62" x2="64" y2="62" stroke="#CBD5E1" strokeWidth="2" strokeLinecap="round" />
+
+            {/* 基底圆垫 */}
+            <ellipse cx="42" cy="98" rx="4" ry="2" fill="#CBD5E1" />
+            <ellipse cx="74" cy="98" rx="4" ry="2" fill="#CBD5E1" />
+          </g>
+
+          {/* 右侧：圆润软糖信号格 */}
+          <g className="kawaii-signal-bars" transform="translate(94, 30)">
             {[
-              { x: 0, y: 46, h: 16 },
-              { x: 10, y: 38, h: 24 },
-              { x: 20, y: 28, h: 34 },
-              { x: 30, y: 16, h: 46 },
-              { x: 40, y: 2, h: 60 },
+              { x: 0, y: 52, h: 18, color: barColors[0] },
+              { x: 12, y: 42, h: 28, color: barColors[1] },
+              { x: 24, y: 30, h: 40, color: barColors[2] },
+              { x: 36, y: 18, h: 52, color: barColors[3] },
+              { x: 48, y: 4, h: 66, color: barColors[4] },
             ].map((bar, idx) => {
               const active = idx < activeBars;
               return (
-                <g key={idx} className={`signal-bar-group ${active ? 'is-active' : 'is-inactive'}`}>
-                  {/* 背景槽位 */}
+                <g key={idx} className={`kawaii-bar-item ${active ? 'is-active' : 'is-inactive'}`}>
+                  {/* 软糖圆角信号条 */}
                   <rect
                     x={bar.x}
                     y={bar.y}
-                    width="6.5"
+                    width="8"
                     height={bar.h}
-                    rx="3.25"
-                    fill={active ? 'url(#bar-active-grad)' : 'currentColor'}
-                    opacity={active ? 1 : 0.15}
-                    className="signal-bar-rect"
+                    rx="4"
+                    fill={active ? bar.color : '#F3F4F6'}
+                    stroke={active ? '#FFFFFF' : 'transparent'}
+                    strokeWidth="1"
+                    className="kawaii-bar-rect"
                   />
-                  {active ? (
+                  {/* 顶端可爱小圆点 */}
+                  {active && (
                     <circle
-                      cx={bar.x + 3.25}
+                      cx={bar.x + 4}
                       cy={bar.y - 4}
-                      r="1.6"
-                      fill={toneColor}
-                      className="signal-bar-sparkle"
+                      r="2"
+                      fill={bar.color}
+                      className="kawaii-bar-dot"
                     />
-                  ) : null}
+                  )}
                 </g>
               );
             })}
           </g>
-
-          {/* 动态能量流动粒子 */}
-          <circle className="energy-particle energy-particle--1" cx="55" cy="36" r="1.5" fill={toneColor} />
-          <circle className="energy-particle energy-particle--2" cx="75" cy="46" r="1.2" fill={toneColor} />
         </svg>
       </div>
 
-      <div className="signal-tower-meta">
-        <div className="signal-tower-header">
-          <span className="signal-tower-badge">{mode || '5G NR'}</span>
-          <span className="signal-tower-percent" style={{ color: toneColor }}>
+      <div className="kawaii-tower-meta">
+        <div className="kawaii-tower-header">
+          <span className="kawaii-badge-pill">{displayMode}</span>
+          <span className="kawaii-tower-percent">
             {percent !== null ? `${p}%` : '未连接'}
           </span>
         </div>
-        <div className="signal-tower-details">
-          <span className="tower-desc">
-            {p >= 75 ? '超强 5G 信号' : p >= 50 ? '良好蜂窝覆盖' : p >= 25 ? '一般驻留' : '弱信号/边缘'}
-          </span>
-          <div className="tower-metrics">
-            {rsrp !== null && rsrp !== undefined ? <span>RSRP: <b>{rsrp} dBm</b></span> : null}
-            {sinr !== null && sinr !== undefined ? <span>SINR: <b>{sinr} dB</b></span> : null}
-          </div>
+        <div className="kawaii-tower-desc">
+          {p >= 75 ? '🌸 信号满格，超棒' : p >= 50 ? '✨ 信号良好稳定' : p >= 25 ? '🌱 信号一般' : '💤 信号较弱'}
         </div>
+        {(rsrp !== null && rsrp !== undefined) || (sinr !== null && sinr !== undefined) ? (
+          <div className="kawaii-tower-metrics">
+            {rsrp !== null && rsrp !== undefined ? <span>RSRP: {rsrp} dBm</span> : null}
+            {sinr !== null && sinr !== undefined ? <span>SINR: {sinr} dB</span> : null}
+          </div>
+        ) : null}
       </div>
     </div>
   );
 };
 
 // ============================================================================
-// 5. SvgDataStream: 动态双向数据流（光子微粒流动）
-// 在速率仪表盘中呈现高速下行与上行的双向动态数据粒子流管道
+// 5. SvgDataStream: 可爱粉彩流动泡泡数据流
 // ============================================================================
 export const SvgDataStream: React.FC<{
-  dlRate: number; // kbps
-  ulRate: number; // kbps
-}> = ({ dlRate, ulRate }) => {
-  const isDlActive = dlRate > 10;
-  const isUlActive = ulRate > 10;
-  
-  // 流动速度随速率提高而加快
-  const dlDuration = Math.max(0.6, 2.8 - Math.min(2.0, (dlRate / 50000)));
-  const ulDuration = Math.max(0.6, 2.8 - Math.min(2.0, (ulRate / 20000)));
+  active?: boolean;
+  downMbps?: number;
+  upMbps?: number;
+  dlRate?: number;
+  ulRate?: number;
+}> = ({ active, downMbps, upMbps, dlRate, ulRate }) => {
+  const hasDl = (downMbps ?? (dlRate ? dlRate / 1024 : 0)) > 0.05;
+  const hasUl = (upMbps ?? (ulRate ? ulRate / 1024 : 0)) > 0.05;
+  const isStreaming = active ?? (hasDl || hasUl);
 
   return (
-    <div className="svg-data-stream-container" aria-hidden="true">
+    <div className={`kawaii-datastream-container ${isStreaming ? 'is-streaming' : ''}`}>
       <svg
-        className="data-stream-svg"
-        viewBox="0 0 460 36"
+        className="kawaii-datastream-svg"
+        viewBox="0 0 720 44"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
         preserveAspectRatio="none"
       >
         <defs>
-          <linearGradient id="dl-stream-grad" x1="0%" y1="0%" x2="100%" y2="0%">
-            <stop offset="0%" stopColor="#0284c7" stopOpacity="0.1" />
-            <stop offset="50%" stopColor="#38bdf8" stopOpacity="0.8" />
-            <stop offset="100%" stopColor="#0284c7" stopOpacity="0.1" />
+          <linearGradient id="kawaii-track-dl" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stopColor="#F9A8D4" stopOpacity="0.15" />
+            <stop offset="50%" stopColor="#A78BFA" stopOpacity="0.3" />
+            <stop offset="100%" stopColor="#F9A8D4" stopOpacity="0.15" />
           </linearGradient>
-          <linearGradient id="ul-stream-grad" x1="100%" y1="0%" x2="0%" y2="0%">
-            <stop offset="0%" stopColor="#059669" stopOpacity="0.1" />
-            <stop offset="50%" stopColor="#34d399" stopOpacity="0.8" />
-            <stop offset="100%" stopColor="#059669" stopOpacity="0.1" />
+          <linearGradient id="kawaii-track-ul" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stopColor="#67E8F9" stopOpacity="0.15" />
+            <stop offset="50%" stopColor="#FDE68A" stopOpacity="0.3" />
+            <stop offset="100%" stopColor="#67E8F9" stopOpacity="0.15" />
           </linearGradient>
         </defs>
 
-        {/* 下行数据管道 */}
-        <path
-          d="M 10 10 C 120 10, 160 6, 230 6 C 300 6, 340 10, 450 10"
-          stroke="rgba(14, 165, 233, 0.22)"
-          strokeWidth="2.5"
+        {/* 下行轨道 (柔和粉紫) */}
+        <line
+          x1="20"
+          y1="14"
+          x2="700"
+          y2="14"
+          stroke="url(#kawaii-track-dl)"
+          strokeWidth="6"
           strokeLinecap="round"
-        />
-        <path
-          d="M 10 10 C 120 10, 160 6, 230 6 C 300 6, 340 10, 450 10"
-          stroke="url(#dl-stream-grad)"
-          strokeWidth="2.5"
-          strokeDasharray="16 28"
-          strokeLinecap="round"
-          className="stream-path-dl"
-          style={{
-            animationDuration: `${dlDuration}s`,
-            opacity: isDlActive ? 1 : 0.35,
-          }}
         />
 
-        {/* 上行数据管道 */}
-        <path
-          d="M 10 26 C 120 26, 160 30, 230 30 C 300 30, 340 26, 450 26"
-          stroke="rgba(16, 185, 129, 0.22)"
-          strokeWidth="2.5"
+        {/* 上行轨道 (柔和青黄) */}
+        <line
+          x1="20"
+          y1="30"
+          x2="700"
+          y2="30"
+          stroke="url(#kawaii-track-ul)"
+          strokeWidth="6"
           strokeLinecap="round"
         />
-        <path
-          d="M 10 26 C 120 26, 160 30, 230 30 C 300 30, 340 26, 450 26"
-          stroke="url(#ul-stream-grad)"
-          strokeWidth="2.5"
-          strokeDasharray="14 26"
-          strokeLinecap="round"
-          className="stream-path-ul"
-          style={{
-            animationDuration: `${ulDuration}s`,
-            opacity: isUlActive ? 1 : 0.35,
-          }}
-        />
+
+        {/* 动态流动糖果微粒 */}
+        <g className="kawaii-stream-particles-dl">
+          <circle cx="80" cy="14" r="5" fill="#F472B6" className="kawaii-p kawaii-p-1" />
+          <circle cx="220" cy="14" r="4" fill="#A78BFA" className="kawaii-p kawaii-p-2" />
+          <circle cx="360" cy="14" r="5.5" fill="#F9A8D4" className="kawaii-p kawaii-p-3" />
+          <circle cx="500" cy="14" r="4.5" fill="#C084FC" className="kawaii-p kawaii-p-4" />
+          <circle cx="640" cy="14" r="5" fill="#F472B6" className="kawaii-p kawaii-p-5" />
+        </g>
+
+        <g className="kawaii-stream-particles-ul">
+          <circle cx="640" cy="30" r="4.5" fill="#67E8F9" className="kawaii-p-rev kawaii-pr-1" />
+          <circle cx="500" cy="30" r="5" fill="#FDE68A" className="kawaii-p-rev kawaii-pr-2" />
+          <circle cx="360" cy="30" r="4" fill="#38BDF8" className="kawaii-p-rev kawaii-pr-3" />
+          <circle cx="220" cy="30" r="5.5" fill="#FCD34D" className="kawaii-p-rev kawaii-pr-4" />
+          <circle cx="80" cy="30" r="4.5" fill="#67E8F9" className="kawaii-p-rev kawaii-pr-5" />
+        </g>
       </svg>
     </div>
   );
 };
 
 // ============================================================================
-// 6. SvgRadarScanner: 动态全网扫频雷达
-// 扫频面板中展现的科技雷达扫描器，旋转扫描锥束与雷达定位点
+// 6. SvgRadarScanner: 可爱极简粉彩雷达扫描盘
 // ============================================================================
 export const SvgRadarScanner: React.FC<{
   scanning: boolean;
+  cellsFound?: number;
   cellCount?: number;
-}> = ({ scanning, cellCount = 0 }) => {
+}> = ({ scanning, cellsFound, cellCount }) => {
+  const count = cellsFound ?? cellCount ?? 0;
   return (
-    <div className={`radar-scanner-box ${scanning ? 'is-scanning' : ''}`}>
+    <div className="kawaii-radar-container">
       <svg
-        className="radar-scanner-svg"
+        className={`kawaii-radar-svg ${scanning ? 'is-scanning' : ''}`}
         viewBox="0 0 200 200"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
       >
         <defs>
-          <radialGradient id="radar-glow-grad" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#0ea5e9" stopOpacity="0.25" />
-            <stop offset="70%" stopColor="#0ea5e9" stopOpacity="0.05" />
-            <stop offset="100%" stopColor="#0ea5e9" stopOpacity="0" />
-          </radialGradient>
-          <linearGradient id="radar-sweep-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stopColor="#38bdf8" stopOpacity="0.6" />
-            <stop offset="50%" stopColor="#38bdf8" stopOpacity="0.15" />
-            <stop offset="100%" stopColor="#38bdf8" stopOpacity="0" />
+          <linearGradient id="kawaii-sweep-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#F9A8D4" stopOpacity="0.45" />
+            <stop offset="60%" stopColor="#A78BFA" stopOpacity="0.1" />
+            <stop offset="100%" stopColor="#A78BFA" stopOpacity="0" />
           </linearGradient>
         </defs>
 
-        {/* 底层雷达淡蓝微光 */}
-        <circle cx="100" cy="100" r="90" fill="url(#radar-glow-grad)" />
+        {/* 柔和同心圆环 */}
+        <circle cx="100" cy="100" r="85" stroke="#FBCFE8" strokeWidth="2" strokeDasharray="6 4" />
+        <circle cx="100" cy="100" r="60" stroke="#FBCFE8" strokeWidth="2" />
+        <circle cx="100" cy="100" r="35" stroke="#FBCFE8" strokeWidth="1.5" strokeDasharray="4 3" />
+        <circle cx="100" cy="100" r="12" fill="#FDF2F8" stroke="#F472B6" strokeWidth="2" />
 
-        {/* 同心距离圈 */}
-        <circle cx="100" cy="100" r="90" stroke="rgba(14, 165, 233, 0.3)" strokeWidth="1.2" />
-        <circle cx="100" cy="100" r="66" stroke="rgba(14, 165, 233, 0.25)" strokeWidth="1" strokeDasharray="3 3" />
-        <circle cx="100" cy="100" r="42" stroke="rgba(14, 165, 233, 0.25)" strokeWidth="1" />
-        <circle cx="100" cy="100" r="18" stroke="rgba(14, 165, 233, 0.3)" strokeWidth="1.2" />
+        {/* 轴线 */}
+        <line x1="100" y1="15" x2="100" y2="185" stroke="#FCE7F3" strokeWidth="1.5" />
+        <line x1="15" y1="100" x2="185" y2="100" stroke="#FCE7F3" strokeWidth="1.5" />
 
-        {/* 十字方位基准线 */}
-        <line x1="10" y1="100" x2="190" y2="100" stroke="rgba(14, 165, 233, 0.2)" strokeWidth="1" />
-        <line x1="100" y1="10" x2="100" y2="190" stroke="rgba(14, 165, 233, 0.2)" strokeWidth="1" />
-        {/* 对角斜线 */}
-        <line x1="36" y1="36" x2="164" y2="164" stroke="rgba(14, 165, 233, 0.12)" strokeWidth="0.8" strokeDasharray="2 4" />
-        <line x1="164" y1="36" x2="36" y2="164" stroke="rgba(14, 165, 233, 0.12)" strokeWidth="0.8" strokeDasharray="2 4" />
-
-        {/* 旋转扫描扇区 (CSS Keyframes 驱动) */}
-        {scanning ? (
-          <g className="radar-sweep-beam">
-            <path
-              d="M 100 100 L 190 100 A 90 90 0 0 0 164 36 Z"
-              fill="url(#radar-sweep-grad)"
-            />
-            <line x1="100" y1="100" x2="190" y2="100" stroke="#38bdf8" strokeWidth="2" strokeLinecap="round" />
-          </g>
-        ) : null}
-
-        {/* 探测到的小区目标脉冲点 */}
-        <g className="radar-blips">
-          <circle className="radar-blip radar-blip--1" cx="135" cy="65" r="3" fill="#10b981" />
-          <circle className="radar-blip-ring radar-blip-ring--1" cx="135" cy="65" r="6" stroke="#10b981" strokeWidth="1" />
-          {cellCount > 1 ? (
-            <>
-              <circle className="radar-blip radar-blip--2" cx="72" cy="130" r="2.6" fill="#38bdf8" />
-              <circle className="radar-blip-ring radar-blip-ring--2" cx="72" cy="130" r="5" stroke="#38bdf8" strokeWidth="1" />
-            </>
-          ) : null}
-          {cellCount > 3 ? (
-            <circle className="radar-blip radar-blip--3" cx="150" cy="120" r="2.8" fill="#f59e0b" />
-          ) : null}
+        {/* 扇形扫描指针 */}
+        <g className="kawaii-radar-sweep-beam">
+          <path
+            d="M 100 100 L 100 15 A 85 85 0 0 1 170 50 Z"
+            fill="url(#kawaii-sweep-grad)"
+          />
+          <line x1="100" y1="100" x2="100" y2="15" stroke="#F472B6" strokeWidth="2.5" strokeLinecap="round" />
         </g>
 
-        {/* 核心雷达探针圆心 */}
-        <circle cx="100" cy="100" r="3.5" fill="#38bdf8" stroke="#ffffff" strokeWidth="1.5" />
+        {/* 探测到的可爱小区糖果亮点 */}
+        {count > 0 && (
+          <g className="kawaii-radar-blips">
+            <circle cx="125" cy="65" r="5" fill="#FDE68A" stroke="#F59E0B" strokeWidth="1.5" className="kawaii-blip-1" />
+            {count > 1 && (
+              <circle cx="70" cy="135" r="5.5" fill="#67E8F9" stroke="#0284C7" strokeWidth="1.5" className="kawaii-blip-2" />
+            )}
+            {count > 2 && (
+              <circle cx="145" cy="115" r="4.5" fill="#A78BFA" stroke="#7C3AED" strokeWidth="1.5" className="kawaii-blip-3" />
+            )}
+            {count > 4 && (
+              <circle cx="60" cy="75" r="5" fill="#F9A8D4" stroke="#DB2777" strokeWidth="1.5" className="kawaii-blip-4" />
+            )}
+          </g>
+        )}
       </svg>
+      <div className="kawaii-radar-footer">
+        <span className="kawaii-radar-status">
+          {scanning ? '🌸 正在温柔搜索周边基站...' : `已发现 ${count} 个蜂窝频段`}
+        </span>
+      </div>
     </div>
   );
 };

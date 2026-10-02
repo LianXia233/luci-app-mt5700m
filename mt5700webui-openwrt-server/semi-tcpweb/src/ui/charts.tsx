@@ -253,7 +253,6 @@ interface RingGaugeProps {
 
 /** 环形仪表，用于"信号质量"这类单一百分比。数值居中，颜色随好坏档位。 */
 export const RingGauge: React.FC<RingGaugeProps> = ({ percent, label, size = 76, color = 'var(--app-success)' }) => {
-  const filterId = useId();
   const strokeWidth = 7;
   const r = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * r;
@@ -271,11 +270,6 @@ export const RingGauge: React.FC<RingGaugeProps> = ({ percent, label, size = 76,
           aria-valuemax={100}
           aria-valuenow={percent ?? undefined}
         >
-          <defs>
-            <filter id={`ring-glow-${filterId}`} x="-20%" y="-20%" width="140%" height="140%">
-              <feDropShadow dx="0" dy="0" stdDeviation="2" floodColor={color} floodOpacity="0.4" />
-            </filter>
-          </defs>
           <circle
             className="ring-gauge-track"
             cx={size / 2}
@@ -293,7 +287,6 @@ export const RingGauge: React.FC<RingGaugeProps> = ({ percent, label, size = 76,
             strokeLinecap="round"
             strokeDasharray={`${(circumference * p) / 100} ${circumference}`}
             transform={`rotate(-90 ${size / 2} ${size / 2})`}
-            filter={`url(#ring-glow-${filterId})`}
           />
         </svg>
         <b className="ring-gauge-value">{percent === null ? '—' : `${p}%`}</b>
