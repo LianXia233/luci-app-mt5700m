@@ -14,6 +14,10 @@
   - `svgCarrier`：多载波聚合（CA）轨道动态指示器，主辅载波环绕卫星轨道动态旋转。
   - `svgTrafficArrows`：双向收发流量动态光流箭头，直观指示当前实时数据上下行吞吐。
   - 动态状态呼吸光球（`svgStatusPulse`）、纸飞机发送图标（`svgSendIcon`）、旋转刷新图标（`svgRefreshIcon`）与 WebUI 跳转图标（`svgWebUiIcon`）。
+- **独立 WebUI（`/5700`）全新 Kawaii Minimal 软萌粉彩视觉重构**：
+  - 设计语言全面升级为 Kawaii Minimal 风格：采用马卡龙柔和粉彩配色（粉、紫、青、黄、暖白），搭配果冻弹性微交互（jelly bounce、squishy press）、圆润糖果卡片与柔和阴影，消除冷硬科技感。
+  - 动态 SVG 组件系统升级：新增 `SvgAmbientMesh`（柔和浮动粉彩气泡背景）、`SvgBrandLogo`（萌系圆润基站/路由器 Logo）、`SvgConnectionPulse`（果冻状态呼吸灯）、`SvgSignalTower`（圆角糖果 5G 基站与多彩信号阶梯）、`SvgDataStream`（粉紫双向流动微粒数据流）与 `SvgRadarScanner`（粉彩雷达圆环扫描仪）。
+  - 集成至全站布局（`AppLayout`）、网络信息页（`Info`）与基站扫频面板（`ScanPanel`），完成生产环境 bundle 打包与静态资源同步（`at-webserver/files/www/5700`）。
 - **LuCI 前端 100% 完整中文化（Localization）**：
   - 补充补全 `po/zh_Hans/mt5700m.po` 中所有缺失的翻译词条（`OVERVIEW`、`MESSAGING`、`ADVANCED`、`TERMINAL`、`DIAGNOSTICS`、`SETTINGS`、`WebUI`、`No messages yet.`、`Phone number…`、`Received`、`Sent` 等）。
   - 规范并包裹所有前端视图中的用户可见文本与 Badge 标识（如 `_('AT Console')`、各页面 Kicker 导航标签），修复 PO 文件中多处格式换行缺失问题，实现前端界面 0 缺漏中文化覆盖。
