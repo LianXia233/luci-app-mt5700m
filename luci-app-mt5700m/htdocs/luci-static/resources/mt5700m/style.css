@@ -1030,4 +1030,459 @@
 	.mt-skeleton-bar.w60 { width: 60%; }
 	.mt-skeleton-bar.w70 { width: 70%; }
 	.mt-skeleton-bar.mt-skeleton-title { height: 26px; border-radius: 8px; }
-	@keyframes mt-skeleton-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+	@keyframes mt-skeleton-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }/*
+ * MT5700M LuCI — 排版与视觉补丁（patch_style.css）
+ * -----------------------------------------------------------------------------
+ * 用法：把本文件全文追加到 style.css 末尾即可生效（同名同优先级，后者胜出）。
+ * 原则：只覆盖与新增，不删除任何既有 mt- 规则；不改动 JS。
+ * 每条规则均带「问题 → 影响页面 → 修复」注释。
+ * 断点约定：<768px = 手机；768–1200px = 平板/小屏笔记本；>1200px = 桌面。
+ */
+
+/* ==========================================================================
+   1. 令牌重映射（P0，暗色模式根本性缺陷）
+   问题：style.css 的 --mt-surface / --mt-surface-soft / --mt-surface-inset /
+        --mt-text / --mt-muted / --mt-faint / --mt-border / --mt-border-soft
+        全部形如 var(--background-color-high, #ffffff)，即只认 luci-base 主题
+        的 --*-color-* 令牌。本机主题 aurora 只提供 --surface / --text /
+        --text-muted / --text-subtle / --hairline / --surface-sunken /
+        --surface-overlay（已在 /www/luci-static/aurora/main.css 核对，
+        全站无 --text-color-high / --background-color-high 定义）。
+        因此这些令牌在明暗两种模式下**都**解析成写死的浅色回退值：
+          暗色下 .mt-page 文字 = #20242a（近黑），页面背景 #05070e → 完全不可读；
+          .mt-sms-shell 背景 = #ffffff → 暗色下整块刺眼白底；
+          .mt-badge / .mt-signal-track / .mt-gauge-track / 输入框背景 = 浅灰。
+   影响：全部页面（概览 / 移动数据 / 射频与小区 / 短信 / 模组与 SIM / 高级 / 终端 / 设置）
+   修复：回退链改为「aurora 令牌 → luci-base 令牌 → 硬编码回退」，
+        明暗两套分别声明，保持既有 mt- 类语义不变。
+   ========================================================================== */
+:root {
+	--mt-surface: var(--surface, var(--background-color-high, #ffffff));
+	--mt-surface-soft: var(--surface-sunken, var(--background-color-low, #f4f6f8));
+	--mt-surface-inset: var(--surface-overlay, var(--background-color-highest, #f7f9fb));
+	--mt-text: var(--text, var(--text-color-high, #20242a));
+	--mt-muted: var(--text-muted, var(--text-color-medium, #6e7783));
+	/* --mt-faint：aurora 的 --text-subtle 在浅色下仅 3.6:1（10–11px 小字不达 AA），
+	   故浅色下改用 4.8:1 的固定值；luci-base 主题仍走 --text-color-low。 */
+	--mt-faint: var(--text-color-low, #6b7280);
+	--mt-border: var(--hairline, var(--border-color-medium, #d9dde4));
+	--mt-border-soft: var(--hairline, var(--border-color-low, #edf0f4));
+}
+
+:root[data-darkmode="true"] {
+	--mt-surface: var(--surface, #141822);
+	--mt-surface-soft: var(--surface-sunken, #0a0e17);
+	--mt-surface-inset: var(--surface-overlay, #181d27);
+	--mt-text: var(--text, #f9fafb);
+	--mt-muted: var(--text-muted, #909297);
+	/* aurora 暗色 --text-subtle = #5d6067 仅 2.6:1，不可用；改用 5.5:1 固定值 */
+	--mt-faint: #8a9099;
+	--mt-border: var(--hairline, #2a3038);
+	--mt-border-soft: var(--hairline, #23272f);
+}
+
+/* ==========================================================================
+   2. 新增语义令牌（原文件缺失，供下面第 10 节替换写死的 rgba 使用）
+   ========================================================================== */
+:root {
+	--mt-tint-accent: rgba(18, 100, 216, 0.10);
+	--mt-tint-accent-border: rgba(18, 100, 216, 0.30);
+	--mt-tint-teal: rgba(7, 152, 142, 0.14);
+	--mt-tint-teal-border: rgba(7, 152, 142, 0.24);
+	--mt-tint-ok: rgba(11, 138, 95, 0.12);
+	--mt-tint-ok-border: rgba(11, 138, 95, 0.22);
+	--mt-tint-warn: rgba(185, 126, 20, 0.14);
+	--mt-tint-warn-border: rgba(185, 126, 20, 0.24);
+	--mt-tint-bad: rgba(189, 66, 56, 0.12);
+	--mt-tint-bad-border: rgba(189, 66, 56, 0.35);
+	/* view_system.js 内联使用了 var(--mt-warn-border, #ead7b2)，但令牌从未定义 */
+	--mt-warn-border: rgba(185, 126, 20, 0.35);
+	--mt-skeleton-bg: var(--mt-surface-inset);
+}
+
+:root[data-darkmode="true"] {
+	--mt-tint-accent: rgba(91, 155, 245, 0.16);
+	--mt-tint-accent-border: rgba(91, 155, 245, 0.45);
+	--mt-tint-teal: rgba(46, 189, 178, 0.18);
+	--mt-tint-teal-border: rgba(46, 189, 178, 0.42);
+	--mt-tint-ok: rgba(55, 214, 166, 0.16);
+	--mt-tint-ok-border: rgba(55, 214, 166, 0.38);
+	--mt-tint-warn: rgba(240, 182, 74, 0.16);
+	--mt-tint-warn-border: rgba(240, 182, 74, 0.40);
+	--mt-tint-bad: rgba(240, 124, 116, 0.16);
+	--mt-tint-bad-border: rgba(240, 124, 116, 0.42);
+	--mt-warn-border: rgba(240, 182, 74, 0.38);
+	--mt-skeleton-bg: rgba(255, 255, 255, 0.10);
+}
+
+/* ==========================================================================
+   3. 长文本溢出（P0）
+   问题：c.row() 生成 <strong> 作为值节点，既没有 min-width:0 也没有断行规则；
+        .mt-row .mt-muted（标签）还是 flex-shrink:0，标签永不收缩。
+        IMEI(15) / ICCID(19–20) / IMSI(15) / 固件版本 / IPv6 地址 / 运营商名
+        在窄卡片里会整体撑破 flex 容器，溢出到卡片外。
+   影响：概览（模块卡 ICCID/IMSI/IMEI/固件、SIM 卡运营商/APN）、
+        移动数据（IPv4/IPv6、网关、DNS）、模组与 SIM、高级
+   修复：值侧 min-width:0 + overflow-wrap:anywhere；标签允许收缩。
+   ========================================================================== */
+.mt-row > *:not(.mt-muted) {
+	min-width: 0;
+	overflow-wrap: anywhere;
+	/* flex 子项会被块级化，text-align 生效；多行时右对齐更整齐 */
+	text-align: right;
+}
+.mt-row .mt-muted {
+	flex-shrink: 1;
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+/* .mt-facts-value 原用 word-break:break-all，会把 "12.5 GB"、"SA" 之类短词
+   也随意切断；overflow-wrap:anywhere 只在真正放不下时断行，观感更好 */
+.mt-facts-value {
+	word-break: normal;
+	overflow-wrap: anywhere;
+}
+.mt-session-value,
+.mt-pdp-value,
+.mt-carrier-val,
+.mt-radio-val,
+.mt-system-hardware-val,
+.mt-advanced-value,
+.mt-lock-cell-bands,
+.mt-terminal-saved-item code {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+/* 徽标文本取自模组返回串（如 SIM 状态），可能很长且 nowrap → 溢出 */
+.mt-badge {
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	vertical-align: middle;
+}
+.mt-gauge-head {
+	flex-wrap: wrap;
+	row-gap: 4px;
+}
+.mt-gauge-head > * { min-width: 0; }
+.mt-hero-title { overflow-wrap: anywhere; }
+.mt-lock-cell-head { flex-wrap: wrap; }
+.mt-lock-cell-name { overflow-wrap: anywhere; }
+
+/* ==========================================================================
+   4. 网格在窄屏溢出（P0）
+   问题：repeat(auto-fit, minmax(300px, 1fr)) 在容器窄于 300px 时（320px 手机
+        .mt-page 左右各 12px padding → 内容宽 296px）轨道仍是 300px，
+        整页出现横向滚动条。
+   影响：全部页面的 .mt-grid / .mt-facts-grid / .mt-carrier-grid /
+        .mt-traffic-stats / .mt-shortcuts / .mt-circular-gauges-grid /
+        .mt-form-grid / .mt-lock-cell-grid / .mt-beam-grid / .mt-band-fields
+   修复：minmax(min(Npx, 100%), 1fr) —— 容器不足时轨道收缩到 100%，永不溢出。
+   ========================================================================== */
+.mt-grid { grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); }
+.mt-facts-grid { grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr)); }
+.mt-carrier-grid { grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); }
+.mt-traffic-stats { grid-template-columns: repeat(auto-fit, minmax(min(130px, 100%), 1fr)); }
+.mt-shortcuts { grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr)); }
+.mt-circular-gauges-grid { grid-template-columns: repeat(auto-fit, minmax(min(130px, 100%), 1fr)); }
+.mt-form-grid { grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); }
+.mt-lock-cell-grid { grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); }
+.mt-beam-grid { grid-template-columns: repeat(auto-fill, minmax(min(150px, 100%), 1fr)); }
+.mt-band-fields { grid-template-columns: repeat(auto-fit, minmax(min(120px, 100%), 1fr)); }
+
+/* ==========================================================================
+   5. 数值等宽（P1）
+   问题：RSRP/RSRQ/SINR/温度/流量/日期在轮询刷新时字宽变化 → 数字左右抖动。
+   影响：概览（事实网格、信号卡、流量）、射频与小区（信号条、波束）、移动数据
+   ========================================================================== */
+.mt-facts-value,
+.mt-gauge-value,
+.mt-gauge-unit,
+.mt-signal-value,
+.mt-circular-gauge-val,
+.mt-circular-gauge-unit,
+.mt-traffic-stat-value,
+.mt-traffic-bar-value,
+.mt-traffic-bar-note,
+.mt-beam-card-freq,
+.mt-beam-cell-id,
+.mt-beam-cell-signal,
+.mt-pdp-cell-id,
+.mt-row > strong,
+.mt-session-value,
+.mt-carrier-val,
+.mt-radio-val,
+.mt-system-hardware-val,
+.mt-system-thermal-value input,
+.mt-ssb-value,
+.mt-raw,
+.mt-terminal-output {
+	font-variant-numeric: tabular-nums;
+	font-feature-settings: "tnum" 1;
+}
+
+/* ==========================================================================
+   6. 骨架屏 → 真实内容切换的布局跳动（CLS）（P1）
+   问题：skeletonPage() 的 .mt-skeleton-hero 只有 min-height:118px
+        （真实 hero 含 84px 插画 + 44px padding ≈ 128px），
+        .mt-skeleton-card 只有 min-height:150px（真实卡片普遍 300–400px），
+        数据到达后整页向下猛涨；且 .mt-skeleton-page 自身无高度保留。
+   影响：概览 / 移动数据 / 射频与小区 / 短信 / 模组与 SIM / 高级
+   修复：抬高骨架尺寸贴近真实值，并给骨架根节点保留 60vh 视口高度。
+   ========================================================================== */
+.mt-skeleton-page { min-height: 60vh; }
+.mt-skeleton-hero { min-height: 132px; }
+.mt-skeleton-card { min-height: 176px; }
+.mt-skeleton-bar { background: var(--mt-skeleton-bg); }
+
+/* 暗色下 --mt-surface-inset(#181d27) 与玻璃卡片底色几乎同色，骨架条看不见 */
+:root[data-darkmode="true"] .mt-skeleton-bar {
+	background-color: transparent;
+	background-image: linear-gradient(90deg,
+		rgba(255, 255, 255, 0.07) 0%,
+		rgba(255, 255, 255, 0.15) 50%,
+		rgba(255, 255, 255, 0.07) 100%);
+	background-size: 220% 100%;
+	animation: mt-skeleton-pulse 1.4s ease-in-out infinite,
+	           mt-skeleton-shimmer 1.6s linear infinite;
+}
+@keyframes mt-skeleton-shimmer {
+	from { background-position: 200% 0; }
+	to   { background-position: -120% 0; }
+}
+
+/* ==========================================================================
+   7. 信号柱高度溢出（P1）
+   问题：components.signalBars() 内联 height = 8 + i*3 px（i=0..13，最高 47px），
+        但 .mt-signal-bars 容器写死 height:16px，柱条向上溢出 31px，
+        压住上方 31px 的 RSRP 大数字。
+   影响：概览「信号」卡
+   修复：容器改为自适应高度（=最高柱条 47px），min-height 兜底。
+   ========================================================================== */
+.mt-signal-bars {
+	height: auto;
+	min-height: 16px;
+	align-items: flex-end;
+}
+
+/* ==========================================================================
+   8. 补齐 JS 使用但 style.css 未定义的类（P1）
+   ========================================================================== */
+/* 各 view 的渐进渲染根节点，骨架屏与真实内容在此整体替换 */
+.mt-view { min-width: 0; }
+/* 短信会话区外壳：撑满 .mt-sms-shell 的第二列并允许内部 flex:1 生效 */
+.mt-sms-chat-shell {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+/* PDP 会话行状态标记（view_connection.js） */
+.mt-pdp-state { font-size: 11.5px; font-weight: 700; color: var(--mt-muted); white-space: nowrap; }
+.mt-pdp-state.on { color: var(--mt-ok); }
+/* 移动数据页地址两列栅格（view_connection.js 内联声明，见第 11 节响应式覆盖） */
+.mt-session-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; }
+/* 服务小区标题行（view_network.js）：title 与 meta 两个 span 原本裸排，无换行/间距 */
+.mt-ssb-serving-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 2px 10px;
+}
+.mt-ssb-serving-title {
+	font-size: 12.5px;
+	font-weight: 700;
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+.mt-ssb-serving-meta {
+	font-size: 11px;
+	color: var(--mt-faint);
+	font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
+   9. 多子项行在窄屏挤压（P1）
+   问题：.mt-pdp-row 一行塞 5 个子项（CID / 类型 / APN / 状态 / 操作），
+        桌面尚可，窄屏必然互相挤压甚至溢出。
+   影响：移动数据（PDP 会话）
+   ========================================================================== */
+.mt-pdp-row {
+	flex-wrap: wrap;
+	row-gap: 6px;
+	column-gap: 10px;
+}
+.mt-pdp-row > * { min-width: 0; overflow-wrap: anywhere; }
+
+/* ==========================================================================
+   10. 暗色模式对比度 / 写死色值（P1）
+   问题：.mt-badge--* 、--primary、--danger、.mt-beam-cell.selected、
+        .mt-band-option.checked、.mt-sms-chat-item.outgoing、focus 描边
+        全部用写死的浅色 rgba，暗色下：
+          - primary/danger 按钮边框几乎不可见；
+          - 主色浅底（rgba(18,100,216,.08)）压在深色上变成近乎全黑；
+          - svgCarrier() 的 <text fill="#fff"> 落在亮蓝 --mt-accent(#5b9bf5) 圆上，
+            对比度约 2.1:1，看不清频段名；
+          - focus 描边 rgba(18,100,216,0.4) 在深色上发闷。
+   影响：全部页面（徽标/按钮/频段勾选/短信气泡/载波 SVG/键盘导航）
+   ========================================================================== */
+.mt-badge--ok { background: var(--mt-tint-ok); border-color: var(--mt-tint-ok-border); }
+.mt-badge--warn { background: var(--mt-tint-warn); border-color: var(--mt-tint-warn-border); }
+.mt-badge--bad { background: var(--mt-tint-bad); border-color: var(--mt-tint-bad-border); }
+.mt-badge--primary { background: var(--mt-tint-accent); border-color: var(--mt-tint-accent-border); }
+.mt-badge--active { background: var(--mt-tint-teal); border-color: var(--mt-tint-teal-border); }
+
+.mt-diag-action--primary,
+.mt-lock-btn--primary {
+	background: var(--mt-tint-accent);
+	border-color: var(--mt-tint-accent-border);
+}
+.mt-diag-action--primary:hover,
+.mt-lock-btn--primary:hover { background: var(--mt-tint-accent); }
+
+.mt-session-action--danger,
+.mt-system-maintenance-action--danger,
+.mt-lock-btn--danger {
+	background: var(--mt-tint-bad);
+	border-color: var(--mt-tint-bad-border);
+}
+.mt-session-action--danger:hover,
+.mt-system-maintenance-action--danger:hover,
+.mt-lock-btn--danger:hover { background: var(--mt-tint-bad); }
+
+.mt-beam-cell.selected,
+.mt-band-option.checked {
+	background: var(--mt-tint-accent);
+	border-color: var(--mt-tint-accent-border);
+}
+:root[data-darkmode="true"] .mt-sms-chat-item.outgoing {
+	background: var(--mt-tint-accent);
+	border-color: var(--mt-tint-accent-border);
+}
+/* svgCarrier() 的频段文字在暗色下是白字压亮蓝圆，改为深色字 */
+:root[data-darkmode="true"] .mt-card svg text[fill="#fff"] { fill: #0d1119; }
+
+/* 键盘焦点描边跟随主题色（原为写死的 rgba(18,100,216,0.4)） */
+.mt-sms-compose-input:focus,
+.mt-band-field input:focus,
+.mt-band-field select:focus,
+.mt-pref-row select:focus,
+.mt-sms-compose-actions select:focus,
+.mt-terminal-input-field:focus {
+	outline-color: var(--mt-accent);
+}
+
+/* 写死的浅色投影在暗色下不可见/发灰 */
+:root[data-darkmode="true"] .mt-traffic-stat { box-shadow: none; }
+:root[data-darkmode="true"] .mt-facts-cell:hover { box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35); }
+
+/* ==========================================================================
+   11. 响应式：<768px（手机）
+   ========================================================================== */
+@media (max-width: 767px) {
+	/* 数据行改成「标签 | 值」两列栅格：值列可收缩换行，长串不再溢出，
+	   也不会因为换行把整行撑成两段 */
+	.mt-row {
+		display: grid;
+		grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+		column-gap: 12px;
+		row-gap: 2px;
+		align-items: baseline;
+	}
+	.mt-row .mt-muted { grid-column: 1; }
+	.mt-row > *:not(.mt-muted) {
+		grid-column: 2;
+		justify-content: flex-end;
+		text-align: right;
+	}
+
+	/* PDP 会话行在手机上改为纵向堆叠 */
+	.mt-pdp-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; }
+	.mt-pdp-actions { justify-content: flex-start; }
+
+	/* 移动数据页两列地址栅格塌成单列（内联 style 需要 !important 才能覆盖；
+	   建议后续把 view_connection.js 的内联 style 迁进 CSS） */
+	.mt-session-columns { grid-template-columns: minmax(0, 1fr) !important; }
+
+	/* 流量柱状图：7 根柱挤在 ~300px 卡片里，10px 的 "1.2 GB" 会互相压叠 */
+	.mt-traffic-days { gap: 3px; }
+	.mt-traffic-bar-value,
+	.mt-traffic-bar-note {
+		font-size: 9px;
+		max-width: 100%;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	/* 终端输出固定 320px 在手机上过高 */
+	.mt-terminal-output { height: clamp(220px, 42vh, 320px); }
+
+	/* 按钮组在手机上铺满，触控目标更大 */
+	.mt-advanced-actions,
+	.mt-session-actions,
+	.mt-system-fota-actions,
+	.mt-diag-actions,
+	.mt-scan-actions { flex-wrap: wrap; }
+	.mt-advanced-actions > *,
+	.mt-session-actions > *,
+	.mt-system-fota-actions > *,
+	.mt-diag-actions > *,
+	.mt-scan-actions > * { flex: 1 1 140px; }
+
+	.mt-sms-chat-list { max-height: min(340px, 55vh); }
+}
+
+@media (max-width: 480px) {
+	.mt-hero { padding: 16px; gap: 12px; }
+	.mt-hero-side { width: 100%; }
+	.mt-hero-btn { flex: 1 1 auto; justify-content: center; }
+	/* .mt-beam-card-grid 7 列在手机卡片里每格仅 ~21px，"-110" 放不下 */
+	.mt-beam-card-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+	.mt-beam-cell-signal { font-size: 10px; }
+	.mt-system-thermal-label { min-width: 0; }
+}
+
+/* ==========================================================================
+   12. 响应式：768–1200px（平板 / 小屏笔记本）
+   ========================================================================== */
+@media (min-width: 768px) and (max-width: 1200px) {
+	.mt-page { max-width: 100%; }
+	.mt-grid { grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); }
+	.mt-facts-grid { grid-template-columns: repeat(auto-fit, minmax(min(132px, 100%), 1fr)); }
+	.mt-circular-gauges-grid { gap: 10px; }
+	/* 901px 以上才恢复双栏（900px 以下由 style.css 自带的单栏规则接管），
+	   否则会覆盖掉短信页的移动端堆叠 */
+	.mt-sms-shell { grid-template-columns: 220px 1fr; }
+}
+
+/* ==========================================================================
+   13. 无障碍：降低动效
+   问题：信号塔脉冲、信标呼吸、流动虚线、芯片激光、轨道旋转、插画浮动
+        全部无限循环，低端手机/路由器管理页持续占用 CPU 与电量。
+   影响：概览（信号塔/载波轨道/流量箭头）、射频与小区（芯片）
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+	.mt-hero-illustration svg,
+	.mt-svg-pulse-ring-1,
+	.mt-svg-pulse-ring-2,
+	.mt-svg-pulse-ring-3,
+	.mt-svg-beacon-dot,
+	.mt-svg-flow-line,
+	.mt-svg-flow-line-rev,
+	.mt-svg-chip-laser,
+	.mt-svg-orbit,
+	.mt-skeleton-bar {
+		animation: none !important;
+	}
+	.mt-card,
+	.mt-facts-cell,
+	.mt-circular-gauge-card,
+	.mt-hero-btn,
+	.mt-shortcuts-card,
+	.mt-signal-fill,
+	.mt-gauge-fill,
+	.mt-traffic-bar-fill {
+		transition: none !important;
+	}
+}

@@ -1,5 +1,38 @@
 # Changelog
 
+## [2.8.2] - 2026-10-04
+
+### Fixed
+- **修复 LuCI 概览页永久停留在骨架屏、页面加载不出来（P0）**。
+  - Background：`admin/modem/mt5700m` 的渲染链路是「骨架屏 → StateCache 快照帧 → AT 完整帧」。AT 后端 daemon 以 `TIOCEXCL` 独占 AT 串口，而 `mt5700m-at` 在共享控制通道失败后会回落直连串口，与独占锁形成死锁；rpcd 的 `fs.exec` 没有超时概念，于是 `Promise.all` 永不 settle，页面永久停在骨架屏，挂起请求还会占满 uhttpd 的并发进程（本机 `-n 3`）导致整个 LuCI 无响应。
+  - Changes：
+    - `resources/mt5700m/api.js`：所有 `fs.exec`（`mt5700m-at`）调用套一层 15s 硬超时（`Promise.race`），AT 挂起时 Promise 必然 settle，页面必然完成渲染。
+    - `at-webserver/src/at.rs`：新增 `daemon_owns_serial()`；`auto_cascade` / `serial_cascade` 在 daemon 存活（控制 socket 存在）或本次请求失败时**不再回落直连串口**，改为快速失败——避免打开被独占的 tty 造成死锁；仅在 daemon 确实不可达（socket 不存在）时才直连，此时无人持有端口，行为安全。
+    - `at-webserver/src/sock.rs`：控制通道读超时由硬编码 20s 改为 `2 × timeout + 10s`。原值恰好等于 daemon 侧预算（`queued_timeout + timeout + 2s` ≈ 20s），两者边界重叠时 CLI 会误判 daemon 不可用并触发串口回落——这是死锁的直接触发器。
+    - `htdocs/luci-static/resources/view/mt5700m/status.js`：渲染改为真正的异步化架构。首屏只依赖非阻塞数据源（`mt5700m-at cached` StateCache 快照 + rpcd `mt5700m status` + 流量统计），AT 详情查询移出渲染关键路径，由后台异步补齐并带超时；失败时保留快照帧而不是退回骨架屏；新增 15s 快照轮询实现零 AT 流量的持续自更新（页面卸载时自动清理定时器）。
+- **修复快照帧从未生效（首屏空白的直接原因，P0）**。
+  - Background：`mt5700m-at cached` 输出的是裸 topic 对象（`{"signal":{"value":…,"age_ms":…},…}`），而 `api.cachedSnapshot()` 只接受 `{ok:true,snapshot:{…}}` 包装，导致快照恒定返回 `null`。叠加上面的 AT 挂起后，页面既等不到快照帧也等不到完整帧，表现为彻底白屏。
+  - Changes：`cachedSnapshot()` 兼容三种输出形状（控制通道包装、带 `snapshot` 键、裸 topic 映射），首屏立即渲染最近一次后台采集结果。
+- **修复 `/5700` 原厂 WebUI 无法加载数据（P0）**。
+  - Background：`build-release.sh` 只把 `files/www/5700` 折入包内，漏拷 `files/www/cgi-bin`，导致 `/cgi-bin/at-ws-info` 404；前端回退到 `config.json` 里构建期硬编码的 `at.host = 192.168.1.1`，在 192.168.10.x 等非默认网段上 WebSocket 连接到不可达主机，`/5700/#/network/info` 等页面永远拿不到数据。
+  - Changes：`build-release.sh` 补拷 `files/www/cgi-bin`（`at-ws-info`、`at-log-clear`）并赋予 0755。`at-ws-info` 通过 `HTTP_HOST` 动态返回客户端实际访问的主机，任意网段均可正确发现后端。
+- **修复 LuCI JS 视图在 luci-base 26.275 上无法加载（P0，运行时兜底）**。
+  - Background：该版本 `luci.js` 在加载模块时调用 `String.prototype.format`，但该 polyfill 的定义只存在于 `cbi.js`，加载顺序滞后；缺失时 `L.require()` 抛错，所有 JS 视图（含登录表单）失效。
+  - Changes：在目标设备的 `/www/luci-static/resources/luci.js` 头部注入幂等 polyfill（覆盖 `%s`/`%d`/`%i`/`%f`/`%%`），`cbi.js` 加载后由其完整实现自动接管。
+  - 注意：该文件属于 `luci-base` 而非本包清单，此项是**设备侧运行时兜底**，不含本次代码提交；升级 `luci-base` 后需重新注入。已在 README「故障排查」记录该现象与注入片段。
+
+### Changed
+- **排版与视觉一致性修复**（`resources/mt5700m/style.css` 追加式补丁，不改动既有 `mt-` 类语义）：
+  - 8 个基础色令牌（`--mt-surface/-soft/-inset`、`--mt-text/-muted/-faint`、`--mt-border/-soft`）原只认 luci-base 的 `--*-color-*` 变量，而 aurora 主题提供的是 `--surface/--text/--hairline` 等，导致明暗两模式均解析为写死浅色回退值——暗色下正文近黑压深底完全不可读、短信页出现刺眼白底。改为「aurora 令牌 → luci-base 令牌 → 硬编码回退」三级链，明暗各一套。
+  - 长标识串溢出：`c.row()` 值节点补 `min-width:0` 与 `overflow-wrap:anywhere`，标签改为可收缩，修复 IMEI/ICCID/IMSI/IPv6 撑破卡片。
+  - 窄屏栅格溢出：10 处 `minmax(Npx,1fr)` 改为 `minmax(min(Npx,100%),1fr)`，消除 320px 手机上的横向滚动条。
+  - 信号柱容器由写死 16px 改为 `height:auto`，修复柱体（最高 47px）向上压住 RSRP 大数字。
+  - 骨架屏尺寸对齐真实内容并保留视口高度，显著降低 CLS 抖动；暗色下骨架条改为可见。
+  - 数值列统一 `tabular-nums`，消除 15s 轮询刷新时的数字左右抖动。
+  - 补齐 JS 已使用但 CSS 未定义的类（`mt-view`、`mt-sms-chat-shell`、`mt-pdp-state`、`mt-session-columns`、`mt-ssb-serving-*`）与缺失的 `--mt-warn-border` 令牌。
+  - 暗色下写死 rgba 改为新 `--mt-tint-*` 令牌；`svgCarrier()` 白字压亮蓝圆的对比度问题在暗色下改为深字。
+  - 新增 768–1200px 断点调优与 `prefers-reduced-motion` 降级。
+
 ## [2.8.1] - 2026-10-02
 
 ### Chore

@@ -67,6 +67,18 @@ echo "INFO: built Rust at-webserver backend (${rust_target})"
 pkg_src="package/h5000m-custom/luci-app-mt5700m"
 mkdir -p "${pkg_src}/htdocs" "${pkg_src}/root/usr/bin" "${pkg_src}/root/etc/init.d"
 cp -a "${repo_dir}/mt5700webui-openwrt-server/at-webserver/files/www/5700" "${pkg_src}/htdocs/5700"
+# The WebUI discovers its AT WebSocket endpoint at runtime, in this order:
+#   1) GET /cgi-bin/at-ws-info  (dynamic: returns the host the client is
+#      actually talking to, so any LAN subnet works)
+#   2) fallback: /5700/config.json, whose `at.host` is a build-time default of
+#      192.168.1.1
+# Only `www/5700` used to be folded in, so at-ws-info was missing from the
+# package (404) and every installation silently fell back to the hard-coded
+# 192.168.1.1 — on any other subnet (e.g. 192.168.10.1) the WebSocket never
+# connects and /5700 renders no data at all. Ship the CGI scripts too.
+mkdir -p "${pkg_src}/htdocs/cgi-bin"
+cp -a "${repo_dir}/mt5700webui-openwrt-server/at-webserver/files/www/cgi-bin/." "${pkg_src}/htdocs/cgi-bin/."
+chmod 0755 "${pkg_src}/htdocs/cgi-bin/"*
 cp -f "${rust_bin}" "${pkg_src}/root/usr/bin/at-webserver"
 chmod 0755 "${pkg_src}/root/usr/bin/at-webserver"
 cp -f "${repo_dir}/mt5700webui-openwrt-server/at-webserver/files/etc/init.d/at-webserver" "${pkg_src}/root/etc/init.d/at-webserver"

@@ -13,24 +13,92 @@
  *
  * 渲染策略（Async Architecture）：
  *   1) 骨架屏立即出（不等待任何后端）；
- *   2) cached 快照帧：零 AT 流量、毫秒级到达，先渲染最近一次后台采集的状态；
- *   3) 完整帧：manager + AT + session + traffic 并行到达后整体替换。
- * 模组离线 / AT 卡住时页面依然秒开，数据由后台采集器 + 事件推送持续更新。
+ *   2) 快照帧：只走非阻塞数据源（daemon StateCache + rpcd），毫秒级到达并
+ *      立即完成首屏渲染 —— 这一帧就是页面的"完成态"，不依赖任何 AT 查询；
+ *   3) 详情帧：AT 查询在**后台**异步发起（带硬超时），到达后增量替换；
+ *      超时或失败时保留快照帧，绝不让页面停在骨架屏。
+ *   4) 快照轮询：定期刷新 StateCache，页面持续自更新（无需手动刷新）。
+ *
+ * 为什么必须这么做：
+ *   AT 后端 daemon 以 TIOCEXCL 独占串口，异常情况下 AT 查询会长时间挂起。
+ *   rpcd 的 fs.exec 没有超时概念，一旦把 AT 查询放进渲染关键路径，
+ *   Promise 永不 settle，页面会永久停在骨架屏；挂起的请求还会占满
+ *   uhttpd 的并发进程（本机 -n 3），导致整个 LuCI 无响应。
+ *   异步化之后 AT 查询永远不在关键路径上，页面一定能渲染出来。
  */
 
 return view.extend({
+	/* 快照轮询间隔（毫秒）：StateCache 由后台采集器持续写入，轮询零 AT 流量 */
+	pollIntervalMs: 15000,
+
 	load: function() {
-		// 完整帧并行发起但不阻塞渲染：load() 同步返回，页面先出骨架屏，
-		// 快照帧 / 完整帧由 render() 分阶段填充。
+		// 异步化：首屏只依赖非阻塞数据源。AT 查询不在 load() 里发起。
 		this.pending = Promise.all([
 			api.managerStatus().catch(function() { return {}; }),
-			api.atStatus(),
-			api.atSession(),
-			api.trafficSummary().catch(function() { return { interfaces: [] }; })
+			api.trafficSummary().catch(function() { return { interfaces: [] }; }),
+			api.cachedSnapshot().catch(function() { return null; })
 		]).then(function(results) {
-			return { manager: results[0], native: results[1], session: results[2], traffic: results[3] };
+			return { manager: results[0], traffic: results[1], snapshot: results[2] };
 		});
 		return Promise.resolve();
+	},
+
+	/* 快照 → parseStatus 可消费的 key=value 行（含 manager 侧的链路信息） */
+	frameFromSnapshot: function(snapshot, manager) {
+		var lines = snapshot ? this.snapshotLines(snapshot) : [];
+		if (manager) {
+			if (manager.at_port) lines.push('at_port=' + manager.at_port);
+			if (manager.network) lines.push('network_interface=' + manager.network);
+			if (manager.mode) lines.push('mode=' + manager.mode);
+			if (manager.connected !== undefined) lines.push('connected=' + (manager.connected ? '1' : '0'));
+			if (manager.ipv4_address) lines.push('ipv4_address=' + manager.ipv4_address);
+		}
+		return {
+			manager: manager || {},
+			native: { stdout: lines.join('\n'), stderr: '' },
+			session: { stdout: '', stderr: '' },
+			traffic: { interfaces: [] }
+		};
+	},
+
+	/*
+	 * 后台异步补齐详情（AT 查询）。
+	 * 只在 holder 仍挂载于文档时替换内容，避免页面切换后的野更新。
+	 */
+	refreshDetail: function(holder, base) {
+		var self = this;
+		return Promise.all([
+			api.atStatus(),
+			api.atSession()
+		]).then(function(r) {
+			if (!document.body.contains(holder)) return;
+			holder.replaceChildren(self.renderPage({
+				manager: base.manager,
+				native: r[0],
+				session: r[1],
+				traffic: base.traffic
+			}));
+		}, function() {
+			/* AT 不可用：保留快照帧，不打断渲染 */
+		});
+	},
+
+	/* 快照轮询：零 AT 流量的持续自更新 */
+	startPolling: function(holder, base) {
+		var self = this;
+		if (this._pollTimer) clearInterval(this._pollTimer);
+		this._pollTimer = setInterval(function() {
+			if (!document.body.contains(holder)) {
+				clearInterval(self._pollTimer);
+				self._pollTimer = null;
+				return;
+			}
+			api.cachedSnapshot().then(function(snapshot) {
+				if (!snapshot || !document.body.contains(holder)) return;
+				holder.replaceChildren(self.renderPage(
+					self.frameFromSnapshot(snapshot, base.manager)));
+			}, function() { /* 快照不可用：保持当前帧 */ });
+		}, this.pollIntervalMs);
 	},
 
 	/*
@@ -232,33 +300,28 @@ return view.extend({
 
 	/* ---------- 渲染 ---------- */
 
-	// 渐进渲染（SWR）：骨架屏 → 快照帧（零 AT，秒开）→ 完整帧整体替换
+	// 异步化渲染：骨架屏 → 快照帧（完成态，零 AT）→ 后台详情帧增量替换
 	render: function() {
 		var self = this;
 		var holder = E('div', { 'class': 'mt-view' });
 		holder.appendChild(c.skeletonPage(6));
 
-		// 快照帧：StateCache 快照（无 AT 流量）先渲染最近一次后台状态。
-		// daemon 未运行 / 快照为空时静默跳过，直接等完整帧。
-		api.cachedSnapshot().then(function(snapshot) {
-			if (!snapshot) return;
-			var lines = self.snapshotLines(snapshot).join('\n');
-			holder.replaceChildren(self.renderPage({
-				manager: {},
-				native: { stdout: lines, stderr: '' },
-				session: { stdout: '', stderr: '' },
-				traffic: { interfaces: [] }
-			}));
-		}, function() { /* 快照不可用：等完整帧 */ });
-
-		// 完整帧：manager + AT + session + traffic 并行到达后整体替换
 		this.pending.then(function(data) {
-			holder.replaceChildren(self.renderPage(data));
+			// 快照帧即为页面的完成态：即使后续 AT 查询永久挂起，页面也已渲染完毕。
+			holder.replaceChildren(self.renderPage(
+				self.frameFromSnapshot(data.snapshot, data.manager)));
+
+			// 后台异步补齐详情（带硬超时，失败不影响已渲染内容）。
+			var base = { manager: data.manager, traffic: data.traffic };
+			self.refreshDetail(holder, base);
+			// 快照轮询：零 AT 流量的持续自更新。
+			self.startPolling(holder, base);
 		}, function(err) {
 			holder.replaceChildren(E('div', { 'class': 'mt-page' }, [
 				E('div', { 'class': 'alert-message error' }, String(err && err.message || err))
 			]));
 		});
+
 		return holder;
 	},
 

@@ -436,6 +436,9 @@ fn serial_cascade(settings: &Settings, command: &str) -> AtOutcome {
         Ok(None) => {}
         Err(e) => return fail(e),
     }
+    if daemon_owns_serial() {
+        return fail(AtError::DaemonFailed(sock::ControlError::Unavailable.message()));
+    }
     let Some(device) = detect_mt5700m_at_port(settings) else {
         return AtOutcome {
             text: String::new(),
@@ -466,12 +469,43 @@ fn network_cascade(settings: &Settings, command: &str) -> AtOutcome {
     fail(last.unwrap_or(AtError::NetworkFailed))
 }
 
+/// Whether the AT daemon is currently holding the serial port.
+///
+/// The daemon opens the AT tty with `TIOCEXCL` (exclusive). If it is running,
+/// any direct `open()` of the same tty from this process either fails with
+/// EBUSY or — far worse — blocks indefinitely inside the tty layer, because
+/// the exclusive lock is never released while the daemon lives. Falling back
+/// to direct serial *while the daemon owns the port* is therefore not a
+/// degraded path, it is a deadlock: `mt5700m-at` hangs forever, rpcd's
+/// `fs.exec` has no timeout, and the LuCI page never finishes loading.
+///
+/// The control socket is the single source of truth: it exists and accepts
+/// connections only while the daemon is up. So:
+///   * daemon reachable but the request failed -> surface the error, NEVER
+///     touch the serial port (it is locked by the daemon);
+///   * daemon unreachable (socket gone) -> nobody owns the port, direct
+///     serial is safe and keeps the CLI usable standalone.
+fn daemon_owns_serial() -> bool {
+    std::path::Path::new(sock::CONTROL_SOCKET).exists()
+}
+
 fn auto_cascade(settings: &Settings, command: &str) -> AtOutcome {
-    if let Ok(Some(text)) = daemon_transport(command, settings.timeout_s) {
-        return AtOutcome::ok_text(text);
+    match daemon_transport(command, settings.timeout_s) {
+        Ok(Some(text)) => return AtOutcome::ok_text(text),
+        // Daemon not running: nobody holds the port, direct serial is safe.
+        Ok(None) => {}
+        // Daemon running but this request failed (timeout / modem error).
+        // Do NOT fall back to direct serial — the daemon still owns the port
+        // and the fallback would hang forever. Fail fast instead, so callers
+        // (LuCI) can render their cached snapshot instead of blocking.
+        Err(e) => return fail(e),
     }
-    // The daemon is unavailable (or failed over); use direct serial, then the
-    // network endpoints as a final fallback, matching the shell's rc path.
+    if daemon_owns_serial() {
+        // Socket file exists but we could not talk to it (daemon wedged /
+        // restarting). Opening the tty now would contend with the exclusive
+        // lock; report the failure instead of hanging.
+        return fail(AtError::DaemonFailed(sock::ControlError::Unavailable.message()));
+    }
     if let Some(device) = detect_mt5700m_at_port(settings) {
         match serial_sendat(&device, settings.timeout_s, command) {
             Ok(text) => return AtOutcome::ok_text(text),

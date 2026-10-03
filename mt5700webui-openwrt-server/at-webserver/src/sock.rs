@@ -44,19 +44,43 @@ impl ControlError {
     }
 }
 
+/// Read timeout for one control-socket round trip.
+///
+/// The daemon answers a `send` only after its own bounded budget:
+/// `queued_timeout + timeout + 2s`, where `queued_timeout` defaults to
+/// `timeout + 2`. A caller-visible `timeout` of 8 s therefore yields a
+/// daemon-side budget of ~20 s. The previous hard-coded 20 s read timeout sat
+/// exactly on that boundary: whenever the daemon actually used its full
+/// budget, the CLI timed out at the same moment, classified the daemon as
+/// `Unavailable`, and fell back to direct serial — which the daemon had
+/// locked exclusively (TIOCEXCL), hanging the CLI forever.
+///
+/// The read timeout must be strictly greater than the daemon budget, and it
+/// is derived from the requested timeout instead of being a fixed constant.
+fn read_timeout(timeout: u64) -> std::time::Duration {
+    // 2 * timeout + 10 s covers queued_timeout(timeout + 2) + timeout + 2
+    // plus scheduling slack, and never lands exactly on the daemon boundary.
+    std::time::Duration::from_secs(timeout.saturating_mul(2).saturating_add(10).max(20))
+}
+
 pub fn request(payload: &json::Value) -> Result<json::Value, ControlError> {
+    let timeout = payload
+        .get("timeout")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(5);
     let wire = format!("{}\n", payload.dump());
-    let response_text = exchange(&wire).ok_or(ControlError::Unavailable)?;
+    let response_text = exchange(&wire, timeout).ok_or(ControlError::Unavailable)?;
     json::parse(response_text.trim())
         .ok_or_else(|| ControlError::BadResponse(response_text.to_string()))
 }
 
 #[cfg(unix)]
-fn exchange(wire: &str) -> Option<String> {
+fn exchange(wire: &str, timeout: u64) -> Option<String> {
     use std::io::{BufRead, Write};
     use std::os::unix::net::UnixStream;
     let mut conn = UnixStream::connect(CONTROL_SOCKET).ok()?;
-    let _ = conn.set_read_timeout(Some(std::time::Duration::from_secs(20)));
+    let _ = conn.set_read_timeout(Some(read_timeout(timeout)));
+    let _ = conn.set_write_timeout(Some(std::time::Duration::from_secs(5)));
     conn.write_all(wire.as_bytes()).ok()?;
     let mut rdr = std::io::BufReader::new(&conn);
     let mut line = String::new();
