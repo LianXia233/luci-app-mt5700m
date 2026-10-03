@@ -281,6 +281,82 @@ v2.6 对该后端做了一次彻底重构，前端（LuCI 与 WebUI）接口不�
 
 ---
 
+## 故障排查
+
+### 页面永久停在骨架屏 / 加载不出来
+
+自 v2.8.2 起，LuCI 概览页已改为真正的异步化渲染：首屏只依赖非阻塞数据源
+（StateCache 快照 + rpcd 状态 + 流量统计），AT 详情查询后台异步补齐。若仍卡住，按
+以下顺序排查：
+
+1. **确认后端存活并独占串口**
+   ```sh
+   ps w | grep '[a]t-webserver'
+   logread | grep at-webserver | tail -5   # 期望: attached to serial / control socket ready
+   ```
+   后端以 `TIOCEXCL` 独占 AT 串口；`mt5700m-at` 必须经 `/var/run/at-webserver.sock`
+   共享访问，**不得**直连 `/dev/ttyUSB*`（v2.8.2 起已禁止该回落，避免死锁）。
+   可用 `timeout 15 mt5700m-at command 'AT'` 验证，正常应秒级返回 `OK`。
+2. **确认快照可用**（首屏数据源）
+   ```sh
+   mt5700m-at cached | head -c 300
+   ```
+   返回裸 topic 对象（`{"signal":{"value":…,"age_ms":…},…}`）即正常。v2.8.2 前
+   `api.js` 只认 `{ok:true,snapshot:{}}` 包装，会把裸对象判成无效并返回 `null`，
+   导致快照帧永不渲染。
+3. **清 LuCI 菜单/模块缓存**（改完前端必做，文件名带 hash，必须通配）
+   ```sh
+   rm -f /tmp/luci-indexcache*; rm -rf /tmp/luci-modulecache/; /etc/init.d/rpcd reload
+   ls -l /tmp/luci-indexcache*   # 应为 No such file（访问页面会立刻重建）
+   ```
+4. **客户端硬刷新**：LuCI 部分资源不带版本戳，升级后需 `Ctrl+Shift+R` 清浏览器缓存。
+
+### `/5700` 原厂 WebUI 拿不到数据
+
+WebUI 按「`/cgi-bin/at-ws-info` → `/5700/config.json`」顺序发现后端 WebSocket 地址。
+
+- `at-ws-info` 通过 `HTTP_HOST` **动态**返回客户端实际访问的主机，任意网段都正确；
+  v2.8.2 前 `build-release.sh` 只折入 `www/5700`、漏拷 `www/cgi-bin`，该 CGI 缺失
+  （404）后会回退到 `config.json` 里构建期硬编码的 `192.168.1.1`，在
+  192.168.10.x 等网段上 WebSocket 连到不可达主机，页面永远无数据。
+- 自查：`curl -s http://<网关>/cgi-bin/at-ws-info` 应返回 200 且 `host` 为实际网关。
+- 已装旧包可手工补：`cp files/www/cgi-bin/* /www/cgi-bin/ && chmod 755 /www/cgi-bin/at-*`。
+
+### 所有 LuCI JS 视图都无法加载（含登录表单）
+
+现象：浏览器控制台报 `TypeError: "%s/%s.js%s".format is not a function`。
+`luci-base` 26.275 的 `luci.js` 在加载模块时调用 `String.prototype.format`，但该
+polyfill 的定义只存在于 `cbi.js`，加载顺序滞后。
+
+该文件属于 `luci-base` 而非本包，需设备侧运行时兜底——在
+`/www/luci-static/resources/luci.js` **头部**注入（幂等，`cbi.js` 加载后其完整实现
+会自动接管；升级 `luci-base` 后需重新注入）：
+
+```js
+if (typeof String.prototype.format !== 'function') {
+	String.prototype.format = function() {
+		var args = arguments, idx = 0;
+		return this.replace(/%(\d+\$)?([sdif%])/g, function(match, pos, type) {
+			if (type === '%')
+				return '%';
+			var value = args[pos ? parseInt(pos, 10) - 1 : idx++];
+			if (value === undefined || value === null)
+				value = '';
+			if (type === 'd' || type === 'i')
+				return String(parseInt(value, 10));
+			if (type === 'f')
+				return String(parseFloat(value));
+			return String(value);
+		});
+	};
+}
+```
+
+注入后校验语法（`node --check /www/luci-static/resources/luci.js`）与文件完整性
+（末尾应为 `})(window,document);`），再清浏览器缓存重试。
+
+---
+
 ## 许可证与知识产权声明
 
 - **本项目主程序代码**：遵循 [Apache License 2.0](LICENSE) 协议发布，商业友好、修改自由。
