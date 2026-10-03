@@ -1129,3 +1129,746 @@ body {
     display: inline-block;
   }
 }
+
+/* ==========================================================================
+   Page Layout & Widgets 补全
+   与 Kawaii Minimal 设计系统一致；补齐页面/组件引用的样式类，
+   修正缺失样式导致的排版异常（间距、对齐、溢出、空态）。
+   ========================================================================== */
+
+/* Content 区域：与 app-main 相同的居中布局（AppLayout 使用 <Content className="app-content">） */
+.app-content {
+  flex: 1;
+  padding: var(--app-content-pad);
+  max-width: var(--app-content-max);
+  margin: 0 auto;
+  width: 100%;
+  min-width: 0;
+}
+
+/* 页面垂直堆叠：统一页内区块间距 */
+.page-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--app-gap);
+  min-width: 0;
+}
+
+/* 表单堆叠 */
+.form-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* 操作按钮行：输入框 + 按钮并排，窄屏换行 */
+.action-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.mono {
+  font-family: var(--app-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- SectionHeader（widgets） ---------- */
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0 2px;
+  min-width: 0;
+}
+
+.section-header-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.section-header-marker {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 22px;
+  border-radius: var(--app-radius-full);
+  background: linear-gradient(180deg, #F472B6 0%, #A78BFA 100%);
+}
+
+.section-header-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--app-radius-md);
+  background: #FDF2F8;
+  color: #DB2777;
+  border: 1.5px solid var(--app-border);
+}
+
+.section-header-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--app-text-1);
+}
+
+.section-header-desc {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--app-text-3);
+}
+
+.section-header-extra {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---------- Field（widgets） ---------- */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.field-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-text-2);
+}
+
+.field-hint {
+  font-size: 11px;
+  color: var(--app-text-3);
+}
+
+/* ---------- Metric（widgets） ---------- */
+.metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.metric--center {
+  align-items: center;
+  text-align: center;
+}
+
+.metric-value {
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--app-text-1);
+  font-feature-settings: "tnum";
+  word-break: break-all;
+}
+
+.metric--lg .metric-value { font-size: 28px; }
+.metric--sm .metric-value { font-size: 16px; }
+
+.metric-label {
+  font-size: 11px;
+  color: var(--app-text-3);
+}
+
+.metric-hint {
+  font-size: 11px;
+  color: var(--app-text-muted);
+}
+
+.metric-tile {
+  padding: 14px 16px;
+  background: #FFFDF9;
+  border: 1.5px solid var(--app-border-light);
+  border-radius: var(--app-radius-md);
+}
+
+/* ---------- Kv（widgets 实际类名） ---------- */
+.kv-grid--dense {
+  gap: 10px 14px;
+}
+
+.kv-label {
+  font-size: 11px;
+  color: var(--app-text-3);
+  font-weight: 600;
+}
+
+.kv-value {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--app-text-1);
+  word-break: break-all;
+}
+
+/* ---------- Panel 变体 ---------- */
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--app-text-1);
+}
+
+.panel-head-extra {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.panel--accent {
+  border-left: 4px solid #F472B6;
+}
+
+/* ---------- PageCard 变体 ---------- */
+.page-card--hero {
+  border-color: #FBCFE8;
+  background: linear-gradient(180deg, #FFFFFF 0%, #FFFDF9 100%);
+}
+
+.page-card--group {
+  background: #FFFDF9;
+}
+
+.page-card-hint {
+  margin-left: 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--app-text-3);
+}
+
+.page-card-footer {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 2px solid var(--app-border-light);
+}
+
+/* ---------- ConfigSelect ---------- */
+.config-select {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.config-select-current {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.config-select-current-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-text-2);
+}
+
+/* ---------- cell-list（窄屏列表替代表格） ---------- */
+.cell-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.cell-list-empty {
+  padding: 28px 16px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--app-text-muted);
+  background: #FFFDF9;
+  border: 1.5px dashed var(--app-border);
+  border-radius: var(--app-radius-md);
+}
+
+.cell-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  background: #FFFDF9;
+  border: 1.5px solid var(--app-border-light);
+  border-radius: var(--app-radius-md);
+  transition: var(--app-transition-spring);
+}
+
+.cell-list-item:hover {
+  border-color: var(--app-border);
+  background: #FFFFFF;
+}
+
+.cell-list-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.cell-list-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13.5px;
+}
+
+.cell-list-sub {
+  font-size: 12px;
+  color: var(--app-text-3);
+  word-break: break-all;
+}
+
+/* ---------- AT Terminal ---------- */
+.at-console {
+  min-height: 240px;
+  max-height: 480px;
+  overflow-y: auto;
+  padding: 14px;
+  font-family: var(--app-font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  background: #FFFFFF;
+  border: 2px solid var(--app-border-light);
+  border-radius: var(--app-radius-md);
+  color: var(--app-text-1);
+}
+
+.at-console-empty {
+  display: grid;
+  place-items: center;
+  min-height: 200px;
+  color: var(--app-text-muted);
+  font-family: var(--app-font-sans);
+}
+
+.at-console-entry {
+  margin-bottom: 14px;
+}
+
+.at-console-cmd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--app-font-sans);
+}
+
+.at-console-cmd b {
+  font-size: 13px;
+  color: #DB2777;
+}
+
+.at-console-cmd time {
+  font-size: 11px;
+  color: var(--app-text-muted);
+}
+
+.at-console-prompt {
+  color: #F472B6;
+  font-weight: 700;
+}
+
+.at-console-res {
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: #FFFDF9;
+  border-radius: var(--app-radius-sm);
+  border: 1.5px solid var(--app-border-light);
+  color: var(--app-text-1);
+}
+
+.at-console-res--err {
+  background: #FFF1F2;
+  border-color: rgba(244, 63, 94, 0.35);
+  color: var(--app-danger);
+}
+
+.at-input-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.at-input-row .semi-input-wrapper {
+  flex: 1;
+}
+
+/* ---------- 网络状态页 ---------- */
+.net-hero-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.net-hero-details {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.signal-overview {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.signal-tower-wrapper {
+  flex: 0 0 auto;
+}
+
+.signal-overview-side {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.signal-overview-caption {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--app-text-1);
+}
+
+.signal-overview-note {
+  font-size: 11px;
+  color: var(--app-text-3);
+}
+
+.metric-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--app-gap);
+}
+
+.quality-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.net-operator-panel {
+  min-width: 0;
+}
+
+.net-cell-params {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+  padding: 12px 14px;
+  background: #FFFDF9;
+  border-radius: var(--app-radius-md);
+  border: 1.5px solid var(--app-border-light);
+}
+
+.net-cell-params-title {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--app-text-2);
+}
+
+.carrier-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--app-gap);
+}
+
+.speed-datastream-banner {
+  width: 100%;
+}
+
+.speed-stat-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--app-radius-full);
+  background: #FDF2F8;
+  color: #DB2777;
+}
+
+.speed-stat-main {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.speed-stat-sub {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--app-text-3);
+}
+
+.temp-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--app-gap);
+}
+
+.temp-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  background: #FFFDF9;
+  border: 1.5px solid var(--app-border-light);
+  border-radius: var(--app-radius-md);
+}
+
+/* ---------- 系统信息页 ---------- */
+.system-summary-body {
+  min-width: 0;
+}
+
+.device-control-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--app-gap);
+}
+
+.device-control-item {
+  min-width: 0;
+}
+
+.device-control-item--wide {
+  grid-column: 1 / -1;
+}
+
+.device-maintenance-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.capability-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.capability-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #FFFDF9;
+  border: 1.5px solid var(--app-border-light);
+  border-radius: var(--app-radius-md);
+}
+
+.capability-control-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--app-text-1);
+}
+
+.capability-switch-control {
+  flex: 0 0 auto;
+}
+
+/* ---------- 升级页 ---------- */
+.agree-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--app-text-3);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+.upgrade-steps {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--app-text-2);
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+/* ---------- 扫频横幅 ---------- */
+.scan-radar-banner {
+  margin: 16px 0 6px;
+}
+
+/* ---------- 短信中心 ---------- */
+.sms-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--app-gap);
+  min-width: 0;
+}
+
+.sms-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.sms-toolbar-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sms-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sms-contact-empty,
+.sms-thread-empty {
+  padding: 40px 16px;
+  text-align: center;
+  color: var(--app-text-muted);
+  font-size: 13px;
+}
+
+.sms-contact-list {
+  overflow-y: auto;
+  flex: 1;
+}
+
+.sms-contact-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sms-contact-time,
+.sms-contact-preview {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sms-message-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.sms-message-row.sent {
+  align-items: flex-end;
+}
+
+.sms-message-body {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sms-message-row.sent .sms-message-body {
+  flex-direction: row-reverse;
+}
+
+.sms-message-time {
+  font-size: 11px;
+  color: var(--app-text-muted);
+}
+
+.sms-message-delete {
+  flex: 0 0 auto;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.sms-message-row:hover .sms-message-delete {
+  opacity: 1;
+}
+
+.sms-batch-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px;
+  background: #FFFDF9;
+  border-top: 2px solid var(--app-border-light);
+}
+
+.sms-composer-hint {
+  font-size: 11px;
+  color: var(--app-text-muted);
+}
+
+/* 短信存储用量 */
+.storage-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.storage-usage-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #FFFDF9;
+  border: 1.5px solid var(--app-border-light);
+  border-radius: var(--app-radius-md);
+}
+
+.storage-usage-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--app-text-1);
+}
+
+/* ---------- 响应式 ---------- */
+@media (max-width: 960px) {
+  .metric-row,
+  .carrier-grid,
+  .device-control-grid,
+  .capability-grid,
+  .temp-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .quality-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 767px) {
+  .net-cell-params {
+    grid-template-columns: 1fr;
+  }
+}

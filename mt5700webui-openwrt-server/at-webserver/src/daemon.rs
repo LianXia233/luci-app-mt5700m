@@ -881,6 +881,212 @@ fn handle_control_conn(
     let _ = stream.flush();
 }
 
+// ---------------------------------------------------------------- LuCI RPC (8765 双协议)
+//
+// 8765 端口同时服务两类客户端，连接建立时按首字节嗅探分流：
+//   - WebSocket（WebUI）：握手以 "GET " 开头，走 handle_ws_conn
+//   - newline-JSON RPC（LuCI ucode 经 nc 转发）：以 '{' 开头，走 handle_rpc_conn
+//
+// RPC 协议（每行一个 JSON，请求-响应模型）：
+//   请求: {"id":1,"method":"at","params":{"cmd":"AT+CSQ","auth_key":"..."}}
+//   应答: {"id":1,"result":{"success":true,"data":"..."}}
+//   错误: {"id":1,"error":{"code":-32601,"message":"..."}}
+// 事件不主动推送：LuCI 通过 events(since) 轮询增量（EventBus 全局历史）。
+// 所有 AT 交换仍走同一个 AtArbiter，LuCI 与 WebUI 永不争抢串口。
+
+/// 构造 RPC 错误应答 {"id":...,"error":{"code":...,"message":...}}。
+fn rpc_error(id: &Value, code: i64, message: &str) -> Value {
+    let mut e = std::collections::BTreeMap::new();
+    e.insert("code".to_string(), json::num_val(code));
+    e.insert("message".to_string(), json::str_val(message));
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("id".to_string(), id.clone());
+    m.insert("error".to_string(), Value::Obj(e));
+    Value::Obj(m)
+}
+
+/// 处理一条 RPC 请求行，返回 JSON 应答。复用与 WebSocket 相同的命令分发
+/// （伪命令/扫频/调度/常规 AT），保证两侧行为一致、数据同源。
+fn handle_rpc_request(
+    client: &Arc<AtClient>,
+    arbiter: &Arc<AtArbiter>,
+    tasks: &Arc<TaskManager>,
+    bus: &Arc<EventBus>,
+    cache: &Arc<StateCache>,
+    line: &str,
+) -> Value {
+    let parsed = json::parse(line).unwrap_or(Value::Null);
+    let id = parsed.get("id").cloned().unwrap_or(Value::Null);
+    let method = parsed.get("method").and_then(|v| v.as_str()).unwrap_or("");
+    let params = parsed.get("params").cloned().unwrap_or(Value::Null);
+
+    // RPC 与 WebUI 共用 8765 端口：配置了 auth_key 时逐请求校验（空 key 免检，
+    // 与 WebSocket 认证语义一致，由 rpcd 登录态 + 本地回环兜底）。
+    let auth_key = params.get("auth_key").and_then(|v| v.as_str()).unwrap_or("");
+    if !client.config.websocket_auth_key.is_empty() && auth_key != client.config.websocket_auth_key
+    {
+        return rpc_error(&id, -32001, "authentication failed");
+    }
+
+    let result = match method {
+        "at" => {
+            let cmd = params.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
+            if cmd.is_empty() {
+                err_response("缺少参数 cmd")
+            } else {
+                // 前端可按参数边界透传 args（sms-send 等多词参数），
+                // 缺省时后端对 cmd 做空格分词，兼容旧协议。
+                let args = params.get("args").and_then(|v| v.as_arr()).cloned();
+                handle_at_command(client, arbiter, tasks, bus, cmd, args)
+            }
+        }
+        // 缓存快照：零 AT 流量，LuCI 首屏立即拿到后台采集器状态。
+        "cached" => {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert("ok".to_string(), Value::Bool(true));
+            m.insert("snapshot".to_string(), cache.snapshot());
+            Value::Obj(m)
+        }
+        // 增量事件拉取（与 WebSocket 推送同源：EventBus 全局历史）。
+        "events" => {
+            let since = params.get("since").and_then(|v| v.as_u64()).unwrap_or(0);
+            let (latest, events) = bus.events_since(since);
+            let mut m = std::collections::BTreeMap::new();
+            m.insert("seq".to_string(), json::num_val(latest));
+            m.insert("events".to_string(), Value::Arr(events));
+            Value::Obj(m)
+        }
+        "scan" => {
+            let ports: Vec<Value> = at::scan_serial_ports()
+                .iter()
+                .map(|p| {
+                    let mut m = std::collections::BTreeMap::new();
+                    m.insert("path".to_string(), json::str_val(&p.path));
+                    m.insert("state".to_string(), json::str_val(&p.state));
+                    m.insert("is_pcui".to_string(), Value::Bool(p.is_pcui));
+                    m.insert("answers_at".to_string(), Value::Bool(p.answers_at));
+                    m.insert("vendor".to_string(), json::str_val(&p.vendor));
+                    m.insert("product".to_string(), json::str_val(&p.product));
+                    Value::Obj(m)
+                })
+                .collect();
+            let mut m = std::collections::BTreeMap::new();
+            m.insert("ok".to_string(), Value::Bool(true));
+            m.insert("ports".to_string(), Value::Arr(ports));
+            Value::Obj(m)
+        }
+        "ping" => ok_response("pong"),
+        _ => return rpc_error(&id, -32601, "method not found"),
+    };
+
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("id".to_string(), id);
+    m.insert("result".to_string(), result);
+    Value::Obj(m)
+}
+
+/// 统一的 AT / 伪命令分发（LuCI ucode `at` 方法）。
+///
+/// 规则：
+///   * `AT…`（大小写不敏感）或 `command <AT…>` → 原生 run_command，直连
+///     arbiter：与 WebSocket / 后台采集器读去重，相同 AT 命令不重复下发；
+///   * 其余（status / network / system / advanced / sms-* / cellscan /
+///     sim-pin / pdp-set …）→ 复用 CLI 模式的聚合逻辑（把自身以 `cli`
+///     子进程方式重新执行）。子进程经控制 socket 回到本守护进程的同一
+///     arbiter，因此同样不会与 WebUI / 采集器抢占串口；聚合输出与旧的
+///     `fs.exec` 路径逐字节一致，LuCI 前端解析无需改动。
+fn handle_at_command(
+    client: &Arc<AtClient>,
+    arbiter: &Arc<AtArbiter>,
+    tasks: &Arc<TaskManager>,
+    bus: &Arc<EventBus>,
+    cmd: &str,
+    args: Option<Vec<Value>>,
+) -> Value {
+    let trimmed = cmd.trim();
+    if let Some(rest) = trimmed.strip_prefix("command ") {
+        let at_cmd = rest.trim();
+        if at_cmd.is_empty() {
+            return err_response("缺少参数 cmd");
+        }
+        return run_command(client, arbiter, tasks, bus, at_cmd);
+    }
+    if trimmed.to_ascii_uppercase().starts_with("AT") {
+        return run_command(client, arbiter, tasks, bus, trimmed);
+    }
+    let cli_args: Vec<String> = match args {
+        Some(list) => list.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+        None => trimmed.split_whitespace().map(String::from).collect(),
+    };
+    if cli_args.is_empty() {
+        return err_response("缺少参数 cmd");
+    }
+    let (text, code) = cli_capture(&cli_args);
+    if code == 0 {
+        ok_response(text.trim())
+    } else if !text.is_empty() {
+        err_response(text.trim())
+    } else {
+        err_response("mt5700m-at failed")
+    }
+}
+
+/// 以 CLI 模式重新执行自身并捕获输出（stdout 为空时回退 stderr）。
+fn cli_capture(args: &[String]) -> (String, i32) {
+    let exe = std::env::current_exe()
+        .unwrap_or_else(|_| std::path::PathBuf::from("at-webserver"));
+    let output = match std::process::Command::new(&exe).arg("cli").args(args).output() {
+        Ok(o) => o,
+        Err(_) => return (String::new(), 127),
+    };
+    let mut text = String::from_utf8_lossy(&output.stdout).to_string();
+    if text.trim().is_empty() {
+        text = String::from_utf8_lossy(&output.stderr).to_string();
+    }
+    (text, output.status.code().unwrap_or(1))
+}
+
+/// Serve one newline-JSON RPC connection. 每个请求一行、每个应答一行，
+/// ucode 插件（mt5700.uc）经 busybox nc 管道与后端交互。
+fn handle_rpc_conn(
+    stream: &mut TcpStream,
+    client: &Arc<AtClient>,
+    arbiter: &Arc<AtArbiter>,
+    tasks: &Arc<TaskManager>,
+    bus: &Arc<EventBus>,
+    cache: &Arc<StateCache>,
+) {
+    use std::io::{BufRead, Write};
+    let write_stream = match stream.try_clone() {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let mut reader = std::io::BufReader::new(write_stream);
+    loop {
+        let mut line = String::new();
+        let n = match reader.read_line(&mut line) {
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        if n == 0 {
+            break;
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let resp = handle_rpc_request(client, arbiter, tasks, bus, cache, line);
+        let mut out = resp.dump();
+        out.push('\n');
+        if stream.write_all(out.as_bytes()).is_err() {
+            break;
+        }
+        if stream.flush().is_err() {
+            break;
+        }
+    }
+}
+
 // ---------------------------------------------------------------- Client connections
 
 pub struct ClientConn {
@@ -1034,13 +1240,29 @@ pub fn run(args: &[String]) -> i32 {
     for incoming in listener.incoming() {
         let Ok(mut stream) = incoming else { continue };
         let _ = stream.set_nodelay(true);
+        // 协议嗅探（无损 peek）：'{' -> newline-JSON RPC（LuCI ucode），
+        // 其余（"GET "）-> WebSocket（WebUI）。避免握手消费掉首字节。
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+        let mut probe = [0u8; 1];
+        let is_rpc = match stream.peek(&mut probe) {
+            Ok(n) if n > 0 => probe[0] == b'{',
+            _ => {
+                let _ = stream.set_read_timeout(None);
+                continue;
+            }
+        };
+        let _ = stream.set_read_timeout(None);
         let client = client.clone();
         let arbiter = arbiter.clone();
         let tasks = tasks.clone();
         let bus = bus.clone();
         let cache = cache.clone();
         thread::spawn(move || {
-            handle_ws_conn(&mut stream, &client, &arbiter, &tasks, &bus, &cache);
+            if is_rpc {
+                handle_rpc_conn(&mut stream, &client, &arbiter, &tasks, &bus, &cache);
+            } else {
+                handle_ws_conn(&mut stream, &client, &arbiter, &tasks, &bus, &cache);
+            }
         });
     }
     0
@@ -1313,6 +1535,172 @@ mod tests {
         // non-control frames are treated as AT commands
         assert!(handle_ws_control(&bus, &cache, &sub, "AT+CSQ").is_none());
         bus.unsubscribe(&sub);
+    }
+
+    #[test]
+    fn rpc_unknown_method_rejected() {
+        let arbiter = test_arbiter();
+        let cache = Arc::new(StateCache::new());
+        let bus = EventBus::new();
+        let tasks = TaskManager::new(arbiter.clone(), cache.clone(), bus.clone());
+        let client = Arc::new(AtClient {
+            config: DaemonConfig::default(),
+            lock: Mutex::new(Stream::None),
+            rx: Arc::new(Mutex::new(VecDeque::new())),
+            in_flight: Arc::new(AtomicBool::new(false)),
+        });
+        let resp = handle_rpc_request(
+            &client,
+            &arbiter,
+            &tasks,
+            &bus,
+            &cache,
+            r#"{"id":7,"method":"nope","params":{}}"#,
+        );
+        let err = resp.get("error").expect("error object");
+        assert_eq!(
+            err.get("code").and_then(|v| v.as_i64()),
+            Some(-32601)
+        );
+        bus.stop();
+    }
+
+    #[test]
+    fn rpc_at_empty_cmd_rejected() {
+        let arbiter = test_arbiter();
+        let cache = Arc::new(StateCache::new());
+        let bus = EventBus::new();
+        let tasks = TaskManager::new(arbiter.clone(), cache.clone(), bus.clone());
+        let client = Arc::new(AtClient {
+            config: DaemonConfig::default(),
+            lock: Mutex::new(Stream::None),
+            rx: Arc::new(Mutex::new(VecDeque::new())),
+            in_flight: Arc::new(AtomicBool::new(false)),
+        });
+        let resp = handle_rpc_request(
+            &client,
+            &arbiter,
+            &tasks,
+            &bus,
+            &cache,
+            r#"{"id":1,"method":"at","params":{"cmd":"  "}}"#,
+        );
+        let result = resp.get("result").expect("result object");
+        assert_eq!(result.get("success").and_then(|v| v.as_bool()), Some(false));
+        bus.stop();
+    }
+
+    #[test]
+    fn rpc_cached_returns_snapshot() {
+        let arbiter = test_arbiter();
+        let cache = Arc::new(StateCache::new());
+        let bus = EventBus::new();
+        let tasks = TaskManager::new(arbiter.clone(), cache.clone(), bus.clone());
+        let client = Arc::new(AtClient {
+            config: DaemonConfig::default(),
+            lock: Mutex::new(Stream::None),
+            rx: Arc::new(Mutex::new(VecDeque::new())),
+            in_flight: Arc::new(AtomicBool::new(false)),
+        });
+        cache.set("signal", json::str_val("warm"), "test");
+        let resp = handle_rpc_request(
+            &client,
+            &arbiter,
+            &tasks,
+            &bus,
+            &cache,
+            r#"{"id":2,"method":"cached","params":{}}"#,
+        );
+        let result = resp.get("result").expect("result object");
+        assert_eq!(result.get("ok").and_then(|v| v.as_bool()), Some(true));
+        assert!(result.get("snapshot").is_some());
+        bus.stop();
+    }
+
+    #[test]
+    fn rpc_events_returns_increments() {
+        let arbiter = test_arbiter();
+        let cache = Arc::new(StateCache::new());
+        let bus = EventBus::new();
+        let tasks = TaskManager::new(arbiter.clone(), cache.clone(), bus.clone());
+        let client = Arc::new(AtClient {
+            config: DaemonConfig::default(),
+            lock: Mutex::new(Stream::None),
+            rx: Arc::new(Mutex::new(VecDeque::new())),
+            in_flight: Arc::new(AtomicBool::new(false)),
+        });
+        bus.publish_now("signal", "signal.updated", json::num_val(-86));
+        let resp = handle_rpc_request(
+            &client,
+            &arbiter,
+            &tasks,
+            &bus,
+            &cache,
+            r#"{"id":3,"method":"events","params":{"since":0}}"#,
+        );
+        let result = resp.get("result").expect("result object");
+        let latest = result.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
+        assert!(latest >= 1, "seq must advance, got {}", latest);
+        let events = result.get("events").and_then(|v| v.as_arr());
+        assert!(
+            events.map(|e| !e.is_empty()).unwrap_or(false),
+            "events must include the published one"
+        );
+        // 增量语义：since=latest 后为空
+        let resp2 = handle_rpc_request(
+            &client,
+            &arbiter,
+            &tasks,
+            &bus,
+            &cache,
+            &format!(r#"{{"id":4,"method":"events","params":{{"since":{}}}}}"#, latest),
+        );
+        let result2 = resp2.get("result").expect("result object");
+        let events2 = result2.get("events").and_then(|v| v.as_arr());
+        assert!(
+            events2.map(|e| e.is_empty()).unwrap_or(true),
+            "no new events after latest seq"
+        );
+        bus.stop();
+    }
+
+    #[test]
+    fn rpc_auth_key_required() {
+        let arbiter = test_arbiter();
+        let cache = Arc::new(StateCache::new());
+        let bus = EventBus::new();
+        let tasks = TaskManager::new(arbiter.clone(), cache.clone(), bus.clone());
+        let mut cfg = DaemonConfig::default();
+        cfg.websocket_auth_key = "sekret".into();
+        let client = Arc::new(AtClient {
+            config: cfg,
+            lock: Mutex::new(Stream::None),
+            rx: Arc::new(Mutex::new(VecDeque::new())),
+            in_flight: Arc::new(AtomicBool::new(false)),
+        });
+        // 无 auth_key -> 拒绝
+        let resp = handle_rpc_request(
+            &client,
+            &arbiter,
+            &tasks,
+            &bus,
+            &cache,
+            r#"{"id":5,"method":"at","params":{"cmd":"AT+CSQ"}}"#,
+        );
+        assert!(resp.get("error").is_some());
+        // 正确的 auth_key -> 放行（无传输 -> 命令报错而非鉴权错误）
+        let resp = handle_rpc_request(
+            &client,
+            &arbiter,
+            &tasks,
+            &bus,
+            &cache,
+            r#"{"id":6,"method":"at","params":{"cmd":"AT+CSQ","auth_key":"sekret"}}"#,
+        );
+        assert!(resp.get("error").is_none(), "auth passes");
+        let result = resp.get("result").expect("result object");
+        assert_eq!(result.get("success").and_then(|v| v.as_bool()), Some(false));
+        bus.stop();
     }
 
     #[test]

@@ -61,6 +61,13 @@ impl Value {
         }
     }
 
+    pub fn as_arr(&self) -> Option<&Vec<Value>> {
+        match self {
+            Value::Arr(items) => Some(items),
+            _ => None,
+        }
+    }
+
     pub fn dump(&self) -> String {
         let mut out = String::new();
         self.write(&mut out);

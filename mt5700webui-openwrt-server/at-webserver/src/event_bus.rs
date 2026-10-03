@@ -10,10 +10,14 @@
 //!   { "topic": "signal", "event": "signal.updated", "data": {...}, "timestamp": ... }
 
 use crate::json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
+
+/// 事件历史上限：为 LuCI RPC `events(since)` 增量拉取保留的最近事件数。
+/// 轮询间隔 1.5 s，高并发时 500 足够覆盖一个窗口，避免内存无限增长。
+const HISTORY_MAX: usize = 500;
 
 pub const EMIT_TICK_MS: u64 = 100;
 
@@ -96,10 +100,19 @@ struct BusInner {
     pending: HashMap<String, Event>,
 }
 
+/// 全局事件历史（RPC 增量拉取）：每次发布分配单调 seq，LuCI 通过
+/// `events(since)` 取回自 since 之后的事件。WebSocket 走订阅推送，
+/// 这里只服务请求-响应模型的前端（LuCI ucode -> RPC）。
+struct HistoryState {
+    seq: u64,
+    events: VecDeque<(u64, Value)>,
+}
+
 pub struct EventBus {
     inner: Mutex<BusInner>,
     next_sub: AtomicU64,
     stop: Arc<std::sync::atomic::AtomicBool>,
+    history: Mutex<HistoryState>,
 }
 
 impl EventBus {
@@ -111,6 +124,10 @@ impl EventBus {
             }),
             next_sub: AtomicU64::new(1),
             stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            history: Mutex::new(HistoryState {
+                seq: 0,
+                events: VecDeque::new(),
+            }),
         });
         let ticker = bus.clone();
         crate::runtime::spawn_thread("event-bus", move || {
@@ -187,6 +204,7 @@ impl EventBus {
             data,
             timestamp: crate::runtime::now_secs(),
         };
+        self.record(&ev);
         let immediate = IMMEDIATE_TOPICS.contains(&topic);
         if immediate {
             self.deliver(&ev);
@@ -204,7 +222,33 @@ impl EventBus {
             data,
             timestamp: crate::runtime::now_secs(),
         };
+        self.record(&ev);
         self.deliver(&ev);
+    }
+
+    /// 将事件写入全局历史（单调 seq），供 RPC `events(since)` 增量拉取。
+    fn record(&self, ev: &Event) {
+        let mut h = self.history.lock().unwrap();
+        let seq = h.seq + 1;
+        h.seq = seq;
+        h.events.push_back((seq, ev.to_json()));
+        while h.events.len() > HISTORY_MAX {
+            h.events.pop_front();
+        }
+    }
+
+    /// 返回 (最新 seq, 自 since 之后的事件列表)。LuCI 前端轮询此接口，
+    /// 事件形状与原 WebSocket 推送一致：{type,data,timestamp}。
+    pub fn events_since(&self, since: u64) -> (u64, Vec<Value>) {
+        let h = self.history.lock().unwrap();
+        let latest = h.seq;
+        let events = h
+            .events
+            .iter()
+            .filter(|(s, _)| *s > since)
+            .map(|(_, v)| v.clone())
+            .collect();
+        (latest, events)
     }
 
     fn deliver(&self, ev: &Event) {

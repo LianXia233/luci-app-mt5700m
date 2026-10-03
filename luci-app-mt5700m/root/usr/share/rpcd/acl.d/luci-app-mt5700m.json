@@ -2,11 +2,12 @@
 	"luci-app-mt5700m": {
 		"description": "Grant access to MT5700M management",
 		"read": {
-			"uci": [ "mt5700m" ],
+			"uci": [ "mt5700m", "at-webserver" ],
 			"ubus": {
 				"mt5700m-traffic": [ "summary" ],
 				"file": [ "exec" ],
 				"mt5700m": [ "status", "log" ],
+				"mt5700": [ "at", "cached", "events", "netrate", "usb", "logs" ],
 				"network.device": [ "status" ]
 			},
 			"file": {
@@ -14,10 +15,11 @@
 			}
 		},
 		"write": {
-			"uci": [ "mt5700m" ],
+			"uci": [ "mt5700m", "at-webserver" ],
 			"ubus": {
 				"file": [ "exec" ],
-				"mt5700m": [ "connect", "disconnect", "redial", "sync" ]
+				"mt5700m": [ "connect", "disconnect", "redial", "sync" ],
+				"mt5700": [ "at" ]
 			},
 			"file": {
 				"/usr/sbin/mt5700m-at": [ "exec" ]

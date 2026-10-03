@@ -200,7 +200,7 @@ const AppLayout: React.FC = () => {
             </div>
             <div className="app-brand-copy">
               <div className="app-brand-title">MT5700M-CN</div>
-              <div className="app-brand-sub">5G CPE · V3.0.0</div>
+              <div className="app-brand-sub">5G CPE · V{__APP_VERSION__}</div>
             </div>
           </div>
           <Nav
@@ -273,7 +273,7 @@ const AppLayout: React.FC = () => {
           <Content className="app-content">
             <Outlet />
           </Content>
-          <Footer className="app-footer">MT5700M-CN · 5G CPE Management · V3.0.0</Footer>
+          <Footer className="app-footer">MT5700M-CN · 5G CPE Management · V{__APP_VERSION__}</Footer>
         </Layout>
         <AuthHandler />
         <NotificationHandler />

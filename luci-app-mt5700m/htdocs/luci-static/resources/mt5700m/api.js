@@ -1,19 +1,21 @@
 'use strict';
 'require baseclass';
 'require rpc';
-'require fs';
 
 /*
  * MT5700M LuCI — api.js
  * ---------------------------------------------
- * 数据通道统一封装层：
- *   - rpc.declare：mt5700m status/log/connect/disconnect/redial、
+ * 数据通道统一封装层（共享后端，LuCI / WebUI 同源）：
+ *   - rpcd：mt5700m status/log/connect/disconnect/redial（拨号管理，LuCI 独占）、
  *     mt5700m-traffic summary、network.device status
- *   - fs.exec('/usr/sbin/mt5700m-at', args)：AT 子命令封装
+ *   - ucode（mt5700 对象）：at / cached —— 经 nc 转发到 Rust 后端 at-webserver
+ *     的 8765 端口；WebUI 走同一后端的 WebSocket。两侧共享 StateCache /
+ *     EventBus / AtArbiter：相同只读 AT 命令命中缓存后不重复下发，
+ *     AT 串口由 daemon 独占，LuCI 不再自己开端口，互不抢占。
  * 页面代码一律经本模块调用，不再各自 declare / 各自写 catch 归一化。
  *
  * 超时兜底（AT_TIMEOUT_MS）：
- *   rpcd 的 fs.exec 没有超时概念 —— 后端 AT 命令一旦挂起（例如串口被
+ *   rpcd / ucode 调用没有超时概念 —— 后端 AT 命令一旦挂起（例如串口被
  *   AT 守护进程独占），Promise 永不 settle，页面会永久停在骨架屏。
  *   这里对每个 AT 调用套一层 Promise.race 硬超时：
  *     - at()     超时按 reject 处理（send / terminal 需要区分成败）；
@@ -31,7 +33,10 @@ var callRedial = rpc.declare({ object: 'mt5700m', method: 'redial', expect: { } 
 var callTraffic = rpc.declare({ object: 'mt5700m-traffic', method: 'summary', expect: { } });
 var callDeviceStatus = rpc.declare({ object: 'network.device', method: 'status', params: [ 'name' ], expect: { } });
 
-var AT_BIN = '/usr/sbin/mt5700m-at';
+/* ---------- ucode（共享后端）声明 ---------- */
+
+var callAt = rpc.declare({ object: 'mt5700', method: 'at', params: [ 'cmd', 'args', '_rid' ], expect: { } });
+var callCached = rpc.declare({ object: 'mt5700', method: 'cached', expect: { } });
 
 /*
  * 单个 AT 调用的硬超时（毫秒）。
@@ -40,6 +45,12 @@ var AT_BIN = '/usr/sbin/mt5700m-at';
  * 走共享控制通道通常 < 3s），又能在挂起时及时让路给渲染。
  */
 var AT_TIMEOUT_MS = 15000;
+
+/* rpc/ubus 调用方的自增请求号（ucode 侧用于临时文件唯一性） */
+var rpcSeq = 0;
+function nextRid() {
+	return String(Date.now()) + '-' + (rpcSeq++);
+}
 
 /*
  * 给任意 Promise 套一层硬超时。超时的 Promise 永不 settle 时，
@@ -62,11 +73,23 @@ function deadline(promise, ms, label) {
 	return guarded;
 }
 
-/* ---------- fs.exec 封装 ---------- */
+/* ---------- ucode 封装 ---------- */
 
-// 原始调用：reject 时携带错误（send / terminal 等需要区分成败的场景）
+/*
+ * 原始调用：reject 时携带错误（send / terminal 等需要区分成败的场景）。
+ * 后端应答 { success:true, data } / { success:false, error }，归一化为页面
+ * 既有的 { stdout, stderr } 契约；失败按 reject 抛出。
+ */
 function at(args) {
-	return deadline(fs.exec(AT_BIN, args), AT_TIMEOUT_MS, 'mt5700m-at ' + args.join(' '));
+	return deadline(callAt(args.join(' '), args, nextRid()), AT_TIMEOUT_MS, 'mt5700.at ' + args.join(' ')).then(function(res) {
+		if (res && res.success === true)
+			return { stdout: res.data || '', stderr: '' };
+		var msg = (res && res.error) || 'AT command failed';
+		var err = new Error(msg);
+		err.stdout = '';
+		err.stderr = msg;
+		throw err;
+	});
 }
 
 // 归一化调用：永不 reject，失败返回 { stdout:'', stderr: message }
@@ -78,41 +101,30 @@ function atSafe(args) {
 
 /*
  * cachedSnapshot —— Async Architecture 缓存优先（SWR）快照。
- * 走 mt5700m-at cached 子命令（本地控制 socket → daemon StateCache）：
- * 零 AT 流量、毫秒级返回，即使模组离线 / AT 卡住也能立即拿到最近一次
- * 后台采集器写入的状态。永不 reject：daemon 未运行或解析失败时返回 null，
- * 调用方回退到常规查询帧。
+ * 走 ucode mt5700.cached（nc → daemon StateCache）：零 AT 流量、毫秒级返回，
+ * 即使模组离线 / AT 卡住也能立即拿到最近一次后台采集器写入的状态。
+ * 永不 reject：后端未运行或解析失败时返回 null，调用方回退到常规查询帧。
  *
  * 返回形状（每 topic 一项）：
  *   { "signal": { "value": { "rsrp": -86, ... }, "fresh": true,
  *                 "age_ms": 42, "source": "snapshot" }, ... }
  */
 function cachedSnapshot() {
-	return atSafe([ 'cached' ]).then(function(result) {
-		try {
-			var parsed = JSON.parse(result.stdout || '');
-			if (!parsed || typeof parsed !== 'object') return null;
+	return deadline(callCached(), AT_TIMEOUT_MS, 'mt5700.cached').then(function(res) {
+		if (!res || typeof res !== 'object') return null;
 
-			// 形状 A（守护进程控制通道）：{ "ok": true, "snapshot": { ... } }
-			if (parsed.ok === true && parsed.snapshot && typeof parsed.snapshot === 'object')
-				return parsed.snapshot;
+		// 形状 A（daemon RPC）：{ "ok": true, "snapshot": { ... } }
+		if (res.ok === true && res.snapshot && typeof res.snapshot === 'object')
+			return res.snapshot;
 
-			// 形状 B：裸 snapshot 对象（带或不带 snapshot 键）
-			if (parsed.snapshot && typeof parsed.snapshot === 'object')
-				return parsed.snapshot;
-
-			// 形状 C（实机实测）：裸 topic 映射 { "signal": {value,age_ms}, ... }
-			// mt5700m-at cached 直接输出 StateCache.snapshot() 的结果，没有
-			// ok/snapshot 包装。旧实现只认形状 A，导致快照恒为 null、
-			// 首屏永远渲染不出来 —— 这里必须兼容。
-			var topics = Object.keys(parsed).filter(function(k) {
-				var v = parsed[k];
-				return v && typeof v === 'object' && ('value' in v || 'age_ms' in v);
-			});
-			if (topics.length) return parsed;
-		} catch (e) { /* 快照不可解析：忽略，走常规查询帧 */ }
+		// 形状 C（实机兜底）：裸 topic 映射 { "signal": {value,age_ms}, ... }
+		var topics = Object.keys(res).filter(function(k) {
+			var v = res[k];
+			return v && typeof v === 'object' && ('value' in v || 'age_ms' in v);
+		});
+		if (topics.length) return res;
 		return null;
-	});
+	}).catch(function() { return null; });
 }
 
 /* ---------- AT 子命令速记 ---------- */
@@ -143,7 +155,7 @@ return baseclass.extend({
 	/* 超时配置（供页面展示/调试） */
 	atTimeoutMs: AT_TIMEOUT_MS,
 
-	/* fs.exec（AT） */
+	/* ucode（共享后端 AT 通道） */
 	at: at,
 	atSafe: atSafe,
 	cachedSnapshot: cachedSnapshot,

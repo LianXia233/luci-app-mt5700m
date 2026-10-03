@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.8.5] - 2026-10-03
+
+### Added
+- **LuCI / WebUI 共享同一 Rust AT 后端（8765 单端口双协议）**：
+  - `at-webserver` daemon 在 8765 端口按首字节嗅探分流：WebSocket（WebUI 用）与 newline-JSON RPC（LuCI 经 `nc` 回环转发用）。两个前端共享同一 `StateCache` / `EventBus` / `AtArbiter`，数据互相可见、串口由 daemon 独占，互相不抢占、不干扰。
+  - `EventBus` 新增全局事件历史（单调 `seq` + 有界队列），RPC `events(since)` 支持增量拉取，LuCI 无需重复下发只读 AT 命令。
+  - 相同只读 AT 命令命中 `StateCache` 后不再重复下发（缓存优先，SWR）。
+- **新增 rpcd ucode 插件 `mt5700.uc`**：`at` / `cached` / `events` / `netrate` / `usb` / `logs`。AT 数据面经 `nc` 转发到 Rust 后端；`netrate` / `usb` / `logs` 为本地 sysfs / 文件直读，全程零 AT 流量；`at` 支持参数数组透传（`args`），解决 `sms-send` 等多词参数的空格分词丢失。
+- **LuCI api.js 数据通道重构**：AT 查询由 `fs.exec` 直调 shell 改为 `rpc.declare` 调 ucode `mt5700` 对象，保留 15s 硬超时兜底；`cachedSnapshot()` 兼容 daemon RPC 包装 / `snapshot` 键 / 裸 topic 三种输出形状。
+- **WebUI 拨号页改为只读**：`network/Dial.tsx` 移除全部拨号操作（连接 / 断开 / 重拨 / 自动拨号 / APN 修改），改为只读展示共享状态并提示「拨号管理请使用 LuCI」。拨号（LuCI `mt5700m-manager`）与 WebUI 互不影响。
+- **WebUI 版本号单一来源**：header / footer 不再硬编码 `V3.0.0`，由 `vite.config.ts` 构建时从 `package.json` 注入 `__APP_VERSION__`，显示与实际发布版本一致。
+
+### Fixed
+- **WebUI 排版异常（缺样式类导致的间距 / 对齐 / 空态缺失）**：`global.css` 补齐 `page-stack` / `form-stack` / `action-row` / `section-header*` / `field*` / `metric*` / `kv-label|kv-value`（widgets 实际类名）/ `cell-list*` / `panel-head` / `page-card--*` / `config-select*` / `at-console*` / `sms-*` / `device-control*` / `capability-*` / `temp-*` / `carrier-grid` / `quality-grid` 等全部页面引用类，并补响应式断点。
+- **Kv 组件标签/值样式失效**：widgets 输出 `kv-label`/`kv-value`，旧样式表只有 `kv-k`/`kv-v`，已补齐。
+
+### Note
+- **拨号职责划分**：拨号（连接 / 断开 / 重拨 / 自动拨号 / APN / PDP 管理）由 LuCI「网络 → MT5700M → 移动数据」独占（`mt5700m-manager` + rpcd `mt5700m`）；WebUI `/network/dial` 仅只读展示共享后端状态，不发起任何 PDP 激活 / APN 写入操作。
+
 ## [2.8.4] - 2026-10-04
 
 ### Chore
