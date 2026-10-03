@@ -69,6 +69,9 @@ export type PushEventType =
   | 'temperature.updated'
   | 'traffic.updated'
   | 'registration.updated'
+  | 'endc.updated'
+  | 'txpower.updated'
+  | 'nr_txpower.updated'
   | 'sim.updated'
   | 'modem.info'
   | `usb.${string}`
@@ -108,6 +111,9 @@ const STATE_EVENT_TYPES = [
   'temperature.updated',
   'traffic.updated',
   'registration.updated',
+  'endc.updated',
+  'txpower.updated',
+  'nr_txpower.updated',
   'sim.updated',
   'modem.info',
 ] as const;
@@ -1765,15 +1771,18 @@ export class ATService {
       // 先设置为支持详细信息的模式
       await this.sendCommand('AT+CGREG=2');
 
-      // 查询PS域注册状态
+      // 查询PS域注册状态。华为 MT5700 固件对 5G 注册的应答前缀是 +C5GREG，
+      // 且可能只回单个状态值（如 "+C5GREG: 2"），没有 <n>,<stat> 两段，
+      // 这里两种前缀、两种长度都要兼容，否则匹配失败会原样返回纯文本，
+      // 调用方再 JSON.parse 就会抛 SyntaxError。
       const response = await this.sendCommand('AT+CGREG?');
       if (response.success && typeof response.data === 'string') {
         console.log('PS域注册状态响应:', response.data);
         const matches = response.data.match(
-          /\+CGREG:\s*(\d+),(\d+)(?:,([^,]*),([^,]*)(?:,(\d+))?)?/,
+          /\+C5?GREG:\s*(?:(\d+),)?(\d+)(?:,([^,]*),([^,]*)(?:,(\d+))?)?/,
         );
         if (matches) {
-          const [_, n, stat, lac, ci, act] = matches;
+          const [, n, stat, lac, ci, act] = matches;
           const status = parseInt(stat);
 
           // 返回PS域注册状态数据

@@ -107,7 +107,7 @@ export const parseNrTxPower = (text: string): NrTxPower[] => {
 };
 
 // 手册 5.27.3 <stat>
-const REG_STATES: Record<number, string> = {
+export const REG_STATES: Record<number, string> = {
   0: '未注册，未搜网',
   1: '已注册本地网络',
   2: '未注册，搜网中',
@@ -118,7 +118,7 @@ const REG_STATES: Record<number, string> = {
 };
 
 // 手册 5.27.3 <AcT>
-const ACT_TYPES: Record<number, string> = { 10: 'EUTRAN-5GC', 11: 'NR-5GC' };
+export const ACT_TYPES: Record<number, string> = { 10: 'EUTRAN-5GC', 11: 'NR-5GC' };
 
 export interface Reg5G {
   stat: number;

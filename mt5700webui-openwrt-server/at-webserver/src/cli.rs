@@ -671,6 +671,41 @@ pub fn print_subscriber_number(settings: &Settings) -> String {
 }
 
 pub fn print_temperature(settings: &Settings) -> String {
+    // 缓存优先：后台采集器（snapshot.temperature，60 s 周期）已把温度写入
+    // StateCache。外部高频调用方（如 mt5700m-manager 每 15 s 刷新温度缓存）
+    // 命中缓存时零 AT 流量，避免把独占串口占死。缓存缺失或过期才回退实时
+    // AT^CHIPTEMP?（该命令在 modem 上往返约 4 s，属慢命令，应尽量少发）。
+    if let Ok(snap) = crate::sock::daemon_cached() {
+        if let Some(entry) = snap.get("temperature") {
+            let fresh = entry.get("fresh").and_then(|f| f.as_bool()).unwrap_or(false);
+            let age_ms = entry.get("age_ms").and_then(|a| a.as_u64()).unwrap_or(u64::MAX);
+            if fresh && age_ms < 600_000 {
+                if let crate::json::Value::Obj(fields) = entry.get("value").cloned().unwrap_or(crate::json::Value::Null) {
+                    let mut out = String::new();
+                    let mut peak: f64 = f64::MIN;
+                    let mut peak_name = String::new();
+                    let mut found = false;
+                    for (k, v) in &fields {
+                        let Some(n) = v.as_f64() else { continue };
+                        if n <= 0.0 || n > 150.0 {
+                            continue;
+                        }
+                        let _ = write!(out, "temp_{}={:.1}\n", k.to_ascii_lowercase(), n);
+                        if n > peak {
+                            peak = n;
+                            peak_name = k.to_ascii_lowercase();
+                            found = true;
+                        }
+                    }
+                    if found {
+                        let _ = write!(out, "temperature={:.1}\n", peak);
+                        let _ = writeln!(out, "temperature_sensor={}", peak_name);
+                    }
+                    return out;
+                }
+            }
+        }
+    }
     let raw = at::at_cmd(settings, "AT^CHIPTEMP?");
     let mut out = String::new();
     let Some(line) = first_match(&raw.text, "^CHIPTEMP:") else {

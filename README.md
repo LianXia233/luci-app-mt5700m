@@ -107,7 +107,7 @@
 | **StateCache（SWR）** | 后台采集器周期性把 signal / network / registration / temperature / traffic / cell / sim / modem 写入缓存，每项含 `value + timestamp + ttl + source`；页面读到过期值仍立即返回（Stale-While-Revalidate），同时后台刷新 |
 | **事件总线 EventBus** | 主题订阅/发布，高频遥测 100ms 窗口合并（coalescing），task / usb / modem / sms / scan 即时直推；状态变化 → 事件 → WebSocket → 订阅前端，前端不再自己轮询 |
 | **TaskManager** | 统一任务模型 `Queued → Running → Completed/Failed/Cancelled/Timeout`；支持进度事件、取消（注入线缆上的 abort）、看门狗超时、周期任务（互不重叠、后台优先级、记录上限 512 / 300s TTL） |
-| **周期采集** | signal 2s、registration 3s、network 3s、temperature 5s、traffic 5s、cell 10s、sim 30s、modem info 60s——全部 Background 优先级，经 AT 仲裁器去重排队，约 93 次快查询/分钟，远低于一次串行交换每秒 |
+| **周期采集** | signal 2s、registration 3s、network 3s、temperature 5s、traffic 5s、cell 10s、sim 30s、modem info 60s——全部 Background 优先级，经 AT 仲裁器去重排队，约 93 次快查询/分钟，远低于一次串行交换每秒；慢命令（`COPS`/`SYSINFOEX`/`^CHIPTEMP` 等）走 `slow_query` 宽松规格（更长超时 + 不重试 + Low 优先级 + 失败退避），采集失败时 `stale_refresh` 回退缓存旧值续命，模组抖动期间页面数据不归零 |
 | **USB 热插拔** | DeviceMonitor 监听 USB 增删/重置，变化时：失效缓存 → 取消失效任务 → 重连 transport → 刷新状态 → 推送 `usb.*` / `modem.*` 事件 |
 | **慢任务隔离** | 扫频、短信收发、PDP 操作、网络恢复等一律后台执行；HTTP/WS 请求立即返回 `task_id`，结果通过 `task.*` 事件推送 |
 | **错误模型与重试** | 统一 `ModemUnavailable / TransportError / AtTimeout / AtRejected / Busy / TaskCancelled / TaskTimeout / InvalidParameter / PermissionDenied / UsbDisconnected / InternalError`，机器可读 `code` + 人类可读 `message` + `retryable`；超时/传输瞬时故障带退避重试，参数错误/模组明确拒绝绝不盲目重试 |

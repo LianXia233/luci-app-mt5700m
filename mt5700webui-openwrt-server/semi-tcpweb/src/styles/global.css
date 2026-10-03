@@ -290,10 +290,31 @@ body {
   box-shadow: var(--app-shadow-sm);
 }
 
-.app-header-title {
+.app-header-left {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
+  min-width: 0;
+}
+
+.app-header-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.2;
+}
+
+.app-header-eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--app-text-muted);
+}
+
+.app-header-name {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--app-text-1);
 }
 
 .app-header-page-title {
@@ -302,13 +323,76 @@ body {
   color: var(--app-text-1);
 }
 
-.app-header-actions {
+.app-header-right {
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
 /* Connection Pill in Header */
+.at-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  border-radius: var(--app-radius-full);
+  background: #FFFDF9;
+  border: 2px solid var(--app-border);
+  box-shadow: var(--app-shadow-sm);
+  transition: var(--app-transition-spring);
+}
+
+.at-status--connected {
+  color: #059669;
+  background: var(--app-success-bg);
+  border-color: rgba(16, 185, 129, 0.4);
+}
+
+.at-status--connecting,
+.at-status--authenticating,
+.at-status--reconnecting {
+  color: #D97706;
+  background: var(--app-warning-bg);
+  border-color: rgba(245, 158, 11, 0.4);
+}
+
+.at-status--error,
+.at-status--idle,
+.at-status--disconnected {
+  color: var(--app-danger);
+  background: var(--app-danger-bg);
+  border-color: rgba(244, 63, 94, 0.35);
+}
+
+.at-status-label {
+  display: inline-block;
+}
+
+.at-status-label--compact {
+  display: none;
+}
+
+.app-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--app-radius-full);
+}
+
+.app-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 35;
+  background: rgba(31, 41, 55, 0.4);
+  backdrop-filter: blur(2px);
+}
+
 .app-conn-pill {
   display: inline-flex;
   align-items: center;
@@ -326,6 +410,13 @@ body {
 .app-conn-pill:hover {
   transform: scale(1.05);
   box-shadow: var(--app-shadow-md);
+}
+
+.app-footer {
+  padding: 12px var(--app-content-pad) 20px;
+  font-size: 12px;
+  color: var(--app-text-muted);
+  text-align: center;
 }
 
 /* Main Content Area */
@@ -1028,5 +1119,13 @@ body {
 
   .app-header {
     padding: 0 14px;
+  }
+
+  .at-status-label--full {
+    display: none;
+  }
+
+  .at-status-label--compact {
+    display: inline-block;
   }
 }

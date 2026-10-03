@@ -60,17 +60,28 @@ pub struct StateCache {
 }
 
 /// Default per-topic TTLs (matched to the periodic refresh cadence).
+///
+/// TTL 必须 ≥ 采集周期，否则缓存永远 stale。周期按 2026-10-04 设备实测
+/// 慢命令耗时放宽（见 snapshot.rs）：signal 15 s / registration 20 s /
+/// network 30 s / cell 120 s / endc·txpower 300 s / nr_txpower 180 s。
+/// temperature 特殊：mt5700m-manager 每 15 s 通过 `mt5700m-at temperature`
+/// （缓存优先）刷新温度缓存，TTL 必须大到两次采集之间始终命中缓存，
+/// 否则它会回退实时 AT^CHIPTEMP?（modem 上往返约 4 s）把独占串口占死，
+/// 反过来饿死采集器，形成死循环。
 pub fn default_ttl(topic: &str) -> Duration {
     match topic {
-        "signal" => Duration::from_secs(2),
-        "network" => Duration::from_secs(3),
-        "registration" => Duration::from_secs(3),
-        "temperature" => Duration::from_secs(5),
-        "traffic" => Duration::from_secs(5),
-        "cell" => Duration::from_secs(10),
-        "sim" => Duration::from_secs(30),
-        "modem_info" => Duration::from_secs(60),
-        "usb" => Duration::from_secs(2),
+        "signal" => Duration::from_secs(18),
+        "network" => Duration::from_secs(35),
+        "registration" => Duration::from_secs(25),
+        "temperature" => Duration::from_secs(600),
+        "traffic" => Duration::from_secs(35),
+        "cell" => Duration::from_secs(130),
+        "endc" => Duration::from_secs(320),
+        "txpower" => Duration::from_secs(320),
+        "nr_txpower" => Duration::from_secs(200),
+        "sim" => Duration::from_secs(70),
+        "modem_info" => Duration::from_secs(75),
+        "usb" => Duration::from_secs(8),
         _ => Duration::from_secs(10),
     }
 }

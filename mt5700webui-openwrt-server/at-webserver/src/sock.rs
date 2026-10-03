@@ -91,7 +91,7 @@ fn exchange(wire: &str, timeout: u64) -> Option<String> {
 }
 
 #[cfg(not(unix))]
-fn exchange(_wire: &str) -> Option<String> {
+fn exchange(_wire: &str, _timeout: u64) -> Option<String> {
     None
 }
 

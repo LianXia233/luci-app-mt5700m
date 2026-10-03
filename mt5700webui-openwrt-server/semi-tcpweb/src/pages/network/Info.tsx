@@ -11,7 +11,6 @@ import {
   convertRsrq,
   convertRssi,
   convertSinr,
-  deriveNetworkMode,
   extractATData,
   extractATDataMultiline,
   formatDuration,
@@ -21,10 +20,7 @@ import {
   ipv6CapDescription,
   operatorFromCode,
   parseCHIPTEMP,
-  parseHCSQ,
-  parseHFREQINFO,
   parseMCS,
-  parseMONSC,
   parseHexValue,
   psRegText,
   qciLabel,
@@ -39,8 +35,6 @@ import { QualityBar, RingGauge, Sparkline } from '@/ui/charts';
 import { Diagnostics } from './Diagnostics';
 import {
   carrierSignalFor,
-  parseCascellAll,
-  parseMonsscAll,
   unmatchedSecondaries,
   type SecondaryLTE,
   type SecondaryNR,
@@ -195,6 +189,26 @@ const NetworkInfo: React.FC = () => {
     }));
   };
 
+  // 小区参数（PCI/频点/MCC-MNC/TAC·LAC/小区ID）：后端 collect_cell 每 10s
+  // 解析 ^MONSC 写入 StateCache 并推送 cell.updated，字段映射与 parseMONSC
+  // 一致（cid/lac 为十进制字符串，pci 为数字），页面只做存在性判断。
+  const applyCellEvent = (value: Record<string, unknown>) => {
+    setCell((prev) => {
+      const str = (v: unknown): string | undefined =>
+        typeof v === 'string' && v ? (v as string) : undefined;
+      return {
+        ...prev,
+        pci: typeof value.pci === 'number' ? (value.pci as number) : prev.pci,
+        channel: str(value.channel) ?? prev.channel,
+        mcc: str(value.mcc) ?? prev.mcc,
+        mnc: str(value.mnc) ?? prev.mnc,
+        lac: str(value.lac) ?? prev.lac,
+        cid: str(value.cid) ?? prev.cid,
+        sysMode: str(value.sysmode) ?? prev.sysMode,
+      };
+    });
+  };
+
   const applyTrafficEvent = (data: Partial<PDCPData>) => {
     const up = Number(data.ulPdcpRate || 0);
     const down = Number(data.dlPdcpRate || 0);
@@ -227,15 +241,24 @@ const NetworkInfo: React.FC = () => {
     if (reg && typeof reg.state === 'number') setNetworkStatus(psRegText(reg.state));
     const temp = pick('temperature');
     if (temp) applyTempsEvent(temp);
+    const cellv = pick('cell');
+    if (cellv) applyCellEvent(cellv);
     const traffic = pick('traffic');
     if (traffic) applyTrafficEvent(traffic as Partial<PDCPData>);
   };
 
   const getPSReg = async () => {
     const response = await at().getPSRegStatus();
-    if (response.success && response.data) {
-      const parsed = JSON.parse(response.data as string);
-      setNetworkStatus(psRegText(parsed.stat));
+    // 只认 JSON 应答：正则匹配失败时 getPSRegStatus 会原样返回模组的纯文本
+    // （如 "+C5GREG: 2"），直接 JSON.parse 会抛 SyntaxError 把整个命令队列
+    // 炸掉。解析失败就跳过，注册状态由 registration.updated 事件兜底。
+    if (response.success && typeof response.data === 'string' && response.data.trim().startsWith('{')) {
+      try {
+        const parsed = JSON.parse(response.data);
+        if (typeof parsed.stat === 'number') setNetworkStatus(psRegText(parsed.stat));
+      } catch {
+        // 忽略无法解析的应答
+      }
     }
   };
 
@@ -394,76 +417,24 @@ const NetworkInfo: React.FC = () => {
   };
 
   const updateNetworkInfo = async () => {
-    const monsc = await at().sendCommand('AT^MONSC');
-    const serving = monsc.success && monsc.data ? parseMONSC(monsc.data as string) : null;
-    const hfreq = await at().sendCommand('AT^HFREQINFO?');
-    const carriers = hfreq.success && hfreq.data ? parseHFREQINFO(hfreq.data as string) : [];
-    let fallback = '';
-    if (!carriers.length) {
-      const hcsq = await at().sendCommand('AT^HCSQ?');
-      fallback = (hcsq.data as string) || '';
-    }
-    setCell((prev) => ({
-      ...prev,
-      ...(serving
-        ? {
-            mcc: serving.mcc,
-            mnc: serving.mnc,
-            channel: serving.channel,
-            cid: serving.cid,
-            pci: serving.pci,
-            lac: serving.lac,
-            rscp: serving.rscp || prev.rscp,
-            ecio: serving.ecio || prev.ecio,
-            rssi: serving.rssi ?? prev.rssi,
-            sysMode: serving.sysMode,
-            signalPercent: calculateSignalPercent(serving.rscp || prev.rscp),
-          }
-        : {}),
-      carrierInfo: carriers,
-      carrierCount: carriers.length,
-      networkMode: deriveNetworkMode(carriers, fallback),
-    }));
-
-    // 手册 13.27 / 13.18：非 NSA、未配置 CA 时这两条本来就会失败，属正常情况，
-    // 查不到就当没有辅小区，不打扰用户。
-    const monssc = await at().sendCommand('AT^MONSSC');
-    setSecondaryNR(monssc.success && monssc.data ? parseMonsscAll(String(monssc.data)) : []);
-    const cascell = await at().sendCommand('AT^CASCELLINFO?');
-    setSecondaryLTE(cascell.success && cascell.data ? parseCascellAll(String(cascell.data)) : []);
+    // 不再直发慢命令（AT^MONSC / AT^HFREQINFO? / AT^MONSSC / AT^CASCELLINFO?，
+    // 实测 MONSC 失败也要占 8 s+，fast_query 3 s 超时 + 2 次重试会长期独占
+    // 串口把后端采集器饿死）：小区参数 / 载波 / 网络模式改由后端 collect_cell
+    // 采集器推送 cell.updated（channel/band/dlBandwidth/operator）驱动，
+    // 页面在 applyCellEvent 里消费，不再发起查询。
   };
 
   const updateSignal = async () => {
-    const res = await at().sendCommand('AT^HCSQ?');
-    if (res.success && res.data) {
-      const parsed = parseHCSQ(res.data as string);
-      if (parsed.mode) {
-        setCell((prev) => ({
-          ...prev,
-          rscp: parsed.rsrp,
-          sinr: parsed.sinr,
-          ecio: parsed.rsrq,
-          rssi: parsed.rssi || prev.rssi,
-          signalPercent: parsed.signalPercent,
-          sysMode: parsed.mode || prev.sysMode,
-          networkMode: parsed.both ? 'EN-DC (LTE+NR)' : prev.networkMode || parsed.mode || '',
-        }));
-        // 轮询到的值同样入曲线：有些固件的 ^HCSQ 主动上报很稀疏，
-        // 只靠上报的话趋势图会长时间空着。
-        if (Number.isFinite(parsed.rsrp) && parsed.rsrp < 0) {
-          setSignalHistory((hist) => trimHistory([...hist, { rsrp: parsed.rsrp, sinr: parsed.sinr }]));
-        }
-      }
-    }
+    // 不再直发 AT^HCSQ?（模组 ~4 s 才响应，fast_query 3 s 超时会重试并占住
+    // 串口）：信号数据由后端 snapshot.signal 采集器写入 StateCache 并推送
+    // signal.updated 事件，页面在 applySignalEvent 里消费（见事件订阅分支）。
   };
 
   const loadAll = () => {
     setLoading(true);
     enqueue(async () => {
       await getPSReg();
-      await updateSignal();
       await getOperator();
-      await updateNetworkInfo();
       await getAMBR();
       await getQCI();
       await getDHCP();
@@ -506,6 +477,10 @@ const NetworkInfo: React.FC = () => {
       }
       if (response.type === 'temperature.updated') {
         applyTempsEvent(response.data as Record<string, unknown>);
+        return;
+      }
+      if (response.type === 'cell.updated') {
+        applyCellEvent(response.data as Record<string, unknown>);
         return;
       }
       if (response.type === 'traffic.updated') {
@@ -586,9 +561,7 @@ const NetworkInfo: React.FC = () => {
       enqueue(async () => {
         try {
           if (key === 'networkInfo') {
-            await updateNetworkInfo();
             await getMCS();
-            await updateSignal();
           } else if (key === 'flowStats') {
             await getFlow();
           } else {

@@ -5,6 +5,8 @@
 luci-app-mt5700m/root/** text eol=lf
 mt5700webui-openwrt-server/at-webserver/files-py/** text eol=lf
 *.js text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
 *.html text eol=lf
 *.css text eol=lf
 *.json text eol=lf

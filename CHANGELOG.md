@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.8.3] - 2026-10-04
+
+### Fixed
+- **修复慢 AT 命令拖垮后台采集（signal/registration/network/cell 等缓存项长期空转）**。
+  - Background：部分查询（`AT^HCSQ?`、`AT^COPS?`、`AT^SYSINFOEX`、`AT^CHIPTEMP?`、`AT^HFREQINFO?` 等）在模组响应慢或弱网环境下频繁超时，而采集器沿用 fast 规格（2s 超时、失败即丢弃），缓存项常年为空，LuCI / WebUI 页面相关字段持续显示 `--`。
+  - Changes（`at-webserver/src/snapshot.rs`）：
+    - 新增 `stale_refresh` 续命模式：采集失败时回退 StateCache 旧值重新 store（刷新 TTL + 重推事件），模组抖动期间页面数据不归零；缓存为空时返回 `Value::Null` 且不落库。
+    - 新增 `slow_query` 三件套：宽松 AT 超时 + 不重试 + Low 优先级 + 失败 `set_ttl` 退避，用于 `COPS` / `SYSINFOEX` 等慢命令。
+    - `collect_signal`：`^HCSQ` 改 12s 规格 + 失败 `stale_refresh`。
+    - `collect_registration`：`C5GREG` → `CEREG` → `CREG` 逐级回退循环，`has_reg` 判定注册态。
+    - `collect_network`：`COPS` / `SYSINFOEX` 走 `slow_query`。
+    - `collect_temperature`：`^CHIPTEMP` 改 12s/8s Low 优先级规格 + `stale_refresh`，仅非 `Value::Null` 才 store。
+    - `collect_cell`：`HFREQINFO` / `MONSC` / `COPS` 采集 + 从 registration 缓存补齐 lac/cid，`cell.updated` 事件补全 PCI / 频点 / MCC-MNC / TAC / 小区 ID 字段。
+    - `collect_sim` / `collect_modem_info`：`CPIN` / `ICCID` / `CIMI` / `ATI` / `CGSN` 采集补位。
+- **修复 SINR / 温度等浮点字段长尾精度（如 `25.000000000000004`）**：数值字段统一 round 归一，页面显示不再出现浮点尾差。
+- **修复 WebUI header 状态栏文字重复（"AT 已连接已连接"）与布局缺失**。
+  - Background：`AppLayout` 渲染 full（"AT 已连接"）与 compact（"已连接"）两个状态文本 span，但 `global.css` 仍是旧版类名（`.app-header-actions` / `.app-conn-pill`），JSX 新类名（`.at-status*` / `.app-header-*`）全部缺失样式，两段文字以默认 inline 拼接显示。
+  - Changes（`semi-tcpweb/src/styles/global.css`）：补齐 `.app-header-left/right/eyebrow/name`、`.at-status` 及各连接状态配色（connected/connecting/authenticating/reconnecting/error/idle/disconnected）、`.at-status-label--full/compact`（桌面显示全称、移动端显示缩写）、`.app-icon-button`、`.app-scrim`、`.app-footer` 样式。
+
+### Note
+- **模组 AT 引擎死锁为设备侧/固件环境问题（非本包代码缺陷）**：目标设备（cmiot5g 物联网卡、4G 0% 弱信号）上模组只推送 `^PDCPDATAINFO:` URC、不对任何 AT 命令（含 `AT`/`ATI`/`^HCSQ`/`^C5GREG`/`^CHIPTEMP`）应答。多轮排查确认：无 at-webserver 触碰 3 分钟仍死锁、USB authorized 复位无效、整机重启短暂恢复后复现、`logread` 无 bandlock/scan/SETAUTODIAL 命令痕迹、scheduler 未启用——排除后台命令触发。代码修复（stale_refresh / 宽松采集规格 / cell 补位）已部署，模组恢复后全量字段可正常采集（温度采集实机验证通过）。
+
 ## [2.8.2] - 2026-10-04
 
 ### Fixed

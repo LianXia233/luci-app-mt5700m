@@ -52,8 +52,11 @@ pub const TOPIC_TASK: &str = "task";
 pub const TOPIC_SMS: &str = "sms";
 pub const TOPIC_SCAN: &str = "scan";
 pub const TOPIC_BEAM: &str = "beam";
+pub const TOPIC_ENDC: &str = "endc";
+pub const TOPIC_TXPOWER: &str = "txpower";
+pub const TOPIC_NR_TXPOWER: &str = "nr_txpower";
 
-pub const DEFAULT_TOPICS: [&str; 13] = [
+pub const DEFAULT_TOPICS: [&str; 16] = [
     TOPIC_SIGNAL,
     TOPIC_NETWORK,
     TOPIC_CELL,
@@ -61,6 +64,9 @@ pub const DEFAULT_TOPICS: [&str; 13] = [
     TOPIC_TRAFFIC,
     TOPIC_SIM,
     TOPIC_REGISTRATION,
+    TOPIC_ENDC,
+    TOPIC_TXPOWER,
+    TOPIC_NR_TXPOWER,
     TOPIC_USB,
     TOPIC_MODEM,
     TOPIC_TASK,
