@@ -1032,10 +1032,39 @@ fn handle_at_command(
 }
 
 /// 以 CLI 模式重新执行自身并捕获输出（stdout 为空时回退 stderr）。
+/// CLI 子进程经控制 socket 回到本守护进程，受 socket 读超时兜底；
+/// 这里再套一层硬超时，避免子进程异常卡死时永久占住 RPC 线程
+/// （否则并发 RPC 连接堆积，配合 ucode 侧超时仍可能拖慢整个后端）。
+/// 跨平台：try_wait / kill / wait_with_output 均为 std API（Linux+Windows）。
 fn cli_capture(args: &[String]) -> (String, i32) {
     let exe = std::env::current_exe()
         .unwrap_or_else(|_| std::path::PathBuf::from("at-webserver"));
-    let output = match std::process::Command::new(&exe).arg("cli").args(args).output() {
+    let mut child = match std::process::Command::new(&exe)
+        .arg("cli")
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return (String::new(), 127),
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(25);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return (String::from("mt5700m-at timed out after 25s"), 124);
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            Err(_) => return (String::new(), 127),
+        }
+    }
+    let output = match child.wait_with_output() {
         Ok(o) => o,
         Err(_) => return (String::new(), 127),
     };

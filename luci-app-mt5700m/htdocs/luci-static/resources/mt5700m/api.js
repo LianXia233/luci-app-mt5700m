@@ -15,12 +15,15 @@
  * 页面代码一律经本模块调用，不再各自 declare / 各自写 catch 归一化。
  *
  * 超时兜底（AT_TIMEOUT_MS）：
- *   rpcd / ucode 调用没有超时概念 —— 后端 AT 命令一旦挂起（例如串口被
- *   AT 守护进程独占），Promise 永不 settle，页面会永久停在骨架屏。
- *   这里对每个 AT 调用套一层 Promise.race 硬超时：
- *     - at()     超时按 reject 处理（send / terminal 需要区分成败）；
- *     - atSafe() 超时被 catch 归一化为 { stdout:'', stderr:message }；
- *   两者都保证 Promise 一定 settle，页面必然完成渲染。
+ *   三层防挂起：
+ *     - ucode 插件侧：nc 转发套 timeout 外壳（读类 12s / 写类 25s），
+ *       到点杀掉 nc，rpcd 进程立即释放 —— 防止「AT 挂起 -> rpcd 进程
+ *       被 nc 永久占用 -> 并发请求耗尽 rpcd -> 整个 LuCI 拖死」。
+ *     - 后端侧：arbiter 命令有 queued_timeout + timeout 预算兜底。
+ *     - 前端侧：对每个 AT 调用套 Promise.race 硬超时（30s，> ucode 外壳），
+ *       保证 Promise 一定 settle，页面必然完成渲染。
+ *   at() 超时按 reject 处理（send / terminal 需要区分成败）；
+ *   atSafe() 超时被 catch 归一化为 { stdout:'', stderr:message }。
  */
 
 /* ---------- rpcd 声明 ---------- */
@@ -40,11 +43,13 @@ var callCached = rpc.declare({ object: 'mt5700', method: 'cached', expect: { } }
 
 /*
  * 单个 AT 调用的硬超时（毫秒）。
- * 取值依据：守护进程侧预算 = queued_timeout(10s) + timeout(8s) + 2s = 20s，
- * 前端不应比后端更久地空等；15s 足以覆盖正常一帧（数十条 AT 的聚合命令
- * 走共享控制通道通常 < 3s），又能在挂起时及时让路给渲染。
+ * 取值依据：守护进程侧预算 = queued_timeout(10s) + timeout(8s) + 2s = 20s；
+ * ucode 插件侧另有超时外壳（读类 12s / 写类 25s，防止 rpcd 进程被 nc
+ * 永久占用拖死整个 LuCI）。前端兜底必须 > ucode 超时外壳，否则前端先
+ * 放弃而 rpcd 进程仍卡着：30s 覆盖写类 25s，读类 12s 会先返回错误，
+ * 正常帧（数十条 AT 的聚合命令走共享控制通道通常 < 3s）远不会触发。
  */
-var AT_TIMEOUT_MS = 15000;
+var AT_TIMEOUT_MS = 30000;
 
 /* rpc/ubus 调用方的自增请求号（ucode 侧用于临时文件唯一性） */
 var rpcSeq = 0;

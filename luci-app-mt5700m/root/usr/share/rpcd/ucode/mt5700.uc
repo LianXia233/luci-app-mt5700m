@@ -356,10 +356,16 @@ function logsCall(req) {
 	return { success: true, log: text, lines: total };
 }
 
-function rpcCall(method, params) {
+function rpcCall(method, params, timeoutS) {
 	const rpcCfg = readRpcConfig();
 	const port = rpcCfg.port;
 	const authKey = rpcCfg.authKey;
+
+	/* 超时外壳秒数：读类 12s / 写类 25s（由调用方传入），
+	 * 必须小于前端兜底（30s），保证 rpcd 进程一定先于前端释放。 */
+	if (timeoutS == null || timeoutS <= 0 || timeoutS > 60) {
+		timeoutS = 12;
+	}
 
 	const payload = { id: 1, method: method, params: params };
 	if (authKey != '') {
@@ -390,6 +396,45 @@ function rpcCall(method, params) {
 			success: false,
 			error: '系统缺少 nc（busybox 未编译 nc applet），无法连接后端：请安装 netcat 后重试'
 		};
+	}
+
+	/*
+	 * 超时外壳（关键兜底，防止拖死整个 LuCI）：
+	 * rpcd 的 ucode 插件是「每请求一个进程」，rpcCall 里的 p.read('line')
+	 * 一旦没有超时，nc 就会一直等后端响应 —— 后端 AT 命令排队 / 串口挂起时
+	 * 该 rpcd 进程被永久占用，页面并发几个请求就把 rpcd 的并发进程耗尽，
+	 * 连静态页面 / 其它插件都转不动，表现为「LuCI 整个拖死」。
+	 * 前端 15s 超时只救浏览器（Promise reject），救不了 rpcd 进程。
+	 *
+	 * 因此这里给 nc 套一层硬超时：优先用 timeout applet（OpenWrt busybox
+	 * 自带，coreutils 也有）；个别裁剪固件没有 timeout 时，退化为 nc 自身
+	 * 的 -w（GNU / busybox nc 都支持，作为「等待响应」超时）。
+	 * 超时后 nc 退出 -> read 返回 null -> 本请求立即返回错误，rpcd 进程
+	 * 马上释放，不再占坑。
+	 */
+	let rpcTimeoutS = timeoutS;
+	let tmoBin = '';
+	const tmoCands = ['/usr/bin/timeout', '/bin/timeout', '/usr/sbin/timeout', '/sbin/timeout'];
+	for (let i = 0; i < length(tmoCands); i++) {
+		let probe;
+		try {
+			probe = fs.open(tmoCands[i], 'r');
+		} catch (e) {
+			probe = null;
+		}
+		if (probe) {
+			probe.close();
+			tmoBin = tmoCands[i];
+			break;
+		}
+	}
+
+	/* busybox/coreutils 的 timeout 均支持 `timeout N cmd ...` 位置参数 */
+	let ncCmd;
+	if (tmoBin != '') {
+		ncCmd = tmoBin + ' ' + rpcTimeoutS + ' ' + ncBin + ' 127.0.0.1 ' + port + ' < ' + tmp;
+	} else {
+		ncCmd = ncBin + ' -w ' + rpcTimeoutS + ' 127.0.0.1 ' + port + ' < ' + tmp;
 	}
 
 	const body = sprintf('%J', payload);
@@ -424,7 +469,7 @@ function rpcCall(method, params) {
 
 	let p;
 	try {
-		p = fs.popen(ncBin + ' 127.0.0.1 ' + port + ' < ' + tmp, 'r');
+		p = fs.popen(ncCmd, 'r');
 	} catch (e) {
 		return { success: false, error: '无法连接 Rust 后端: ' + e.message };
 	}
@@ -442,7 +487,11 @@ function rpcCall(method, params) {
 	}
 
 	if (!line) {
-		return { success: false, error: 'Rust 后端无应答（服务未运行或端口 ' + port + ' 未监听）' };
+		/* 后端无应答：可能是服务未运行，也可能是命令超时被外壳杀掉 */
+		return {
+			success: false,
+			error: '后端响应超时（>' + rpcTimeoutS + 's，AT 命令可能仍挂起）或服务未运行：Rust 后端端口 ' + port + ' 无应答'
+		};
 	}
 	if (substr(line, 0, 1) != '{') {
 		return { success: false, error: 'Rust 后端应答异常: ' + substr(line, 0, 160) };
@@ -483,7 +532,22 @@ return {
 				if (argList != null && length(argList) > 0) {
 					params.args = argList;
 				}
-				return rpcCall('at', params);
+				// 超时分配：原生 AT（command 前缀）/ SMS / 写类命令放宽到 25s
+				// （SMS 收发、PDP 配置、恢复出厂等可能慢），读类 12s 快速失败。
+				// 前端兜底 30s > 25s，rpcd 进程一定先释放，LuCI 不会被拖死。
+				let tmo = 12;
+				if (substr(cmd, 0, 8) == 'command ' || substr(cmd, 0, 4) == 'sms-') {
+					tmo = 25;
+				} else {
+					const slowWrites = ['pdp-set', 'factory-reset', 'sim-pin', 'restart', 'unlock', 'advanced-set'];
+					for (let i = 0; i < length(slowWrites); i++) {
+						if (cmd == slowWrites[i]) {
+							tmo = 25;
+							break;
+						}
+					}
+				}
+				return rpcCall('at', params, tmo);
 			}
 		},
 		cached: {
