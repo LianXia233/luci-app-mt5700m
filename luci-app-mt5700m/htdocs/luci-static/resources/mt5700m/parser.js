@@ -203,6 +203,9 @@ function parseStatus(res) {
 	}
 	data.network_interface = res.manager.network || '';
 	data.error = res.native && res.native.stderr || '';
+	// 后端输出的键名是 sim_state（见 at-webserver print_cached_status），
+	// 而 status.js 读的是 data.sim。两边不一致会让 SIM 状态恒为 Unknown。
+	data.sim = data.sim || data.sim_state || '';
 	return data;
 }
 

@@ -363,7 +363,13 @@ return view.extend({
 				]),
 				E('div', { 'class': 'mt-facts-cell' }, [
 					E('div', { 'class': 'mt-facts-label' }, _('Operator')),
-					E('div', { 'class': 'mt-facts-value' }, [ opInfo.logo ? E('img', { 'src': opInfo.logo, 'alt': operator, 'style': 'width:20px;height:20px;vertical-align:-4px;margin-right:6px' }) : null, operator || '--' ])
+					/* 运营商 logo 与文字同一行：mt-facts-value 是块级容器，
+					   img 与文本会各占一行叠压（vertical-align 在块内无效），
+					   故用 mt-facts-value--inline 改成 flex 布局。 */
+					E('div', { 'class': 'mt-facts-value mt-facts-value--inline' }, [
+						opInfo.logo ? E('img', { 'src': opInfo.logo, 'alt': operator, 'class': 'mt-facts-logo' }) : null,
+						E('span', {}, operator || '--')
+					])
 				]),
 				E('div', { 'class': 'mt-facts-cell' }, [
 					E('div', { 'class': 'mt-facts-label' }, _('AT port')),

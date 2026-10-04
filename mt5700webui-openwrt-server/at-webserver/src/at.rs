@@ -36,6 +36,11 @@ pub struct Settings {
     pub host: String,
     pub port: u16,
     pub timeout_s: u64,
+    /// Allow `status` to spend a few short AT round-trips on values that have
+    /// no background collector (active APN, QCI, MSISDN, subscribed rate).
+    /// Off by default so callers that need a strictly cache-only, zero-AT read
+    /// can opt out; `cmd_status` turns it on.
+    pub query_extras: bool,
 }
 
 impl Default for Settings {
@@ -47,6 +52,7 @@ impl Default for Settings {
             host: "192.168.8.1".into(),
             port: 20249,
             timeout_s: 8,
+            query_extras: false,
         }
     }
 }

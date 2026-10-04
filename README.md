@@ -438,6 +438,46 @@ rm -f /tmp/luci-indexcache*; rm -rf /tmp/luci-modulecache/; /etc/init.d/rpcd rel
 调用；`E` 同理），与本包无关，在 404 页面尤其明显。需设备侧运行时兜底，见上文
 「所有 LuCI JS 视图都无法加载」一节。
 
+### 概览页「载波状态」显示 unavailable，QCI / APN / 签约速率全空
+
+`mt5700m-at status` 切到 StateCache 快照后，输出里少了几组字段——先自查：
+
+```sh
+mt5700m-at status | grep -E '^(carrier_|ca_|dc_|active_apn|qci|ambr_|phone_number)'
+```
+
+期望至少能看到 `carrier_count`、`carrier_1`、`ca_dl_bandwidth`、`qci`、
+`ambr_down_mbps` / `ambr_up_mbps`。
+
+若缺失，说明 `print_cached_status()` 的缓存路径没有覆盖对应 topic 或
+`print_*` 辅助函数。`carrier_*` 应由 `cell` 快照（`AT^HFREQINFO?` 的采集结果）
+重建，格式是 8 段 `|` 分隔且**顺序必须与 `parser.js` 的 `carrierInfo()` 一致**：
+
+```
+radio|band|arfcn|dl_freq_MHz|dl_bw_MHz|ul_freq_MHz|<unused>|ul_bw_MHz
+```
+
+`active_apn` / `qci` / `phone_number` / `ambr_*` 没有后台采集器，只能在
+`status` 里现查——它们由 `Settings.query_extras` 开关控制（默认 off，
+`cmd_status` 打开）。新增这类字段时记得开这个开关，否则页面永远空白。
+
+### SIM 状态显示 Unknown
+
+后端输出的键名是 `sim_state`，前端读的是 `data.sim`。`parser.js::parseStatus`
+里做了兼容：
+
+```js
+data.sim = data.sim || data.sim_state || '';
+```
+
+新增 status 字段时注意**前后端键名必须一致**，不一致的表现就是该行恒空。
+
+### 运营商 logo 压在名称上
+
+`.mt-facts-value` 是块级容器，`<img>` 与文本节点会各占一行（`vertical-align`
+在块级上下文里对 img 不生效），单元格高度会翻倍。用 flex 变体
+（`.mt-facts-value--inline`）而不是给共用类加规则——共用类被 20+ 处复用。
+
 ### `status` 报告的 `at_port` 与实际在用串口不一致
 
 USB 重新枚举时 `option` 驱动会重编号 `ttyUSB*`（PCUI 口在 ttyUSB1 ↔ ttyUSB2

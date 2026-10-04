@@ -95,6 +95,40 @@
 
 - **修复 Semi Card 头部挤压**：Semi 实际类名是 `semi-card-header-wrapper`（且为 `row-reverse`），原先只写了 `semi-card-header`，补 `flex-wrap` + `row-gap`，并让 `header-extra` 用 `margin-left:auto` 保持右对齐。
 
+- **修复概览页「载波状态」卡与 QCI / APN / 签约速率永久空白（P0）**：
+  - Background：`status` 切到 StateCache 快照后（`print_cached_status`），
+    **只覆盖 5 个 topic**（signal / sim / modem / network / temperature），
+    `print_carrier_aggregation()` 只在「无 daemon」的 fallback 分支里被调用，
+    从未进入缓存路径。结果 `status` 输出里**完全没有**
+    `carrier_count` / `carrier_N` / `ca_*` / `dc_*` / `active_apn` / `qci` /
+    `ambr_*` / `phone_number` 这几组字段，而 `parser.js` 的 `carrierInfo()` 与
+    `status.js` 的 SIM 卡正是靠它们渲染 —— 于是「载波状态」恒显示
+    "Current carrier information is unavailable."，QCI / APN / 签约速率恒为空。
+  - Changes：
+    - `cli.rs::print_cached_status` 新增 carrier/CA 段：从已有的 `cell` 快照
+      （`AT^HFREQINFO?` 的采集结果，含 band / NR-ARFCN / dlBandwidth）重建
+      `carrier_count` / `carrier_1`（8 段 `|` 分隔，字段顺序与 parser.js 严格对齐）、
+      `ca_active` / `dc_active` / `ca_mode` / `ca_dl_bandwidth` / `ca_ul_bandwidth`，
+      零 AT 流量。
+    - 新增 `nr_arfcn_to_mhz()`（3GPP TS 38.104）换算 NR-ARFCN → 中心频率，
+      填 `carrier_1` 的 dl/ul_freq 字段。
+    - `Settings` 新增 `query_extras` 开关（默认 off），`cmd_status` 置 on 后
+      补回 `print_active_apn` / `print_qos` / `print_subscriber_number` /
+      `print_subscription_rate` 四项 —— 它们没有后台采集器，只能现查；
+      `timeout_s` 已被压到 3s，单次 status 仍在 0–1s 内完成。
+  - 实测新增输出：`carrier_count=1`、`carrier_1=NR|B41|504990|2524950.00|100|…`、
+    `ca_dl_bandwidth=100`、`qci=6`、`ambr_down_mbps=1000.0` / `ambr_up_mbps=100.0`。
+    概览页实测渲染：B41 / NR / Single carrier / ARFCN 504990 / 上下行各 100 MHz。
+
+- **修复 SIM 状态恒显示 Unknown**：`status` 输出的键名是 `sim_state`，而
+  `status.js` 读的是 `data.sim`，两边不一致。`parser.js::parseStatus` 补
+  `data.sim = data.sim || data.sim_state || ''`。实测 SIM Status 由 Unknown 变 Ready。
+
+- **修复运营商 logo 压在名称上（概览页事实卡）**：`mt-facts-value` 是块级容器，
+  运营商 logo（`<img>`）与文本节点各占一行叠压，单元格高度从 24px 翻到 44px。
+  新增 `.mt-facts-value--inline` flex 变体 + `.mt-facts-logo`，不改动共用类以免
+  影响其余 20+ 处用法。实测高度回落到 24px，logo 20×20 同行对齐。
+
 ### Added
 - **新增前端构建配置（`semi-tcpweb/` 原先只有 `src/`，无任何构建入口，无法产出可发布产物）**：补齐 `package.json`（React 18 + Semi 2.103 + Vite 5 + TypeScript）、`vite.config.ts`（`base:'/5700/'`、构建期注入 `__APP_VERSION__`、hash 产物名 `assets/index-[hash].*`）、`tsconfig.json`、`index.html`。
 - **新增 `src/styles/breakpoints.ts` 断点契约**：CSS 与 JS 共用 `mobile 768 / compact 480 / tablet 1024`。改造前 CSS 断点（960/767）与 JS 断点（767/640/520）**互不重合**，≤640px 区间无任何 CSS 规则；5 处调用点（`Dial.tsx` / `Settings.tsx` / `ScanPanel.tsx` / `Upgrade.tsx` / `AppLayout.tsx`）已改为引用共享常量。响应式统一为**移动优先三档**：≥1024px 多列网格、768–1023px 两列、<768px 单列纵向堆叠、<480px 按钮全宽与 Steps 缩进复位。
@@ -142,7 +176,7 @@
 ### Verified
 - `cargo test`：连续 4 次全量 **94 passed / 0 failed**。
 - `tsc --noEmit` 全绿；顺带修两处既有类型错误（Semi `Collapse.onChange` 可能传 `undefined`，`SchedulePanel.tsx` / `Settings.tsx` 需窄化为 `[]`）。
-- 产物：CSS 724.02 kB / JS 986.95 kB，已同步至 `htdocs/5700/`（21 文件，清除旧 hash 产物）与 `root/usr/bin/at-webserver`（805,600 B）。
+- 产物：CSS 724.02 kB / JS 986.95 kB；Rust 二进制 807,936 B（补齐载波字段），已同步至 `htdocs/5700/`（21 文件，清除旧 hash 产物）与 `root/usr/bin/at-webserver`（805,600 B）。
 - Playwright 三档实测**均无横向溢出**（`scrollWidth == clientWidth`）：
 
   | 视口 | 375 | 768 | 1440 |

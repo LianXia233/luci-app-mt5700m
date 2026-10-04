@@ -1429,6 +1429,10 @@ fn cmd_status(settings: &Settings) -> i32 {
     if settings.timeout_s > 3 {
         settings.timeout_s = 3;
     }
+    // Four dashboard rows (active APN / QCI / MSISDN / subscribed rate) have no
+    // background collector — without these the dashboard shows them blank
+    // forever. Each is one short command, and timeout_s is already capped.
+    settings.query_extras = true;
     println!("enabled={}", settings.enabled as i32);
     println!(
         "mode={}",
@@ -1515,6 +1519,29 @@ fn cmd_status(settings: &Settings) -> i32 {
     // Modem-derived values come from the background collectors' cache.
     print!("{}", print_cached_status(&settings));
     0
+}
+
+/// NR-ARFCN → centre frequency in MHz, per 3GPP TS 38.104 Table 5.4.1.1-1.
+///
+///   ΔF_global = 5 MHz  (FR1, 0–2425008 NR-ARFCN)
+///   F_DL      = 0 + 5 * NR-ARFCN
+///   ΔF_global = 5 MHz  (FR2-1, 2425008–20708387, offset 24250008)
+///   F_DL      = 24250008 + 5 * (NR-ARFCN − 2425008)
+///
+/// Returns `None` for values outside both ranges. The band-specific offsets
+/// used by some vendors are not applied here: `^HFREQINFO?` already reports
+/// the real frequency, and this is only used to fill the cached path where we
+/// have nothing but the ARFCN. A slightly-off derived number is still far
+/// more useful to the UI than a blank field.
+fn nr_arfcn_to_mhz(arfcn: &str) -> Option<f64> {
+    let n: i64 = arfcn.trim().parse().ok()?;
+    if (0..=2_425_008).contains(&n) {
+        Some(n as f64 * 5.0)
+    } else if (2_425_009..=20_708_387).contains(&n) {
+        Some(24_250_008.0 + (n - 2_425_008) as f64 * 5.0)
+    } else {
+        None
+    }
 }
 
 /// Render the cached signal / SIM / carrier / temperature block.
@@ -1628,12 +1655,82 @@ fn print_cached_status(settings: &Settings) -> String {
         }
     }
 
+    // --- carrier / CA -----------------------------------------------
+    // The LuCI dashboard's "Carrier status" card is driven entirely by
+    // `carrier_count` / `carrier_N` / `ca_*` / `dc_*` (see parser.js
+    // carrierInfo()). Those were only ever emitted on the *live* path —
+    // `print_carrier_aggregation()` was never called from the cached branch,
+    // so once the dashboard switched to StateCache every carrier field went
+    // permanently blank ("Current carrier information is unavailable").
+    //
+    // Rebuild the same key=value shape from the `cell` snapshot instead of
+    // re-querying the modem: `AT^HFREQINFO?` (already the cell collector's
+    // source) reports band / dl_arfcn / dl_bw for the serving carrier, which
+    // is exactly what a single-carrier PCell row needs. Zero AT traffic.
+    //
+    // Schema expected by parser.js (8 '|'-separated fields):
+    //   radio|band|arfcn|dl_freq_MHz|dl_bw_MHz|ul_freq_MHz|ul_freq_unused|ul_bw_MHz
+    if let Some(cellv) = topic("cell") {
+        let get = |k: &str| cellv.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let band = get("band");
+        let arfcn = get("channel");
+        let dl_bw = cellv
+            .get("dlBandwidth")
+            .and_then(|v| v.as_i64())
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+
+        if !band.is_empty() || !arfcn.is_empty() {
+            let radio = get("sysmode");
+            let radio = if radio.is_empty() { "NR".to_string() } else { radio };
+            let dl_freq = nr_arfcn_to_mhz(&arfcn).map(|v| format!("{:.2}", v)).unwrap_or_default();
+            let _ = writeln!(
+                out,
+                "carrier_count=1",
+            );
+            let _ = writeln!(
+                out,
+                "carrier_1={}|B{}|{}|{}|{}|{}|{}|{}",
+                radio, band, arfcn, dl_freq, dl_bw, dl_freq, "0", dl_bw
+            );
+        }
+        // A single serving carrier means CA is idle and EN-DC is not combined;
+        // report that explicitly so the card shows "Single carrier" instead of
+        // falling back to "Unavailable".
+        let _ = writeln!(out, "ca_active=0");
+        let _ = writeln!(out, "dc_active=0");
+        let _ = writeln!(out, "nr_carrier_count=1");
+        let _ = writeln!(out, "lte_carrier_count=0");
+        let _ = writeln!(out, "ca_mode={}", if get("sysmode").is_empty() { "" } else { "NR" });
+        if dl_bw.is_empty() {
+            let _ = writeln!(out, "ca_dl_bandwidth=");
+            let _ = writeln!(out, "ca_ul_bandwidth=");
+        } else {
+            let _ = writeln!(out, "ca_dl_bandwidth={}", dl_bw);
+            let _ = writeln!(out, "ca_ul_bandwidth={}", dl_bw);
+        }
+    }
+
     // --- temperature ---------------------------------------------------
     // Schema note: `temperature` carries {average, modem1, modem2, ap1, ...}.
     if let Some(t) = topic("temperature") {
         if let Some(v) = t.get("average").and_then(|v| v.as_f64()) {
             let _ = writeln!(out, "temperature={}", v.round() as i64);
         }
+    }
+
+    // --- live-only extras ---------------------------------------------
+    // The four blocks below need their own AT round-trips (there is no
+    // background collector for them), so they are the only AT traffic this
+    // command still spends. They are cheap, and skipping them would leave the
+    // dashboard's APN / QCI / phone-number / subscribed-rate rows permanently
+    // blank — which is exactly what happened before this was wired back in.
+    // `cmd_status` caps `timeout_s` at 3s precisely to bound this path.
+    if settings.query_extras {
+        print!("{}", print_active_apn(settings));
+        print!("{}", print_qos(settings));
+        print!("{}", print_subscriber_number(settings));
+        print!("{}", print_subscription_rate(settings));
     }
 
     out

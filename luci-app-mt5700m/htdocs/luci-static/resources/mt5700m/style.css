@@ -1486,3 +1486,27 @@
 		transition: none !important;
 	}
 }
+
+/* 运营商 logo + 文字同行显示。
+   .mt-facts-value 是块级容器，img 与文本节点会各占一行（vertical-align
+   在块级上下文里对 img 不生效），表现为 logo 压在文字上、单元格高度翻倍。
+   这里单独提供 flex 变体，不改动共用类，避免影响其余 mt-facts-value。 */
+.mt-facts-value--inline {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+}
+
+.mt-facts-value--inline > span {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.mt-facts-logo {
+	flex: 0 0 auto;
+	width: 20px;
+	height: 20px;
+	border-radius: 3px;
+	object-fit: contain;
+}
