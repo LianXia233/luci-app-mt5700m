@@ -59,8 +59,18 @@ pub const TOPIC_BEAM: &str = "beam";
 pub const TOPIC_ENDC: &str = "endc";
 pub const TOPIC_TXPOWER: &str = "txpower";
 pub const TOPIC_NR_TXPOWER: &str = "nr_txpower";
+/// Interface byte counters + the shared traffic history (see snapshot.rs
+/// `collect_netrate`). Same physical source LuCI reads via
+/// `mt5700m-traffic`, so both UIs agree on one number.
+pub const TOPIC_NETRATE: &str = "netrate";
+/// Prefix for the read-gate's per-command raw cache (`raw:AT+CPIN?`).
+///
+/// 前缀式设计而不是独立 topic：读命令有40+ 条且会持续新增，用固定
+/// 集合枚举必然漏；加前缀后闸门对**任何**读命令自动适用，新增读点
+/// 不需要改后端。
+pub const TOPIC_RAW: &str = "raw:";
 
-pub const DEFAULT_TOPICS: [&str; 16] = [
+pub const DEFAULT_TOPICS: [&str; 17] = [
     TOPIC_SIGNAL,
     TOPIC_NETWORK,
     TOPIC_CELL,
@@ -71,6 +81,7 @@ pub const DEFAULT_TOPICS: [&str; 16] = [
     TOPIC_ENDC,
     TOPIC_TXPOWER,
     TOPIC_NR_TXPOWER,
+    TOPIC_NETRATE,
     TOPIC_USB,
     TOPIC_MODEM,
     TOPIC_TASK,

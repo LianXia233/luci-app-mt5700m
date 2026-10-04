@@ -37,6 +37,18 @@ interface BaseATResponse {
 interface CommandATResponse extends BaseATResponse {
   type?: never;
   data?: string;
+  /**
+   * 后端读命令闸门返回的「采集中」标记。
+   *
+   * 后端把渲染/轮询路径上的读命令全部改成只读缓存：命中时零 AT 秒回，
+   * 未命中时提交一次后台采集并**立刻**返回 pending（而不是让前端等AT
+   * 往返8~12 s）。前端据此渲染「采集中」占位，真实值随后由事件推送补上。
+   *
+   * 这条字段是「前端无论刷新多快都不影响后端」的可见证据：前端刷新
+   * 再频繁，AT 增量也是 0。
+   */
+  pending?: boolean;
+  message?: string;
 }
 
 // 添加信号数据接口
@@ -68,6 +80,7 @@ export type PushEventType =
   | 'cell.updated'
   | 'temperature.updated'
   | 'traffic.updated'
+  | 'netrate.updated'
   | 'registration.updated'
   | 'endc.updated'
   | 'txpower.updated'
@@ -110,6 +123,7 @@ const STATE_EVENT_TYPES = [
   'cell.updated',
   'temperature.updated',
   'traffic.updated',
+  'netrate.updated',
   'registration.updated',
   'endc.updated',
   'txpower.updated',
@@ -928,6 +942,22 @@ export class WebSocketATAdapter implements ATAdapter {
       } else {
         this.collectSMSChunk(typeof parsedData.data === 'string' ? parsedData.data : data);
       }
+      return;
+    }
+
+    // 读命令闸门的「采集中」应答：{success, pending:true, data:'', message}
+    //
+    // 必须**先于** matchesLastCommand 判定。pending 的 data 是空串，
+    // 走下面的命令匹配会因为对不上任何命令而被当成串号丢弃，结果前端
+    // 白等一个 commandTimeout。闸门的语义是「已受理、正在采集」，
+    // 不是失败，所以直接结算给等待方。
+    if (parsedData.pending === true) {
+      this.handleResponse({
+        success: true,
+        pending: true,
+        data: '',
+        message: parsedData.message,
+      } as CommandATResponse);
       return;
     }
 

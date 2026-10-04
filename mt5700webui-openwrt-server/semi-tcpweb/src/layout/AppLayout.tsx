@@ -57,6 +57,17 @@ const NAV_ITEMS = [
   },
 ];
 
+/**
+ * 常量提到模块作用域。
+ *
+ * 根因：原先写的是 `openKeys={['network', 'system', 'sms']}` —— 这是**每次渲染
+ * 都新建的数组字面量**。Nav 是受控组件，`openKeys` 引用一变它就认为「展开态
+ * 变了」，于是重算并重放子列表的展开过渡。任何一次 re-render（AT 连接状态
+ * 推送、主题切换、轮询刷新）都会触发一轮，表现为菜单项闪一下 / 过渡循环。
+ * 模块级常量的引用在应用生命周期内恒定，Nav 只会在真正需要时更新。
+ */
+const NAV_OPEN_KEYS = ['network', 'system', 'sms'];
+
 const PAGE_META: Record<string, { group: string; title: string }> = {
   '/network/info': { group: '网络设置', title: '网络状态' },
   '/network/setting': { group: '网络设置', title: '网络设置' },
@@ -208,7 +219,7 @@ const AppLayout: React.FC = () => {
             style={{ maxWidth: siderWidth, height: 'calc(100vh - 76px)' }}
             items={NAV_ITEMS}
             selectedKeys={selectedKeys}
-            openKeys={['network', 'system', 'sms']}
+            openKeys={NAV_OPEN_KEYS}
             isCollapsed={false}
             onSelect={(data) => {
               const key = String(data.itemKey);

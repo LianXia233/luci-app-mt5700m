@@ -1,4 +1,6 @@
-import React, { useId } from 'react';
+import React, { useEffect, useState, useId } from 'react';
+import { useMediaQuery } from '@/hooks/useMediaQuery';
+import { QUERY_MOBILE } from '@/styles/breakpoints';
 
 /**
  * Kawaii Minimal Dynamic SVG Visuals
@@ -13,12 +15,82 @@ import React, { useId } from 'react';
  * No neon/glow effects, no harsh dark shadows.
  */
 
+/**
+ * 装饰动画的使用者授权（Ambient Motion Opt-in）。
+ *
+ * 2026-10-04 实测（tools/probe_nav_anim.py）：桌面首屏 `getAnimations()` 返回
+ * 19 条，其中 **18 条是 infinite**——4 个 bubble + 1 cloud + 3 ripple + 10 个
+ * kawaii-p/pr 圆点，全在 `position: fixed` 的 SVG 装饰层里。手机档仍有 11 条。
+ *
+ * 这些动画不承载任何语义，纯粹是背景装饰，但代价是实打实的：每条 infinite
+ * 动画都会让浏览器在合成线程上 perpetually 保持图层，目标设备（MT6880 路由
+ * + 低端客户端浏览器）在同时跑数据面轮询时会明显感到卡顿。
+ *
+ * 判定为「只保留静态装饰」的情况：
+ *   - 视口 < 768px（手机档）：装饰层几乎全在视口外，看不见却照样合成；
+ *   - prefers-reduced-motion: reduce（无障碍）；
+ *   - 低并发设备（hardwareConcurrency <= 4）。
+ * 三者任一成立即降级为静态图形：装饰仍然绘制（视觉不缺失），但不再启动
+ * 任何动画。这比纯 CSS 的 `animation: none` 更彻底——不创建动画对象，
+ * 自然不占合成线程。
+ */
+export const useAmbientMotion = (): boolean => {
+  const isMobile = useMediaQuery(QUERY_MOBILE);
+  const [reduced, setReduced] = useState(false);
+  const [weak, setWeak] = useState(false);
+  const [forced, setForced] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    setReduced(mq.matches);
+    const onChange = () => setReduced(mq.matches);
+    mq.addEventListener('change', onChange);
+    // 低并发设备（如 4 核以下的瘦客户端 / 低端路由 CPU）同样降级。
+    const cores = navigator.hardwareConcurrency ?? 8;
+    setWeak(cores <= 4);
+
+    // 显式开关：localStorage['ambient-motion'] = 'off' | 'on'。
+    // 核数启发式对「浏览器跑在高性能 PC 上但页面服务的是低功耗路由」这种
+    // 常见场景判断不出来（实测桌面 16 核仍会在路由器上打开全部装饰动画）。
+    // 现场排障时可以在浏览器控制台一键关掉，不用改代码重新构建。
+    let stored: boolean | null = null;
+    try {
+      const v = window.localStorage.getItem('ambient-motion');
+      if (v === 'off') stored = false;
+      else if (v === 'on') stored = true;
+    } catch {
+      /* localStorage 不可用（隐私模式）时忽略即可 */
+    }
+    setForced(stored);
+
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  return !isMobile && !reduced && !weak && forced !== false;
+};
+
 // ============================================================================
 // 1. SvgAmbientMesh: 暖白与粉彩浮动气泡/柔和云朵背景
 // ============================================================================
 export const SvgAmbientMesh: React.FC = () => {
+  const motion = useAmbientMotion();
+  // 关闭动效时把动画类名换成静态类名：DOM 里不再存在 animation 声明，
+  // getAnimations() 自然归零，而不是靠 CSS 事后覆盖。
+  // base 形如 "kawaii-p kawaii-p-1"：整体是动画类，后面可跟修饰类。
+  // 降级时必须把 `--static` 追加到**动画类**上（kawaii-p--static），
+  // 而不是拼在整串末尾（kawaii-p-1--static），否则与 CSS 选择器不匹配。
+  const anim = (base: string) => {
+    if (motion) return base;
+    const parts = base.split(/\s+/);
+    return `${parts[0]}--static ${parts.slice(1).join(' ')}`;
+  };
+
   return (
-    <div className="kawaii-ambient-mesh" aria-hidden="true">
+    <div
+      className={`kawaii-ambient-mesh${motion ? '' : ' kawaii-ambient-mesh--still'}`}
+      aria-hidden="true"
+    >
       <svg
         className="kawaii-ambient-svg"
         viewBox="0 0 1440 900"
@@ -40,7 +112,7 @@ export const SvgAmbientMesh: React.FC = () => {
           fill="#FDE68A"
           opacity="0.32"
           filter="url(#kawaii-blur-soft)"
-          className="kawaii-bubble-float kawaii-bubble-float--1"
+          className={anim("kawaii-bubble-float kawaii-bubble-float--1")}
         />
         <circle
           cx="1260"
@@ -49,7 +121,7 @@ export const SvgAmbientMesh: React.FC = () => {
           fill="#F9A8D4"
           opacity="0.28"
           filter="url(#kawaii-blur-soft)"
-          className="kawaii-bubble-float kawaii-bubble-float--2"
+          className={anim("kawaii-bubble-float kawaii-bubble-float--2")}
         />
         <circle
           cx="880"
@@ -58,7 +130,7 @@ export const SvgAmbientMesh: React.FC = () => {
           fill="#A78BFA"
           opacity="0.22"
           filter="url(#kawaii-blur-soft)"
-          className="kawaii-bubble-float kawaii-bubble-float--3"
+          className={anim("kawaii-bubble-float kawaii-bubble-float--3")}
         />
         <circle
           cx="340"
@@ -67,7 +139,7 @@ export const SvgAmbientMesh: React.FC = () => {
           fill="#67E8F9"
           opacity="0.25"
           filter="url(#kawaii-blur-soft)"
-          className="kawaii-bubble-float kawaii-bubble-float--4"
+          className={anim("kawaii-bubble-float kawaii-bubble-float--4")}
         />
       </svg>
     </div>
@@ -183,6 +255,15 @@ export const SvgSignalTower: React.FC<{
   rsrp?: number | null;
   sinr?: number | null;
 }> = ({ percent, is5G = true, mode, rsrp, sinr }) => {
+  const motion = useAmbientMotion();
+  // base 形如 "kawaii-p kawaii-p-1"：整体是动画类，后面可跟修饰类。
+  // 降级时必须把 `--static` 追加到**动画类**上（kawaii-p--static），
+  // 而不是拼在整串末尾（kawaii-p-1--static），否则与 CSS 选择器不匹配。
+  const anim = (base: string) => {
+    if (motion) return base;
+    const parts = base.split(/\s+/);
+    return `${parts[0]}--static ${parts.slice(1).join(' ')}`;
+  };
   const p = percent ?? 0;
   const activeBars = p >= 80 ? 5 : p >= 60 ? 4 : p >= 40 ? 3 : p >= 20 ? 2 : p > 0 ? 1 : 0;
   const displayMode = mode || (is5G ? '5G NR' : '4G LTE');
@@ -200,7 +281,7 @@ export const SvgSignalTower: React.FC<{
           xmlns="http://www.w3.org/2000/svg"
         >
           {/* 柔和云朵装饰 */}
-          <g className="kawaii-cloud-float" opacity="0.8">
+          <g className={anim("kawaii-cloud-float")} opacity="0.8">
             <path
               d="M18 42 C18 36 24 33 28 35 C31 30 39 30 42 35 C46 33 51 36 50 42 Z"
               fill="#FFFFFF"
@@ -217,7 +298,7 @@ export const SvgSignalTower: React.FC<{
               strokeWidth="2.5"
               strokeLinecap="round"
               fill="none"
-              className="kawaii-ripple-1"
+              className={anim("kawaii-ripple-1")}
             />
             <path
               d="M 42 22 A 22 22 0 0 1 74 22"
@@ -225,7 +306,7 @@ export const SvgSignalTower: React.FC<{
               strokeWidth="2.5"
               strokeLinecap="round"
               fill="none"
-              className="kawaii-ripple-2"
+              className={anim("kawaii-ripple-2")}
             />
             <path
               d="M 36 14 A 30 30 0 0 1 80 14"
@@ -234,7 +315,7 @@ export const SvgSignalTower: React.FC<{
               strokeLinecap="round"
               strokeDasharray="4 3"
               fill="none"
-              className="kawaii-ripple-3"
+              className={anim("kawaii-ripple-3")}
             />
           </g>
 
@@ -329,6 +410,15 @@ export const SvgDataStream: React.FC<{
   dlRate?: number;
   ulRate?: number;
 }> = ({ active, downMbps, upMbps, dlRate, ulRate }) => {
+  const motion = useAmbientMotion();
+  // base 形如 "kawaii-p kawaii-p-1"：整体是动画类，后面可跟修饰类。
+  // 降级时必须把 `--static` 追加到**动画类**上（kawaii-p--static），
+  // 而不是拼在整串末尾（kawaii-p-1--static），否则与 CSS 选择器不匹配。
+  const anim = (base: string) => {
+    if (motion) return base;
+    const parts = base.split(/\s+/);
+    return `${parts[0]}--static ${parts.slice(1).join(' ')}`;
+  };
   const hasDl = (downMbps ?? (dlRate ? dlRate / 1024 : 0)) > 0.05;
   const hasUl = (upMbps ?? (ulRate ? ulRate / 1024 : 0)) > 0.05;
   const isStreaming = active ?? (hasDl || hasUl);
@@ -379,19 +469,19 @@ export const SvgDataStream: React.FC<{
 
         {/* 动态流动糖果微粒 */}
         <g className="kawaii-stream-particles-dl">
-          <circle cx="80" cy="14" r="5" fill="#F472B6" className="kawaii-p kawaii-p-1" />
-          <circle cx="220" cy="14" r="4" fill="#A78BFA" className="kawaii-p kawaii-p-2" />
-          <circle cx="360" cy="14" r="5.5" fill="#F9A8D4" className="kawaii-p kawaii-p-3" />
-          <circle cx="500" cy="14" r="4.5" fill="#C084FC" className="kawaii-p kawaii-p-4" />
-          <circle cx="640" cy="14" r="5" fill="#F472B6" className="kawaii-p kawaii-p-5" />
+          <circle cx="80" cy="14" r="5" fill="#F472B6" className={anim("kawaii-p kawaii-p-1")} />
+          <circle cx="220" cy="14" r="4" fill="#A78BFA" className={anim("kawaii-p kawaii-p-2")} />
+          <circle cx="360" cy="14" r="5.5" fill="#F9A8D4" className={anim("kawaii-p kawaii-p-3")} />
+          <circle cx="500" cy="14" r="4.5" fill="#C084FC" className={anim("kawaii-p kawaii-p-4")} />
+          <circle cx="640" cy="14" r="5" fill="#F472B6" className={anim("kawaii-p kawaii-p-5")} />
         </g>
 
         <g className="kawaii-stream-particles-ul">
-          <circle cx="640" cy="30" r="4.5" fill="#67E8F9" className="kawaii-p-rev kawaii-pr-1" />
-          <circle cx="500" cy="30" r="5" fill="#FDE68A" className="kawaii-p-rev kawaii-pr-2" />
-          <circle cx="360" cy="30" r="4" fill="#38BDF8" className="kawaii-p-rev kawaii-pr-3" />
-          <circle cx="220" cy="30" r="5.5" fill="#FCD34D" className="kawaii-p-rev kawaii-pr-4" />
-          <circle cx="80" cy="30" r="4.5" fill="#67E8F9" className="kawaii-p-rev kawaii-pr-5" />
+          <circle cx="640" cy="30" r="4.5" fill="#67E8F9" className={anim("kawaii-p-rev kawaii-pr-1")} />
+          <circle cx="500" cy="30" r="5" fill="#FDE68A" className={anim("kawaii-p-rev kawaii-pr-2")} />
+          <circle cx="360" cy="30" r="4" fill="#38BDF8" className={anim("kawaii-p-rev kawaii-pr-3")} />
+          <circle cx="220" cy="30" r="5.5" fill="#FCD34D" className={anim("kawaii-p-rev kawaii-pr-4")} />
+          <circle cx="80" cy="30" r="4.5" fill="#67E8F9" className={anim("kawaii-p-rev kawaii-pr-5")} />
         </g>
       </svg>
     </div>

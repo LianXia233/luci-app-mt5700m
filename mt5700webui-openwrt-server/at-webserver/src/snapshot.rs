@@ -21,8 +21,8 @@
 
 use crate::at_queue::{AtPayload, AtRequestSpec, AtResult, RetryPolicy};
 use crate::event_bus::{
-    EventBus, TOPIC_CELL, TOPIC_ENDC, TOPIC_MODEM, TOPIC_NETWORK, TOPIC_NR_TXPOWER, TOPIC_REGISTRATION,
-    TOPIC_SIGNAL, TOPIC_SIM, TOPIC_TEMPERATURE, TOPIC_TRAFFIC, TOPIC_TXPOWER,
+    EventBus, TOPIC_CELL, TOPIC_ENDC, TOPIC_MODEM, TOPIC_NETRATE, TOPIC_NETWORK, TOPIC_NR_TXPOWER,
+    TOPIC_REGISTRATION, TOPIC_SIGNAL, TOPIC_SIM, TOPIC_TEMPERATURE, TOPIC_TRAFFIC, TOPIC_TXPOWER,
 };
 use crate::json::{self, Value};
 use crate::state_cache::{Freshness, StateCache};
@@ -140,6 +140,148 @@ pub fn spawn_all(tasks: &TaskManager) {
         Some(Duration::from_secs(15)),
         Box::new(|ctx| collect_modem_info(ctx)),
     );
+    // netrate：网卡字节计数 + 与 LuCI 共享的 mt5700m-traffic 历史。
+    // 纯本地 sysfs/文件读取，全程零 AT 流量，5 s 一��也不会占独占串口。
+    tasks.add_periodic(
+        "snapshot.netrate",
+        Duration::from_secs(5),
+        Priority::Background,
+        Some(Duration::from_secs(5)),
+        Box::new(|ctx| collect_netrate(ctx)),
+    );
+}
+
+/// Read one sysfs counter, returning `None` when unreadable.
+fn read_counter(path: &str) -> Option<u64> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    raw.trim().parse::<u64>().ok()
+}
+
+/// Candidate modem-facing interfaces, most specific first.
+///
+/// Mirrors `mt5700m-traffic`'s default (`eth2`) but probes a couple of
+/// fallbacks so the numbers still show up when the kernel renames the netdev
+/// across a USB re-enumeration.
+const NETRATE_IFACES: [&str; 4] = ["eth2", "usb0", "wwan0", "eth1"];
+
+/// Detect which interface carries the modem's traffic.
+fn detect_netrate_iface() -> Option<&'static str> {
+    NETRATE_IFACES
+        .iter()
+        .copied()
+        .find(|d| std::path::Path::new(&format!("/sys/class/net/{}/statistics", d)).is_dir())
+}
+
+/// Collect interface byte counters plus the shared traffic history.
+///
+/// 单一数据源（2026-10-04）：累计/日/月流量来自
+/// `/usr/sbin/mt5700m-traffic json` —— 与 LuCI 概览页「IP 流量统计」
+/// 走的是**同一个二进制、同一份 /etc/mt5700m/traffic-history**。
+/// 此前 WebUI 读 AT^DSFLOWQRY（模组 PDCP 计数），LuCI 读网卡计数，
+/// 两者物理量不同，同一台设备会显示两套对不上的流量。统一到网卡口径后
+/// 两侧数字必然一致。
+///
+/// 写入方始终只有 mt5700m-traffic 的 daemon 一个；这里和两个前端都只读，
+/// 不存在双写。执行外部命令读 json 是为了和 LuCI 走**同一条代码路径**
+/// （只有它知道 history 的格式），而不是各自解析文件。
+///
+/// 实时速率由前端按两次采样差计算，这里只给原始累计计数。
+fn collect_netrate(ctx: &TaskCtx) -> Result<Value, crate::error::BackendError> {
+    let dev = match detect_netrate_iface() {
+        Some(d) => d,
+        None => {
+            // 接口还没 up：写一份明确标注的 unavailable，前端据此显示
+            // 「等待接口」而不是把上一轮的旧值继续显示成当前值。
+            let mut m = std::collections::BTreeMap::new();
+            m.insert("available".to_string(), json::bool_val(false));
+            m.insert(
+                "reason".to_string(),
+                json::str_val("/sys/class/net 下未找到可用接口（eth2/usb0/wwan0/eth1）"),
+            );
+            let v = Value::Obj(m);
+            store(ctx, TOPIC_NETRATE, "netrate.updated", &v);
+            return Ok(v);
+        }
+    };
+
+    let base = format!("/sys/class/net/{}/statistics", dev);
+    let rx = read_counter(&format!("{}/rx_bytes", base));
+    let tx = read_counter(&format!("{}/tx_bytes", base));
+
+    if rx.is_none() && tx.is_none() {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert("available".to_string(), json::bool_val(false));
+        m.insert("device".to_string(), json::str_val(dev));
+        m.insert("reason".to_string(), json::str_val("接口计数器不可读"));
+        let v = Value::Obj(m);
+        store(ctx, TOPIC_NETRATE, "netrate.updated", &v);
+        return Ok(v);
+    }
+
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("available".to_string(), json::bool_val(true));
+    m.insert("device".to_string(), json::str_val(dev));
+    m.insert(
+        "rx_bytes".to_string(),
+        rx.map(|v| json::num_val(v as f64)).unwrap_or(Value::Null),
+    );
+    m.insert(
+        "tx_bytes".to_string(),
+        tx.map(|v| json::num_val(v as f64)).unwrap_or(Value::Null),
+    );
+    m.insert("timestamp".to_string(), json::num_val(now_secs_f64()));
+
+    // 累计/日/月：与 LuCI 同源的那一份。
+    match run_traffic_json() {
+        Some(report) => {
+            m.insert("source".to_string(), json::str_val("mt5700m-traffic"));
+            m.insert("traffic".to_string(), report);
+        }
+        None => {
+            // 采集器本身不可用不影响实时速率（上面已拿到计数器），
+            // 只标明累计部分缺失。
+            m.insert("source".to_string(), json::str_val("unavailable"));
+        }
+    }
+
+    let v = Value::Obj(m);
+    store(ctx, TOPIC_NETRATE, "netrate.updated", &v);
+    Ok(v)
+}
+
+/// Shell out to `mt5700m-traffic json` and parse its output as JSON.
+///
+/// Returns the raw `Value` (an object with an `interfaces` array) so the
+/// frontends can read total/day/month without this backend having to
+/// re-define that file format.
+fn run_traffic_json() -> Option<Value> {
+    use std::process::{Command, Stdio};
+
+    let out = Command::new("/bin/sh")
+        .arg("-c")
+        .arg("/usr/sbin/mt5700m-traffic json")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    // json::parse 失败时返回 None（不是 Result），无需再 .ok()
+    crate::json::parse(text)
+}
+
+/// Seconds since the Unix epoch, as f64. Used for event timestamps only.
+fn now_secs_f64() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 /// Write a topic to the cache and publish the update event.

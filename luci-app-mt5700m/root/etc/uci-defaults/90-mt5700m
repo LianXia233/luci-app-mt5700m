@@ -55,7 +55,15 @@ uci -q commit mt5700m
 if [ -z "${IPKG_INSTROOT:-}" ]; then
 	rm -f /tmp/luci-indexcache /tmp/luci-modulecache/* 2>/dev/null || true
 	[ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd restart >/dev/null 2>&1 || true
-	[ -x /etc/init.d/uhttpd ] && /etc/init.d/uhttpd reload >/dev/null 2>&1 || true
+	# 刻意 **不** reload uhttpd。
+	#
+	# 本包没有改动 /etc/config/uhttpd 的任何字段（WebUI 静态资源直接落在
+	# uhttpd 默认 home=/www 下的 /www/5700，路由与 CGI 前缀都沿用默认值），
+	# 所以 reload 是多余的；而它恰恰是「WebUI 与 LuCI 同时打开时其中一个
+	# 加载不出数据」的确定性诱因：uhttpd reload 会掐断所有进行中的连接，
+	# 浏览器侧表现为 LuCI 页面停在加载中、或 WebUI 的 /cgi-bin/at-ws-info
+	# 拿不到 ws_url 而停在「AT 未连接」。安装/升级时用户的浏览器往往正开着
+	# 这两个页面，命中概率不低。
 	if [ -x /etc/init.d/mt5700m-manager ]; then
 		/etc/init.d/mt5700m-manager enable >/dev/null 2>&1 || true
 		# Do not let the procd monitor inherit apk's package-script pipes. A

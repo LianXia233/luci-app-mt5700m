@@ -212,6 +212,19 @@ body {
   animation: kawaii-float-subtle 16s ease-in-out infinite alternate;
 }
 
+/* 装饰动效降级（组件层 useAmbientMotion 授权关闭时附加）。
+   组件层已在不授权时直接不挂动画类，这里是第二道保险：即使某个类名因重构
+   漏改，`--static` 也会把 animation 清成 none，不会悄悄跑起来。 */
+.kawaii-bubble-float--static,
+.kawaii-cloud-float--static,
+.kawaii-ripple-1--static,
+.kawaii-ripple-2--static,
+.kawaii-ripple-3--static,
+.kawaii-p--static,
+.kawaii-p-rev--static {
+  animation: none !important;
+}
+
 .kawaii-bubble-float--1 { animation-duration: 18s; }
 .kawaii-bubble-float--2 { animation-duration: 22s; animation-delay: -5s; }
 .kawaii-bubble-float--3 { animation-duration: 26s; animation-delay: -10s; }
@@ -250,7 +263,23 @@ body {
   background: transparent !important;
 }
 
-.app-sider .semi-navigation-item {
+/* --------------------------------------------------------------------------
+   Nav items — 只作用于叶子项，必须排除 Semi 的分组父容器。
+
+   根因（2026-10-04 实测取证，tools/probe_nav_anim.py）：
+   `.semi-navigation-item` 同时命中**分组父容器**与叶子项。父容器的实测
+   class 是 `semi-navigation-sub-wrap semi-navigation-item semi-navigation-item-sub`，
+   叶子项是 `semi-navigation-item-normal semi-navigation-item`。父容器
+   （`系统模组设置模组升级`，实测 h=132px）包住自己的两个子项，于是同一套
+   规则在父容器上也生效：
+     · border-radius:9999px      → 132px 高的巨型胶囊
+     · :hover 粉底 + scale(1.03) → 罩住整组的粉色块（用户截图里的异常）
+     · :active scale(0.96)       → 整组一起被按扁
+   半-nav 组件库不保证 `.semi-navigation-item-sub` 一定存在（flat 模式下子项
+   也走同一个 wrapper），所以两条规则都以 `semi-navigation-item-normal` 为
+   命中条件——那是叶子项独有的修饰类，父容器绝不会带它。
+   -------------------------------------------------------------------------- */
+.app-sider .semi-navigation-item.semi-navigation-item-normal {
   min-height: 42px;
   margin: 4px 0;
   border-radius: var(--app-radius-full) !important;
@@ -258,12 +287,24 @@ body {
   transition: var(--app-t-tint);
 }
 
-.app-sider .semi-navigation-item:hover {
+/* 分组父容器（sub-wrap）只做排版，绝不参与 hover 缩放/高亮，否则整组会跟着动。
+   flex 布局由 Semi 内联样式控制，这里只清掉我们自己的视觉规则。 */
+.app-sider .semi-navigation-sub-wrap.semi-navigation-item {
+  min-height: 0;
+  margin: 10px 0 2px;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  transform: none !important;
+  transition: none;
+}
+
+.app-sider .semi-navigation-item.semi-navigation-item-normal:hover {
   background: #FFF1F2 !important;
   transform: scale(1.03);
 }
 
-.app-sider .semi-navigation-item:active {
+.app-sider .semi-navigation-item.semi-navigation-item-normal:active {
   transform: scale(0.96);
 }
 
@@ -2141,6 +2182,16 @@ body {
   font-size: 12.5px;
   font-weight: 600;
   color: var(--app-text-1);
+}
+
+/* 数据来源标注（累计统计面板）。流量口径必须对用户可见：网卡字节计数与
+   模组 PDCP 计数数量级不同，不标注会被当成「数字算错了」。 */
+.netrate-source {
+  display: block;
+  margin-top: 10px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--app-text-muted);
 }
 
 /* ==========================================================================

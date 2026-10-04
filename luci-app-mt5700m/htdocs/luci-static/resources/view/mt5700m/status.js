@@ -33,11 +33,18 @@ return view.extend({
 
 	load: function() {
 		// 异步化：首屏只依赖非阻塞数据源。AT 查询不在 load() 里发起。
+		//
+		// traffic 缓存在 this.trafficCache：轮询刷新时（frameFromSnapshot）
+		// 必须复用**上一帧**的流量数据，不能重置为空，否则「IP 流量统计」
+		// 会在第一次轮询（15s 后）被清成 0 B。
+		var self = this;
+		this.trafficCache = { interfaces: [] };
 		this.pending = Promise.all([
 			api.managerStatus().catch(function() { return {}; }),
 			api.trafficSummary().catch(function() { return { interfaces: [] }; }),
 			api.cachedSnapshot().catch(function() { return null; })
 		]).then(function(results) {
+			if (results[1] && results[1].interfaces) self.trafficCache = results[1];
 			return { manager: results[0], traffic: results[1], snapshot: results[2] };
 		});
 		return Promise.resolve();
@@ -57,7 +64,16 @@ return view.extend({
 			manager: manager || {},
 			native: { stdout: lines.join('\n'), stderr: '' },
 			session: { stdout: '', stderr: '' },
-			traffic: { interfaces: [] }
+			/*
+			 * 复用缓存的流量，而不是写死空数组。
+			 *
+			 * 原来这里硬编码 `traffic: { interfaces: [] }`，而 startPolling
+			 * 每 15s 用 frameFromSnapshot 整体重渲染一次 —— 于是「IP 流量统计」
+			 * 首帧正常、15 秒后被清成 0 B，实测 t=8s 有 26.0 GiB、
+			 * t=16s 起全部 0 B。轮询只该刷新「快照类」数据，流量是
+			 * 独立数据源（mt5700.traffic），不该被快照帧顺带清掉。
+			 */
+			traffic: this.trafficCache || { interfaces: [] }
 		};
 	},
 
@@ -83,7 +99,13 @@ return view.extend({
 		});
 	},
 
-	/* 快照轮询：零 AT 流量的持续自更新 */
+	/*
+	 * 快照轮询：零 AT 流量的持续自更新。
+	 *
+	 * 流量也一起刷：mt5700.traffic 与 cachedSnapshot 同源（后端 netrate topic），
+	 * 两者都是纯读、零 AT 流量，所以并发发起不会互相排队。合并成
+	 * Promise.all 后一次重渲染，避免中间态闪一下。
+	 */
 	startPolling: function(holder, base) {
 		var self = this;
 		if (this._pollTimer) clearInterval(this._pollTimer);
@@ -93,11 +115,18 @@ return view.extend({
 				self._pollTimer = null;
 				return;
 			}
-			api.cachedSnapshot().then(function(snapshot) {
-				if (!snapshot || !document.body.contains(holder)) return;
+			Promise.all([
+				api.cachedSnapshot().catch(function() { return null; }),
+				api.trafficSummary().catch(function() { return null; })
+			]).then(function(res) {
+				var snapshot = res[0];
+				if (res[1] && res[1].interfaces) self.trafficCache = res[1];
+				if (!document.body.contains(holder)) return;
+				/* 快照不可用时保持当前帧，但流量若拿到了仍可刷新 */
+				if (!snapshot) return;
 				holder.replaceChildren(self.renderPage(
 					self.frameFromSnapshot(snapshot, base.manager)));
-			}, function() { /* 快照不可用：保持当前帧 */ });
+			}, function() { /* 都不可用：保持当前帧 */ });
 		}, this.pollIntervalMs);
 	},
 
@@ -207,7 +236,13 @@ return view.extend({
 				c.badge(active ? _('Active') : _('Disconnected'), active ? 'active' : 'slate')
 			]),
 			c.row('IPv4', [ E('div', { 'class': 'mt-muted', 'style': 'text-align:right' }, session.ipv4Connected ? _('Connected') : _('Not assigned')), E('strong', {}, session.ipv4Address || '--') ]),
-			c.row('IPv6', [ E('div', { 'class': 'mt-muted', 'style': 'text-align:right' }, session.ipv6Connected ? _('Connected') : _('Not assigned')), E('strong', {}, session.ipv6Address || '--') ]),
+			/*
+			 * IPv6 是 39 字符无空格长串，窄容器下默认只在 `:` 处断行，
+			 * 实测会把末位（如 `...a74:16d` + `8`）孤立到下一行。
+			 * `anywhere` 允许在任意字符间断，代价是可能把一个 hextet 劈开；
+			 * 对「是否已连接」这个判断无影响，可读性明显更好。
+			 */
+			c.row('IPv6', [ E('div', { 'class': 'mt-muted', 'style': 'text-align:right' }, session.ipv6Connected ? _('Connected') : _('Not assigned')), E('strong', { 'style': 'word-break:break-all' }, session.ipv6Address || '--') ]),
 			E('div', { 'class': 'mt-session-note' }, (session.capability || '--') + ' · MTU ' + (session.mtu || '--')),
 			E('div', { 'class': 'mt-advanced-actions', 'style': 'justify-content:flex-start;margin-top:12px' },
 				c.btnLink(_('View connection details'), L.url('admin/modem/mt5700m/connection')))

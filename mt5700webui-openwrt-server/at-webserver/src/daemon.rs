@@ -704,6 +704,7 @@ fn sched_json() -> String {
 fn handle_control_request(
     arbiter: &Arc<AtArbiter>,
     cache: &Arc<StateCache>,
+    tasks: &Arc<TaskManager>,
     line: &str,
 ) -> String {
     let parsed = json::parse(line);
@@ -734,6 +735,25 @@ fn handle_control_request(
                 // writes are serialised as interactive actions. Reads use
                 // `ui_query` so a slow command is not retried against the
                 // shared channel (see AtRequestSpec::ui_query).
+                // 读命令闸门。**LuCI 的全部读命令都走这条 control
+                // socket**（mt5700m-at command -> auto_cascade ->
+                // daemon_transport -> 这里），不在 run_command 里；漏了
+                // 这里闸门等于没装 —— 实测表现为cached 里始终没有
+                // raw: topic。
+                match crate::read_gate::gate(&command, cache, tasks) {
+                    crate::read_gate::Gate::Cached(text) => {
+                        ok.insert("ok".to_string(), Value::Bool(true));
+                        ok.insert("response".to_string(), json::str_val(text.trim()));
+                        return Value::Obj(ok).dump();
+                    }
+                    crate::read_gate::Gate::Pending => {
+                        ok.insert("ok".to_string(), Value::Bool(true));
+                        ok.insert("pending".to_string(), Value::Bool(true));
+                        ok.insert("response".to_string(), json::str_val(""));
+                        return Value::Obj(ok).dump();
+                    }
+                    crate::read_gate::Gate::Passthrough => {}
+                }
                 let mut spec = if command.ends_with('?') {
                     AtRequestSpec::ui_query(&command)
                 } else {
@@ -743,8 +763,14 @@ fn handle_control_request(
                 spec.queued_timeout = spec
                     .queued_timeout
                     .max(Duration::from_secs(timeout + 2));
+                let is_write = !crate::read_gate::is_read_command(&command);
                 match await_request(arbiter, spec) {
                     Ok(text) => {
+                        // 写操作改了模组状态，读缓存必须立刻作废
+                        // （改 APN 后旧的 DHCP 地址不能继续显示）。
+                        if is_write {
+                            crate::read_gate::invalidate_related(cache, &command);
+                        }
                         ok.insert("ok".to_string(), Value::Bool(true));
                         ok.insert("response".to_string(), json::str_val(text.trim()));
                     }
@@ -829,7 +855,11 @@ fn await_request(arbiter: &Arc<AtArbiter>, spec: AtRequestSpec) -> Result<String
 }
 
 /// Bind the Unix control socket and service `mt5700m-at` requests.
-fn spawn_control_socket(arbiter: Arc<AtArbiter>, cache: Arc<StateCache>) {
+fn spawn_control_socket(
+    arbiter: Arc<AtArbiter>,
+    cache: Arc<StateCache>,
+    tasks: Arc<TaskManager>,
+) {
     #[cfg(unix)]
     {
         use std::io::BufRead;
@@ -858,15 +888,16 @@ fn spawn_control_socket(arbiter: Arc<AtArbiter>, cache: Arc<StateCache>) {
                 let Ok(stream) = incoming else { continue };
                 let arbiter = arbiter.clone();
                 let cache = cache.clone();
+                let tasks = tasks.clone();
                 thread::spawn(move || {
-                    handle_control_conn(&arbiter, &cache, stream);
+                    handle_control_conn(&arbiter, &cache, &tasks, stream);
                 });
             }
         });
     }
     #[cfg(not(unix))]
     {
-        let _ = (arbiter, cache);
+        let _ = (arbiter, cache, tasks);
     }
 }
 
@@ -874,6 +905,7 @@ fn spawn_control_socket(arbiter: Arc<AtArbiter>, cache: Arc<StateCache>) {
 fn handle_control_conn(
     arbiter: &Arc<AtArbiter>,
     cache: &Arc<StateCache>,
+    tasks: &Arc<TaskManager>,
     mut stream: std::os::unix::net::UnixStream,
 ) {
     use std::io::BufRead;
@@ -887,7 +919,7 @@ fn handle_control_conn(
     {
         return;
     }
-    let resp = handle_control_request(arbiter, cache, &line);
+    let resp = handle_control_request(arbiter, cache, tasks, &line);
     let _ = stream.write_all(resp.as_bytes());
     let _ = stream.flush();
 }
@@ -948,7 +980,7 @@ fn handle_rpc_request(
                 // 前端可按参数边界透传 args（sms-send 等多词参数），
                 // 缺省时后端对 cmd 做空格分词，兼容旧协议。
                 let args = params.get("args").and_then(|v| v.as_arr()).cloned();
-                handle_at_command(client, arbiter, tasks, bus, cmd, args)
+                handle_at_command(client, arbiter, tasks, bus, cache, cmd, args)
             }
         }
         // 缓存快照：零 AT 流量，LuCI 首屏立即拿到后台采集器状态。
@@ -1020,6 +1052,7 @@ fn handle_at_command(
     arbiter: &Arc<AtArbiter>,
     tasks: &Arc<TaskManager>,
     bus: &Arc<EventBus>,
+    cache: &Arc<StateCache>,
     cmd: &str,
     args: Option<Vec<Value>>,
 ) -> Value {
@@ -1029,10 +1062,10 @@ fn handle_at_command(
         if at_cmd.is_empty() {
             return err_response("缺少参数 cmd");
         }
-        return run_command(client, arbiter, tasks, bus, at_cmd);
+        return run_command(client, arbiter, tasks, bus, cache, at_cmd);
     }
     if trimmed.to_ascii_uppercase().starts_with("AT") {
-        return run_command(client, arbiter, tasks, bus, trimmed);
+        return run_command(client, arbiter, tasks, bus, cache, trimmed);
     }
     let cli_args: Vec<String> = match args {
         Some(list) => list.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
@@ -1278,7 +1311,7 @@ pub fn run(args: &[String]) -> i32 {
     spawn_urc_monitor(client.clone(), bus.clone());
 
     // LuCI CLI control socket -> arbiter (request -> result semantics).
-    spawn_control_socket(arbiter.clone(), cache.clone());
+    spawn_control_socket(arbiter.clone(), cache.clone(), tasks.clone());
 
     eprintln!(
         "at-webserver-rs listening on {} via {}",
@@ -1402,7 +1435,7 @@ fn handle_ws_conn(
                         }
                         continue;
                     }
-                    let response = run_command(client, arbiter, tasks, bus, &text);
+                    let response = run_command(client, arbiter, tasks, bus, cache, &text);
                     if !conn.try_send(&response.dump()) {
                         break;
                     }
@@ -1471,6 +1504,7 @@ fn run_command(
     arbiter: &Arc<AtArbiter>,
     tasks: &Arc<TaskManager>,
     bus: &Arc<EventBus>,
+    cache: &Arc<StateCache>,
     command: &str,
 ) -> Value {
     if command.trim() == "AT+CONNECT?" {
@@ -1484,6 +1518,27 @@ fn run_command(
         return resp;
     }
     let command = normalize_syscfgex(command);
+    // 读命令闸门：渲染/轮询路径上的读一律走 raw 缓存，绝不同步压 AT
+    // 通道。命中零阻塞；未命中提交单飞后台采集并立刻返回（SWR）。
+    //
+    // 写操作（拨号/设值/短信/清流量/升级/SIM PIN/终端）走Passthrough，
+    // 行为与改造前完全一致。
+    if let Some(cache) = Some(cache) {
+        match crate::read_gate::gate(&command, cache, tasks) {
+            crate::read_gate::Gate::Cached(text) => {
+                if at::response_ok(&text) {
+                    return ok_response(text.trim());
+                }
+                return err_response(text.trim());
+            }
+            crate::read_gate::Gate::Pending => {
+                // 无缓存可返：告知前端正在采集。前端据此显示「采集中」
+                // 占位而不是空值，采集完成后由 EventBus 推真实值。
+                return pending_response(&command);
+            }
+            crate::read_gate::Gate::Passthrough => {}
+        }
+    }
     // Reads deduplicate with the snapshot collectors; writes are serialised
     // as interactive actions. Never blocks beyond the arbiter's bounded wait.
     //
@@ -1493,6 +1548,7 @@ fn run_command(
     // commands' real latency, so a read would fail, retry while holding the
     // channel, and starve the other frontend — the two sides fighting over the
     // AT port rather than over-reading it.
+    let is_write = !crate::read_gate::is_read_command(&command);
     let spec = if command.ends_with('?') {
         AtRequestSpec::ui_query(&command)
     } else {
@@ -1501,6 +1557,13 @@ fn run_command(
     match await_request(arbiter, spec) {
         Ok(text) => {
             if at::response_ok(&text) {
+                // 写操作改变了模组状态，之前采集的 raw 读缓存已经过期
+                // （例如改 APN 后 AT^CGPADDR/AT^DHCP? 的旧地址必须丢掉）。
+                // 保守作废全部 raw：条目数 < 100，且写是低频用户行为，
+                // 代价（下次读重新采一次）远小于漏作废导致页面显示旧值。
+                if is_write {
+                    crate::read_gate::invalidate_related(cache, &command);
+                }
                 ok_response(text.trim())
             } else {
                 err_response(text.trim())
@@ -1508,6 +1571,22 @@ fn run_command(
         }
         Err(e) => err_response(&e.message()),
     }
+}
+
+/// 「采集中」占位应答。
+///
+/// 刻意返回 `success:true` + 空 data 而不是 error：前端拿它渲染
+/// 「采集中」占位而不是错误弹窗。真实值随后由 EventBus 推过来。
+fn pending_response(command: &str) -> Value {
+    let mut m: std::collections::BTreeMap<String, Value> = Default::default();
+    m.insert("success".to_string(), Value::Bool(true));
+    m.insert("pending".to_string(), Value::Bool(true));
+    m.insert("data".to_string(), json::str_val(""));
+    m.insert(
+        "message".to_string(),
+        json::str_val(&format!("{} 采集中，稍后自动更新", command.trim())),
+    );
+    Value::Obj(m)
 }
 
 #[cfg(test)]
@@ -1526,12 +1605,19 @@ mod tests {
         }))
     }
 
+    ///闸门需要 TaskManager 才能提交单飞采集，测试里造一个真实的
+    /// （transport 是 Stream::None，采集会立刻失败但不影响断言）。
+    fn test_tasks(arbiter: &Arc<AtArbiter>, cache: &Arc<StateCache>) -> Arc<TaskManager> {
+        TaskManager::new(arbiter.clone(), cache.clone(), EventBus::new())
+    }
+
     #[test]
     fn control_unknown_command_rejected() {
         let line = r#"{"cmd":"nope"}"#;
         let arbiter = test_arbiter();
         let cache = Arc::new(StateCache::new());
-        let resp = handle_control_request(&arbiter, &cache, line);
+        let tasks = test_tasks(&arbiter, &cache);
+        let resp = handle_control_request(&arbiter, &cache, &tasks, line);
         let v: Value = json::parse(&resp).expect("valid json");
         assert_eq!(v.get("ok").and_then(|x| x.as_bool()), Some(false));
     }
@@ -1541,7 +1627,8 @@ mod tests {
         let line = r#"{"cmd":"send","command":"   "}"#;
         let arbiter = test_arbiter();
         let cache = Arc::new(StateCache::new());
-        let resp = handle_control_request(&arbiter, &cache, line);
+        let tasks = test_tasks(&arbiter, &cache);
+        let resp = handle_control_request(&arbiter, &cache, &tasks, line);
         let v: Value = json::parse(&resp).expect("valid json");
         assert_eq!(v.get("ok").and_then(|x| x.as_bool()), Some(false));
     }
@@ -1549,14 +1636,18 @@ mod tests {
     #[test]
     fn control_send_with_no_transport_errors() {
         // Serial not connected => daemon reports ok=false with an error.
+        //
+        // 刻意用**写命令** `AT+CFUN=0`：读命令会被 read_gate 闸门拦下
+        // （返回 pending 占位），那样就测不到「无传输时报错」这条路径了。
         let mut req = std::collections::BTreeMap::new();
         req.insert("cmd".to_string(), json::str_val("send"));
-        req.insert("command".to_string(), json::str_val("AT+CSQ"));
+        req.insert("command".to_string(), json::str_val("AT+CFUN=0"));
         req.insert("timeout".to_string(), json::num_val(1));
         let line = format!("{}\n", json::Value::Obj(req).dump());
         let arbiter = test_arbiter();
         let cache = Arc::new(StateCache::new());
-        let v: Value = json::parse(&handle_control_request(&arbiter, &cache, &line)).expect("json");
+        let tasks = test_tasks(&arbiter, &cache);
+        let v: Value = json::parse(&handle_control_request(&arbiter, &cache, &tasks, &line)).expect("json");
         assert_eq!(v.get("ok").and_then(|x| x.as_bool()), Some(false));
         assert!(v
             .get("error")
@@ -1565,13 +1656,36 @@ mod tests {
             .contains("not connected"));
     }
 
+    /// 读命令走闸门：无缓存时返回 pending 占位而**不是**阻塞等 AT。
+    ///
+    /// 这是「页面加载不被后端耗时任务阻塞」的机制保证 —— control socket
+    /// 的send 分支同样适用（LuCI 的 `mt5700m-at command 'AT^DHCP?'`
+    /// 走的就是这条路径）。
+    #[test]
+    fn control_send_read_command_is_gated() {
+        let mut req = std::collections::BTreeMap::new();
+        req.insert("cmd".to_string(), json::str_val("send"));
+        req.insert("command".to_string(), json::str_val("AT^DHCP?"));
+        let line = format!("{}\n", json::Value::Obj(req).dump());
+        let arbiter = test_arbiter();
+        let cache = Arc::new(StateCache::new());
+        let tasks = test_tasks(&arbiter, &cache);
+        let v: Value = json::parse(&handle_control_request(&arbiter, &cache, &tasks, &line)).expect("json");
+        // 关键：ok=true（已受理），pending=true（采集中），而不是 ok=false。
+        assert_eq!(v.get("ok").and_then(|x| x.as_bool()), Some(true));
+        assert_eq!(v.get("pending").and_then(|x| x.as_bool()), Some(true));
+        // pending 时刻意返回空串：前端据此渲染占位，不该拿到半截数据。
+        assert_eq!(v.get("response").and_then(|x| x.as_str()), Some(""));
+    }
+
     #[test]
     fn control_cached_returns_snapshot() {
         let arbiter = test_arbiter();
         let cache = Arc::new(StateCache::new());
+        let tasks = test_tasks(&arbiter, &cache);
         cache.set("signal", json::str_val("warm"), "test");
         let line = r#"{"cmd":"cached"}"#;
-        let resp = handle_control_request(&arbiter, &cache, line);
+        let resp = handle_control_request(&arbiter, &cache, &tasks, line);
         let v: Value = json::parse(&resp).expect("json");
         assert_eq!(v.get("ok").and_then(|x| x.as_bool()), Some(true));
         assert!(v.get("snapshot").is_some());
@@ -1741,13 +1855,17 @@ mod tests {
             attached_port: None,
         });
         // 无 auth_key -> 拒绝
+        //
+        // 用写命令 `AT+CFUN=0` 作载体：读命令会被 read_gate 闸门拦成
+        // pending（success=true），那样就断不出「无传输 -> success=false」
+        // 这条路径了。本测试关注的是鉴权，不是读命令的缓存行为。
         let resp = handle_rpc_request(
             &client,
             &arbiter,
             &tasks,
             &bus,
             &cache,
-            r#"{"id":5,"method":"at","params":{"cmd":"AT+CSQ"}}"#,
+            r#"{"id":5,"method":"at","params":{"cmd":"AT+CFUN=0"}}"#,
         );
         assert!(resp.get("error").is_some());
         // 正确的 auth_key -> 放行（无传输 -> 命令报错而非鉴权错误）
@@ -1757,7 +1875,7 @@ mod tests {
             &tasks,
             &bus,
             &cache,
-            r#"{"id":6,"method":"at","params":{"cmd":"AT+CSQ","auth_key":"sekret"}}"#,
+            r#"{"id":6,"method":"at","params":{"cmd":"AT+CFUN=0","auth_key":"sekret"}}"#,
         );
         assert!(resp.get("error").is_none(), "auth passes");
         let result = resp.get("result").expect("result object");

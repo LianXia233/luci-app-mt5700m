@@ -157,79 +157,13 @@ function jsonParse(s) {
 }
 
 /*
- * 解析承载 5G 流量的网络设备名。
- * 优先 UCI network.MT5700M.device，其次 ifname，都拿不到才退回 eth2。
- * 不硬编码单一设备名，避免不同机型/接口命名下取不到计数。
- */
-function detectModemDevice() {
-	let dev = null;
-	try {
-		const cursor = uci.cursor();
-		dev = cursor.get('network', 'MT5700M', 'device');
-		if (dev == null || dev == '') {
-			dev = cursor.get('network', 'MT5700M', 'ifname');
-		}
-	} catch (e) {
-		dev = null;
-	}
-	if (dev == null || dev == '') {
-		dev = 'eth2';
-	}
-	return dev;
-}
-
-/* 读取单个字节计数器；失败返回 null（不做静默补 0，避免算出假速率） */
-function readCounter(path) {
-	let f;
-	try {
-		f = fs.open(path, 'r');
-	} catch (e) {
-		return null;
-	}
-	if (!f) {
-		return null;
-	}
-	let s = f.read('line');
-	f.close();
-	if (s == null) {
-		return null;
-	}
-	let v = int(s);
-	if (v == null) {
-		return null;
-	}
-	return v;
-}
-
-/*
- * 取网络接口累计字节数。
- * 实时速率由前端按「两次采样差 / 时间差」计算，这里只返回原始计数与本机时钟，
- * 由前端统一时间基准，规避 rpcd 与浏览器时钟不同源的抖动。
+ * netrateCall / trafficCall 已下移到 rpcCall 之后。
  *
- * 关键：全程不向模组下发任何 AT 命令，避免占用 AT 通道、干扰模组工作。
+ * 原因：两者现在都要经 rpcCall 读后端 StateCache，而 rpcCall 定义在文件后部。
+ * ucode 虽会把 function 声明提升到块作用域，但本文件刻意保持
+ * 「先定义、后引用」的单向顺序（与既有 jsonParse / strIndexOf 的
+ * 引用方向一致），避免依赖提升行为。
  */
-function netrateCall(req) {
-	let a = req.args;
-	let dev = getStr(a, 'device');
-	if (dev == null || dev == '') {
-		dev = detectModemDevice();
-	}
-
-	const base = '/sys/class/net/' + dev;
-	const rx = readCounter(base + '/statistics/rx_bytes');
-	const tx = readCounter(base + '/statistics/tx_bytes');
-
-	if (rx == null && tx == null) {
-		return { success: false, device: dev, error: '读不到接口计数器，设备可能不存在或未 up' };
-	}
-
-	return {
-		success: true,
-		device: dev,
-		rx_bytes: rx == null ? 0 : rx,
-		tx_bytes: tx == null ? 0 : tx
-	};
-}
 
 /* 查单字符分隔符下标（ucode 全局 index 在本固件未必可用，用 substr 逐字符扫描） */
 function strIndexOf(s, ch) {
@@ -429,14 +363,14 @@ function rpcCall(method, params, timeoutS) {
 		}
 	}
 
-	/* busybox/coreutils 的 timeout 均支持 `timeout N cmd ...` 位置参数 */
-	let ncCmd;
-	if (tmoBin != '') {
-		ncCmd = tmoBin + ' ' + rpcTimeoutS + ' ' + ncBin + ' 127.0.0.1 ' + port + ' < ' + tmp;
-	} else {
-		ncCmd = ncBin + ' -w ' + rpcTimeoutS + ' 127.0.0.1 ' + port + ' < ' + tmp;
-	}
-
+	/*
+	 * busybox/coreutils 的 timeout 均支持 `timeout N cmd ...` 位置参数。
+	 *
+	 * ncCmd 必须在 tmp 声明**之后**构造：ucode 的 let/const 是块级作用域，
+	 * 提前引用会抛 "access to undeclared variable tmp"，rpcd 把整个方法
+	 * 报成 Unknown error（实测踩过：rpcd -S 才看得到这句 Reference error，
+	 * 普通 logread 里什么都没有）。
+	 */
 	const body = sprintf('%J', payload);
 
 	/*
@@ -455,6 +389,14 @@ function rpcCall(method, params, timeoutS) {
 		rid = sprintf('%d-%d', time(), rpcFallbackSeq++);
 	}
 	const tmp = '/tmp/mt5700-rpc-' + rid + '.json';
+
+	let ncCmd;
+	if (tmoBin != '') {
+		ncCmd = tmoBin + ' ' + rpcTimeoutS + ' ' + ncBin + ' 127.0.0.1 ' + port + ' < ' + tmp;
+	} else {
+		ncCmd = ncBin + ' -w ' + rpcTimeoutS + ' 127.0.0.1 ' + port + ' < ' + tmp;
+	}
+
 	let f;
 	try {
 		f = fs.open(tmp, 'w');
@@ -513,6 +455,128 @@ function rpcCall(method, params, timeoutS) {
 	} catch (e) {
 		return { success: false, error: '解析应答失败: ' + e.message };
 	}
+}
+
+/*
+ * 从后端 cached 快照里取出某个 topic 的 entry（含 value/fresh/age_ms/source）。
+ * 找不到时返回 null，调用方负责降级。
+ *
+ * 注意：rpcCall 成功时返回的是后端的 result 对象，`cached` 方法里用的是
+ * `ok:true` 而**不是** `success:true`（后者是本文件自己的返回约定）。
+ * 这里只判「有没有拿到 snapshot」，不要用 success 去筛，否则一律判失败。
+ */
+function cachedTopic(topic, rid) {
+	let res = rpcCall('cached', { _rid: rid }, 6);
+	if (res == null) {
+		return null;
+	}
+	let snap = res.snapshot;
+	if (snap == null) {
+		return null;
+	}
+	return snap[topic];
+}
+
+/*
+ * 网络接口累计字节数 —— 经 Rust 后端 StateCache 读取（单后端）。
+ *
+ * 2026-10-04 收口：原先这里自己 open('/sys/class/net/eth2/statistics/rx_bytes')
+ * 直读网卡计数器，而 WebUI 读的是后端 netrate topic。同一个物理量、两条采集
+ * 路径，采样时刻不同就会差几百 KB。现在两侧统一读后端采集器（5 s 周期）
+ * 写入的 netrate topic，LuCI 与 WebUI 拿到的是同一份数值。
+ *
+ * 后端不可用时**不静默回落到本地直读**：那正是本次要消灭的双路径。
+ * 直接返回失败，由前端显示「后端未运行」，避免两侧数字悄悄分叉。
+ * 保留 device 入参仅用于回显，不再影响取值。
+ *
+ * 实时速率仍由前端按两次采样差 / 时间差计算；这里额外返回后端 timestamp，
+ * 前端优先用它做时间基准，规避 rpcd 与浏览器时钟不同源的抖动。
+ */
+function netrateCall(req) {
+	let a = req.args;
+	let rid = getStr(a, '_rid');
+	let wantDev = getStr(a, 'device');
+
+	let entry = cachedTopic('netrate', rid);
+	if (entry == null) {
+		return {
+			success: false,
+			error: '后端 netrate 采集器尚无数据（at-webserver 未运行或刚启动，请稍后重试）'
+		};
+	}
+
+	let v = entry.value;
+	if (v == null) {
+		return { success: false, error: '后端 netrate topic 为空' };
+	}
+
+	/* available=false 是后端显式标注的「接口不存在/计数器不可读」，
+	 * 必须原样透传给前端，不能当成 0 —— 否则页面会显示一个假的 0 B/s。 */
+	if (v.available !== true) {
+		return {
+			success: false,
+			available: false,
+			device: v.device != null ? v.device : wantDev,
+			reason: v.reason != null ? v.reason : '接口不可用',
+			fresh: entry.fresh,
+			age_ms: entry.age_ms
+		};
+	}
+
+	return {
+		success: true,
+		available: true,
+		device: v.device,
+		rx_bytes: v.rx_bytes,
+		tx_bytes: v.tx_bytes,
+		timestamp: v.timestamp,
+		/* 后端采集器周期 5 s，这里额外暴露新鲜度便于前端提示「数据可能已过期」 */
+		fresh: entry.fresh,
+		age_ms: entry.age_ms,
+		source: 'at-webserver'
+	};
+}
+
+/*
+ * 累计/日/月流量 —— 经 Rust 后端 StateCache 读取（单后端）。
+ *
+ * 历史文件 /etc/mt5700m/traffic-history 的唯一写入方是 mt5700m-traffic 的
+ * daemon；后端 netrate 采集器调 `mt5700m-traffic json` 读回并放进 netrate
+ * topic。LuCI 与 WebUI 都只读这个 topic，因此两侧看到的是同一份快照。
+ *
+ * 返回形状保持与旧的 `mt5700m-traffic summary`（直接 exec 二进制）完全
+ * 一致：{ interfaces:[{name,updated,traffic:{total,day,month}}] }，
+ * 所以 status.js 的 trafficPanel 无需改动。
+ */
+function trafficCall(req) {
+	let rid = getStr(req.args, '_rid');
+
+	let entry = cachedTopic('netrate', rid);
+	if (entry == null) {
+		return { success: false, error: '后端 netrate 采集器尚无数据，无法读取累计流量' };
+	}
+
+	let v = entry.value;
+	if (v == null) {
+		return { success: false, error: '后端 netrate topic 为空' };
+	}
+	if (v.available !== true) {
+		return {
+			success: false,
+			available: false,
+			reason: v.reason != null ? v.reason : '接口不可用'
+		};
+	}
+	if (v.traffic == null) {
+		return {
+			success: false,
+			available: true,
+			source: v.source != null ? v.source : 'unavailable',
+			error: '后端未取到 mt5700m-traffic 输出（历史可能尚未初始化）'
+		};
+	}
+
+	return { success: true, source: 'at-webserver', report: v.traffic };
 }
 
 return {
@@ -574,9 +638,15 @@ return {
 			}
 		},
 		netrate: {
-			args: { device: '' },
+			args: { device: '', _rid: '' },
 			call: function (req) {
 				return netrateCall(req);
+			}
+		},
+		traffic: {
+			args: { _rid: '' },
+			call: function (req) {
+				return trafficCall(req);
 			}
 		},
 		usb: {

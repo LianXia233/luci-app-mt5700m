@@ -16,3 +16,11 @@ mt5700webui-openwrt-server/at-webserver/files-py/** text eol=lf
 *.woff2 binary
 *.ico binary
 *.rs text eol=lf
+
+# Build-system files: OpenWrt's kbuild parses Makefiles line-wise; a stray
+# CR makes it silently drop variables (e.g. PKG_VERSION) and the package
+# ships with the wrong version.
+Makefile text eol=lf
+*.mk text eol=lf
+Cargo.toml text eol=lf
+Cargo.lock text eol=lf

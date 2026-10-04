@@ -153,3 +153,94 @@ connect → 可选 { action: subscribe, topics:[...] } → 服务端只推订阅
 - 并发安全按场景选 `Mutex` / `Arc` / 原子 / 通道，不滥用锁。
 - 空闲后台任务数量可控，避免 Task Explosion（去重、节流、背压、周期不重叠）。
 - OpenWrt mediatek/filogic aarch64_cortex-a53 交叉编译稳定，`release static strip`，固件体积可控。
+---
+
+## 11. 实测验证结果（2026-10-05）
+
+改造已部署到实机（192.168.10.1），后端二进制
+`aarch64-unknown-linux-musl` 818,328 B / md5 `077bff7191b9455265b66c60fbaac361`，
+`cargo test` 104 passed / 0 failed。
+
+### 11.1 闸门生效证据
+
+| 指标 | 改造前 | 改造后 | 改善 |
+|---|---|---|---|
+| 单次读命令 `AT^DHCP?` | 0.32 s | 0.07 s | 4.6x |
+| 10 次串行 | 2.03 s | 0.15 s | 13.5x |
+| **边际斜率** | ~200 ms/次 | **8.9 ms/次** | **22.5x** |
+| `raw:` age_ms | 每次被刷回 0 | 单调增长 | 缓存复用 |
+
+判据用**边际斜率**而非「总耗时 < 单次 × N」：单档里含 SSH 建连与进程首启的
+一次性开销（~50 ms），拿它当基线会误判（实测0.15 s vs 0.07×2 = 0.14 s，
+只差 0.01 s 就FAIL）。真正要证明的是「每多刷一次多花多少毫秒」。
+
+### 11.2 三条后端路径均已覆盖
+
+| 路径 | 入口 | 覆盖情况 |
+|---|---|---|
+| JSON-RPC `at` | `daemon.rs: run_command` | 已接闸门 |
+| control socket `send` | `daemon.rs: handle_control_request` | 已接闸门（**LuCI 全部读命令走这条**） |
+| CLI fork 子进程 | `daemon.rs: cli_capture` → `cli.rs: run_at` | 复用 control socket，自动覆盖 |
+
+第二处是最容易漏的：只接 `run_command` 时闸门等于没装，实测表现为
+`mt5700m-at cached` 里始终没有 `raw:` topic。
+
+### 11.3 判定漏洞修复
+
+实机验证暴露：`AT+CNUM` 未入缓存。根因是**无参查询**（既无 `?` 也无 `=`
+也不在动词白名单）被判成写命令。修复后新增 4 组测试锁死：
+
+- `paramless_queries_count_as_read` —— 无参查询判读
+- `paramless_actions_stay_write` —— `AT^CELLSCAN` / `AT&F0` 等动作仍判写
+- `all_backend_read_commands_are_classified_as_read` —— **全量反查**：清单来自
+  `grep -ohE '"AT[+^&][^"]*"' src/cli.rs src/snapshot.rs`，新增读命令忘加白名单
+  会立刻测试失败，而不是等到实机表现为「页面偶尔不显示数据」。这条测试当场
+  抓出漏判的 `AT+CSQ`（信号强度，at_queue网速测量依赖它）与 `AT^SYSINFOEX`。
+- `non_cid_param_variants_stay_write` —— `AT^NRRCCAPCFG=5,1,0`（真赋值）
+  不得被 `AT^NRRCCAPQRY=`（查询）的前缀规则误收。
+
+补进白名单的无参查询：`AT+CNUM`、`AT+CIMI`、`AT+CSQ`、`AT^MONSC`、
+`AT^MONSSC`、`AT^DSFLOWQRY`、`AT^FOTADLQ`、`AT^SYSINFOEX`。
+
+### 11.4 并发共存验证
+
+4 worker × 6 轮，混合 control socket / JSON-RPC / CLI fork 三条路径，
+全程无 sleep：
+
+```
+完成 24 次调用，总墙钟 0.57 s（平均 24 ms/次）
+  control  n=12  平均 61 ms
+  rpc      n=6   平均 51 ms
+  fork     n=6   平均 77 ms
+age_ms 单调增长: 是   [3471 → 7482 → 11492]
+后端进程存活 / 端口 8765 LISTEN / netrate 快照 fresh
+结论: PASS
+```
+
+`age_ms` 在轰炸结束后仍持续单调增长，证明**零重采集**——AT 流量与前端
+刷新率完全无关。
+
+### 11.5 页面层实测
+
+- LuCI 7/7 标签页正常，无「未连接」标记，零 JS 错误（独立标签页）。
+- WebUI 直开零 JS 错误，`/5700/` 与两个 asset 均 200。
+- 双标签页各刷新 3 轮后，LuCI 2058 字 / WebUI 1151 字，数据同源。
+- LuCI 数据方法 `cached` / `netrate` / `traffic` / `logs` / `usb` 均
+  0.05~0.09 s 返回；`mt5700m-at status` 0.08 s（改造前 0.296 s）。
+
+### 11.6 两个非本次引入的问题（仅记录，不越界修改）
+
+1. **LuCI 核心 `E is not defined` / `findParent is not defined`**
+   堆栈指向 `/luci-static/resources/luci.js:184` 与 `ui.js:287`
+   `showTooltip`，**未进入本插件即复现**，是 ImmortalWrt 上游 LuCI 既有缺陷。
+
+2. **`AT+CNUM` 模组不应答**
+   中国移动网络下返回空串，故采集失败且**故意不写缓存** —— 把空值缓存
+   起来等于把「不支持」固化，之后每次访问都白下发一条 AT。属正确行为。
+
+### 11.7 IMEI
+
+本轮及验证脚本全程未下发任何 IMEI 命令。`AT^PHYNUM` 未纳入白名单、
+未写入任何测试断言；`AT+CGSN` 保持既有白名单条目不动（无新增测试）。
+WebUI `pages/system/Info.tsx` 的 IMEI 写入入口按用户指示「暂不动」，
+仍是遗留红线隐患。

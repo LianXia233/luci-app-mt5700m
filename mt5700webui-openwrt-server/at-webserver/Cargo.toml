@@ -1,6 +1,9 @@
 [package]
 name = "at-webserver"
-version = "4.0.4"
+# 4.1.0 — 读命令缓存闸门（read_gate）。渲染/轮询路径上的读命令不再直压
+# AT 通道：命中 raw 缓存零 AT 零阻塞，未命中提交单飞后台采集并立刻返回
+# pending 占位。AT 流量与前端刷新率彻底解耦。写命令路径完全不变。
+version = "4.1.0"
 edition = "2021"
 description = "MT5700M AT WebSocket daemon + LuCLI backend (single binary, dual frontend)"
 license = "MIT"

@@ -82,6 +82,9 @@ pub fn default_ttl(topic: &str) -> Duration {
         "sim" => Duration::from_secs(70),
         "modem_info" => Duration::from_secs(75),
         "usb" => Duration::from_secs(8),
+        // 采集器 5 s 一轮（纯 sysfs/文件读，零 AT 流量），TTL 略大于周期，
+        // 保证前端读到的永远是最近一次采样而不 miss。
+        "netrate" => Duration::from_secs(8),
         _ => Duration::from_secs(10),
     }
 }
@@ -159,6 +162,12 @@ impl StateCache {
     /// Drop everything (USB reset / modem re-appear).
     pub fn invalidate_all(&self) {
         self.entries.write().unwrap().clear();
+    }
+
+    /// All topic names currently held. Used by the read gate to invalidate
+    /// raw entries after a write without having to enumerate command names.
+    pub fn entries_snapshot(&self) -> Option<Vec<String>> {
+        Some(self.entries.read().unwrap().keys().cloned().collect())
     }
 
     /// Full dump for the WS `snapshot` action / HTTP `/api/state`.

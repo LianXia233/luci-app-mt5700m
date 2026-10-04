@@ -1424,11 +1424,31 @@
 	.mt-system-fota-actions,
 	.mt-diag-actions,
 	.mt-scan-actions { flex-wrap: wrap; }
+
+	/*
+	 * 移动端按钮铺满整行。
+	 *
+	 * 原写法 `flex: 1 1 140px` 有一个致命前提：这些容器都是 **row** 方向，
+	 * 此时 flex-basis 作用在宽度上，「至少 140px 宽」正是想要的。
+	 * 但射频页那个容器被内联成 `flex-direction:column`（说明文字 + 应用按钮
+	 * 竖排），同一行规则就套到了列方向容器上 —— flex-basis 变成**高度**，
+	 * 于是一个单行按钮被撑成 140px 高的方块。
+	 *
+	 * 修法：用 `min-width` 表达「至少这么宽」，让主轴方向无关；
+	 * 竖排时用 `width:100%` 铺满横向，高度仍由内容决定（auto）。
+	 */
 	.mt-advanced-actions > *,
 	.mt-session-actions > *,
 	.mt-system-fota-actions > *,
 	.mt-diag-actions > *,
-	.mt-scan-actions > * { flex: 1 1 140px; }
+	.mt-scan-actions > * { flex: 1 1 auto; min-width: 140px; }
+
+	/* 竖排容器（说明文字在上、主按钮在下）：用 class 而不是内联样式匹配，
+	   内联 style 会被 style.css 之外的规则或后续改动打乱。
+	   主轴是纵向时，高度必须由内容决定（flex-basis: auto），
+	   只保留横向铺满。 */
+	.mt-advanced-actions--stacked { flex-direction: column; align-items: stretch; }
+	.mt-advanced-actions--stacked > * { flex: 0 0 auto; min-width: 0; }
 
 	.mt-sms-chat-list { max-height: min(340px, 55vh); }
 }

@@ -134,11 +134,22 @@ const NetworkInfo: React.FC = () => {
     totalDsTime: 0,
     totalTxFlow: 0,
     totalRxFlow: 0,
+    // netrateSource: 'modem' = AT^DSFLOWQRY（模组 PDP 计数）
+    //                'netdev'  = mt5700m-traffic（网卡字节计数，与 LuCI 同源）
+    // 两套计数物理量不同，同时显示只会互相误导，因此默认走 netdev 并在
+    // UI 上标注来源。切回 modem 仅用于与模组自带诊断对齐。
+    netrateSource: 'netdev' as 'modem' | 'netdev',
   });
+  // 自动刷新默认全部开启（2026-10-04）。此前三个开关默认 false，等于
+  // 首屏之后数据就冻结了，用户必须逐个手动打开——而实时速率、流量、
+  // 温度本来就是持续变化的量，冻结即失真。
+  // 间隔 5s 与后端采集周期对齐（StateCache: traffic 35s TTL、
+  // temperature 由 manager 15s 刷新），不会因为间隔更短而多打 AT：
+  // 流量/温度走缓存或 sysfs，只有网络信息项会真正下发 AT 查询。
   const [auto, setAuto] = useState({
-    networkInfo: { enabled: false, interval: 5 },
-    flowStats: { enabled: false, interval: 5 },
-    tempMonitor: { enabled: false, interval: 5 },
+    networkInfo: { enabled: true, interval: 5 },
+    flowStats: { enabled: true, interval: 5 },
+    tempMonitor: { enabled: true, interval: 5 },
   });
   const timers = useRef<Record<string, number>>({});
   const activeCidRef = useRef<number | null>(null);
@@ -245,6 +256,9 @@ const NetworkInfo: React.FC = () => {
     if (cellv) applyCellEvent(cellv);
     const traffic = pick('traffic');
     if (traffic) applyTrafficEvent(traffic as Partial<PDCPData>);
+    // 累计流量与网卡计数：与 LuCI 同源的那一份，首屏就从快照渲染。
+    const netrate = pick('netrate');
+    if (netrate) applyNetrate(netrate);
   };
 
   const getPSReg = async () => {
@@ -371,24 +385,67 @@ const NetworkInfo: React.FC = () => {
     }
   };
 
-  const getFlow = async () => {
-    const res = await at().sendCommand('AT^DSFLOWQRY');
-    if (res.success && res.data) {
-      const str = extractATData(res.data as string, '^DSFLOWQRY');
-      if (str) {
-        const d = str.split(',');
-        if (d.length >= 6) {
-          setFlow({
-            lastDsTime: parseHexValue(d[0]),
-            lastTxFlow: parseHexValue(d[1]),
-            lastRxFlow: parseHexValue(d[2]),
-            totalDsTime: parseHexValue(d[3]),
-            totalTxFlow: parseHexValue(d[4]),
-            totalRxFlow: parseHexValue(d[5]),
-          });
-        }
-      }
+  /**
+   * 累计流量 —— 统一从后端 StateCache 读，与 LuCI 概览页同源。
+   *
+   * 单一后端（2026-10-04）：数据源是 Rust daemon 的 `netrate` 采集器
+   * （at-webserver，5 s 一轮）。它读两处：
+   *   · /sys/class/net/<dev>/statistics/{rx,tx}_bytes —— 实时累计计数
+   *   · /usr/sbin/mt5700m-traffic json —— 累计/日/月历史，
+   *     与 LuCI 概览页「IP 流量统计」**同一个二进制、同一份 history**
+   * 两个前端都只读这份缓存，谁都不写，不存在双写冲突。
+   *
+   * 为什么不走 CGI：多一个入口就多一份可能不同步的副本。WebUI 只通过
+   * WebSocket 连后端，与 LuCI 经 ubus 转发到的是**同一个 daemon 进程**。
+   *
+   * 与旧实现的差别：原先读 AT^DSFLOWQRY（模组 PDCP 计数），与网卡计数
+   * 物理量不同（前者不含协议栈开销、后者含），两个数字永远对不上。
+   */
+  const applyNetrate = (raw: unknown) => {
+    const v = (raw ?? {}) as Record<string, any>;
+    if (v.available === false) {
+      // 接口未 up：清零而不是继续显示上一轮的旧值。
+      setFlow((prev) => ({
+        ...prev,
+        totalRxFlow: 0,
+        totalTxFlow: 0,
+        netrateSource: 'netdev',
+      }));
+      return;
     }
+    // 后端把 mt5700m-traffic 的原始结构放在 traffic 字段下：
+    //   { interfaces: [ { name, traffic: { total:{rx,tx}, day:[…], month:[…] } } ] }
+    const list: Array<Record<string, any>> = Array.isArray(v.traffic?.interfaces)
+      ? v.traffic.interfaces
+      : [];
+    const iface =
+      list.find((i) => i?.name === v.device) ||
+      list.find((i) => i?.name === 'eth2') ||
+      list.find((i) => typeof i?.name === 'string' && i.name !== 'lo') ||
+      list[0];
+    const total = iface?.traffic?.total;
+    if (total && (total.rx != null || total.tx != null)) {
+      setFlow((prev) => ({
+        ...prev,
+        totalRxFlow: Number(total.rx) || 0,
+        totalTxFlow: Number(total.tx) || 0,
+        netrateSource: 'netdev',
+      }));
+    } else {
+      // 计数器可用但历史尚未初始化：实时速率仍可用，累计部分保持 0。
+      setFlow((prev) => ({ ...prev, netrateSource: 'netdev' }));
+    }
+  };
+
+  const getFlow = async () => {
+    // 读缓存快照即可拿到最近一次采集结果（零 AT 流量、毫秒级返回）。
+    const snap = await at().requestSnapshot();
+    if (snap && snap.netrate) {
+      applyNetrate(snap.netrate.value);
+      return;
+    }
+    // 首屏快照可能还没建立，等一次事件推送。
+    setFlow((prev) => ({ ...prev }));
   };
 
   const getTemp = async () => {
@@ -477,6 +534,12 @@ const NetworkInfo: React.FC = () => {
       }
       if (response.type === 'temperature.updated') {
         applyTempsEvent(response.data as Record<string, unknown>);
+        return;
+      }
+      // 后端 netrate 采集器每 5 s 发布一次：网卡累计计数 + 与 LuCI 共享的
+      // 流量历史。页面直接消费，不再自己发任何请求。
+      if (response.type === 'netrate.updated') {
+        applyNetrate(response.data);
         return;
       }
       if (response.type === 'cell.updated') {
@@ -986,6 +1049,15 @@ const NetworkInfo: React.FC = () => {
                 <Metric label="总上传流量" value={formatFlow(flow.totalTxFlow)} />
                 <Metric label="总下载流量" value={formatFlow(flow.totalRxFlow)} />
               </div>
+              {/* 数据来源必须标出来：本页读的是后端 netrate 采集器，与 LuCI
+                  概览页「IP 流量统计」同源（同一份网卡计数与历史文件）。
+                  旧实现读模组 PDCP 计数，与网卡口径数量级不同。 */}
+              <Typography.Text type="tertiary" className="netrate-source">
+                数据来源：后端 netrate 采集器 · 网卡计数器
+                {flow.netrateSource === 'netdev'
+                  ? '（与 LuCI「IP 流量统计」同源）'
+                  : ''}
+              </Typography.Text>
             </Panel>
           </PageCard>
         </TwoCol>

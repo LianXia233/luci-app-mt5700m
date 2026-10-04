@@ -1,7 +1,7 @@
 {
   "name": "mt5700m-webui",
   "private": true,
-  "version": "3.0.0",
+  "version": "3.1.0",
   "type": "module",
   "description": "MT5700M-CN 5G 模组内置 WebUI（OpenWrt /www/5700）",
   "scripts": {

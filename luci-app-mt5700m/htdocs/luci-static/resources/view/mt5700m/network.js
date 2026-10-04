@@ -345,17 +345,30 @@ return view.extend({
 				c.bandPanel(_('WCDMA bands'), _('Select the WCDMA bands the module may use.'), wcdmaBands),
 				c.bandPanel(_('LTE bands'), _('Select the LTE bands the module may use.'), lteBands),
 				E('section', { 'class': 'mt-card' }, [
-					E('div', { 'class': 'mt-advanced-actions', 'style': 'flex-direction:column;align-items:stretch;gap:12px' }, [
-						E('p', { 'class': 'mt-scan-note' }, _('Keep all bands selected for normal use. Restricting bands can prevent registration when travelling.')),
-						E('button', { 'type': 'button', 'class': 'btn cbi-button-apply', 'click': function() {
-							var selectedWcdma = c.selectedBandMask(wcdmaBands, '3FFFFFFF');
-							var selectedLte = c.selectedBandMask(lteBands, '7FFFFFFFFFFFFFFF');
-							if (!selectedWcdma || !selectedLte)
-								return ui.addNotification(null, E('p', {}, _('Select at least one WCDMA band and one LTE band.')), 'warning');
-							c.confirmRun(_('Change network policy'), _('The module may lose service if the selected radio technology or bands are unavailable.'), [ 'advanced-set', 'radio-policy', radioModeSelect.value, selectedWcdma, roaming.value, service.value, selectedLte ], true);
-						} }, _('Apply network and band settings'))
-					])
-				]),
+				/*
+				 * mt-advanced-actions--stacked：说明文字在上、主按钮在下的竖排。
+				 *
+				 * 原先这里是内联 `style: 'flex-direction:column;align-items:stretch'`。
+				 * 移动端 style.css 有一条 `.mt-advanced-actions > * { flex: 1 1 140px }`
+				 * （本意是让 row 方向的按钮组「至少 140px 宽」），它同样命中了这个
+				 * 竖排容器 —— 主轴变成纵向，flex-basis 就作用在**高度**上，
+				 * 结果「应用网络与频段设置」这个单行按钮在手机上被撑成
+				 * 264×140 的方块（实测 rect）。
+				 *
+				 * 现在竖排语义收进 class，CSS 里对 --stacked 单独声明
+				 * `flex: 0 0 auto`，高度回到内容高度，横向仍铺满。
+				 */
+				E('div', { 'class': 'mt-advanced-actions mt-advanced-actions--stacked' }, [
+					E('p', { 'class': 'mt-scan-note' }, _('Keep all bands selected for normal use. Restricting bands can prevent registration when travelling.')),
+					E('button', { 'type': 'button', 'class': 'btn cbi-button-apply', 'click': function() {
+						var selectedWcdma = c.selectedBandMask(wcdmaBands, '3FFFFFFF');
+						var selectedLte = c.selectedBandMask(lteBands, '7FFFFFFFFFFFFFFF');
+						if (!selectedWcdma || !selectedLte)
+							return ui.addNotification(null, E('p', {}, _('Select at least one WCDMA band and one LTE band.')), 'warning');
+						c.confirmRun(_('Change network policy'), _('The module may lose service if the selected radio technology or bands are unavailable.'), [ 'advanced-set', 'radio-policy', radioModeSelect.value, selectedWcdma, roaming.value, service.value, selectedLte ], true);
+					} }, _('Apply network and band settings'))
+				])
+			]),
 				c.card(_('5G access architecture'), _('Choose whether the module may use standalone 5G, non-standalone 5G, or both.'), [
 					c.formRow(_('5G access mode'), accessPreset),
 					E('div', { 'class': 'mt-scan-note' }, _('The MT5700M manual requires an airplane-mode cycle before this setting and a module restart afterwards. The cycle is handled automatically; restart when ready.')),

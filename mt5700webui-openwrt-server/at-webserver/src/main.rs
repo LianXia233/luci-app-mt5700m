@@ -18,6 +18,7 @@ mod error;
 mod event_bus;
 mod json;
 mod probe;
+mod read_gate;
 mod runtime;
 mod scheduler;
 mod serial;

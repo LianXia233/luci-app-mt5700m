@@ -7,7 +7,7 @@
 				"mt5700m-traffic": [ "summary" ],
 				"file": [ "exec" ],
 				"mt5700m": [ "status", "log" ],
-				"mt5700": [ "at", "cached", "events", "netrate", "usb", "logs" ],
+				"mt5700": [ "at", "cached", "events", "netrate", "traffic", "usb", "logs" ],
 				"network.device": [ "status" ]
 			},
 			"file": {

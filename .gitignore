@@ -3,3 +3,23 @@ dist/
 .DS_Store
 __pycache__/
 .trae-html-share-packages/
+node_modules/
+target/
+.cache/
+.workbuddy/
+
+# 本地实机同步/验证工作区（含设备抓取的真实数据与凭据），不入库
+live/
+nul
+
+# 实机运维脚本：41 个文件中 31 个硬编码了路由器/云服务器口令，绝不入库。
+# 凭据只经环境变量传递，见 README「安全声明」。
+tools/
+
+# 本地部署验证时从 files/www/5700 拷出的构建产物副本。
+# 真正的发布源在 mt5700webui-openwrt-server/at-webserver/files/www/5700/，
+# 由 scripts/build-release.sh 在 CI 里折入软件包，不要重复入库。
+luci-app-mt5700m/htdocs/5700/
+luci-app-mt5700m/htdocs/cgi-bin/
+luci-app-mt5700m/root/usr/bin/
+luci-app-mt5700m/root/etc/init.d/at-webserver

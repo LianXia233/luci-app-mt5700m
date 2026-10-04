@@ -129,13 +129,40 @@ function parseSession(raw) {
 		return match ? { cid:match[1], apn:match[2] || '', ipv4:match[3] === '1', ipv6:match[4] === '1', type:match[5] || '', ethernet:match[6] === '1' } : null;
 	}).filter(function(item) { return item && item.apn; });
 
+	var ipv4Address = hexIPv4(dhcp4[0]) || pdpAddress[1] || '';
+	var ipv6Address = dhcp6[0] && dhcp6[0] !== '::' ? dhcp6[0] : '';
+
+	/*
+	 * 连接状态判定。
+	 *
+	 * 首选 NDISSTATQRY（`ndis[0]==='1' && ndis[4]==='IPV4'`）—— 它是模组
+	 * 侧对「这条 cid 的数据面是否真的建起来」的权威回答。
+	 *
+	 * 但实测 MT5700M 在中国移动网络下对 `AT^NDISSTATQRY?` **返回空应答**，
+	 * 于是 ndis 恒为空 → ipv4Connected 恒 false → 概览页 Mobile IP 卡片永远
+	 * 显示 Disconnected，哪怕 IPv4 地址就在 DHCP 租约里（实测
+	 * `AT^DHCP?` 正常返回 `98AC060A` = 10.6.172.152，且与 eth2 实际地址一致）。
+	 * 这就是「luci 经常不显示数据」的一条真实成因。
+	 *
+	 * 兜底：NDIS 不可用时改用「是否真的拿到了地址」判定 —— 有租约地址或
+	 * PDP 地址就算 IPv4 已连接。宁可在极端情况下多显示一次「已连接」，
+	 * 也不要拿着真实地址却告诉用户「未分配」。
+	 */
+	var ndisUsable = ndis.length >= 9;
+	var ipv4Connected = ndisUsable
+		? (ndis[0] === '1' && ndis[4] === 'IPV4')
+		: Boolean(ipv4Address);
+	var ipv6Connected = ndisUsable
+		? (ndis[5] === '1' && ndis[8] === 'IPV6')
+		: Boolean(ipv6Address);
+
 	return {
-		ipv4Connected:ndis[0] === '1' && ndis[4] === 'IPV4',
-		ipv6Connected:ndis[5] === '1' && ndis[8] === 'IPV6',
-		ipv4Address:hexIPv4(dhcp4[0]) || pdpAddress[1] || '',
+		ipv4Connected: ipv4Connected,
+		ipv6Connected: ipv6Connected,
+		ipv4Address: ipv4Address,
 		ipv4Gateway:hexIPv4(dhcp4[2]),
 		ipv4Dns:[ hexIPv4(dhcp4[4]), hexIPv4(dhcp4[5]) ].filter(Boolean).join(' · '),
-		ipv6Address:dhcp6[0] && dhcp6[0] !== '::' ? dhcp6[0] : '',
+		ipv6Address: ipv6Address,
 		ipv6Dns:[ dhcp6[4], dhcp6[5] ].filter(function(value) { return value && value !== '::'; }).join(' · '),
 		capability:capabilityNames[capability] || capability,
 		mtu:mtu[1] && mtu[1] !== '0' ? mtu[1] : _('Network default'),

@@ -21,11 +21,18 @@ LUCI_MINIFY_JS:=0
 LUCI_MINIFY_CSS:=0
 
 PKG_NAME:=luci-app-mt5700m
-# v3.0.0 — AT 通道重写 + WebUI 全站排版改造。破坏性变更：AT 串口不再依赖
-# BusyBox `stty` applet（OpenWrt 镜像普遍缺失），改由 Rust 直接发 termios
+# v3.1.0 — 异步化架构：后端读命令缓存闸门。渲染/轮询路径上的 AT 读命令
+# 全部改成只读 raw 缓存（命中秒回、未命中提交后台采集并立刻返回占位），
+# 前端刷新率与 AT 通道下发量彻底解耦。实测边际成本从 ~200ms/次 降到
+# ~9ms/次（22x），并发 4 worker 混合三条路径平均 24ms/次。
+# 同时修复 Mobile IP 卡片在 AT^NDISSTATQRY? 无应答时恒显 Disconnected。
+#
+# 沿用 v3.0.0 的 termios 直发方案（破坏性变更，保留在此备查）：AT 串口不再
+# 依赖 BusyBox `stty` applet（OpenWrt 镜像普遍缺失），改由 Rust 直接发 termios
 # ioctl；串口打开一律 O_NONBLOCK + VMIN=1/VTIME=0。旧版二进制在不修正
 # termios 的情况下会把 TTY 留在 cooked 模式，AT 读取全部超时。
-PKG_VERSION:=3.0.0
+# 写命令、拨号、短信路径不变。
+PKG_VERSION:=3.1.0
 PKG_RELEASE:=1
 PKG_LICENSE:=Apache-2.0
 

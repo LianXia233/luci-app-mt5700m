@@ -5,14 +5,19 @@
 /*
  * MT5700M LuCI — api.js
  * ---------------------------------------------
- * 数据通道统一封装层（共享后端，LuCI / WebUI 同源）：
- *   - rpcd：mt5700m status/log/connect/disconnect/redial（拨号管理，LuCI 独占）、
- *     mt5700m-traffic summary、network.device status
- *   - ucode（mt5700 对象）：at / cached —— 经 nc 转发到 Rust 后端 at-webserver
- *     的 8765 端口；WebUI 走同一后端的 WebSocket。两侧共享 StateCache /
- *     EventBus / AtArbiter：相同只读 AT 命令命中缓存后不重复下发，
- *     AT 串口由 daemon 独占，LuCI 不再自己开端口，互不抢占。
- * 页面代码一律经本模块调用，不再各自 declare / 各自写 catch 归一化。
+ * 数据通道统一封装层（单后端，LuCI / WebUI 同源）：
+ *   - 唯一后端：Rust `at-webserver`（8765）。它同时是 WebSocket 服务端
+ *     （WebUI 连它）与 LuCI 的数据源（ucode 经 nc 转发到它的 TCP RPC）。
+ *     两端共享同一份 StateCache / EventBus / AtArbiter：相同只读 AT 命令
+ *     命中缓存后不重复下发，AT 串口由 daemon 独占，LuCI 不再自己开端口，
+ *     互不抢占。
+ *   - rpcd：mt5700m status/log/connect/disconnect/redial（拨号管理，LuCI 独占）。
+ *   - ucode（mt5700 对象）：at / cached / events / netrate / traffic。
+ *   - 降级旁路：mt5700m-traffic summary（后端未运行时兜底读历史文件）。
+ *
+ * 前端一律「只读缓存」：不频繁的（IMEI/模块信息）与频繁的（信号/载波/流量）
+ * 都读后端 StateCache，缓存新鲜度由后端采集器周期保证（netrate 5 s、
+ * signal 3 s 等），页面侧不再自行下发 AT 探活命令。
  *
  * 超时兜底（AT_TIMEOUT_MS）：
  *   三层防挂起：
@@ -40,6 +45,8 @@ var callDeviceStatus = rpc.declare({ object: 'network.device', method: 'status',
 
 var callAt = rpc.declare({ object: 'mt5700', method: 'at', params: [ 'cmd', 'args', '_rid' ], expect: { } });
 var callCached = rpc.declare({ object: 'mt5700', method: 'cached', expect: { } });
+var callNetrate = rpc.declare({ object: 'mt5700', method: 'netrate', params: [ 'device', '_rid' ], expect: { } });
+var callBackendTraffic = rpc.declare({ object: 'mt5700', method: 'traffic', params: [ '_rid' ], expect: { } });
 
 /*
  * 单个 AT 调用的硬超时（毫秒）。
@@ -147,6 +154,52 @@ function atSmsList()           { return at([ 'sms-list' ]); }
 function atSmsInfo()           { return at([ 'sms-info' ]); }
 function atCellscan()          { return at([ 'cellscan' ]); }
 
+/* ---------- 累计流量 / 实时速率（单后端） ---------- */
+
+/*
+ * trafficReport —— 「IP 流量统计」数据源，**唯一入口**。
+ *
+ * 单后端（2026-10-04）：主路径是 mt5700.traffic —— ucode 经 nc 转发到
+ * Rust 后端，读 StateCache 的 netrate topic（后端采集器 5 s 一轮调
+ * `mt5700m-traffic json` 写入）。WebUI 的「累计统计」读的是同一个 topic，
+ * 两侧是同一份快照，数字必然一致。
+ *
+ * 降级路径：mt5700m-traffic summary —— 直接 exec /usr/sbin/mt5700m-traffic。
+ * 保留它是为了后端未运行时概览页仍能显示历史累计；后端起来后自动切回主路径。
+ * 两者物理量相同（同一份 /etc/mt5700m/traffic-history），所以降级期间也不会
+ * 出现「两套数字」，最多差一个采集周期。
+ *
+ * 永不 reject，调用方拿到的永远是 { interfaces: [...] }。
+ */
+function fallbackTraffic() {
+	return callTraffic().catch(function() { return null; }).then(function(fallback) {
+		return (fallback && Array.isArray(fallback.interfaces)) ? fallback : { interfaces: [] };
+	});
+}
+
+function trafficReport() {
+	return deadline(callBackendTraffic({ _rid: nextRid() }), AT_TIMEOUT_MS, 'mt5700.traffic')
+		.then(function(res) {
+			if (res && res.success === true && res.report && Array.isArray(res.report.interfaces))
+				return res.report;
+			return fallbackTraffic();
+		}, function() {
+			return fallbackTraffic();
+		});
+}
+
+/*
+ * netrate —— 网络接口累计字节数（与 WebUI 实时速率同源）。
+ * 同样优先读后端 netrate topic；后端不可用时返回 null，**不**回落本地直读
+ * sysfs —— 那正是本次要消灭的第二条采集路径。
+ */
+function netrate(device) {
+	return deadline(callNetrate({ device: device || '', _rid: nextRid() }), AT_TIMEOUT_MS, 'mt5700.netrate')
+		.then(function(res) {
+			return (res && res.success === true) ? res : null;
+		}, function() { return null; });
+}
+
 return baseclass.extend({
 	/* rpcd */
 	managerStatus: callManagerStatus,
@@ -154,8 +207,11 @@ return baseclass.extend({
 	connect: callDial,
 	disconnect: callHang,
 	redial: callRedial,
-	trafficSummary: callTraffic,
+	trafficSummary: trafficReport,
 	deviceStatus: callDeviceStatus,
+
+	/* 后端 netrate（单后端数据源） */
+	netrate: netrate,
 
 	/* 超时配置（供页面展示/调试） */
 	atTimeoutMs: AT_TIMEOUT_MS,
