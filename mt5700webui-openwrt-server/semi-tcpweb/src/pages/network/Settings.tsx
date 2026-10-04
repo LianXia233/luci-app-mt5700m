@@ -131,7 +131,7 @@ const NetworkSettings: React.FC = () => {
   const fetchCurrent = async () => {
     setLoading(true);
     try {
-      const lte = await at().sendCommand('AT^LTEFREQLOCK?');
+      const lte = await at().readCommand('AT^LTEFREQLOCK?');
       if (lte.success && lte.data) {
         const parsed = parseLockResponse(String(lte.data), '^LTEFREQLOCK');
         if (parsed) {
@@ -141,7 +141,7 @@ const NetworkSettings: React.FC = () => {
           if (parsed.lockType !== 0) setActiveKeys((prev) => Array.from(new Set([...prev, 'lteLock'])));
         }
       }
-      const nr = await at().sendCommand('AT^NRFREQLOCK?');
+      const nr = await at().readCommand('AT^NRFREQLOCK?');
       if (nr.success && nr.data) {
         const parsed = parseLockResponse(String(nr.data), '^NRFREQLOCK');
         if (parsed) {
@@ -163,7 +163,7 @@ const NetworkSettings: React.FC = () => {
 
   const query5G = async () => {
     await sleep(200);
-    const res = await at().sendCommand('AT^C5GOPTION?');
+    const res = await at().readCommand('AT^C5GOPTION?');
     if (res.success && res.data) {
       const match = String(res.data).match(/\^C5GOPTION:\s*(\d+),(\d+),(\d+)/);
       if (match) {
@@ -351,7 +351,7 @@ const NetworkSettings: React.FC = () => {
     if (busy) return;
     setBusy(true);
     try {
-      const res = await at().sendCommand('AT^NRSSBID?');
+      const res = await at().readCommand('AT^NRSSBID?');
       if (!res.success || !res.data) return;
       const dataLine = String(res.data)
         .split('\n')

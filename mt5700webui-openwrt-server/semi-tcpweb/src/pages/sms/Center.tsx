@@ -75,6 +75,9 @@ const SMSCenter: React.FC = () => {
   const [storageInfo, setStorageInfo] = useState({ used: 0, total: 0 });
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const shouldAutoScrollRef = useRef(true);
+  const refreshInFlight = useRef<Promise<void> | null>(null);
   const selectedContactRef = useRef(selectedContact);
   selectedContactRef.current = selectedContact;
 
@@ -131,32 +134,39 @@ const SMSCenter: React.FC = () => {
     }
   }, []);
 
-  const refresh = useCallback(async () => {
-    setRefreshing(true);
-    try {
-      const res = await at().listAllSMS();
-      if (!res.success) {
-        Toast.error(res.error || '获取短信列表失败');
-        return;
+  const refresh = useCallback(() => {
+    if (refreshInFlight.current) return refreshInFlight.current;
+
+    const request = (async () => {
+      setRefreshing(true);
+      try {
+        const res = await at().listAllSMS();
+        if (!res.success) {
+          Toast.error(res.error || '获取短信列表失败');
+          return;
+        }
+        const raw = typeof res.data === 'string' ? res.data : '';
+        const parsed = raw && raw !== 'OK' && raw !== 'NO SMS' ? parseCMGL(raw) : [];
+        const cached = getCachedSentMessages();
+        buildContacts([...parsed, ...cached]);
+      } catch {
+        Toast.error('获取短信列表失败');
+      } finally {
+        setRefreshing(false);
+        refreshInFlight.current = null;
       }
-      const raw = typeof res.data === 'string' ? res.data : '';
-      const parsed = raw && raw !== 'OK' && raw !== 'NO SMS' ? parseCMGL(raw) : [];
-      const cached = getCachedSentMessages();
-      buildContacts([...parsed, ...cached]);
-    } catch {
-      Toast.error('获取短信列表失败');
-    } finally {
-      setRefreshing(false);
-    }
+    })();
+    refreshInFlight.current = request;
+    return request;
   }, [buildContacts]);
 
   const init = useCallback(async () => {
-    const ims = await at().sendCommand('AT^IMSSWITCH?');
+    const ims = await at().readCommand('AT^IMSSWITCH?');
     if (ims.success && ims.data) {
       setImsEnabled(String(ims.data).includes(': 1'));
     }
 
-    const cmgf = await at().sendCommand('AT+CMGF?');
+    const cmgf = await at().readCommand('AT+CMGF?');
     if (!cmgf.success) {
       setSmsEnabled(false);
       Toast.warning('请先前往设置页开启短信');
@@ -193,10 +203,20 @@ const SMSCenter: React.FC = () => {
   }, [selectedContact, contacts]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (shouldAutoScrollRef.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [messages]);
 
+  const handleMessagesScroll = () => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    shouldAutoScrollRef.current =
+      container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+  };
+
   const handleSelectContact = (number: string) => {
+    shouldAutoScrollRef.current = true;
     setSelectedContact(number);
   };
 
@@ -243,13 +263,13 @@ const SMSCenter: React.FC = () => {
 
     setLoading(true);
     try {
-      const cmgf = await at().sendCommand('AT+CMGF?');
+      const cmgf = await at().readCommand('AT+CMGF?');
       if (!cmgf.success || (typeof cmgf.data === 'string' && !cmgf.data.includes('0'))) {
         await at().sendCommand('AT+CMGF=0');
       }
 
       let smsc = '';
-      const csca = await at().sendCommand('AT+CSCA?');
+      const csca = await at().readCommand('AT+CSCA?');
       if (csca.success && typeof csca.data === 'string') {
         const m = csca.data.match(/\+CSCA: "([^"]+)"/);
         if (m) smsc = m[1];
@@ -527,7 +547,11 @@ const SMSCenter: React.FC = () => {
               <div className="sms-thread-head">
                 <Typography.Text strong>{selectedContact}</Typography.Text>
               </div>
-              <div className="sms-messages">
+              <div
+                className="sms-messages"
+                ref={messagesContainerRef}
+                onScroll={handleMessagesScroll}
+              >
                 {messages.length > 0 ? (
                   <>
                     {messages.map(renderMessage)}

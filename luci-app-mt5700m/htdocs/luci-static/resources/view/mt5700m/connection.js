@@ -21,14 +21,24 @@ return view.extend({
 		// AT 查询与 manager/接口状态全部并行发起，且 load() 不等待它们：
 		// 页面先渲染骨架屏，数据到达后由 render() 填充。
 		var self = this;
+		var previousManager = this.manager || {};
+		this.managerError = '';
 		var settings = api.atConnectionSettings();
 		var session = api.atSession();
 		this.pending = uci.load('mt5700m').then(function() {
-			return api.managerStatus().catch(function() { return {}; }).then(function(manager) {
+			return api.managerStatus().catch(function(err) {
+					self.managerError = err && err.message || String(err);
+					return previousManager;
+				}).then(function(manager) {
 				self.manager = manager || {};
 				return Promise.all([
 					Promise.resolve(self.manager),
-					api.deviceStatus(self.manager.network || '').catch(function() { return {}; }),
+					api.deviceStatus(self.manager.network || '').then(function(device) {
+						self.deviceStatus = device || {};
+						return self.deviceStatus;
+					}, function(err) {
+						return Object.assign({}, self.deviceStatus || {}, { _rpcError: err && err.message || String(err) });
+					}),
 					settings,
 					session
 				]);
@@ -169,6 +179,7 @@ return view.extend({
 		var sessionResult = results[3] || {};
 		var session = parser.parseSession(sessionResult.stdout || '');
 		var moduleRaw = moduleSettings.stdout || '';
+		var managerError = this.managerError || '';
 		var online = dial.connected === true && device.up === true && device.carrier !== false;
 		var configuredApn = uci.get('mt5700m', 'connection', 'apn') || _('Automatic');
 		var configuredProtocol = { ip:'IPv4', ipv6:'IPv6', ipv4v6:'IPv4 / IPv6' }[uci.get('mt5700m', 'connection', 'pdp_type')] || 'IPv4 / IPv6';
@@ -329,6 +340,8 @@ return view.extend({
 
 		m.render().then(function(formNode) {
 			dom.content(slot, [
+				managerError ? E('div', { 'class': 'alert-message warning' }, _('Dial manager status is temporarily unavailable. ') + managerError) : null,
+				device._rpcError ? E('div', { 'class': 'alert-message warning' }, _('Network interface status is temporarily unavailable. ') + device._rpcError) : null,
 				manager.usb_state && manager.usb_state !== 'normal' ? E('div', { 'class': 'alert-message warning' }, _('The MT5700M is not in normal USB mode. Connection settings remain available, but dialing cannot start.')) : null,
 					c.hero(_('Mobile Data'), _('Mobile data'), _('Configure how the MT5700M connects to the mobile network.'), [
 					E('div', { 'class': 'mt-conn-state' }, [

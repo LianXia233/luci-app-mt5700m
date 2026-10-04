@@ -284,6 +284,7 @@ return view.extend({
 		return E('div', { 'class': 'mt-page' }, [
 			c.cssLink(),
 			listResult.stderr ? E('div', { 'class': 'alert-message warning' }, listResult.stderr) : null,
+			infoResult.stderr ? E('div', { 'class': 'alert-message warning' }, _('SMS storage information is temporarily unavailable. ') + infoResult.stderr) : null,
 			c.hero(_('MESSAGING'), _('Messages'), _('Conversations using the SIM installed in the MT5700M.'), [
 				E('div', { 'style': 'display:flex;align-items:center;gap:8px' }, [
 					c.svgStatusPulse('ok', 14),

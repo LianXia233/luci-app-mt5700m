@@ -324,10 +324,13 @@ return view.extend({
 		var diagnosticHost = E('div', { 'class': 'mt-diag-host' }, E('div', { 'class': 'alert-message notice' }, _('Loading detailed radio diagnostics…')));
 		var self = this;
 		window.setTimeout(function() {
+			if (!document.body.contains(diagnosticHost)) return;
 			api.atRadioDiagnostics().then(function(result) {
-				dom.content(diagnosticHost, self.radioDiagnostics(result.stdout || ''));
+				if (document.body.contains(diagnosticHost))
+					dom.content(diagnosticHost, self.radioDiagnostics(result.stdout || ''));
 			}, function(err) {
-				dom.content(diagnosticHost, E('div', { 'class': 'alert-message warning' }, err.message || String(err)));
+				if (document.body.contains(diagnosticHost))
+					dom.content(diagnosticHost, E('div', { 'class': 'alert-message warning' }, err.message || String(err)));
 			});
 		}, 0);
 		var radioControls = E('section', { 'class': 'mt-card', 'style': 'margin-top:20px' }, [
@@ -463,6 +466,8 @@ return view.extend({
 							api.atCellscan().then(function(scan) {
 								var body = scan.stdout ? renderCellScan(scan.stdout) : E('div', { 'class': 'alert-message warning' }, _('No response.'));
 								ui.showModal(_('Cell Scan'), [ body, E('div', { 'class': 'right', 'style': 'margin-top:14px' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close'))) ]);
+							}, function(err) {
+								ui.addNotification(null, E('p', {}, err.message || _('Cell scan failed.')), 'danger');
 							});
 						} }, _('Continue')) ])
 					]);

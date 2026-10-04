@@ -1,16 +1,13 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Banner, Button, InputNumber, Modal, Space, Spin, Switch, Tag, Toast, Typography } from '@douyinfe/semi-ui';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Button, InputNumber, Modal, Space, Switch, Tag, Toast, Typography } from '@douyinfe/semi-ui';
 import { IconArrowDown, IconArrowUp, IconSetting } from '@douyinfe/semi-icons';
-import { ATResponse, ATService, PDCPData, StateSnapshot, URCData } from '@/services/at';
+import { ATResponse, ATService, PDCPData, URCData, type StateSnapshot } from '@/services/at';
+import { refreshSharedStateFeed, useSharedStateTopic } from '@/services/stateCache';
 import { useATReady } from '@/hooks/useATReady';
 import { useCommandQueue } from '@/hooks/useCommandQueue';
 import { SvgSignalTower, SvgDataStream } from '@/ui/svgVisuals';
 import {
   calculateSignalPercent,
-  convertRsrp,
-  convertRsrq,
-  convertRssi,
-  convertSinr,
   extractATData,
   extractATDataMultiline,
   formatDuration,
@@ -18,11 +15,10 @@ import {
   splitSpeed,
   hexToIP,
   ipv6CapDescription,
-  operatorFromCode,
-  parseCHIPTEMP,
   parseMCS,
   parseHexValue,
   psRegText,
+  operatorFromCode,
   qciLabel,
   rsrpColor,
   signalColor,
@@ -55,6 +51,19 @@ const numOrNull = (v: unknown): number | null => {
   return Number.isFinite(n) && n !== 0 ? n : null;
 };
 
+const displayOperatorName = (raw: unknown): string => {
+  if (typeof raw !== 'string') return '';
+  const value = raw.trim();
+  if (!value) return '';
+  if (/^\d{5,6}$/.test(value)) return operatorFromCode(value);
+  const upper = value.toUpperCase();
+  if (upper.includes('UNICOM')) return '中国联通';
+  if (upper.includes('TELECOM') || /CHN-?CT/.test(upper)) return '中国电信';
+  if (upper.includes('MOBILE') || upper.includes('CMCC')) return '中国移动';
+  if (upper.includes('BROADNET') || upper.includes('CBN')) return '中国广电';
+  return value;
+};
+
 const EMPTY_CELL = {
   rscp: 0,
   signalPercent: '',
@@ -75,7 +84,25 @@ const EMPTY_CELL = {
 
 const NetworkInfo: React.FC = () => {
   const { enqueue } = useCommandQueue();
-  const [loading, setLoading] = useState(false);
+  const signalEntry = useSharedStateTopic('signal');
+  const networkEntry = useSharedStateTopic('network');
+  const registrationEntry = useSharedStateTopic('registration');
+  const temperatureEntry = useSharedStateTopic('temperature');
+  const cellEntry = useSharedStateTopic('cell');
+  const trafficEntry = useSharedStateTopic('traffic');
+  const netrateEntry = useSharedStateTopic('netrate');
+  const sharedSnapshot: Partial<StateSnapshot> = useMemo(
+    () => ({
+      signal: signalEntry,
+      network: networkEntry,
+      registration: registrationEntry,
+      temperature: temperatureEntry,
+      cell: cellEntry,
+      traffic: trafficEntry,
+      netrate: netrateEntry,
+    }),
+    [signalEntry, networkEntry, registrationEntry, temperatureEntry, cellEntry, trafficEntry, netrateEntry],
+  );
   const [networkStatus, setNetworkStatus] = useState('等待状态中');
   const [operator, setOperator] = useState('未知运营商');
   const [cell, setCell] = useState(EMPTY_CELL);
@@ -143,9 +170,8 @@ const NetworkInfo: React.FC = () => {
   // 自动刷新默认全部开启（2026-10-04）。此前三个开关默认 false，等于
   // 首屏之后数据就冻结了，用户必须逐个手动打开——而实时速率、流量、
   // 温度本来就是持续变化的量，冻结即失真。
-  // 间隔 5s 与后端采集周期对齐（StateCache: traffic 35s TTL、
-  // temperature 由 manager 15s 刷新），不会因为间隔更短而多打 AT：
-  // 流量/温度走缓存或 sysfs，只有网络信息项会真正下发 AT 查询。
+  // 间隔 5s 用于刷新共享 StateCache 快照（零 AT）；daemon 自己按 topic 调度
+  // 后台采集，流量计数走 sysfs / mt5700m-traffic，温度走其共享缓存。
   const [auto, setAuto] = useState({
     networkInfo: { enabled: true, interval: 5 },
     flowStats: { enabled: true, interval: 5 },
@@ -153,14 +179,15 @@ const NetworkInfo: React.FC = () => {
   });
   const timers = useRef<Record<string, number>>({});
   const activeCidRef = useRef<number | null>(null);
+  const appliedTopicValues = useRef<Record<string, string>>({});
   const pdcpOnRef = useRef(false);
   pdcpOnRef.current = pdcpOn;
 
   // ---- Async Architecture：事件 / 快照 -> 页面状态的统一映射 ----
   // 后端采集器写入 StateCache 并推送 *.updated 事件，字段已是物理值
   // （RSRP 单位 dBm、SINR/RSRQ 单位 dB），与页面模型一致，这里只做存在性
-  // 判断，不做二次换算。后端每 2s 采一次信号、每 5s 采一次温度/流量，
-  // 页面据此实时刷新，不再需要自己 setInterval 轮询这些项。
+  // 判断，不做二次换算。各 topic 按 daemon 的采集周期异步更新；页面只订阅
+  // 自己用到的 topic，不再为这些共享状态建立第二套 AT 轮询。
   const applySignalEvent = (value: Record<string, unknown>) => {
     const sig = (v: unknown): number | null =>
       typeof v === 'number' && Number.isFinite(v) && v !== 0 ? v : null;
@@ -239,58 +266,38 @@ const NetworkInfo: React.FC = () => {
 
   // SWR 首屏：请求 StateCache 快照（零 AT 流量）先渲染最近一次后台状态，
   // 详细数据由 loadAll 里的命令在后台补齐；快照拿不到时静默回退。
-  const applySnapshot = (snap: StateSnapshot) => {
-    const pick = (topic: string): Record<string, unknown> | null => {
-      const v = snap[topic]?.value;
-      return v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
+  const applySnapshot = (snap: typeof sharedSnapshot) => {
+    const applyTopic = (topic: string, apply: (value: Record<string, unknown>) => void) => {
+      const value = snap[topic]?.value;
+      if (!value || typeof value !== 'object') return;
+      // Snapshots are refreshed periodically and may contain unchanged values.
+      // Applying those again would add duplicate points to the live charts.
+      const signature = JSON.stringify(value);
+      if (appliedTopicValues.current[topic] === signature) return;
+      appliedTopicValues.current[topic] = signature;
+      apply(value as Record<string, unknown>);
     };
-    const sig = pick('signal');
-    if (sig) applySignalEvent(sig);
-    const net = pick('network');
-    if (net && typeof net.operator === 'string' && net.operator) setOperator(net.operator);
-    const reg = pick('registration');
-    if (reg && typeof reg.state === 'number') setNetworkStatus(psRegText(reg.state));
-    const temp = pick('temperature');
-    if (temp) applyTempsEvent(temp);
-    const cellv = pick('cell');
-    if (cellv) applyCellEvent(cellv);
-    const traffic = pick('traffic');
-    if (traffic) applyTrafficEvent(traffic as Partial<PDCPData>);
+
+    applyTopic('signal', applySignalEvent);
+    applyTopic('network', (net) => {
+      const name = displayOperatorName(net.operator);
+      if (name) setOperator(name);
+    });
+    applyTopic('registration', (reg) => {
+      if (typeof reg.state === 'number') setNetworkStatus(psRegText(reg.state));
+    });
+    applyTopic('temperature', applyTempsEvent);
+    applyTopic('cell', applyCellEvent);
+    applyTopic('traffic', (traffic) => applyTrafficEvent(traffic as Partial<PDCPData>));
     // 累计流量与网卡计数：与 LuCI 同源的那一份，首屏就从快照渲染。
-    const netrate = pick('netrate');
-    if (netrate) applyNetrate(netrate);
+    applyTopic('netrate', applyNetrate);
   };
 
-  const getPSReg = async () => {
-    const response = await at().getPSRegStatus();
-    // 只认 JSON 应答：正则匹配失败时 getPSRegStatus 会原样返回模组的纯文本
-    // （如 "+C5GREG: 2"），直接 JSON.parse 会抛 SyntaxError 把整个命令队列
-    // 炸掉。解析失败就跳过，注册状态由 registration.updated 事件兜底。
-    if (response.success && typeof response.data === 'string' && response.data.trim().startsWith('{')) {
-      try {
-        const parsed = JSON.parse(response.data);
-        if (typeof parsed.stat === 'number') setNetworkStatus(psRegText(parsed.stat));
-      } catch {
-        // 忽略无法解析的应答
-      }
-    }
-  };
-
-  const getOperator = async () => {
-    const res = await at().sendCommand('AT^EONS=2');
-    if (res.success && res.data) {
-      const str = extractATData(res.data as string, '^EONS');
-      const code = str?.split(',')[1]?.trim().replace(/"/g, '') || '';
-      setOperator(operatorFromCode(code));
-    }
-  };
-
-  // ^DSAMBR 和 +CGEQOSRDP 都是按 PDP 上下文查的，而 cid 随拨号方式/运营商而变
-  // （手册 7.2 的拨号步骤里 cid 由 AT+CGDCONT 自己定义），写死数字只是碰巧对上某些设备。
-  // 这里从 AT+CGACT? 里取真正处于激活态的 cid。
+  // Preserve the existing per-PDP-context AMBR/QCI lookup; these values are
+  // not part of the shared StateCache topics and remain normal async reads.
   const resolveActiveCid = async (force = false): Promise<number | null> => {
     if (!force && activeCidRef.current !== null) return activeCidRef.current;
-    const res = await at().sendCommand('AT+CGACT?');
+    const res = await at().readCommand('AT+CGACT?');
     if (!res.success || !res.data) return activeCidRef.current;
     const active: number[] = [];
     for (const row of extractATDataMultiline(res.data as string, '+CGACT')) {
@@ -303,15 +310,11 @@ const NetworkInfo: React.FC = () => {
 
   const getAMBR = async () => {
     const cid = await resolveActiveCid();
-    // 手册 16.17 的 ^DSAMBR 必须带 cid，且写明“目前只支持 cid 为 1 的查询”，
-    // 所以激活的 cid 查不到时退回 1。
     const candidates = Array.from(new Set([cid, 1].filter((v): v is number => !!v && v > 0)));
     for (const candidate of candidates) {
-      const res = await at().sendCommand(`AT^DSAMBR=${candidate}`);
+      const res = await at().readCommand(`AT^DSAMBR=${candidate}`);
       const str = res.success && res.data ? extractATData(res.data as string, '^DSAMBR') : null;
       if (!str) continue;
-      // 手册只定义 <cid>,<DlApnAmbr>,<UlApnAmbr>，APN 是部分固件多给的，
-      // 所以速率不能绑在“必须有第四个字段”上，否则按手册应答就一个都不显示。
       const parts = str.split(',');
       if (parts.length >= 3) {
         setDownSpeed((parseInt(parts[1], 10) || 0) / 1000);
@@ -322,26 +325,23 @@ const NetworkInfo: React.FC = () => {
       }
       return;
     }
-    // 全都没答上来，可能是缓存的 cid 已经失效（比如换了拨号方式），下次重新解析。
     activeCidRef.current = null;
   };
 
   const getQCI = async () => {
     const cid = await resolveActiveCid();
-    // 手册 13.30：cid 是可选的，不带时会把所有激活承载列出来，比猜 cid 稳。
-    let res = await at().sendCommand('AT+CGEQOSRDP');
+    let res = await at().readCommand('AT+CGEQOSRDP');
     if ((!res.success || !res.data) && cid) {
-      res = await at().sendCommand(`AT+CGEQOSRDP=${cid}`);
+      res = await at().readCommand(`AT+CGEQOSRDP=${cid}`);
     }
     if (!res.success || !res.data) return;
     const rows = extractATDataMultiline(res.data as string, '+CGEQOSRDP');
     const row = rows.find((r) => cid !== null && Number(r.split(',')[0]) === cid) ?? rows[0];
-    // non-GBR 承载的应答只有 <cid>,<QCI> 两个字段（手册 13.30.5 的例子就是 "3,5"）。
     if (row) setQci(qciLabel(row.split(',')[1]?.trim()));
   };
 
   const getDHCP = async () => {
-    const v6 = await at().sendCommand('AT^DHCPV6?');
+    const v6 = await at().readCommand('AT^DHCPV6?');
     if (v6.success && v6.data) {
       const str = extractATData(v6.data as string, '^DHCPV6');
       if (str) {
@@ -358,7 +358,7 @@ const NetworkInfo: React.FC = () => {
         }
       }
     }
-    const v4 = await at().sendCommand('AT^DHCP?');
+    const v4 = await at().readCommand('AT^DHCP?');
     if (v4.success && v4.data) {
       const str = extractATData(v4.data as string, '^DHCP');
       if (str) {
@@ -375,7 +375,7 @@ const NetworkInfo: React.FC = () => {
         }
       }
     }
-    const cap = await at().sendCommand('AT^IPV6CAP?');
+    const cap = await at().readCommand('AT^IPV6CAP?');
     if (cap.success && cap.data) {
       const str = extractATData(cap.data as string, '^IPV6CAP');
       if (str) {
@@ -437,34 +437,7 @@ const NetworkInfo: React.FC = () => {
     }
   };
 
-  const getFlow = async () => {
-    // 读缓存快照即可拿到最近一次采集结果（零 AT 流量、毫秒级返回）。
-    const snap = await at().requestSnapshot();
-    if (snap && snap.netrate) {
-      applyNetrate(snap.netrate.value);
-      return;
-    }
-    // 首屏快照可能还没建立，等一次事件推送。
-    setFlow((prev) => ({ ...prev }));
-  };
-
-  const getTemp = async () => {
-    const res = await at().sendCommand('AT^CHIPTEMP?');
-    if (res.success && res.data) {
-      const parsed = parseCHIPTEMP(res.data as string);
-      if (parsed) {
-        setTemps({
-          sub3GPA: parsed.sub3GPA,
-          sub6GPA: parsed.sub6GPA,
-          mimoPa: parsed.mimoPa,
-          tcxo: parsed.tcxo,
-          ap1: parsed.ap1,
-          ap2: parsed.ap2,
-          modem1: parsed.modem1,
-        });
-      }
-    }
-  };
+  const refreshSharedMeasurements = () => refreshSharedStateFeed();
 
   const getMCS = async () => {
     const dl = await at().sendCommand('AT^MCS=1');
@@ -473,33 +446,18 @@ const NetworkInfo: React.FC = () => {
     if (ul.success && ul.data) setUplinkMCS(parseMCS(ul.data as string));
   };
 
-  const updateNetworkInfo = async () => {
-    // 不再直发慢命令（AT^MONSC / AT^HFREQINFO? / AT^MONSSC / AT^CASCELLINFO?，
-    // 实测 MONSC 失败也要占 8 s+，fast_query 3 s 超时 + 2 次重试会长期独占
-    // 串口把后端采集器饿死）：小区参数 / 载波 / 网络模式改由后端 collect_cell
-    // 采集器推送 cell.updated（channel/band/dlBandwidth/operator）驱动，
-    // 页面在 applyCellEvent 里消费，不再发起查询。
-  };
-
-  const updateSignal = async () => {
-    // 不再直发 AT^HCSQ?（模组 ~4 s 才响应，fast_query 3 s 超时会重试并占住
-    // 串口）：信号数据由后端 snapshot.signal 采集器写入 StateCache 并推送
-    // signal.updated 事件，页面在 applySignalEvent 里消费（见事件订阅分支）。
-  };
-
   const loadAll = () => {
-    setLoading(true);
+    // 首屏状态由共享 StateCache/EventBus 驱动。这里只补 LuCI 概览同样读取的
+    // APN/QCI/AMBR 等未纳入主题缓存的只读字段，以及页面特有的 MCS 诊断值；
+    // 页面本身不再用 AT 轮询覆盖信号、注册、温度或累计流量。
     enqueue(async () => {
-      await getPSReg();
-      await getOperator();
+      // 保留原有的注册状态详细上报设置副作用；注册值本身只由共享缓存/事件更新。
+      await at().sendCommand('AT+CGREG=2');
       await getAMBR();
       await getQCI();
       await getDHCP();
-      await getFlow();
-      await getTemp();
       await getMCS();
-      setLoading(false);
-      // 进入页面默认激活实时速率上报，让看板动态展现
+      // 保留页面特有的 PDCP 实时速率开关；累计流量仍使用与 LuCI 相同的 netrate。
       void at().setPDCPDataReport(true, pdcpInterval).catch(() => {});
     });
   };
@@ -507,103 +465,31 @@ const NetworkInfo: React.FC = () => {
   useATReady(loadAll);
 
   useEffect(() => {
-    // ---- Async Architecture：SWR 首屏 ----
-    // 请求 StateCache 快照（零 AT 流量）先渲染最近一次后台状态，再等
-    // loadAll 的命令查询和事件推送把详细数据补齐。模组离线也能秒开。
-    void at().requestSnapshot().then((snap) => {
-      if (snap) applySnapshot(snap);
-    });
+    if (Object.keys(sharedSnapshot).length) applySnapshot(sharedSnapshot);
+  }, [sharedSnapshot]);
 
+  useEffect(() => {
     const handle = (response: ATResponse) => {
-      if (!('type' in response)) return;
-      // Async Architecture：事件总线推送的状态事件（后台采集器写入
-      // StateCache 后发布），页面直接消费，不再需要自己轮询模组。
-      if (response.type === 'signal.updated') {
-        applySignalEvent(response.data as Record<string, unknown>);
-        return;
-      }
-      if (response.type === 'network.updated') {
-        const v = response.data as Record<string, unknown>;
-        if (typeof v.operator === 'string' && v.operator) setOperator(v.operator);
-        return;
-      }
-      if (response.type === 'registration.updated') {
-        const v = response.data as Record<string, unknown>;
-        if (typeof v.state === 'number') setNetworkStatus(psRegText(v.state));
-        return;
-      }
-      if (response.type === 'temperature.updated') {
-        applyTempsEvent(response.data as Record<string, unknown>);
-        return;
-      }
-      // 后端 netrate 采集器每 5 s 发布一次：网卡累计计数 + 与 LuCI 共享的
-      // 流量历史。页面直接消费，不再自己发任何请求。
-      if (response.type === 'netrate.updated') {
-        applyNetrate(response.data);
-        return;
-      }
-      if (response.type === 'cell.updated') {
-        applyCellEvent(response.data as Record<string, unknown>);
-        return;
-      }
-      if (response.type === 'traffic.updated') {
-        applyTrafficEvent(response.data as Partial<PDCPData>);
-        return;
-      }
-      if (response.type === 'pdcp_data' && 'data' in response) {
-        const data = response.data as PDCPData;
-        setPdcpOn(true);
-        pdcpOnRef.current = true;
-        if (data.ulPdcpRate > 0 || data.dlPdcpRate > 0) setLastPdcp(data);
-        setPdcp(data);
-        // 速率曲线：PDCP 上报的单位是 Bytes/s，乘以 8 换算成 Mbps
-        const upMbps = Number(((data.ulPdcpRate * 8) / 1_000_000).toFixed(2));
-        const downMbps = Number(((data.dlPdcpRate * 8) / 1_000_000).toFixed(2));
-        setSpeedHistory((prev) =>
-          trimHistory([
-            ...prev,
-            { up: upMbps, down: downMbps },
-          ]),
-        );
-      }
-      if (response.type === 'urc_data' && 'data' in response) {
+      if (!('type' in response) || !('data' in response)) return;
+      if (response.type === 'urc_data') {
         const urc = response.data as URCData;
-        if (urc.type === 'HCSQ' && urc.parsed) {
-          const { networkMode, rsrp, rsrq, sinr, rssi } = urc.parsed;
-          let actualRsrp = 0;
-          let actualRsrq = 0;
-          let actualSinr = 0;
-          let actualRssi = 0;
-          if (networkMode === 'LTE' || networkMode === 'NR') {
-            actualRsrp = convertRsrp(rsrp);
-            actualRsrq = convertRsrq(rsrq);
-            if (sinr !== undefined) actualSinr = convertSinr(sinr);
-            if (rssi !== undefined) actualRssi = convertRssi(rssi);
-          }
-          setCell((prev) => {
-            const next = {
-              ...prev,
-              rscp: actualRsrp || prev.rscp,
-              ecio: actualRsrq || prev.ecio,
-              sinr: Math.round(actualSinr) || prev.sinr,
-              rssi: actualRssi || prev.rssi,
-              signalPercent: calculateSignalPercent(actualRsrp || prev.rscp),
-              sysMode: networkMode || prev.sysMode,
-            };
-            // 信号趋势：调天线时看曲线比看单个数字直观得多
-            const rsrp = Number(next.rscp);
-            if (Number.isFinite(rsrp) && rsrp < 0) {
-              setSignalHistory((hist) => trimHistory([...hist, { rsrp, sinr: next.sinr }]));
-            }
-            return next;
-          });
-        }
         if (urc.type === 'DSAMBR' && urc.parsed) {
           if (urc.parsed.apn) setApn(String(urc.parsed.apn).replace(/^["']|["']$/g, ''));
           if (urc.parsed.maxDownlinkRate) setDownSpeed(urc.parsed.maxDownlinkRate / 1000);
           if (urc.parsed.maxUplinkRate) setUpSpeed(urc.parsed.maxUplinkRate / 1000);
         }
+        return;
       }
+      if (response.type !== 'pdcp_data') return;
+      const data = response.data as PDCPData;
+      setPdcpOn(true);
+      pdcpOnRef.current = true;
+      if (data.ulPdcpRate > 0 || data.dlPdcpRate > 0) setLastPdcp(data);
+      setPdcp(data);
+      // 页面特有的 PDCP 速率曲线；公共信号/温度/网络状态统一来自 StateCache。
+      const upMbps = Number(((data.ulPdcpRate * 8) / 1_000_000).toFixed(2));
+      const downMbps = Number(((data.dlPdcpRate * 8) / 1_000_000).toFixed(2));
+      setSpeedHistory((prev) => trimHistory([...prev, { up: upMbps, down: downMbps }]));
     };
     at().subscribe(handle);
     return () => {
@@ -625,10 +511,9 @@ const NetworkInfo: React.FC = () => {
         try {
           if (key === 'networkInfo') {
             await getMCS();
-          } else if (key === 'flowStats') {
-            await getFlow();
           } else {
-            await getTemp();
+            // StateCache snapshot 请求是纯读控制帧，不会新增 AT 采集；实际更新由 EventBus 推送。
+            await refreshSharedMeasurements();
           }
         } catch {
           Toast.error('自动刷新失败，已停止');
@@ -679,7 +564,7 @@ const NetworkInfo: React.FC = () => {
     const res = await at().sendCommand('AT^DSFLOWCLR');
     if (res.success) {
       Toast.success('流量已清零');
-      await getFlow();
+      await refreshSharedMeasurements();
     } else Toast.error('清零失败');
   };
 
@@ -700,7 +585,7 @@ const NetworkInfo: React.FC = () => {
   const orphan = unmatchedSecondaries(cell.carrierInfo, secondaryNR, secondaryLTE);
 
   return (
-    <Spin spinning={loading}>
+    <>
       <div className="page-stack">
         <SectionHeader title="信号与驻留" desc="当前驻留小区、信号质量与网络参数" />
 
@@ -1133,7 +1018,7 @@ const NetworkInfo: React.FC = () => {
         <Typography.Paragraph type="tertiary">PDCP 上报间隔（毫秒），范围 200–65535</Typography.Paragraph>
         <InputNumber min={200} max={65535} step={100} value={tempInterval} onChange={(v) => setTempInterval(Number(v) || 500)} />
       </Modal>
-    </Spin>
+    </>
   );
 };
 

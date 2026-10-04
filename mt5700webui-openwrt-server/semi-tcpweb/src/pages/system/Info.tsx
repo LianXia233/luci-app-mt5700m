@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Banner,
   Button,
@@ -14,7 +14,8 @@ import {
   Toast,
   Typography,
 } from '@douyinfe/semi-ui';
-import { ATService, type ATResponse } from '@/services/at';
+import { ATService } from '@/services/at';
+import { getSharedStateFeed, refreshSharedStateFeed, useSharedStateTopic } from '@/services/stateCache';
 import { useATReady } from '@/hooks/useATReady';
 import { extractATData } from '@/modem/parse';
 import { sleep } from '@/modem/atx';
@@ -146,6 +147,12 @@ const combineBandHex = (selected: string[], allHex: string): string => {
 };
 
 const SystemInfo: React.FC = () => {
+  const modemEntry = useSharedStateTopic('modem');
+  const nrTxpowerEntry = useSharedStateTopic('nr_txpower');
+  const sharedSnapshot = useMemo(
+    () => ({ modem: modemEntry, nr_txpower: nrTxpowerEntry }),
+    [modemEntry, nrTxpowerEntry],
+  );
   // ---- AT服务器配置 ----
   const [host, setHost] = useState(() => ATService.getInstance().getHost());
   const [port, setPort] = useState(() => ATService.getInstance().getPort());
@@ -218,9 +225,10 @@ const SystemInfo: React.FC = () => {
   // ---------- AT服务器配置 ----------
   const fetchConnectionMode = async () => {
     setServiceModeLoading(true);
+    let loaded = false;
     try {
       for (let i = 0; i < 3; i += 1) {
-        const res = await at().sendCommand('AT+CONNECT?');
+        const res = await at().readCommand('AT+CONNECT?');
         if (res && res.success && res.data) {
           const dataStr = String(res.data);
           const lines = dataStr.split(/[\r\n]+/).filter((l) => l.trim());
@@ -230,6 +238,7 @@ const SystemInfo: React.FC = () => {
             if (modeValue === '0') setServiceMode('网络AT');
             else if (modeValue === '1') setServiceMode('串口AT');
             else setServiceMode('未知模式');
+            loaded = true;
             return;
           }
           // 若返回 CPIN 状态则等待后重试
@@ -240,7 +249,12 @@ const SystemInfo: React.FC = () => {
         }
         await sleep(100);
       }
-      setServiceMode('获取失败');
+      if (!loaded) {
+        setServiceMode((previous) =>
+          previous === '获取中...' || previous === '获取失败' ? '获取失败' : previous,
+        );
+        Toast.warning('读取 AT 连接模式失败，已保留上次状态');
+      }
     } finally {
       setServiceModeLoading(false);
     }
@@ -272,13 +286,16 @@ const SystemInfo: React.FC = () => {
   const fetchDeviceInfo = async () => {
     setSystemInfoLoading(true);
     try {
-      const modemRes = await at().sendCommand('ATI');
+      const modemRes = await at().readCommand('ATI');
       if (modemRes.success && typeof modemRes.data === 'string') {
-        setDeviceInfo({
-          manufacturer: modemRes.data.match(/Manufacturer:\s*([^\r\n]+)/)?.[1]?.trim() || '',
-          model: modemRes.data.match(/Model:\s*([^\r\n]+)/)?.[1]?.trim() || '',
-          revision: modemRes.data.match(/Revision:\s*([^\r\n]+)/)?.[1]?.trim() || '',
-        });
+        const manufacturer = modemRes.data.match(/Manufacturer:\s*([^\r\n]+)/)?.[1]?.trim();
+        const model = modemRes.data.match(/Model:\s*([^\r\n]+)/)?.[1]?.trim();
+        const revision = modemRes.data.match(/Revision:\s*([^\r\n]+)/)?.[1]?.trim();
+        setDeviceInfo((prev) => ({
+          manufacturer: manufacturer || prev.manufacturer,
+          model: model || prev.model,
+          revision: revision || prev.revision,
+        }));
       }
       await sleep(100);
       const imeiRes = await at().getIMEI();
@@ -305,13 +322,13 @@ const SystemInfo: React.FC = () => {
 
   // ---------- SIM卡配置 ----------
   const fetchSimConfig = async () => {
-    const slotRes = await at().sendCommand('AT^SCICHG?');
+    const slotRes = await at().readCommand('AT^SCICHG?');
     if (slotRes.success && typeof slotRes.data === 'string') {
       const m = slotRes.data.match(/\^SCICHG:\s*(\d+),\s*(\d+)/);
       if (m) setSimSlot(parseInt(m[1], 10));
     }
     await sleep(100);
-    const hpRes = await at().sendCommand('AT^TDSIMHP?');
+    const hpRes = await at().readCommand('AT^TDSIMHP?');
     if (hpRes.success && typeof hpRes.data === 'string') {
       const m = hpRes.data.match(/\^TDSIMHP:\s*(\d+)/);
       if (m) setSimHotPlug(m[1] === '1');
@@ -365,7 +382,7 @@ const SystemInfo: React.FC = () => {
 
   const fetchPinStatus = async () => {
     // 没插卡时模组回的是 +CME ERROR: 10，不是 +CPIN，失败分支也要看。
-    const res = await at().sendCommand('AT+CPIN?');
+    const res = await at().readCommand('AT+CPIN?');
     const state = parseCpin(String(res.data || res.error || ''));
     if (state) {
       setPinStatus(state.code);
@@ -373,7 +390,7 @@ const SystemInfo: React.FC = () => {
     }
 
     // 手册 6.6：^SIMSQ 能区分卡不在位 / 被锁 / PUK 锁死，+CPIN 看不出来。
-    const sq = await at().sendCommand('AT^SIMSQ?');
+    const sq = await at().readCommand('AT^SIMSQ?');
     if (sq.success && typeof sq.data === 'string') setSimSlotStatus(parseSimsq(sq.data));
   };
 
@@ -443,7 +460,7 @@ const SystemInfo: React.FC = () => {
   };
 
   const fetchAirplaneMode = async () => {
-    const res = await at().sendCommand('AT+CFUN?');
+    const res = await at().readCommand('AT+CFUN?');
     if (res.success && typeof res.data === 'string') {
       const m = res.data.match(/\+CFUN:\s*(\d+)/);
       if (m) setAirplaneMode(m[1] === '0');
@@ -467,7 +484,7 @@ const SystemInfo: React.FC = () => {
 
   // ---------- 设备控制 ----------
   const fetchDeviceControl = async () => {
-    const nicRes = await at().sendCommand('AT^TDPCIELANCFG?');
+    const nicRes = await at().readCommand('AT^TDPCIELANCFG?');
     if (nicRes.success && typeof nicRes.data === 'string') {
       const m = nicRes.data.match(/\^TDPCIELANCFG:\s*(\d+)/);
       if (m) {
@@ -476,7 +493,7 @@ const SystemInfo: React.FC = () => {
       }
     }
     await sleep(100);
-    const pwrRes = await at().sendCommand('AT^TDPMCFG?');
+    const pwrRes = await at().readCommand('AT^TDPMCFG?');
     if (pwrRes.success && typeof pwrRes.data === 'string') {
       const m = pwrRes.data.match(/\^TDPMCFG:\s*(\d+)/);
       if (m) setPowerControl(m[1] === '1');
@@ -598,19 +615,19 @@ const SystemInfo: React.FC = () => {
   const fetchNRCapability = async () => {
     setNrLoading(true);
     try {
-      const ca = await at().sendCommand('AT^NRRCCAPQRY=3');
+      const ca = await at().readCommand('AT^NRRCCAPQRY=3');
       if (ca.success && typeof ca.data === 'string') {
         const m = ca.data.match(/\^NRRCCAPQRY:\s*3,(\d+)/);
         if (m) setNrCa(m[1] === '1');
       }
       await sleep(100);
-      const vonr = await at().sendCommand('AT^NRRCCAPQRY=2');
+      const vonr = await at().readCommand('AT^NRRCCAPQRY=2');
       if (vonr.success && typeof vonr.data === 'string') {
         const m = vonr.data.match(/\^NRRCCAPQRY:\s*2,(\d+)/);
         if (m) setNrVonr(parseInt(m[1], 10));
       }
       await sleep(100);
-      const dss = await at().sendCommand('AT^NRRCCAPQRY=5');
+      const dss = await at().readCommand('AT^NRRCCAPQRY=5');
       if (dss.success && typeof dss.data === 'string') {
         const m = dss.data.match(/\^NRRCCAPQRY:\s*5,(\d+),(\d+)/);
         if (m) setNrDss({ rateMatchingLTE: parseInt(m[1], 10), additionalDMRS: parseInt(m[2], 10) });
@@ -684,7 +701,7 @@ const SystemInfo: React.FC = () => {
   const fetchSysCfg = async () => {
     setSysCfgLoading(true);
     try {
-      const res = await at().sendCommand('AT^SYSCFGEX?');
+      const res = await at().readCommand('AT^SYSCFGEX?');
       if (res.success && typeof res.data === 'string') {
         const m = res.data.match(/\^SYSCFGEX:\s*"([^"]+)",([^,\s]+),(\d+),(\d+),([^,\s]+)/);
         if (m) {
@@ -743,7 +760,7 @@ const SystemInfo: React.FC = () => {
   const fetchTxPower = async () => {
     setTxPowerLoading(true);
     try {
-      const res = await at().sendCommand('AT^NTXPOWER?');
+      const res = await at().readCommand('AT^NTXPOWER?');
       if (res.success && typeof res.data === 'string') {
         const payload = extractATData(res.data, '^NTXPOWER');
         const values = (payload || res.data)
@@ -771,7 +788,7 @@ const SystemInfo: React.FC = () => {
   const fetchThermConfig = async () => {
     setThermLoading(true);
     try {
-      const fun = await at().sendCommand('AT^THERMAUTOFUN?');
+      const fun = await at().readCommand('AT^THERMAUTOFUN?');
       if (fun.success && typeof fun.data === 'string') {
         const m = fun.data.match(/\^THERMAUTOFUN:\s*(\d+)\s+(\d+)\s+(\d+)/);
         if (m) {
@@ -784,7 +801,7 @@ const SystemInfo: React.FC = () => {
         }
       }
       await sleep(100);
-      const log = await at().sendCommand('AT^THERMLDLOGSW?');
+      const log = await at().readCommand('AT^THERMLDLOGSW?');
       if (log.success && typeof log.data === 'string') {
         const m = log.data.match(/\^THERMLDLOGSW:\s*(\d+)\s+(\d+)/);
         if (m) {
@@ -795,13 +812,13 @@ const SystemInfo: React.FC = () => {
         }
       }
       await sleep(100);
-      const para = await at().sendCommand('AT^THERMLDAUTOPARA?');
+      const para = await at().readCommand('AT^THERMLDAUTOPARA?');
       if (para.success && typeof para.data === 'string') {
         const m = para.data.match(/\^THERMLDAUTOPARA:\s*([\d,]+)/);
         if (m) setTherm((p) => ({ ...p, thresholds: m[1].split(',').map(Number) }));
       }
       await sleep(100);
-      const status = await at().sendCommand('AT^THERMLDAUTOSTATUS?');
+      const status = await at().readCommand('AT^THERMLDAUTOSTATUS?');
       if (status.success && typeof status.data === 'string') {
         const m = status.data.match(/\^THERMLDAUTOSTATUS:\s*([\d,]+)/);
         if (m) {
@@ -881,7 +898,14 @@ const SystemInfo: React.FC = () => {
   // ---------- 初始化加载 ----------
   const loadAll = async () => {
     try {
-      await fetchDeviceInfo();
+      // Prefer the shared modem.info cache (same value LuCI reads). Keep the
+      // existing ATI/IMEI read as a cold-cache fallback and manual refresh path.
+      await refreshSharedStateFeed();
+      const modem = getSharedStateFeed().snapshot.modem?.value;
+      const hasIdentity = !!modem && ['manufacturer', 'model', 'revision', 'imei'].every(
+        (key) => typeof modem[key] === 'string' && !!modem[key],
+      );
+      if (!hasIdentity) await fetchDeviceInfo();
       await sleep(100);
       await fetchConnectionMode();
       await sleep(100);
@@ -895,8 +919,6 @@ const SystemInfo: React.FC = () => {
       await sleep(100);
       await fetchSysCfg();
       await sleep(100);
-      await fetchTxPower();
-      await sleep(100);
       await fetchThermConfig();
     } catch {
       Toast.error('部分数据加载失败，请刷新重试');
@@ -905,39 +927,34 @@ const SystemInfo: React.FC = () => {
 
   useATReady(loadAll);
 
-  // ---- Async Architecture：SWR 首屏 + modem.info 事件 ----
-  // 后端把 ATI/CGSN 采集进 StateCache（60s TTL）并通过 EventBus 推送
-  // modem.info，这里先渲染缓存值，再由 loadAll 的命令查询补齐其它配置。
-  // 设备信息随事件自动刷新，不需要页面自己轮询。
+  // The app-wide StateCache feed is the same snapshot/EventBus consumed by LuCI.
+  // Use it for shared identity/NR diagnostics, retaining existing manual refresh
+  // handlers for values that are intentionally outside the common cache topics.
   useEffect(() => {
-    void at()
-      .requestSnapshot()
-      .then((snap) => {
-        const v = snap?.modem?.value;
-        if (v && typeof v === 'object') {
-          const m = v as Record<string, unknown>;
-          setDeviceInfo((prev) => ({
-            manufacturer: typeof m.manufacturer === 'string' ? m.manufacturer : prev.manufacturer,
-            model: typeof m.model === 'string' ? m.model : prev.model,
-            revision: typeof m.revision === 'string' ? m.revision : prev.revision,
-          }));
-          if (typeof m.imei === 'string') setImei(m.imei);
-        }
-      });
-
-    const handle = (response: ATResponse) => {
-      if (!('type' in response) || response.type !== 'modem.info') return;
-      const m = response.data as Record<string, unknown>;
+    const modem = sharedSnapshot.modem?.value;
+    if (modem && typeof modem === 'object') {
+      const m = modem as Record<string, unknown>;
       setDeviceInfo((prev) => ({
-        manufacturer: typeof m.manufacturer === 'string' ? m.manufacturer : prev.manufacturer,
-        model: typeof m.model === 'string' ? m.model : prev.model,
-        revision: typeof m.revision === 'string' ? m.revision : prev.revision,
+        manufacturer: typeof m.manufacturer === 'string' && m.manufacturer ? m.manufacturer : prev.manufacturer,
+        model: typeof m.model === 'string' && m.model ? m.model : prev.model,
+        revision: typeof m.revision === 'string' && m.revision ? m.revision : prev.revision,
       }));
-      if (typeof m.imei === 'string') setImei(m.imei);
-    };
-    at().subscribe(handle);
-    return () => at().unsubscribe(handle);
-  }, []);
+      if (typeof m.imei === 'string' && m.imei) setImei(m.imei);
+    }
+
+    const power = sharedSnapshot.nr_txpower?.value;
+    if (power && Array.isArray(power.carriers) && power.carriers.length > 0) {
+      setTxPower(
+        (power.carriers as Record<string, unknown>[]).map((carrier) => ({
+          PPusch: typeof carrier.pusch === 'number' ? carrier.pusch : 999,
+          PPucch: typeof carrier.pucch === 'number' ? carrier.pucch : 999,
+          PSrs: typeof carrier.srs === 'number' ? carrier.srs : 999,
+          PPrach: typeof carrier.prach === 'number' ? carrier.prach : 999,
+          Freq: typeof carrier.freq === 'number' ? carrier.freq : 0,
+        })),
+      );
+    }
+  }, [sharedSnapshot]);
 
   const pinPlaceholder =
     pinOperation === 'verify'

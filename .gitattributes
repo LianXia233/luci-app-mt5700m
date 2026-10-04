@@ -3,6 +3,8 @@
 *.sh text eol=lf
 *.py text eol=lf
 luci-app-mt5700m/root/** text eol=lf
+# Compiled daemon executable must not pass through text newline conversion.
+luci-app-mt5700m/root/usr/bin/at-webserver binary
 mt5700webui-openwrt-server/at-webserver/files-py/** text eol=lf
 *.js text eol=lf
 *.ts text eol=lf

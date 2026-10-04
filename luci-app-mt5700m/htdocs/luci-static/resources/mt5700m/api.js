@@ -57,6 +57,9 @@ var callBackendTraffic = rpc.declare({ object: 'mt5700', method: 'traffic', para
  * 正常帧（数十条 AT 的聚合命令走共享控制通道通常 < 3s）远不会触发。
  */
 var AT_TIMEOUT_MS = 30000;
+var RPC_TIMEOUT_MS = 15000;
+var cachedSnapshotInFlight = null;
+var trafficReportInFlight = null;
 
 /* rpc/ubus 调用方的自增请求号（ucode 侧用于临时文件唯一性） */
 var rpcSeq = 0;
@@ -68,12 +71,10 @@ function nextRid() {
  * 给任意 Promise 套一层硬超时。超时的 Promise 永不 settle 时，
  * 由计时器接管并 reject，调用方即可继续渲染。
  */
-function deadline(promise, ms, label) {
+function deadlineWithMessage(promise, ms, message) {
 	var timer = null;
-	var guarded = new Promise(function(resolve, reject) {
-		timer = setTimeout(function() {
-			reject(new Error(_('AT command timed out after %s ms').format(ms) + ' (' + label + ')'));
-		}, ms);
+	return new Promise(function(resolve, reject) {
+		timer = setTimeout(function() { reject(new Error(message)); }, ms);
 		promise.then(function(v) {
 			clearTimeout(timer);
 			resolve(v);
@@ -82,8 +83,18 @@ function deadline(promise, ms, label) {
 			reject(e);
 		});
 	});
-	return guarded;
 }
+
+function deadline(promise, ms, label) {
+	return deadlineWithMessage(promise, ms,
+		_('AT command timed out after %s ms').format(ms) + ' (' + label + ')');
+}
+
+function rpcDeadline(promise, label) {
+	return deadlineWithMessage(promise, RPC_TIMEOUT_MS,
+		_('RPC request timed out after %s ms').format(RPC_TIMEOUT_MS) + ' (' + label + ')');
+}
+
 
 /* ---------- ucode 封装 ---------- */
 
@@ -122,7 +133,8 @@ function atSafe(args) {
  *                 "age_ms": 42, "source": "snapshot" }, ... }
  */
 function cachedSnapshot() {
-	return deadline(callCached(), AT_TIMEOUT_MS, 'mt5700.cached').then(function(res) {
+	if (cachedSnapshotInFlight) return cachedSnapshotInFlight;
+	var request = deadline(callCached(), AT_TIMEOUT_MS, 'mt5700.cached').then(function(res) {
 		if (!res || typeof res !== 'object') return null;
 
 		// 形状 A（daemon RPC）：{ "ok": true, "snapshot": { ... } }
@@ -137,6 +149,15 @@ function cachedSnapshot() {
 		if (topics.length) return res;
 		return null;
 	}).catch(function() { return null; });
+	var shared = request.then(function(value) {
+		if (cachedSnapshotInFlight === shared) cachedSnapshotInFlight = null;
+		return value;
+	}, function(err) {
+		if (cachedSnapshotInFlight === shared) cachedSnapshotInFlight = null;
+		throw err;
+	});
+	cachedSnapshotInFlight = shared;
+	return shared;
 }
 
 /* ---------- AT 子命令速记 ---------- */
@@ -172,13 +193,16 @@ function atCellscan()          { return at([ 'cellscan' ]); }
  * 永不 reject，调用方拿到的永远是 { interfaces: [...] }。
  */
 function fallbackTraffic() {
-	return callTraffic().catch(function() { return null; }).then(function(fallback) {
-		return (fallback && Array.isArray(fallback.interfaces)) ? fallback : { interfaces: [] };
-	});
+	return rpcDeadline(callTraffic(), 'mt5700m-traffic.summary')
+		.catch(function() { return null; })
+		.then(function(fallback) {
+			return (fallback && Array.isArray(fallback.interfaces)) ? fallback : { interfaces: [] };
+		});
 }
 
 function trafficReport() {
-	return deadline(callBackendTraffic({ _rid: nextRid() }), AT_TIMEOUT_MS, 'mt5700.traffic')
+	if (trafficReportInFlight) return trafficReportInFlight;
+	var request = deadline(callBackendTraffic({ _rid: nextRid() }), AT_TIMEOUT_MS, 'mt5700.traffic')
 		.then(function(res) {
 			if (res && res.success === true && res.report && Array.isArray(res.report.interfaces))
 				return res.report;
@@ -186,6 +210,15 @@ function trafficReport() {
 		}, function() {
 			return fallbackTraffic();
 		});
+	var shared = request.then(function(report) {
+		if (trafficReportInFlight === shared) trafficReportInFlight = null;
+		return report;
+	}, function(err) {
+		if (trafficReportInFlight === shared) trafficReportInFlight = null;
+		throw err;
+	});
+	trafficReportInFlight = shared;
+	return shared;
 }
 
 /*
@@ -202,13 +235,13 @@ function netrate(device) {
 
 return baseclass.extend({
 	/* rpcd */
-	managerStatus: callManagerStatus,
-	dialLog: callDialLog,
+	managerStatus: function() { return rpcDeadline(callManagerStatus(), 'mt5700m.status'); },
+	dialLog: function() { return rpcDeadline(callDialLog(), 'mt5700m.log'); },
 	connect: callDial,
 	disconnect: callHang,
 	redial: callRedial,
 	trafficSummary: trafficReport,
-	deviceStatus: callDeviceStatus,
+	deviceStatus: function(name) { return rpcDeadline(callDeviceStatus(name), 'network.device.status'); },
 
 	/* 后端 netrate（单后端数据源） */
 	netrate: netrate,

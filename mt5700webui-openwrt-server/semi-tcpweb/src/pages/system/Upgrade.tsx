@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Banner, Button, Input, Modal, Progress, Steps, Toast, Typography } from '@douyinfe/semi-ui';
 import { ATService } from '@/services/at';
+import { refreshSharedStateFeed, useSharedStateTopic } from '@/services/stateCache';
 import { useATReady } from '@/hooks/useATReady';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { QUERY_COMPACT } from '@/styles/breakpoints';
@@ -11,6 +12,7 @@ const at = () => ATService.getInstance();
 
 const SystemUpgrade: React.FC = () => {
   const isNarrow = useMediaQuery(QUERY_COMPACT);
+  const modemEntry = useSharedStateTopic('modem');
   const [agreed, setAgreed] = useState(false);
   const [showAgree, setShowAgree] = useState(true);
   const [version, setVersion] = useState('');
@@ -20,12 +22,27 @@ const SystemUpgrade: React.FC = () => {
   const [step, setStep] = useState(0);
   const [url, setUrl] = useState('');
   const [fotaState, setFotaState] = useState(10);
+  const pollTimer = useRef<number | null>(null);
+  const pollInFlight = useRef(false);
+  const lastPolledState = useRef<number | null>(null);
+  const lastResumeAt = useRef(0);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (pollTimer.current !== null) window.clearInterval(pollTimer.current);
+      pollTimer.current = null;
+    };
+  }, []);
 
   const fetchVersion = async () => {
+    if (!mounted.current) return;
     setLoading(true);
     try {
-      const res = await at().sendCommand('AT+CGMR');
-      if (res.success && typeof res.data === 'string') {
+      const res = await at().readCommand('AT+CGMR');
+      if (mounted.current && res.success && typeof res.data === 'string') {
         const lines = res.data
           .replace(/\r/g, '')
           .split('\n')
@@ -34,21 +51,32 @@ const SystemUpgrade: React.FC = () => {
         setVersion(lines[0] || res.data.trim());
       }
     } catch {
-      Toast.error('获取版本失败');
+      if (mounted.current) Toast.error('获取版本失败');
     } finally {
-      setLoading(false);
+      if (mounted.current) setLoading(false);
     }
   };
 
-  useATReady(fetchVersion);
+  useATReady(async () => {
+    const snapshot = await refreshSharedStateFeed();
+    if (!mounted.current) return;
+    const revision = snapshot?.modem?.value?.revision;
+    if (typeof revision === 'string' && revision) setVersion(revision);
+    else await fetchVersion();
+  });
+
+  useEffect(() => {
+    const revision = modemEntry?.value?.revision;
+    if (typeof revision === 'string' && revision) setVersion(revision);
+  }, [modemEntry]);
 
   const queryState = async () => {
-    const res = await at().sendCommand('AT^FOTASTATE?');
+    const res = await at().readCommand('AT^FOTASTATE?');
     if (res.success && typeof res.data === 'string') {
       const raw = extractATData(res.data, '^FOTASTATE') || res.data.split(':')[1];
       const state = parseInt(String(raw).trim(), 10);
       if (!Number.isNaN(state)) {
-        setFotaState(state);
+        if (mounted.current) setFotaState(state);
         return state;
       }
     }
@@ -56,6 +84,7 @@ const SystemUpgrade: React.FC = () => {
   };
 
   const start = async () => {
+    if (upgrading) return;
     if (!url) {
       Toast.error('请设置 FOTA 服务器地址');
       return;
@@ -68,85 +97,117 @@ const SystemUpgrade: React.FC = () => {
     setUpgrading(true);
     setProgress(0);
     setStep(1);
+    lastPolledState.current = null;
+    lastResumeAt.current = 0;
     try {
       await at().sendCommand('ATE0');
+      if (!mounted.current) return;
       await at().sendCommand('AT^FOTAMODE=0,1,0,1');
+      if (!mounted.current) return;
       setStep(2);
       const setUrl = await at().sendCommand(`AT^FOTAOEMDL="${formatted}"`);
+      if (!mounted.current) return;
       if (!setUrl.success) {
         Toast.error('设置 FOTA 地址失败');
         setUpgrading(false);
         setStep(0);
         return;
       }
-      const timer = window.setInterval(async () => {
-        const state = await queryState();
-        switch (state) {
-          case 11:
-            Toast.info('正在查询新版本...');
-            break;
-          case 12:
-            Toast.info('发现新版本');
-            break;
-          case 13:
-            window.clearInterval(timer);
-            Toast.error('查询新版本失败');
-            setUpgrading(false);
-            setStep(0);
-            break;
-          case 14:
-            window.clearInterval(timer);
-            Toast.error('服务器无新版本');
-            setUpgrading(false);
-            setStep(0);
-            break;
-          case 20:
-            window.clearInterval(timer);
-            Toast.error('固件下载失败');
-            setUpgrading(false);
-            setStep(0);
-            break;
-          case 30: {
-            const dl = await at().sendCommand('AT^FOTADLQ');
-            if (dl.success && typeof dl.data === 'string') {
-              const nums = dl.data
-                .replace(/\r|\n/g, '')
-                .split(',')
-                .map((s) => s.replace(/[^0-9]/g, ''))
-                .filter(Boolean)
-                .map((s) => parseInt(s, 10));
-              if (nums.length >= 2) {
-                const total = nums[nums.length - 2];
-                const downloaded = nums[nums.length - 1];
-                if (total > 0) setProgress(Math.max(0, Math.min(100, Math.floor((downloaded / total) * 100))));
+      if (pollTimer.current !== null) window.clearInterval(pollTimer.current);
+      pollInFlight.current = false;
+      pollTimer.current = window.setInterval(() => {
+        if (pollInFlight.current || !mounted.current) return;
+        pollInFlight.current = true;
+        void (async () => {
+          const stopPolling = () => {
+            if (pollTimer.current !== null) window.clearInterval(pollTimer.current);
+            pollTimer.current = null;
+          };
+          try {
+            const state = await queryState();
+            if (!mounted.current) return;
+            const previousState = lastPolledState.current;
+            if (state !== null) lastPolledState.current = state;
+            switch (state) {
+              case 11:
+                if (previousState !== 11) Toast.info('正在查询新版本...');
+                break;
+              case 12:
+                if (previousState !== 12) Toast.info('发现新版本');
+                break;
+              case 13:
+                stopPolling();
+                Toast.error('查询新版本失败');
+                setUpgrading(false);
+                setStep(0);
+                break;
+              case 14:
+                stopPolling();
+                Toast.error('服务器无新版本');
+                setUpgrading(false);
+                setStep(0);
+                break;
+              case 20:
+                stopPolling();
+                Toast.error('固件下载失败');
+                setUpgrading(false);
+                setStep(0);
+                break;
+              case 30: {
+                const dl = await at().readCommand('AT^FOTADLQ');
+                if (!mounted.current) return;
+                if (dl.success && typeof dl.data === 'string') {
+                  const nums = dl.data
+                    .replace(/\r|\n/g, '')
+                    .split(',')
+                    .map((s) => s.replace(/[^0-9]/g, ''))
+                    .filter(Boolean)
+                    .map((s) => parseInt(s, 10));
+                  if (nums.length >= 2) {
+                    const total = nums[nums.length - 2];
+                    const downloaded = nums[nums.length - 1];
+                    if (total > 0) setProgress(Math.max(0, Math.min(100, Math.floor((downloaded / total) * 100))));
+                  }
+                }
+                break;
               }
+              case 31:
+                if (previousState !== 31) Toast.info('下载挂起，尝试续传');
+                if (Date.now() - lastResumeAt.current >= 5000) {
+                  lastResumeAt.current = Date.now();
+                  const resume = await at().sendCommand('AT^FOTADL=1');
+                  if (!resume.success) lastResumeAt.current = Date.now() - 4000;
+                }
+                break;
+              case 40:
+                stopPolling();
+                Toast.success('固件下载完成');
+                setStep(3);
+                await at().sendCommand('AT^FWUP');
+                if (!mounted.current) return;
+                Toast.success('固件升级已开始，设备即将重启');
+                setStep(4);
+                setUpgrading(false);
+                break;
+              case 50:
+                if (previousState !== 50) Toast.info('正在准备升级...');
+                break;
+              default:
+                break;
             }
-            break;
+          } catch {
+            if (mounted.current) Toast.error('读取升级进度失败，将稍后重试');
+          } finally {
+            pollInFlight.current = false;
           }
-          case 31:
-            Toast.info('下载挂起，尝试续传');
-            await at().sendCommand('AT^FOTADL=1');
-            break;
-          case 40:
-            window.clearInterval(timer);
-            Toast.success('固件下载完成');
-            setStep(3);
-            await at().sendCommand('AT^FWUP');
-            Toast.success('固件升级已开始，设备即将重启');
-            setStep(4);
-            setUpgrading(false);
-            break;
-          case 50:
-            Toast.info('正在准备升级...');
-            break;
-          default:
-            break;
-        }
+        })();
       }, 1000);
     } catch {
-      Toast.error('固件升级失败');
-      setUpgrading(false);
-      setStep(0);
+      if (mounted.current) {
+        Toast.error('固件升级失败');
+        setUpgrading(false);
+        setStep(0);
+      }
     }
   };
 

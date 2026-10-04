@@ -156,7 +156,7 @@ const NetworkDial: React.FC = () => {
 
   const sendCmd = async (command: string) => {
     await sleep(100);
-    return at().sendCommand(command);
+    return at().readCommand(command);
   };
 
   // ---------- 只读查询（共享后端，命中缓存后不重复下发） ----------
