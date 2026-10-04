@@ -316,11 +316,16 @@ return view.extend({
 		// 这也是本项目其它页面统一采用的异步化架构（Async Architecture）：
 		// 首屏不等任何 AT 命令。
 		//
-		// 注意：LuCI 的 dom 模块只有 dom.content()/dom.append()，
-		// 没有 dom.prepend()——用原生 appendChild 往容器尾部追加。
+		// 注意两点：
+		//  1) LuCI 的 dom 模块只有 dom.content()/dom.append()，没有 dom.prepend()
+		//     ——容器一律用原生 appendChild 组装。
+		//  2) c.skeletonPage() 返回的元素**自带 mt-page 类**。若把它放进另一个
+		//     .mt-page 里会得到嵌套的 .mt-page，两个都带 padding 与装饰伪元素，
+		//     内容会被双倍内缩。所以这里：外层容器不带 mt-page，mt-page 放在 slot 上，
+		//     骨架屏与 slot 平级。
 		var skeleton = c.skeletonPage(4);
-		var slot = E('div', { 'class': 'mt-async-body' }, []);
-		var host = E('div', { 'class': 'mt-page' }, [ c.cssLink(), skeleton, slot ]);
+		var slot = E('div', { 'class': 'mt-page' }, []);
+		var host = E('div', { 'class': 'mt-async-host' }, [ c.cssLink(), skeleton, slot ]);
 
 		m.render().then(function(formNode) {
 			dom.content(slot, [
@@ -354,10 +359,13 @@ return view.extend({
 				c.details(_('Advanced connection tools'), _('PDP profiles, module dialing modes and inbound routing for troubleshooting or special deployments.'), [ pdpPanel, moduleControls ]),
 				logDetails
 			]);
-			// 骨架屏用完后移除，避免与正文叠加占位
-			dom.content(skeleton, null);
+			// 骨架屏整体移除（不是 dom.content 清空——那会留下一个空的
+			// .mt-page .mt-skeleton-page 节点，继续占着 padding 与间距）
+			if (skeleton && skeleton.parentNode)
+				skeleton.parentNode.removeChild(skeleton);
 		}).catch(function(err) {
-			dom.content(skeleton, null);
+			if (skeleton && skeleton.parentNode)
+				skeleton.parentNode.removeChild(skeleton);
 			dom.content(slot, E('div', { 'class': 'alert-message danger' },
 				[ _('Failed to render the connection form.'), E('br'), String(err && err.message || err) ]));
 		});

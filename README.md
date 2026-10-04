@@ -405,6 +405,11 @@ registration denied）、`sysmode` 是否为 `NOSERVICE`/`UNKNOWN`、以及
    `return xxx.render().then(...)`。LuCI 的 view 契约要求 `load()` **同步返回一个 DOM
    节点**，返回 Promise 会被当字符串塞进容器，正文被这一行占满。改法：同步返回外层容器
    （可先放骨架屏），渲染完成后异步 `dom.content()` 注入。
+   - 清骨架屏要用 `parentNode.removeChild()`，**不要**用 `dom.content(skeleton, null)`
+     ——后者只清内容、节点仍在，会留下一个空的 `.mt-page .mt-skeleton-page` 继续占位。
+   - 别把 `.mt-page` 套进另一个 `.mt-page`：`c.skeletonPage()` 返回的元素自带
+     `mt-page` 类，嵌套会导致内容双倍内缩。本项目的做法是外层容器不带 `mt-page`，
+     `mt-page` 放在异步注入的 slot 上，骨架与 slot 平级。
 2. **控制台报 `c.xxx is not a function`，整页空白或只剩首屏** —— 视图调用了组件库里
    不存在的函数。核对方式是脚本比对 `components.js` 的 `return {...}` 导出清单与所有视图
    的 `c.xxx()` 调用：

@@ -40,7 +40,17 @@
     并补 `.catch` 把渲染失败显示为可读错误而非空白。与项目既有异步化架构一致。
   - 注意：LuCI 的 `dom` 模块**只有 `dom.content()`，没有 `dom.prepend()`** —— 用原生
     `appendChild` 组装容器。
-  - 实测：页面文本 712 → 2036 字符，「MOBILE DATA / Mobile data」标题与全部控件正常渲染。
+  - 骨架屏清理方式：不能用 `dom.content(skeleton, null)`，那只是清空内容、节点仍在，
+    会留下一个空的 `.mt-page .mt-skeleton-page` 继续占 padding 与间距；必须
+    `parentNode.removeChild(skeleton)`。
+  - `.mt-page` 不能嵌套：`c.skeletonPage()` 返回的元素**自带 `mt-page` 类**，放进另一个
+    `.mt-page` 里会双倍内缩。改为外层容器不带 `mt-page`、`mt-page` 放在注入 slot 上，
+    骨架与 slot 平级。
+  - 实测：页面文本 712 → 2040 字符；`.mt-page` 数量 2→1、嵌套 1→0、残留骨架 1→0、
+    `cbi-map` 正常渲染、文档无横向溢出；「MOBILE DATA / Mobile data」标题、
+    事实卡（自动拨号 / eth2 / Automatic / IPv4+IPv6）、已分配地址（IPv4 10.6.172.152、
+    双栈 DNS、IPv6 PD、MTU）、流量计数（1.68 GiB / 8.37 Gbps）、拨号表单与
+    Save & Apply 栏均正常。
 
 - **修复 LuCI 与 WebUI 的 AT 通道全哑（P0，实机三重根因叠加，缺任一层都导致全部 AT 命令超时）**：
   - Background：
