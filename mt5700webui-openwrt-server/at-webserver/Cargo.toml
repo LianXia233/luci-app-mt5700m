@@ -1,6 +1,6 @@
 [package]
 name = "at-webserver"
-version = "4.0.3"
+version = "4.0.4"
 edition = "2021"
 description = "MT5700M AT WebSocket daemon + LuCLI backend (single binary, dual frontend)"
 license = "MIT"

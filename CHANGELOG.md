@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.8.7] - 2026-10-03
+
+### Fixed
+- **修复 ucode 插件 nc 无超时导致整个 LuCI 被拖死**：
+  - 根因：`rpcCall()` 的 `p.read('line')` 无超时，rpcd 的 ucode 插件是「每请求一个进程」，AT 命令挂起时 nc 永久等待，rpcd 并发进程被占满 → 整个 LuCI 拖死。前端 15s 超时只救浏览器、救不了 rpcd。
+  - ucode 侧：nc 转发套超时外壳（`timeout` applet，缺失退化 `nc -w`），到点杀 nc 立即释放 rpcd 进程；按命令类型分配超时——读类 12s / 写类（`sms-*`、`command` 前缀、`pdp-set`、`factory-reset`、`sim-pin`、`restart`、`unlock`、`advanced-set`）25s。
+  - Rust 侧：`cli_capture` 的 `Command::output()` 改为 `spawn` + `try_wait` 轮询 + 25s 硬超时 `kill`，避免 CLI 子进程卡死时永久占住 RPC 线程（跨平台 std API）。
+  - 前端侧：`AT_TIMEOUT_MS` 15s → 30s，保证前端兜底 > ucode 外壳（25s），三层防挂起闭环。
+
 ## [2.8.6] - 2026-10-03
 
 ### Chore
