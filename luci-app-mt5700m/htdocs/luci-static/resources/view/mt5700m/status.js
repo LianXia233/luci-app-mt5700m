@@ -32,15 +32,20 @@ return view.extend({
 	pollIntervalMs: 15000,
 
 	load: function() {
+		this.stopPolling();
 		// 异步化：首屏只依赖非阻塞数据源。AT 查询不在 load() 里发起。
 		//
 		// traffic 缓存在 this.trafficCache：轮询刷新时（frameFromSnapshot）
 		// 必须复用**上一帧**的流量数据，不能重置为空，否则「IP 流量统计」
 		// 会在第一次轮询（15s 后）被清成 0 B。
 		var self = this;
+		this.managerError = '';
 		this.trafficCache = { interfaces: [] };
 		this.pending = Promise.all([
-			api.managerStatus().catch(function() { return {}; }),
+			api.managerStatus().catch(function(err) {
+				self.managerError = err && err.message || String(err);
+				return {};
+			}),
 			api.trafficSummary().catch(function() { return { interfaces: [] }; }),
 			api.cachedSnapshot().catch(function() { return null; })
 		]).then(function(results) {
@@ -50,9 +55,9 @@ return view.extend({
 		return Promise.resolve();
 	},
 
-	/* 快照 → parseStatus 可消费的 key=value 行（含 manager 侧的链路信息） */
-	frameFromSnapshot: function(snapshot, manager) {
-		var lines = snapshot ? this.snapshotLines(snapshot) : [];
+	/* 快照 / 详情合并成 parseStatus 可消费的 key=value 行。 */
+	frameFromSnapshot: function(snapshot, manager, nativeDetail, sessionDetail) {
+		var lines = this.mergeStatusLines(nativeDetail || '', this.snapshotLines(snapshot, nativeDetail));
 		if (manager) {
 			if (manager.at_port) lines.push('at_port=' + manager.at_port);
 			if (manager.network) lines.push('network_interface=' + manager.network);
@@ -63,85 +68,331 @@ return view.extend({
 		return {
 			manager: manager || {},
 			native: { stdout: lines.join('\n'), stderr: '' },
-			session: { stdout: '', stderr: '' },
-			/*
-			 * 复用缓存的流量，而不是写死空数组。
-			 *
-			 * 原来这里硬编码 `traffic: { interfaces: [] }`，而 startPolling
-			 * 每 15s 用 frameFromSnapshot 整体重渲染一次 —— 于是「IP 流量统计」
-			 * 首帧正常、15 秒后被清成 0 B，实测 t=8s 有 26.0 GiB、
-			 * t=16s 起全部 0 B。轮询只该刷新「快照类」数据，流量是
-			 * 独立数据源（mt5700.traffic），不该被快照帧顺带清掉。
-			 */
+			session: sessionDetail || { stdout: '', stderr: '' },
 			traffic: this.trafficCache || { interfaces: [] }
 		};
 	},
 
 	/*
-	 * 后台异步补齐详情（AT 查询）。
-	 * 只在 holder 仍挂载于文档时替换内容，避免页面切换后的野更新。
+	 * 以「有值者優先」合併 key=value 行：详情补充快照没有的字段，
+	 * 快照则覆盖同名详情值；空字段不会抹掉上一次成功读取的值。
 	 */
-	refreshDetail: function(holder, base) {
-		var self = this;
-		return Promise.all([
-			api.atStatus(),
-			api.atSession()
-		]).then(function(r) {
-			if (!document.body.contains(holder)) return;
-			holder.replaceChildren(self.renderPage({
-				manager: base.manager,
-				native: r[0],
-				session: r[1],
-				traffic: base.traffic
-			}));
-		}, function() {
-			/* AT 不可用：保留快照帧，不打断渲染 */
-		});
+	mergeStatusLines: function(base, overrides) {
+		var values = Object.create(null), order = [];
+		function add(line) {
+			var pos = line.indexOf('=');
+			if (pos < 1) return;
+			var key = line.substring(0, pos).trim();
+			var value = line.substring(pos + 1);
+			if (!key || !value.trim()) return;
+			if (!(key in values)) order.push(key);
+			values[key] = value;
+		}
+		String(base || '').split(/\r?\n/).forEach(add);
+		(overrides || []).forEach(add);
+		return order.map(function(key) { return key + '=' + values[key]; });
 	},
 
-	/*
-	 * 快照轮询：零 AT 流量的持续自更新。
-	 *
-	 * 流量也一起刷：mt5700.traffic 与 cachedSnapshot 同源（后端 netrate topic），
-	 * 两者都是纯读、零 AT 流量，所以并发发起不会互相排队。合并成
-	 * Promise.all 后一次重渲染，避免中间态闪一下。
-	 */
-	startPolling: function(holder, base) {
-		var self = this;
-		if (this._pollTimer) clearInterval(this._pollTimer);
-		this._pollTimer = setInterval(function() {
-			if (!document.body.contains(holder)) {
-				clearInterval(self._pollTimer);
-				self._pollTimer = null;
+	/* StateCache 的不完整 / 空条目不覆盖最近一次有效值。 */
+	mergeSnapshot: function(previous, incoming) {
+		var merged = Object.assign({}, previous || {});
+		if (!incoming || typeof incoming !== 'object') return merged;
+		Object.keys(incoming).forEach(function(topic) {
+			var entry = incoming[topic];
+			if (!entry || typeof entry !== 'object') return;
+			var value = entry.value;
+			var oldEntry = merged[topic];
+			var oldValue = oldEntry && oldEntry.value;
+			if (!value || typeof value !== 'object' || Array.isArray(value)) {
+				if (!oldEntry && value !== undefined && value !== null && value !== '')
+					merged[topic] = entry;
 				return;
 			}
-			Promise.all([
-				api.cachedSnapshot().catch(function() { return null; }),
-				api.trafficSummary().catch(function() { return null; })
-			]).then(function(res) {
-				var snapshot = res[0];
-				if (res[1] && res[1].interfaces) self.trafficCache = res[1];
-				if (!document.body.contains(holder)) return;
-				/* 快照不可用时保持当前帧，但流量若拿到了仍可刷新 */
-				if (!snapshot) return;
-				holder.replaceChildren(self.renderPage(
-					self.frameFromSnapshot(snapshot, base.manager)));
-			}, function() { /* 都不可用：保持当前帧 */ });
+			var nextValue = Object.assign({}, oldValue && typeof oldValue === 'object' ? oldValue : {});
+			Object.keys(value).forEach(function(key) {
+				var field = value[key];
+				if (field !== undefined && field !== null && field !== '')
+					nextValue[key] = field;
+			});
+			merged[topic] = Object.assign({}, oldEntry || {}, entry, { value: nextValue });
+		});
+		return merged;
+	},
+
+	snapshotDiff: function(previous, next) {
+		var changed = [];
+		Object.keys(next || {}).forEach(function(topic) {
+			var before = previous && previous[topic] ? previous[topic].value : undefined;
+			var after = next[topic] ? next[topic].value : undefined;
+			if (JSON.stringify(before) === JSON.stringify(after)) return;
+			var fields = [];
+			if (before && typeof before === 'object' && after && typeof after === 'object') {
+				var keys = Object.keys(before).concat(Object.keys(after));
+				keys.forEach(function(key) {
+					if (fields.indexOf(key) === -1 && JSON.stringify(before[key]) !== JSON.stringify(after[key]))
+						fields.push(key);
+				});
+			} else {
+				fields.push('*');
+			}
+			changed.push({ topic: topic, fields: fields });
+		});
+		return changed;
+	},
+
+	stateWarnings: function(state) {
+		return [ state.detailError, state.snapshotError, state.trafficError, state.managerError ].filter(Boolean);
+	},
+
+	frameFromState: function(state) {
+		var frame = this.frameFromSnapshot(
+			state.snapshot, state.manager, state.nativeDetail, state.sessionDetail);
+		frame.traffic = state.traffic || { interfaces: [] };
+		frame.uiErrors = [];
+		if (state.detailError)
+			frame.uiErrors.push({ message: state.detailError, retry: state.retryDetails });
+		if (state.snapshotError)
+			frame.uiErrors.push({ message: state.snapshotError, retry: state.retryPoll });
+		if (state.trafficError)
+			frame.uiErrors.push({ message: state.trafficError, retry: state.retryPoll });
+		if (state.managerError)
+			frame.uiErrors.push({
+				message: _('Dial manager status is temporarily unavailable; connection details may be incomplete.') + ' ' + state.managerError,
+				retry: state.retryManager
+			});
+		frame.onRetry = state.retryPoll || state.onRefresh || null;
+		frame.onRefresh = state.onRefresh || null;
+		return frame;
+	},
+
+	stopPolling: function(poll) {
+		var current = poll || this._pollState;
+		if (!current) return;
+		current.stopped = true;
+		if (current.timer) clearTimeout(current.timer);
+		if (current.mountTimer) clearTimeout(current.mountTimer);
+		if (current.observer) current.observer.disconnect();
+		current.timer = null;
+		current.mountTimer = null;
+		current.observer = null;
+		if (this._pollState === current) this._pollState = null;
+	},
+
+	schedulePolling: function(poll) {
+		var self = this;
+		if (!poll || poll.stopped || poll.timer || poll.inFlight) return;
+		poll.timer = setTimeout(function() {
+			poll.timer = null;
+			self.runPoll(poll.holder, poll.state);
 		}, this.pollIntervalMs);
 	},
 
-	/*
+	/* 快照与流量只读轮询：串行调度，上一轮未完成时不会再发新请求。 */
+	runPoll: function(holder, state) {
+		var self = this;
+		var poll = state && state.polling;
+		if (!poll || poll.stopped) return Promise.resolve();
+		if (poll.timer) {
+			clearTimeout(poll.timer);
+			poll.timer = null;
+		}
+		if (poll.inFlight) return poll.inFlight;
+		if (!document.body.contains(holder)) {
+			if (poll.seenMounted) this.stopPolling(poll);
+			else this.schedulePolling(poll);
+			return Promise.resolve();
+		}
+		poll.seenMounted = true;
+
+		var beforeWarnings = this.stateWarnings(state).join('\n');
+		var request = Promise.all([
+			api.cachedSnapshot().catch(function() { return null; }),
+			api.trafficSummary().catch(function() { return null; })
+		]).then(function(result) {
+			if (poll.stopped || !document.body.contains(holder)) {
+				if (poll.seenMounted) self.stopPolling(poll);
+				return;
+			}
+
+			var oldSnapshot = state.snapshot || {};
+			if (result[0] && typeof result[0] === 'object') {
+				state.snapshot = self.mergeSnapshot(oldSnapshot, result[0]);
+				state.snapshotError = '';
+			} else {
+				state.snapshotError = _('Shared modem status could not be refreshed; any available cached values are retained.');
+			}
+
+			var changedTopics = self.snapshotDiff(oldSnapshot, state.snapshot || {});
+			var trafficChanged = false;
+			var report = result[1];
+			var hasReport = report && Array.isArray(report.interfaces);
+			var hadTraffic = state.traffic && Array.isArray(state.traffic.interfaces) && state.traffic.interfaces.length > 0;
+			if (hasReport && (report.interfaces.length > 0 || !hadTraffic)) {
+				trafficChanged = JSON.stringify(state.traffic || {}) !== JSON.stringify(report);
+				state.traffic = report;
+				state.trafficError = '';
+				self.trafficCache = report;
+			} else if (!hasReport || hadTraffic) {
+				state.trafficError = _('Traffic statistics could not be refreshed; any previously displayed values are retained.');
+			}
+
+			var regions = [];
+			function addRegions(names) {
+				(names || []).forEach(function(name) {
+					if (regions.indexOf(name) === -1) regions.push(name);
+				});
+			}
+			changedTopics.forEach(function(change) {
+				var fields = change.fields || [];
+				var has = function(name) { return fields.indexOf('*') !== -1 || fields.indexOf(name) !== -1; };
+				if (change.topic === 'signal') {
+					if ([ 'rsrp', 'rsrq', 'sinr', 'rssi' ].some(has)) addRegions([ 'signal' ]);
+					if (has('sysmode')) addRegions([ 'hero', 'facts', 'carrier', 'sim' ]);
+				} else if (change.topic === 'network') {
+					if ([ 'operator', 'sysmode', 'sysmode_detail' ].some(has)) addRegions([ 'facts', 'sim' ]);
+					if (has('sysmode') || has('sysmode_detail')) addRegions([ 'hero' ]);
+				} else if (change.topic === 'temperature' && has('average')) {
+					addRegions([ 'signal' ]);
+				} else if (change.topic === 'modem') {
+					addRegions([ 'module' ]);
+				} else if (change.topic === 'sim') {
+					addRegions([ 'sim' ]);
+				} else if (change.topic === 'cell' || change.topic === 'endc') {
+					addRegions([ 'carrier' ]);
+				}
+			});
+			if (trafficChanged) regions.push('traffic');
+			if (beforeWarnings !== self.stateWarnings(state).join('\n')) regions.push('alerts');
+			if (regions.length)
+				self.updateRegions(holder, self.frameFromState(state), regions);
+		}).catch(function() {
+			if (poll.stopped || !document.body.contains(holder)) return;
+			state.snapshotError = _('Shared modem status could not be refreshed; any available cached values are retained.');
+			if (self.stateWarnings(state).join('\n') !== beforeWarnings)
+				self.updateRegions(holder, self.frameFromState(state), [ 'alerts' ]);
+		});
+
+		var settled = request.then(function() {}, function() {});
+		var final = settled.then(function() {
+			if (poll.inFlight === final) poll.inFlight = null;
+			if (!poll.stopped) self.schedulePolling(poll);
+		});
+		poll.inFlight = final;
+		return final;
+	},
+
+	startPolling: function(holder, state) {
+		var self = this;
+		this.stopPolling();
+		var poll = { holder: holder, state: state, timer: null, mountTimer: null,
+			observer: null, inFlight: null, stopped: false, seenMounted: false };
+		this._pollState = poll;
+		state.polling = poll;
+
+		function begin() {
+			if (poll.stopped) return;
+			if (!document.body.contains(holder)) {
+				self.stopPolling(poll);
+				return;
+			}
+			poll.seenMounted = true;
+			if (typeof MutationObserver !== 'undefined') {
+				poll.observer = new MutationObserver(function() {
+					if (!document.body.contains(holder)) self.stopPolling(poll);
+				});
+				poll.observer.observe(document.body, { childList: true, subtree: true });
+			}
+			self.schedulePolling(poll);
+		}
+
+		if (document.body.contains(holder)) begin();
+		else poll.mountTimer = setTimeout(begin, 0);
+	},
+
+	retryManager: function(holder, state) {
+		var self = this;
+		if (state.managerPending) return state.managerPending;
+		var pending = api.managerStatus().then(function(manager) {
+			if (!document.body.contains(holder)) return;
+			state.manager = manager || {};
+			state.managerError = '';
+			self.updateRegions(holder, self.frameFromState(state), [ 'hero', 'facts', 'module', 'traffic', 'alerts' ]);
+		}, function(err) {
+			if (!document.body.contains(holder)) return;
+			state.managerError = err && err.message || String(err);
+			self.updateRegions(holder, self.frameFromState(state), [ 'alerts' ]);
+		}).then(function() {
+			state.managerPending = null;
+		});
+		state.managerPending = pending;
+		return pending;
+	},
+
+	refreshDetail: function(holder, state) {
+		var self = this;
+		if (state.detailPending) return state.detailPending;
+		var beforeWarnings = this.stateWarnings(state).join('\n');
+		var oldNative = state.nativeDetail || '';
+		var oldSession = state.sessionDetail && state.sessionDetail.stdout || '';
+		function failedResponse(err) {
+			return { stdout: '', stderr: err && err.message || String(err) };
+		}
+		var pending = Promise.all([
+			api.atStatus().catch(failedResponse),
+			api.atSession().catch(failedResponse)
+		]).then(function(result) {
+			if (!document.body.contains(holder)) return;
+			var native = result[0] || { stdout: '', stderr: '' };
+			var session = result[1] || { stdout: '', stderr: '' };
+			var errors = [];
+			var nativeChanged = false, sessionChanged = false;
+
+			if (native.stderr) errors.push(native.stderr);
+			else if (native.stdout) {
+				state.nativeDetail = self.mergeStatusLines(oldNative, native.stdout).join('\n');
+				nativeChanged = state.nativeDetail !== oldNative;
+			}
+			if (session.stderr) errors.push(session.stderr);
+			else if (session.stdout) {
+				state.sessionDetail = { stdout: session.stdout, stderr: '' };
+				sessionChanged = session.stdout !== oldSession;
+			}
+
+			state.detailError = errors.length
+				? _('Some modem details could not be refreshed. Existing values are retained.') + ' ' + errors.join(' · ')
+				: '';
+			var regions = [];
+			if (nativeChanged)
+				regions = regions.concat([ 'hero', 'facts', 'signal', 'carrier', 'module', 'sim' ]);
+			if (sessionChanged) regions.push('address');
+			if (beforeWarnings !== self.stateWarnings(state).join('\n')) regions.push('alerts');
+			if (regions.length)
+				self.updateRegions(holder, self.frameFromState(state), regions);
+		}).catch(function(err) {
+			if (!document.body.contains(holder)) return;
+			state.detailError = _('Some modem details could not be refreshed. Existing values are retained.') + ' ' + (err && err.message || String(err));
+			if (beforeWarnings !== self.stateWarnings(state).join('\n'))
+				self.updateRegions(holder, self.frameFromState(state), [ 'alerts' ]);
+		}).then(function() {
+			state.detailPending = null;
+		});
+		state.detailPending = pending;
+		return pending;
+	},
+
+		/*
 	 * 把 StateCache 快照折叠成 parseStatus 可消费的 key=value 行。
 	 * 仅映射既有 UI 字段，且跳过空值 —— parseStatus 之后照常做
 	 * temperature 清洗、connected 推导等，行为与完整帧一致。
 	 */
-	snapshotLines: function(snapshot) {
+	snapshotLines: function(snapshot, nativeDetail) {
+		snapshot = snapshot || {};
 		var map = {
 			signal: { sysmode: 'sysmode', rsrp: 'rsrp', rsrq: 'rsrq', sinr: 'sinr', rssi: 'rssi' },
 			network: { operator: 'operator', sysmode: 'sysmode', sysmode_detail: 'sysmode_detail' },
 			temperature: { average: 'temperature' },
-			modem: { manufacturer: 'manufacturer', model: 'model', revision: 'revision', imei: 'imei' },
-			sim: { status: 'sim', iccid: 'iccid', imsi: 'imsi' }
+			modem: { manufacturer: 'manufacturer', model: 'product_name', revision: 'revision', imei: 'imei' },
+			sim: { status: 'sim_state', iccid: 'iccid', imsi: 'imsi' }
 		};
 		var lines = [];
 		Object.keys(map).forEach(function(topic) {
@@ -154,6 +405,45 @@ return view.extend({
 				lines.push(fields[src] + '=' + val);
 			});
 		});
+
+		/*
+		 * The cell collector already stores the serving band/channel in the
+		 * shared daemon cache. Mirror the existing parser's carrier_N shape so
+		 * polling can update that card without issuing another AT query.
+		 */
+		var cell = snapshot.cell && snapshot.cell.value;
+		if (cell && typeof cell === 'object') {
+			var band = cell.band == null ? '' : String(cell.band);
+			var channel = cell.channel == null ? '' : String(cell.channel);
+			var radio = cell.sysmode || (snapshot.signal && snapshot.signal.value && snapshot.signal.value.sysmode) || 'NR';
+			var bandwidth = cell.dlBandwidth == null ? '' : String(cell.dlBandwidth);
+			var previousCarrier = null;
+			String(nativeDetail || '').split(/\r?\n/).some(function(line) {
+				if (line.indexOf('carrier_1=') !== 0) return false;
+				previousCarrier = line.substring('carrier_1='.length).split('|');
+				return true;
+			});
+			if (band || channel) {
+				// Keep the last known frequency only for the same radio, band, and
+				// ARFCN; never carry it over to a different serving cell.
+				var sameCell = previousCarrier && previousCarrier[0] === radio &&
+					previousCarrier[1] === 'B' + band && previousCarrier[2] === channel;
+				var dlFrequency = sameCell ? previousCarrier[3] || '' : '';
+				var ulFrequency = sameCell ? previousCarrier[5] || '' : '';
+				lines.push('carrier_count=1');
+				lines.push('carrier_1=' + radio + '|B' + band + '|' + channel + '|' + dlFrequency + '|' + bandwidth + '|' + ulFrequency + '|0|' + bandwidth);
+				lines.push('ca_active=0');
+				lines.push('ca_mode=' + radio);
+				if (bandwidth) {
+					lines.push('ca_dl_bandwidth=' + bandwidth);
+					lines.push('ca_ul_bandwidth=' + bandwidth);
+				}
+			}
+		}
+
+		var endc = snapshot.endc && snapshot.endc.value;
+		if (endc && typeof endc === 'object' && endc.established !== undefined && endc.established !== null)
+			lines.push('dc_active=' + (Number(endc.established) === 1 ? '1' : '0'));
 		return lines;
 	},
 
@@ -333,24 +623,162 @@ return view.extend({
 		]);
 	},
 
+	/* ---------- 状态视图与局部渲染 ---------- */
+
+	statusViewData: function(res) {
+		var data = parser.parseStatus(res);
+		var session = parser.parseSession(res.session && res.session.stdout || '');
+		var opInfo = parser.operatorInfo(data.operator);
+		var operator = opInfo.name;
+		if (!/[A-Za-z0-9\u4e00-\u9fff]/.test(operator)) operator = '';
+		data.operator = operator;
+		return {
+			data: data,
+			session: session,
+			reachable: data.reachable === '1',
+			connected: data.connected === '1',
+			carrierInfo: parser.carrierInfo(data),
+			opInfo: opInfo,
+			operator: operator,
+			usbNames: { upgrade: _('Upgrade mode'), dump: _('Dump mode'), unknown: _('Unknown USB mode') },
+			abnormalUsb: data.usb_state === 'upgrade' || data.usb_state === 'dump' || data.usb_state === 'unknown'
+		};
+	},
+
+	liveRegion: function(node, name) {
+		if (node) node.setAttribute('data-live-region', name);
+		return node;
+	},
+
+	alertsRegion: function(res, viewData) {
+		var notices = [];
+		if (viewData.data.error)
+			notices.push(E('div', { 'class': 'alert-message warning' }, viewData.data.error));
+		if (res.session && res.session.stderr)
+			notices.push(E('div', { 'class': 'alert-message warning' }, res.session.stderr));
+		(res.uiErrors || []).forEach(function(error) {
+			var message = typeof error === 'string' ? error : error.message;
+			var retry = typeof error === 'string' ? res.onRetry : error.retry;
+			var content = [ E('span', {}, message) ];
+			if (retry)
+				content.push(' ', c.btn(_('Retry'), retry, { 'cls': 'mt-session-action' }));
+			notices.push(E('div', { 'class': 'alert-message warning' }, content));
+		});
+		if (viewData.abnormalUsb) {
+			notices.push(E('div', { 'class': 'alert-message warning' },
+				_('The MT5700M is in %s. Mobile data and AT management are unavailable until normal mode returns.')
+					.format(viewData.usbNames[viewData.data.usb_state])));
+		}
+		return this.liveRegion(E('div', { 'class': 'mt-live-alerts' }, notices), 'alerts');
+	},
+
+	heroRegion: function(res, viewData) {
+		var self = this;
+		var connected = viewData.connected, reachable = viewData.reachable;
+		return this.liveRegion(c.hero(_('OVERVIEW'), _('MT5700M Module'),
+			!reachable ? _('The modem did not respond. Check the module connection.') : connected ? _('Mobile network is connected and ready.') : _('The module is online, but mobile data is not connected.'),
+			[
+				E('div', { 'class': 'mt-conn-state' }, [
+					c.svgStatusPulse(connected ? 'ok' : reachable ? 'warn' : 'bad', 18),
+					E('span', { 'class': 'mt-conn-state-text' }, connected ? _('Connected') : reachable ? _('Module online') : _('Unavailable'))
+				]),
+				E('a', { 'class': 'mt-hero-btn', 'href': '/5700/', 'target': '_blank', 'rel': 'noopener' }, [ c.svgWebUiIcon(), _('WebUI') ]),
+				E('button', { 'class': 'mt-hero-btn mt-hero-refresh', 'click': function() {
+					if (res.onRefresh) return res.onRefresh();
+				} }, [ c.svgRefreshIcon(), _('Refresh') ])
+			], null, c.svgTower({ active: reachable, status: connected ? 'ok' : reachable ? 'warn' : 'bad' })), 'hero');
+	},
+
+	factsRegion: function(viewData) {
+		var data = viewData.data, opInfo = viewData.opInfo, operator = viewData.operator;
+		return this.liveRegion(E('div', { 'class': 'mt-facts-grid', 'style': 'margin-bottom:14px' }, [
+			E('div', { 'class': 'mt-facts-cell' }, [
+				E('div', { 'class': 'mt-facts-label' }, _('Network Mode')),
+				E('div', { 'class': 'mt-facts-value' }, data.sysmode_detail || data.sysmode || '--')
+			]),
+			E('div', { 'class': 'mt-facts-cell' }, [
+				E('div', { 'class': 'mt-facts-label' }, _('Network interface')),
+				E('div', { 'class': 'mt-facts-value' }, data.network_interface || '--')
+			]),
+			E('div', { 'class': 'mt-facts-cell' }, [
+				E('div', { 'class': 'mt-facts-label' }, _('Operator')),
+				E('div', { 'class': 'mt-facts-value mt-facts-value--inline' }, [
+					opInfo.logo ? E('img', { 'src': opInfo.logo, 'alt': operator, 'class': 'mt-facts-logo' }) : null,
+					E('span', {}, operator || '--')
+				])
+			]),
+			E('div', { 'class': 'mt-facts-cell' }, [
+				E('div', { 'class': 'mt-facts-label' }, _('AT port')),
+				E('div', { 'class': 'mt-facts-value' }, data.at_port || '--')
+			])
+		]), 'facts');
+	},
+
+	createRegion: function(res, viewData, name) {
+		if (name === 'alerts') return this.alertsRegion(res, viewData);
+		if (name === 'hero') return this.heroRegion(res, viewData);
+		if (name === 'facts') return this.factsRegion(viewData);
+		if (name === 'signal') return this.liveRegion(this.signalCard(viewData.data), 'signal');
+		if (name === 'carrier') return this.liveRegion(this.carrierCard(viewData.carrierInfo), 'carrier');
+		if (name === 'address') return this.liveRegion(this.addressCard(viewData.session), 'address');
+		if (name === 'module') return this.liveRegion(this.moduleCard(viewData.data), 'module');
+		if (name === 'sim') return this.liveRegion(this.simCard(viewData.data), 'sim');
+		if (name === 'traffic')
+			return this.liveRegion(this.trafficPanel(res.traffic || {}, viewData.data.network_interface || 'eth2'), 'traffic');
+		return null;
+	},
+
+	/* 只更新指定区域节点；不重建 mt-page，其余区域与表单状态保持不动。 */
+	updateRegions: function(holder, res, regions) {
+		if (!document.body.contains(holder)) return;
+		var self = this;
+		var viewData = this.statusViewData(res);
+		var updated = [];
+		(regions || []).forEach(function(name) {
+			if (updated.indexOf(name) !== -1) return;
+			updated.push(name);
+			var current = holder.querySelector('[data-live-region="' + name + '"]');
+			if (!current || !current.parentNode) return;
+			var next = self.createRegion(res, viewData, name);
+			if (next) current.parentNode.replaceChild(next, current);
+		});
+	},
+
 	/* ---------- 渲染 ---------- */
 
-	// 异步化渲染：骨架屏 → 快照帧（完成态，零 AT）→ 后台详情帧增量替换
+	// 骨架屏 → StateCache 首帧（不等 AT）→ 详情与轮询只补对应区域。
 	render: function() {
 		var self = this;
 		var holder = E('div', { 'class': 'mt-view' });
 		holder.appendChild(c.skeletonPage(6));
 
 		this.pending.then(function(data) {
-			// 快照帧即为页面的完成态：即使后续 AT 查询永久挂起，页面也已渲染完毕。
-			holder.replaceChildren(self.renderPage(
-				self.frameFromSnapshot(data.snapshot, data.manager)));
-
-			// 后台异步补齐详情（带硬超时，失败不影响已渲染内容）。
-			var base = { manager: data.manager, traffic: data.traffic };
-			self.refreshDetail(holder, base);
-			// 快照轮询：零 AT 流量的持续自更新。
-			self.startPolling(holder, base);
+			var state = {
+				manager: data.manager || {},
+				managerError: self.managerError || '',
+				managerPending: null,
+				traffic: data.traffic || { interfaces: [] },
+				snapshot: data.snapshot || {},
+				nativeDetail: '',
+				sessionDetail: null,
+				detailError: '',
+				snapshotError: data.snapshot ? '' : _('Shared modem status is temporarily unavailable. Showing available data.'),
+				trafficError: '',
+				detailPending: null,
+				polling: null,
+				onRefresh: null
+			};
+			state.retryDetails = function() { return self.refreshDetail(holder, state); };
+			state.retryPoll = function() { return self.runPoll(holder, state); };
+			state.retryManager = function() { return self.retryManager(holder, state); };
+			state.onRefresh = function() {
+				self.refreshDetail(holder, state);
+				if (state.managerError) self.retryManager(holder, state);
+				return self.runPoll(holder, state);
+			};
+			holder.replaceChildren(self.renderPage(self.frameFromState(state)));
+			self.startPolling(holder, state);
+			self.refreshDetail(holder, state);
 		}, function(err) {
 			holder.replaceChildren(E('div', { 'class': 'mt-page' }, [
 				E('div', { 'class': 'alert-message error' }, String(err && err.message || err))
@@ -361,66 +789,24 @@ return view.extend({
 	},
 
 	renderPage: function(res) {
-		var data = parser.parseStatus(res), session = parser.parseSession(res.session && res.session.stdout || '');
-		var reachable = data.reachable === '1', connected = data.connected === '1', carrierInfo = parser.carrierInfo(data);
-		var opInfo = parser.operatorInfo(data.operator);
-		var operator = opInfo.name;
-		if (!/[A-Za-z0-9\u4e00-\u9fff]/.test(operator)) operator = '';
-		var usbNames = { upgrade: _('Upgrade mode'), dump: _('Dump mode'), unknown: _('Unknown USB mode') };
-		var abnormalUsb = data.usb_state === 'upgrade' || data.usb_state === 'dump' || data.usb_state === 'unknown';
-		data.operator = operator;
-
+		var viewData = this.statusViewData(res);
+		var statusGrid = E('div', { 'class': 'mt-grid' }, [
+			this.createRegion(res, viewData, 'signal'),
+			this.createRegion(res, viewData, 'carrier'),
+			this.createRegion(res, viewData, 'address')
+		]);
+		var moduleGrid = E('div', { 'class': 'mt-grid' }, [
+			this.createRegion(res, viewData, 'module'),
+			this.createRegion(res, viewData, 'sim')
+		]);
 		return E('div', { 'class': 'mt-page' }, [
 			c.cssLink(),
-			data.error ? E('div', { 'class': 'alert-message warning' }, data.error) : null,
-			res.session && res.session.stderr ? E('div', { 'class': 'alert-message warning' }, res.session.stderr) : null,
-			abnormalUsb ? E('div', { 'class': 'alert-message warning' }, _('The MT5700M is in %s. Mobile data and AT management are unavailable until normal mode returns.').format(usbNames[data.usb_state])) : null,
-			c.hero(_('OVERVIEW'), _('MT5700M Module'),
-				!reachable ? _('The modem did not respond. Check the module connection.') : connected ? _('Mobile network is connected and ready.') : _('The module is online, but mobile data is not connected.'),
-				[
-					E('div', { 'class': 'mt-conn-state' }, [
-						c.svgStatusPulse(connected ? 'ok' : reachable ? 'warn' : 'bad', 18),
-						E('span', { 'class': 'mt-conn-state-text' }, connected ? _('Connected') : reachable ? _('Module online') : _('Unavailable'))
-					]),
-					E('a', { 'class': 'mt-hero-btn', 'href': '/5700/', 'target': '_blank', 'rel': 'noopener' }, [ c.svgWebUiIcon(), _('WebUI') ]),
-					E('button', { 'class': 'mt-hero-btn mt-hero-refresh', 'click': function() { window.location.reload(); } }, [ c.svgRefreshIcon(), _('Refresh') ])
-				],
-				null,
-				c.svgTower({ active: reachable, status: connected ? 'ok' : reachable ? 'warn' : 'bad' })),
-			E('div', { 'class': 'mt-facts-grid', 'style': 'margin-bottom:14px' }, [
-				E('div', { 'class': 'mt-facts-cell' }, [
-					E('div', { 'class': 'mt-facts-label' }, _('Network Mode')),
-					E('div', { 'class': 'mt-facts-value' }, data.sysmode_detail || data.sysmode || '--')
-				]),
-				E('div', { 'class': 'mt-facts-cell' }, [
-					E('div', { 'class': 'mt-facts-label' }, _('Network interface')),
-					E('div', { 'class': 'mt-facts-value' }, data.network_interface || '--')
-				]),
-				E('div', { 'class': 'mt-facts-cell' }, [
-					E('div', { 'class': 'mt-facts-label' }, _('Operator')),
-					/* 运营商 logo 与文字同一行：mt-facts-value 是块级容器，
-					   img 与文本会各占一行叠压（vertical-align 在块内无效），
-					   故用 mt-facts-value--inline 改成 flex 布局。 */
-					E('div', { 'class': 'mt-facts-value mt-facts-value--inline' }, [
-						opInfo.logo ? E('img', { 'src': opInfo.logo, 'alt': operator, 'class': 'mt-facts-logo' }) : null,
-						E('span', {}, operator || '--')
-					])
-				]),
-				E('div', { 'class': 'mt-facts-cell' }, [
-					E('div', { 'class': 'mt-facts-label' }, _('AT port')),
-					E('div', { 'class': 'mt-facts-value' }, data.at_port || '--')
-				])
-			]),
-			E('div', { 'class': 'mt-grid' }, [
-				this.signalCard(data),
-				this.carrierCard(carrierInfo),
-				this.addressCard(session)
-			]),
-			E('div', { 'class': 'mt-grid' }, [
-				this.moduleCard(data),
-				this.simCard(data)
-			]),
-			this.trafficPanel(res.traffic || {}, data.network_interface || 'eth2'),
+			this.createRegion(res, viewData, 'alerts'),
+			this.createRegion(res, viewData, 'hero'),
+			this.createRegion(res, viewData, 'facts'),
+			statusGrid,
+			moduleGrid,
+			this.createRegion(res, viewData, 'traffic'),
 			E('div', { 'class': 'mt-shortcuts' }, [
 				c.btnLink(_('Mobile data'), L.url('admin/modem/mt5700m/connection'), { 'cls': 'mt-shortcuts-card' }),
 				c.btnLink(_('Radio and Cells'), L.url('admin/modem/mt5700m/network'), { 'cls': 'mt-shortcuts-card' }),

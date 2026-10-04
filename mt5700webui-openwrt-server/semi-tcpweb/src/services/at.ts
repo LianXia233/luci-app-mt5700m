@@ -1476,6 +1476,7 @@ export class ATService {
   private static instance: ATService | null = null; // 确保初始化为 null
   private adapter: ATAdapter;
   private newSMSSubscribers: Set<(response: ATResponse) => void> = new Set();
+  private pendingReads = new Map<string, Promise<ATResponse>>();
 
   private constructor() {
     this.adapter = isMockModeEnabled()
@@ -1525,7 +1526,10 @@ export class ATService {
 
   public isReady(): boolean {
     if (this.adapter instanceof WebSocketATAdapter) {
-      return (this.adapter as WebSocketATAdapter).isReady();
+      return this.adapter.isReady();
+    }
+    if (this.adapter instanceof MockWebSocketATAdapter) {
+      return this.adapter.isReady();
     }
     return false;
   }
@@ -1543,16 +1547,14 @@ export class ATService {
   }
 
   public getConnectionState(): ATConnectionState {
-    if (this.adapter instanceof WebSocketATAdapter) {
-      return (this.adapter as WebSocketATAdapter).getConnectionState();
-    }
+    if (this.adapter instanceof WebSocketATAdapter) return this.adapter.getConnectionState();
+    if (this.adapter instanceof MockWebSocketATAdapter) return this.adapter.getConnectionState();
     return 'disconnected';
   }
 
   public getConnectionSnapshot(): ATConnectionSnapshot {
-    if (this.adapter instanceof WebSocketATAdapter) {
-      return (this.adapter as WebSocketATAdapter).getConnectionSnapshot();
-    }
+    if (this.adapter instanceof WebSocketATAdapter) return this.adapter.getConnectionSnapshot();
+    if (this.adapter instanceof MockWebSocketATAdapter) return this.adapter.getConnectionSnapshot();
     return {
       state: 'disconnected',
       reconnectAttempt: 0,
@@ -1563,8 +1565,9 @@ export class ATService {
   public onConnectionStateChange(
     callback: (snapshot: ATConnectionSnapshot) => void,
   ): () => void {
-    if (this.adapter instanceof WebSocketATAdapter) {
-      return (this.adapter as WebSocketATAdapter).onConnectionStateChange(callback);
+    if (this.adapter instanceof WebSocketATAdapter) return this.adapter.onConnectionStateChange(callback);
+    if (this.adapter instanceof MockWebSocketATAdapter) {
+      return this.adapter.onConnectionStateChange(callback);
     }
     callback(this.getConnectionSnapshot());
     return () => {};
@@ -1572,11 +1575,49 @@ export class ATService {
 
   // 注册连接成功回调
   public onConnectSuccess(callback: () => void): () => void {
-    if (this.adapter instanceof WebSocketATAdapter) {
-      return (this.adapter as WebSocketATAdapter).onConnectSuccess(callback);
-    }
-    // 如果不是 WebSocket 适配器，返回空函数
+    if (this.adapter instanceof WebSocketATAdapter) return this.adapter.onConnectSuccess(callback);
+    if (this.adapter instanceof MockWebSocketATAdapter) return this.adapter.onConnectSuccess(callback);
     return () => {};
+  }
+
+  /**
+   * Read-only query path for view initialization / refresh actions. The Rust
+   * backend may return { pending: true } while a shared raw-cache acquisition is
+   * running; retry a few times with bounded delay and coalesce identical reads
+   * so multiple WebUI pages never create duplicate refresh traffic.
+   */
+  public readCommand(
+    command: string,
+    options: { pendingRetries?: number; retryDelaysMs?: number[] } = {},
+  ): Promise<ATResponse> {
+    const key = command.trim().replace(/\s+/g, ' ').toUpperCase();
+    const existing = this.pendingReads.get(key);
+    if (existing) return existing;
+
+    const retries = Math.max(0, Math.min(4, options.pendingRetries ?? 3));
+    const delays = options.retryDelaysMs ?? [600, 1200, 2000, 3000];
+    const request = (async () => {
+      let result: ATResponse = { success: false, error: '读取命令未执行' };
+      for (let attempt = 0; attempt <= retries; attempt += 1) {
+        result = await this.sendCommand(command);
+        if (!('pending' in result) || result.pending !== true) return result;
+        if (attempt < retries) {
+          const delay = Math.max(0, delays[Math.min(attempt, delays.length - 1)] ?? 1000);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+      }
+      return {
+        ...result,
+        success: false,
+        error: result.message || '设备后台仍在采集该数据，请稍后重试。',
+      };
+    })();
+
+    const coalesced = request.finally(() => {
+      if (this.pendingReads.get(key) === coalesced) this.pendingReads.delete(key);
+    });
+    this.pendingReads.set(key, coalesced);
+    return coalesced;
   }
 
   public async sendCommand(command: string): Promise<ATResponse> {
@@ -1680,7 +1721,7 @@ export class ATService {
       console.log('开始执行listAllSMS');
 
       // 先检查当前模式
-      const modeResponse = await this.sendCommand('AT+CMGF?');
+      const modeResponse = await this.readCommand('AT+CMGF?');
       if (modeResponse.success && 'data' in modeResponse && typeof modeResponse.data === 'string' && !modeResponse.data.includes('+CMGF: 0')) {
         // 只有不是PDU模式时才设置
         console.log('当前不是PDU模式，设置为PDU模式');
@@ -1722,7 +1763,7 @@ export class ATService {
 
   // 查询短信存储器状态
   public async getSMSStorage(): Promise<ATResponse> {
-    return this.sendCommand('AT+CPMS?');
+    return this.readCommand('AT+CPMS?');
   }
 
   // 设置短信格式（PDU/Text）
@@ -1770,16 +1811,14 @@ export class ATService {
 
   public subscribe(callback: (response: ATResponse) => void): void {
     console.log('添加新的通知订阅');
-    if (this.adapter instanceof WebSocketATAdapter) {
-      (this.adapter as WebSocketATAdapter).subscribeSMS(callback);
-    }
+    if (this.adapter instanceof WebSocketATAdapter) this.adapter.subscribeSMS(callback);
+    else if (this.adapter instanceof MockWebSocketATAdapter) this.adapter.subscribeSMS(callback);
   }
 
   public unsubscribe(callback: (response: ATResponse) => void): void {
     console.log('移除通知订阅');
-    if (this.adapter instanceof WebSocketATAdapter) {
-      (this.adapter as WebSocketATAdapter).unsubscribeSMS(callback);
-    }
+    if (this.adapter instanceof WebSocketATAdapter) this.adapter.unsubscribeSMS(callback);
+    else if (this.adapter instanceof MockWebSocketATAdapter) this.adapter.unsubscribeSMS(callback);
   }
 
   // 设置PDCP数据上报
@@ -1875,7 +1914,7 @@ export class ATService {
 
   // 查询IMS业务能力开关状态
   public async queryIMSSwitch(): Promise<ATResponse> {
-    return this.sendCommand('AT^IMSSWITCH?');
+    return this.readCommand('AT^IMSSWITCH?');
   }
 
   // 查询当前呼叫状态

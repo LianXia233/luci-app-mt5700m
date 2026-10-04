@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
-import { Button, Tag, Typography } from '@douyinfe/semi-ui';
-import { ATResponse, ATService, StateSnapshot } from '@/services/at';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Button, Tag, Toast, Typography } from '@douyinfe/semi-ui';
+import { ATService, type StateSnapshot } from '@/services/at';
+import { useSharedStateTopic } from '@/services/stateCache';
 import {
   ACT_TYPES,
   parseC5greg,
@@ -22,16 +23,30 @@ const at = () => ATService.getInstance();
 const dbm = (v: number | null): string => (v == null ? '—' : `${v} dBm`);
 
 export const Diagnostics: React.FC = () => {
+  const endcEntry = useSharedStateTopic('endc');
+  const registrationEntry = useSharedStateTopic('registration');
+  const txpowerEntry = useSharedStateTopic('txpower');
+  const nrTxpowerEntry = useSharedStateTopic('nr_txpower');
+  const sharedSnapshot: Partial<StateSnapshot> = useMemo(
+    () => ({
+      endc: endcEntry,
+      registration: registrationEntry,
+      txpower: txpowerEntry,
+      nr_txpower: nrTxpowerEntry,
+    }),
+    [endcEntry, registrationEntry, txpowerEntry, nrTxpowerEntry],
+  );
   const [endc, setEndc] = useState<EndcStatus | null>(null);
   const [reg, setReg] = useState<Reg5G | null>(null);
   const [tx, setTx] = useState<TxPower | null>(null);
   const [nrTx, setNrTx] = useState<NrTxPower[]>([]);
   const [addrs, setAddrs] = useState<PdpAddress[]>([]);
   const [loading, setLoading] = useState(false);
+  const appliedTopicValues = useRef<Record<string, string>>({});
 
   // ---- Async Architecture：事件 / SWR 快照 -> 页面状态 ----
   // 后端采集器把 ENDC / 发射功率 / 注册状态写入 StateCache 并推送 *.updated
-  // 事件（endc 5s、txpower 5s、registration 3s），页面只消费事件与首屏快照，
+  // 事件（按 daemon topic 周期采集），页面只消费事件与首屏快照，
   // 不再自己轮询。手动“刷新”按钮保留：点一下立即发命令拿最新值。
   // 采集器在非对应组网下会发布空对象，因此这里只在拿到实际字段时才覆盖状态。
 
@@ -67,7 +82,7 @@ export const Diagnostics: React.FC = () => {
   };
 
   const applyNrTxEvent = (v: Record<string, unknown>) => {
-    if (!Array.isArray(v.carriers)) return;
+    if (!Array.isArray(v.carriers) || v.carriers.length === 0) return;
     const n = (r: Record<string, unknown>, k: string): number | null =>
       typeof r[k] === 'number' ? (r[k] as number) : null;
     setNrTx(
@@ -82,76 +97,67 @@ export const Diagnostics: React.FC = () => {
   };
 
   // SWR 首屏：先渲染缓存里最近一次后台采集值，事件流随后补齐。
-  const applySnapshot = (snap: StateSnapshot) => {
-    const pick = (topic: string): Record<string, unknown> | null => {
-      const v = snap[topic]?.value;
-      return v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
+  const applySnapshot = (snap: typeof sharedSnapshot) => {
+    const applyTopic = (topic: string, apply: (value: Record<string, unknown>) => void) => {
+      const value = snap[topic]?.value;
+      if (!value || typeof value !== 'object') return;
+      const signature = JSON.stringify(value);
+      if (appliedTopicValues.current[topic] === signature) return;
+      appliedTopicValues.current[topic] = signature;
+      apply(value as Record<string, unknown>);
     };
-    const endcV = pick('endc');
-    if (endcV) applyEndcEvent(endcV);
-    const regV = pick('registration');
-    if (regV) applyRegEvent(regV);
-    const txV = pick('txpower');
-    if (txV) applyTxEvent(txV);
-    const nrV = pick('nr_txpower');
-    if (nrV) applyNrTxEvent(nrV);
+    applyTopic('endc', applyEndcEvent);
+    applyTopic('registration', applyRegEvent);
+    applyTopic('txpower', applyTxEvent);
+    applyTopic('nr_txpower', applyNrTxEvent);
   };
 
   useEffect(() => {
-    void at()
-      .requestSnapshot()
-      .then((snap) => {
-        if (snap) applySnapshot(snap);
-      });
-    const handle = (response: ATResponse) => {
-      if (!('type' in response)) return;
-      if (response.type === 'endc.updated') {
-        applyEndcEvent(response.data as Record<string, unknown>);
-        return;
-      }
-      if (response.type === 'registration.updated') {
-        applyRegEvent(response.data as Record<string, unknown>);
-        return;
-      }
-      if (response.type === 'txpower.updated') {
-        applyTxEvent(response.data as Record<string, unknown>);
-        return;
-      }
-      if (response.type === 'nr_txpower.updated') {
-        applyNrTxEvent(response.data as Record<string, unknown>);
-        return;
-      }
-    };
-    at().subscribe(handle);
-    return () => {
-      at().unsubscribe(handle);
-    };
-  }, []);
+    if (Object.keys(sharedSnapshot).length) applySnapshot(sharedSnapshot);
+  }, [sharedSnapshot]);
 
   // 手动刷新：立即发命令拿最新值（事件流之外的即时路径）。
   const refresh = async () => {
     setLoading(true);
+    let hadFailure = false;
     try {
-      // 这几条都可能因为“当前不是那个组网”而失败，属于正常情况，静默处理。
+      // 这几条都可能因为“当前不是那个组网”而失败，属于正常情况，静默保留旧值。
       // 手册 11.7.2：仅 LTE 主模且单板支持 NR 时查询才有效。
-      const lendc = await at().sendCommand('AT^LENDC?');
-      setEndc(lendc.success && lendc.data ? parseLendc(String(lendc.data)) : null);
+      const lendc = await at().readCommand('AT^LENDC?');
+      if (lendc.success && typeof lendc.data === 'string') {
+        const parsed = parseLendc(lendc.data);
+        if (parsed) setEndc(parsed);
+        else hadFailure = true;
+      } else hadFailure = true;
 
       // 手册 5.27.2：仅当终端注册在 5G 核心网时上报。
-      const c5g = await at().sendCommand('AT+C5GREG?');
-      setReg(c5g.success && c5g.data ? parseC5greg(String(c5g.data)) : null);
+      const c5g = await at().readCommand('AT+C5GREG?');
+      if (c5g.success && typeof c5g.data === 'string') {
+        const parsed = parseC5greg(c5g.data);
+        if (parsed) setReg(parsed);
+        else hadFailure = true;
+      } else hadFailure = true;
 
       // 手册 13.23.2：仅 GUL 下有效，ENDC 场景查的是 LTE 侧。
-      const txp = await at().sendCommand('AT^TXPOWER?');
-      setTx(txp.success && txp.data ? parseTxPower(String(txp.data)) : null);
+      const txp = await at().readCommand('AT^TXPOWER?');
+      if (txp.success && typeof txp.data === 'string') {
+        const parsed = parseTxPower(txp.data);
+        if (parsed) setTx(parsed);
+        else hadFailure = true;
+      } else hadFailure = true;
 
       // 手册 13.24.2：仅 NR/L 下有效，ENDC 场景查的是 NR 侧。
-      const ntxp = await at().sendCommand('AT^NTXPOWER?');
-      setNrTx(ntxp.success && ntxp.data ? parseNrTxPower(String(ntxp.data)) : []);
+      const ntxp = await at().readCommand('AT^NTXPOWER?');
+      if (ntxp.success && typeof ntxp.data === 'string') setNrTx(parseNrTxPower(ntxp.data));
+      else hadFailure = true;
 
       // 不带 cid 就返回所有已激活 PDP 上下文的地址（手册 7.8.2）。
-      const pdp = await at().sendCommand('AT+CGPADDR');
-      setAddrs(pdp.success && pdp.data ? parseCgpaddr(String(pdp.data)) : []);
+      const pdp = await at().readCommand('AT+CGPADDR');
+      if (pdp.success && typeof pdp.data === 'string') setAddrs(parseCgpaddr(pdp.data));
+      else hadFailure = true;
+      if (hadFailure) Toast.warning('部分诊断数据未更新，已保留上次成功结果');
+    } catch {
+      Toast.error('诊断数据暂不可用，已保留上次成功结果');
     } finally {
       setLoading(false);
     }

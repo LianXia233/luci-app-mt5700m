@@ -83,14 +83,14 @@ const SMSSettings: React.FC = () => {
   const loadIMS = useCallback(async () => {
     setSmsLoading(true);
     try {
-      const res = await at().sendCommand('AT^IMSSWITCH?');
+      const res = await at().readCommand('AT^IMSSWITCH?');
       if (res.success && typeof res.data === 'string') {
         const m = res.data.match(/\^IMSSWITCH:\s*(\d+),\d+,\d+/);
         if (m) {
           const on = m[1] === '1';
           setImsOn(on);
           if (on) {
-            const csca = await at().sendCommand('AT+CSCA?');
+            const csca = await at().readCommand('AT+CSCA?');
             if (csca.success && typeof csca.data === 'string') {
               const cm = csca.data.match(/\+CSCA: "([^"]+)"/);
               if (cm) setCenterNumber(cm[1]);
@@ -109,7 +109,7 @@ const SMSSettings: React.FC = () => {
     setStorageLoading(true);
     try {
       await at().sendCommand('AT+CMGF=0');
-      const res = await at().sendCommand('AT+CPMS?');
+      const res = await at().readCommand('AT+CPMS?');
       if (res.success && typeof res.data === 'string') {
         const m = res.data.match(
           /\+CPMS: "(\w+)",(\d+),(\d+),"(\w+)",(\d+),(\d+),"(\w+)",(\d+),(\d+)/,
@@ -177,7 +177,7 @@ const SMSSettings: React.FC = () => {
       }
       setImsOn(enable);
       if (enable) {
-        const csca = await at().sendCommand('AT+CSCA?');
+        const csca = await at().readCommand('AT+CSCA?');
         if (csca.success && typeof csca.data === 'string') {
           const m = csca.data.match(/\+CSCA: "([^"]+)"/);
           if (m) setCenterNumber(m[1]);
@@ -333,7 +333,7 @@ const SMSSettings: React.FC = () => {
         setClearingAll(true);
         try {
           Toast.info('正在清空所有短信，请稍候...');
-          const cpms = await at().sendCommand('AT+CPMS?');
+          const cpms = await at().readCommand('AT+CPMS?');
           if (!cpms.success || typeof cpms.data !== 'string') throw new Error('获取存储配置失败');
           const m = cpms.data.match(
             /\+CPMS: "(\w+)",(\d+),(\d+),"(\w+)",(\d+),(\d+),"(\w+)",(\d+),(\d+)/,

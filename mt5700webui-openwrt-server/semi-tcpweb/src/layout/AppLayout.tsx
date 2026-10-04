@@ -17,6 +17,7 @@ import { QUERY_MOBILE } from '@/styles/breakpoints';
 import AuthHandler from '@/components/AuthHandler';
 import NotificationHandler from '@/components/NotificationHandler';
 import SimPinHandler from '@/components/SimPinHandler';
+import SharedStateStatus from '@/components/SharedStateStatus';
 import { SvgAmbientMesh, SvgBrandLogo, SvgConnectionPulse } from '@/ui/svgVisuals';
 
 const { Header, Sider, Content, Footer } = Layout;
@@ -283,6 +284,7 @@ const AppLayout: React.FC = () => {
             </div>
           </Header>
           <Content className="app-content">
+            <SharedStateStatus />
             <Outlet />
           </Content>
           <Footer className="app-footer">MT5700M-CN · 5G CPE Management · V{__APP_VERSION__}</Footer>
