@@ -132,6 +132,12 @@ pub struct AtClient {
     /// thread; drained by command responses and the idle URC monitor.
     rx: Arc<Mutex<VecDeque<u8>>>,
     in_flight: Arc<AtomicBool>,
+    /// Serial device this daemon actually owns, reported back to the CLI so
+    /// `status` shows the port in use rather than whatever a fresh scan would
+    /// pick. Those can differ: the option driver renumbers ttyUSB* on every
+    /// USB re-enumeration, and a second port may also answer AT probes while
+    /// this process holds TIOCEXCL on the first one.
+    attached_port: Option<String>,
 }
 
 /// Resolve the serial port for the daemon: honour an explicit path, otherwise
@@ -148,12 +154,14 @@ fn resolve_serial_port(config: &DaemonConfig) -> String {
 impl AtClient {
     fn new(config: DaemonConfig) -> Arc<Self> {
         let kind = config.connection_type.clone();
+        let mut attached_port: Option<String> = None;
         let stream = match kind.as_str() {
             "SERIAL" => {
                 let path = resolve_serial_port(&config);
                 match serial::open_serial_exclusive(&path) {
                     Ok(f) => {
                         eprintln!("at-webserver: attached to serial {}", path);
+                        attached_port = Some(path);
                         Stream::Serial(f)
                     }
                     Err(e) => {
@@ -175,6 +183,7 @@ impl AtClient {
             lock: Mutex::new(stream),
             rx: Arc::new(Mutex::new(VecDeque::new())),
             in_flight: Arc::new(AtomicBool::new(false)),
+            attached_port,
         });
         client.spawn_reader();
         client
@@ -722,9 +731,11 @@ fn handle_control_request(
                 ok.insert("error".to_string(), json::str_val("empty command"));
             } else {
                 // Reads deduplicate with the WebSocket/collector traffic;
-                // writes are serialised as interactive actions.
+                // writes are serialised as interactive actions. Reads use
+                // `ui_query` so a slow command is not retried against the
+                // shared channel (see AtRequestSpec::ui_query).
                 let mut spec = if command.ends_with('?') {
-                    AtRequestSpec::fast_query(&command)
+                    AtRequestSpec::ui_query(&command)
                 } else {
                     AtRequestSpec::interactive(&command)
                 };
@@ -945,6 +956,15 @@ fn handle_rpc_request(
             let mut m = std::collections::BTreeMap::new();
             m.insert("ok".to_string(), Value::Bool(true));
             m.insert("snapshot".to_string(), cache.snapshot());
+            // Report the device this process actually owns, so the CLI does not
+            // have to re-probe and can disagree with reality.
+            m.insert(
+                "serial_port".to_string(),
+                match &client.attached_port {
+                    Some(p) => Value::Str(p.clone()),
+                    None => Value::Null,
+                },
+            );
             Value::Obj(m)
         }
         // 增量事件拉取（与 WebSocket 推送同源：EventBus 全局历史）。
@@ -1466,8 +1486,15 @@ fn run_command(
     let command = normalize_syscfgex(command);
     // Reads deduplicate with the snapshot collectors; writes are serialised
     // as interactive actions. Never blocks beyond the arbiter's bounded wait.
+    //
+    // Reads use `ui_query`, not `fast_query`: this path serves *both* frontends
+    // (LuCI over the JSON-RPC port, the WebUI over WebSocket) and they share
+    // this one channel. `fast_query`'s 3 s budget is shorter than several
+    // commands' real latency, so a read would fail, retry while holding the
+    // channel, and starve the other frontend — the two sides fighting over the
+    // AT port rather than over-reading it.
     let spec = if command.ends_with('?') {
-        AtRequestSpec::fast_query(&command)
+        AtRequestSpec::ui_query(&command)
     } else {
         AtRequestSpec::interactive(&command)
     };
@@ -1495,6 +1522,7 @@ mod tests {
             lock: Mutex::new(Stream::None),
             rx: Arc::new(Mutex::new(VecDeque::new())),
             in_flight: Arc::new(AtomicBool::new(false)),
+            attached_port: None,
         }))
     }
 
@@ -1577,6 +1605,7 @@ mod tests {
             lock: Mutex::new(Stream::None),
             rx: Arc::new(Mutex::new(VecDeque::new())),
             in_flight: Arc::new(AtomicBool::new(false)),
+            attached_port: None,
         });
         let resp = handle_rpc_request(
             &client,
@@ -1605,6 +1634,7 @@ mod tests {
             lock: Mutex::new(Stream::None),
             rx: Arc::new(Mutex::new(VecDeque::new())),
             in_flight: Arc::new(AtomicBool::new(false)),
+            attached_port: None,
         });
         let resp = handle_rpc_request(
             &client,
@@ -1630,6 +1660,7 @@ mod tests {
             lock: Mutex::new(Stream::None),
             rx: Arc::new(Mutex::new(VecDeque::new())),
             in_flight: Arc::new(AtomicBool::new(false)),
+            attached_port: None,
         });
         cache.set("signal", json::str_val("warm"), "test");
         let resp = handle_rpc_request(
@@ -1657,6 +1688,7 @@ mod tests {
             lock: Mutex::new(Stream::None),
             rx: Arc::new(Mutex::new(VecDeque::new())),
             in_flight: Arc::new(AtomicBool::new(false)),
+            attached_port: None,
         });
         bus.publish_now("signal", "signal.updated", json::num_val(-86));
         let resp = handle_rpc_request(
@@ -1706,6 +1738,7 @@ mod tests {
             lock: Mutex::new(Stream::None),
             rx: Arc::new(Mutex::new(VecDeque::new())),
             in_flight: Arc::new(AtomicBool::new(false)),
+            attached_port: None,
         });
         // 无 auth_key -> 拒绝
         let resp = handle_rpc_request(

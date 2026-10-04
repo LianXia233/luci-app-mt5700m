@@ -13,6 +13,7 @@ import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { ATService, type ATConnectionSnapshot } from '@/services/at';
 import { isMockModeEnabled } from '@/services/mockAT';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
+import { QUERY_MOBILE } from '@/styles/breakpoints';
 import AuthHandler from '@/components/AuthHandler';
 import NotificationHandler from '@/components/NotificationHandler';
 import SimPinHandler from '@/components/SimPinHandler';
@@ -127,7 +128,7 @@ const getConnectionPresentation = (snapshot: ATConnectionSnapshot) => {
 const AppLayout: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const isMobile = useMediaQuery('(max-width: 767px)');
+  const isMobile = useMediaQuery(QUERY_MOBILE);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [dark, setDark] = useState(() => {
     const saved = localStorage.getItem('theme-mode');

@@ -3,6 +3,7 @@
 'require form';
 'require uci';
 'require ui';
+'require dom';
 'require mt5700m.api as api';
 'require mt5700m.parser as parser';
 'require mt5700m.components as c';
@@ -308,11 +309,23 @@ return view.extend({
 			])
 		]);
 
-		return m.render().then(function(formNode) {
-			return E('div', { 'class': 'mt-page' }, [
-				c.cssLink(),
+		// LuCI 的 view 契约要求 load() 同步返回一个 DOM 节点；返回 Promise
+		// 会被当成字符串塞进容器，页面上直接出现字面量 “[object Promise]”
+		// （本页此前就是这样——整个正文被这一行占满）。
+		// 正确做法：同步返回外层容器，form.Map 渲染完成后异步注入正文。
+		// 这也是本项目其它页面统一采用的异步化架构（Async Architecture）：
+		// 首屏不等任何 AT 命令。
+		//
+		// 注意：LuCI 的 dom 模块只有 dom.content()/dom.append()，
+		// 没有 dom.prepend()——用原生 appendChild 往容器尾部追加。
+		var skeleton = c.skeletonPage(4);
+		var slot = E('div', { 'class': 'mt-async-body' }, []);
+		var host = E('div', { 'class': 'mt-page' }, [ c.cssLink(), skeleton, slot ]);
+
+		m.render().then(function(formNode) {
+			dom.content(slot, [
 				manager.usb_state && manager.usb_state !== 'normal' ? E('div', { 'class': 'alert-message warning' }, _('The MT5700M is not in normal USB mode. Connection settings remain available, but dialing cannot start.')) : null,
-				c.hero(_('Mobile Data'), _('Mobile data'), _('Configure how the MT5700M connects to the mobile network.'), [
+					c.hero(_('Mobile Data'), _('Mobile data'), _('Configure how the MT5700M connects to the mobile network.'), [
 					E('div', { 'class': 'mt-conn-state' }, [
 						c.svgStatusPulse(online ? 'ok' : 'bad', 18),
 						E('span', { 'class': 'mt-conn-state-text' }, online ? _('Connected') : _('Disconnected'))
@@ -341,6 +354,15 @@ return view.extend({
 				c.details(_('Advanced connection tools'), _('PDP profiles, module dialing modes and inbound routing for troubleshooting or special deployments.'), [ pdpPanel, moduleControls ]),
 				logDetails
 			]);
+			// 骨架屏用完后移除，避免与正文叠加占位
+			dom.content(skeleton, null);
+		}).catch(function(err) {
+			dom.content(skeleton, null);
+			dom.content(slot, E('div', { 'class': 'alert-message danger' },
+				[ _('Failed to render the connection form.'), E('br'), String(err && err.message || err) ]));
 		});
+
+		// 同步返回容器，满足 view 契约
+		return host;
 	}
 });

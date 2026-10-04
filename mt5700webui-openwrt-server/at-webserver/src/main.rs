@@ -17,6 +17,7 @@ mod dispatcher;
 mod error;
 mod event_bus;
 mod json;
+mod probe;
 mod runtime;
 mod scheduler;
 mod serial;
@@ -48,6 +49,11 @@ fn main() {
         _ => match args.first().map(|s| s.as_str()) {
             Some("cli") => cli::run(&args[1..]),
             Some("daemon") => daemon::run(&args[1..]),
+            // Field diagnostic: drive the AT port directly, bypassing the
+            // daemon, the arbiter and the snapshot collectors. Used to tell
+            // "the modem is not answering" apart from "our channel is
+            // starved" when a page renders empty.
+            Some("atprobe") => probe::run(&args[1..]),
             _ => daemon::run(&args),
         },
     };

@@ -13,6 +13,7 @@ import {
 import { ATService, type ATResponse, type URCData } from '@/services/at';
 import { useATReady } from '@/hooks/useATReady';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
+import { QUERY_MOBILE } from '@/styles/breakpoints';
 import { getBandFromArfcn, getDefaultScsType } from '@/modem/parse';
 import {
   buildLockCommand,
@@ -35,7 +36,7 @@ type Neighbor = { type: string; arfcn: string; pci: number; rsrp: string | numbe
 const emptyItem = emptyLockItem;
 
 const NetworkSettings: React.FC = () => {
-  const isNarrow = useMediaQuery('(max-width: 640px)');
+  const isNarrow = useMediaQuery(QUERY_MOBILE);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [activeKeys, setActiveKeys] = useState<string[]>(['nrLock']);
@@ -424,7 +425,10 @@ const NetworkSettings: React.FC = () => {
           />
         ) : null}
         <PageCard title="锁频设置" extra={<Button theme="solid" type="primary" loading={busy} disabled={scanning} onClick={applyLock}>应用锁频</Button>}>
-          <Collapse activeKey={activeKeys} onChange={(keys) => setActiveKeys(Array.isArray(keys) ? keys : [keys])}>
+          <Collapse
+            activeKey={activeKeys}
+            onChange={(keys) => setActiveKeys(Array.isArray(keys) ? keys : keys === undefined ? [] : [keys])}
+          >
             <Collapse.Panel header="4G 锁频设置" itemKey="lteLock">
               <LockEditor
                 kind="lte"

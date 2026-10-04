@@ -21,7 +21,11 @@ LUCI_MINIFY_JS:=0
 LUCI_MINIFY_CSS:=0
 
 PKG_NAME:=luci-app-mt5700m
-PKG_VERSION:=2.8.7
+# v3.0.0 — AT 通道重写 + WebUI 全站排版改造。破坏性变更：AT 串口不再依赖
+# BusyBox `stty` applet（OpenWrt 镜像普遍缺失），改由 Rust 直接发 termios
+# ioctl；串口打开一律 O_NONBLOCK + VMIN=1/VTIME=0。旧版二进制在不修正
+# termios 的情况下会把 TTY 留在 cooked 模式，AT 读取全部超时。
+PKG_VERSION:=3.0.0
 PKG_RELEASE:=1
 PKG_LICENSE:=Apache-2.0
 

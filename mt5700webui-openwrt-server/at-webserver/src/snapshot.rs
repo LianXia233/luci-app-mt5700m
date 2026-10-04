@@ -176,6 +176,13 @@ fn slow_query(
     queued_timeout: Duration,
     backoff: Duration,
 ) -> Option<String> {
+    // Duty-cycle gate: while background work is overrunning the channel — or a
+    // user page has just been turned away for lack of capacity — stay off it.
+    // Skipping costs nothing observable (the pages render the cached snapshot)
+    // and is what stops the two frontends from starving each other.
+    if crate::at_queue::channel_budget_exhausted() || crate::at_queue::channel_user_starved() {
+        return None;
+    }
     let bk = format!("snapshot.backoff.{}", backoff_key);
     if matches!(ctx.cache.get(&bk), (_, Freshness::Fresh)) {
         return None; // 退避期内跳过
@@ -221,6 +228,13 @@ fn collect_signal(ctx: &TaskCtx) -> Result<Value, crate::error::BackendError> {
     // HCSQ 实测约 4 s 才响应：fast_query 的 3 s 超时会误判超时并重试 2 次，
     // 反而把通道占更久。改用 12 s 宽松 spec、不重试；失败静默跳过（不 store，
     // 页面 SWR 继续显示旧缓存），不把任务标记为失败。
+    //
+    // 失败后退避：`collect_signal` 是最高频的采集器（15 s 周期），而 HCSQ 在
+    // 弱信号下会反复慢响应。没有退避时，每次失败都会独占通道整整一个
+    // at_timeout 秒，叠加其余采集器即可把通道吃满（实测占用 >100%），
+    // 用户命令（LuCI 与 WebUI 两侧）于是全部 Busy/超时 —— 这就是两侧
+    // 「互相干扰」的实际成因：不是抢锁，而是后台刷新把独占通道占满。
+    // 退避期内直接跳过且不占通道，页面继续显示上一份 SWR 缓存。
     let spec = AtRequestSpec {
         command: "AT^HCSQ?".to_string(),
         priority: Priority::Normal,
@@ -234,6 +248,12 @@ fn collect_signal(ctx: &TaskCtx) -> Result<Value, crate::error::BackendError> {
         payload: AtPayload::None,
         label: "snapshot AT^HCSQ?".to_string(),
     };
+    // Same duty gate as slow_query: signal is the most expensive collector
+    // (4 s per attempt, 15 s period), so it is the one that must yield first
+    // when the channel is oversubscribed or a user page is waiting.
+    if crate::at_queue::channel_budget_exhausted() || crate::at_queue::channel_user_starved() {
+        return Ok(stale_refresh(ctx, TOPIC_SIGNAL, "signal.updated"));
+    }
     let Ok(text) = ctx.at_request(spec) else {
         return Ok(stale_refresh(ctx, TOPIC_SIGNAL, "signal.updated"));
     };

@@ -707,7 +707,7 @@ const NetworkInfo: React.FC = () => {
             </div>
 
             <div className="net-hero-details">
-              <Panel title="运营商与网络参数" className="net-operator-panel">
+              <Panel title="运营商与网络参数" variant="flat" className="net-operator-panel">
                 <Kv
                   columns={3}
                   dense
@@ -973,14 +973,14 @@ const NetworkInfo: React.FC = () => {
               </Space>
             }
           >
-            <Panel title="最后一次连接">
+            <Panel title="最后一次连接" variant="flat">
               <div className="metric-row">
                 <Metric label="连接时长" value={formatDuration(flow.lastDsTime, showDays)} />
                 <Metric label="上传流量" value={formatFlow(flow.lastTxFlow)} />
                 <Metric label="下载流量" value={formatFlow(flow.lastRxFlow)} />
               </div>
             </Panel>
-            <Panel title="累计统计">
+            <Panel title="累计统计" variant="flat">
               <div className="metric-row">
                 <Metric label="总连接时长" value={formatDuration(flow.totalDsTime, showDays)} />
                 <Metric label="总上传流量" value={formatFlow(flow.totalTxFlow)} />

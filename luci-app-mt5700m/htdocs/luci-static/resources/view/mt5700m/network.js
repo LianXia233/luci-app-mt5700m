@@ -271,6 +271,19 @@ return view.extend({
 		var operatorName = opInfo.name;
 		var tempMatch = raw.match(/^temperature=([\d.]+)/m);
 		var temperature = tempMatch ? tempMatch[1] : '';
+		// 仪表量程表：按 label 查表，而不是按下标硬编码。parser.js 的
+		// cell.metrics 随 RAT 变化（NR: RSRP/RSRQ/SINR，LTE: RSRP/RSRQ/RSSI，
+		// WCDMA: RSCP/RXLEV/ECIO），下标固定会在 LTE/WCDMA 下量程错配、
+		// 指针顶到刻度外。量程取自 MT5700M 手册的典型取值区间。
+		var gaugeScale = [
+			{ label: 'RSRP', unit: 'dBm', min: -120, max: -70, cls: 'accent' },
+			{ label: 'RSRQ', unit: 'dB',  min: -25,  max: -3,  cls: 'accent' },
+			{ label: 'SINR', unit: 'dB',  min: -10,  max: 30,  cls: 'accent' },
+			{ label: 'RSSI', unit: 'dBm', min: -120, max: -60, cls: 'accent' },
+			{ label: 'RSCP', unit: 'dBm', min: -120, max: -25, cls: 'accent' },
+			{ label: 'RXLEV', unit: 'dBm', min: -120, max: -60, cls: 'accent' },
+			{ label: 'ECIO', unit: 'dB',  min: -25,  max: 10,  cls: 'accent' }
+		];
 		var lteLockState = !lteLock[0] ? '--' : lteLock[0] === '0' ? _('Not locked') : _('Locked');
 		var nrLockState = !nrLock[0] ? '--' : nrLock[0] === '0' ? _('Not locked') : _('Locked');
 		var systemValues = parser.matchValues(parser.section(radioRaw, 'Radio mode'), '^SYSCFGEX');
@@ -381,12 +394,31 @@ return view.extend({
 					c.badge(registered ? _('Registered') : _('Not registered'), registered ? 'ok' : 'warn')
 				])
 			], null, c.svgTower({ active: registered, status: registered ? 'ok' : 'bad' })),
-			E('div', { 'class': 'mt-circular-gauges-grid', 'style': 'margin-bottom:18px' }, [
-				c.circularGaugeCard(cell.metrics[0].label, cell.metrics[0].value, 'dBm', 'rsrp', -120, -70),
-				c.circularGaugeCard(cell.metrics[1].label, cell.metrics[1].value, 'dB', 'rsrq', -25, -3),
-				c.circularGaugeCard(cell.metrics[2].label, cell.metrics[2].value, 'dB', 'sinr', -10, 30),
-				c.circularGaugeCard(_('Temperature'), temperature, '°C', 'temp', 20, 80)
-			]),
+			// 仪表量程按 label 取，而不是按下标硬编码：parser.js 的 cell.metrics
+			// 会随 RAT 变化（NR 是 RSRP/RSRQ/SINR，LTE 是 RSRP/RSRQ/RSSI，
+			// WCDMA 是 RSCP/RXLEV/ECIO），下标固定会在 LTE/WCDMA 下把量程配错，
+			// 指针会顶到刻度外。unit 同样由 parser 提供，不在此硬编码。
+			// 原实现调用的是 c.circularGaugeCard()，该函数在组件库中根本不存在
+			// （导出名是 svgCircularGauge），抛 TypeError 中断整个页面渲染。
+			E('div', { 'class': 'mt-circular-gauges-grid', 'style': 'margin-bottom:18px' },
+				gaugeScale
+					.filter(function(g) {
+						return cell.metrics.some(function(m) { return m.label === g.label; });
+					})
+					.map(function(g) {
+						var m = cell.metrics.filter(function(x) { return x.label === g.label; })[0];
+						return c.svgCircularGauge(
+							parseFloat(m.value), g.min, g.max,
+							' ' + (m.unit || g.unit),
+							_(g.label === 'Temperature' ? 'Temperature' : g.label),
+							g.cls
+						);
+					})
+					.concat([
+						c.svgCircularGauge(parseFloat(temperature), 20, 80, '°C',
+							_('Temperature'), 'accent')
+					])
+			),
 			E('div', { 'class': 'mt-grid' }, [
 				E('section', { 'class': 'mt-card' }, [
 					E('h3', { 'class': 'mt-card-title' }, _('Serving cell')),

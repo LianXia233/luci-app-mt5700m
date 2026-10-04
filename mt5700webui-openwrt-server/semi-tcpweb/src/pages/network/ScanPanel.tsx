@@ -3,6 +3,7 @@ import { Button, Input, Progress, Select, Space, Table, Tag, Toast, Typography }
 import { ATService, type ATResponse } from '@/services/at';
 import { useATReady } from '@/hooks/useATReady';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
+import { QUERY_MOBILE } from '@/styles/breakpoints';
 import {
   buildScanCommand,
   isScanRunning,
@@ -52,7 +53,7 @@ const signalText = (cell: ScanCell): string => {
 
 export const ScanPanel: React.FC<Props> = ({ onLock, onScanningChange, disabled }) => {
   const [filter, setFilter] = useState<ScanFilter>({ rat: '' });
-  const isNarrow = useMediaQuery('(max-width: 640px)');
+  const isNarrow = useMediaQuery(QUERY_MOBILE);
   const [scanning, setScanning] = useState(false);
   const [cells, setCells] = useState<ScanCell[]>([]);
   const [note, setNote] = useState('');

@@ -1,33 +1,30 @@
 {
-  "name": "semi-tcpweb",
+  "name": "mt5700m-webui",
   "private": true,
-  "version": "3.0.6",
+  "version": "3.0.0",
   "type": "module",
-  "description": "MT5700M-CN Web UI — Semi Design rewrite of tcpweb-manager",
+  "description": "MT5700M-CN 5G 模组内置 WebUI（OpenWrt /www/5700）",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
-    "sync:www": "sh scripts/sync-www.sh",
-    "deploy": "npm run build && npm run sync:www",
+    "build": "tsc --noEmit && vite build",
+    "build:only": "vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit --pretty false"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@douyinfe/semi-icons": "^2.80.0",
-    "@douyinfe/semi-ui": "^2.80.0",
-    "lodash": "^4.17.21",
-    "node-pdu": "^2.0.2",
+    "@douyinfe/semi-icons": "^2.103.0",
+    "@douyinfe/semi-ui": "^2.103.0",
+    "node-pdu": "^1.0.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.30.1"
+    "react-router-dom": "^6.30.0"
   },
   "devDependencies": {
-    "@types/lodash": "^4.17.16",
-    "@types/node": "^22.13.10",
-    "@types/react": "^18.3.18",
-    "@types/react-dom": "^18.3.5",
+    "@types/node": "^22.20.5",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
-    "typescript": "^5.8.2",
-    "vite": "^6.2.2"
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
   }
 }

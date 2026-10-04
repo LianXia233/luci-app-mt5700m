@@ -3,6 +3,7 @@ import { Banner, Table, Tag, Typography } from '@douyinfe/semi-ui';
 import { ATService } from '@/services/at';
 import { useATReady } from '@/hooks/useATReady';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
+import { QUERY_MOBILE } from '@/styles/breakpoints';
 import { sleep } from '@/modem/atx';
 import { Field, Kv, PageCard, RefreshBtn, SectionHeader, TwoCol } from '@/ui/widgets';
 
@@ -133,7 +134,7 @@ const parseTDCFG = (raw: string) => {
 };
 
 const NetworkDial: React.FC = () => {
-  const isNarrow = useMediaQuery('(max-width: 640px)');
+  const isNarrow = useMediaQuery(QUERY_MOBILE);
   const [loading, setLoading] = useState({
     dial: true,
     usb: true,

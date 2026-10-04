@@ -3,13 +3,14 @@ import { Banner, Button, Input, Modal, Progress, Steps, Toast, Typography } from
 import { ATService } from '@/services/at';
 import { useATReady } from '@/hooks/useATReady';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
+import { QUERY_COMPACT } from '@/styles/breakpoints';
 import { extractATData } from '@/modem/parse';
 import { PageCard, Panel, RefreshBtn } from '@/ui/widgets';
 
 const at = () => ATService.getInstance();
 
 const SystemUpgrade: React.FC = () => {
-  const isNarrow = useMediaQuery('(max-width: 520px)');
+  const isNarrow = useMediaQuery(QUERY_COMPACT);
   const [agreed, setAgreed] = useState(false);
   const [showAgree, setShowAgree] = useState(true);
   const [version, setVersion] = useState('');

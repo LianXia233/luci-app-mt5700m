@@ -237,7 +237,10 @@ export const SchedulePanel: React.FC = () => {
               <Switch checked={draft.toggleAirplane} onChange={(v) => setDraft({ ...draft, toggleAirplane: v })} />
             </Field>
           </TwoCol>
-          <Collapse activeKey={keys} onChange={(k) => setKeys(Array.isArray(k) ? k : [k])}>
+          <Collapse
+            activeKey={keys}
+            onChange={(k) => setKeys(Array.isArray(k) ? k : k === undefined ? [] : [k])}
+          >
             <Collapse.Panel header="夜间模式" itemKey="night">
               {renderPeriod('night')}
             </Collapse.Panel>

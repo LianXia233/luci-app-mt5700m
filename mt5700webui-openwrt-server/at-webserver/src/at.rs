@@ -309,10 +309,38 @@ fn spawn_reader(
             match port.read(&mut chunk) {
                 Ok(0) => std::thread::sleep(Duration::from_millis(50)),
                 Ok(n) => buffer.lock().unwrap().extend_from_slice(&chunk[..n]),
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                // The descriptor is opened O_NONBLOCK with VMIN=1/VTIME=0, so
+                // "no data yet" surfaces as EAGAIN/WouldBlock — the normal idle
+                // state, NOT an error. Breaking here (as this loop used to) tore
+                // the reader thread down seconds after startup, which is why
+                // every AT command timed out while the daemon still looked
+                // healthy. Retry on a short pause instead.
+                Err(ref e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.raw_os_error() == Some(libc_eagain()) =>
+                {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
                 Err(_) => break,
             }
         }
     })
+}
+
+/// `EAGAIN`'s raw errno on Linux. Kept as a helper so the constant lives in
+/// one place and the loop above stays readable.
+#[cfg(target_os = "linux")]
+fn libc_eagain() -> i32 {
+    11
+}
+
+#[cfg(not(target_os = "linux"))]
+fn libc_eagain() -> i32 {
+    35
 }
 
 /// True when the `uci` binary exists (OpenWrt). Non-OpenWrt hosts fall back

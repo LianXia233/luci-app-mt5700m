@@ -1408,11 +1408,26 @@ fn cmd_cached() -> i32 {
     }
 }
 
+/// `mt5700m-at status`: local device/config facts plus a modem-reachability
+/// flag. Modem-derived values (signal, SIM, carrier, temperature, ...) are NOT
+/// queried here — they are served from the daemon's cache snapshot, which the
+/// background collectors already refresh.
+///
+/// Rationale (device-measured): this command used to fire ~15 *sequential* AT
+/// reads through a 2 s timeout. The MT5700M needs ~4 s for `AT^HCSQ?` alone, so
+/// every one of those reads failed, and worse, each failure re-entered the
+/// shared channel — starving the WebUI (same channel) while LuCI sat there
+/// waiting. That is precisely the LuCI/WebUI contention this command caused.
+///
+/// The cache path costs zero AT traffic, returns in milliseconds, and shows the
+/// same values the WebUI renders (both read the same StateCache), so the two
+/// pages can no longer disagree.
 fn cmd_status(settings: &Settings) -> i32 {
     let mut settings = settings.clone();
-    // Keep LuCI status below rpcd's execution timeout.
-    if settings.timeout_s > 2 {
-        settings.timeout_s = 2;
+    // Only used for the single reachability probe below; keep it short so a
+    // wedged modem cannot delay the page. Cached values do not depend on it.
+    if settings.timeout_s > 3 {
+        settings.timeout_s = 3;
     }
     println!("enabled={}", settings.enabled as i32);
     println!(
@@ -1438,8 +1453,16 @@ fn cmd_status(settings: &Settings) -> i32 {
         None => println!("usb_state=absent"),
     }
 
-    let detected = at::detect_mt5700m_at_port(&settings);
-    println!("at_port={}", detected.clone().unwrap_or_else(|| settings.at_port.clone()));
+    // Prefer the port the daemon actually owns. A fresh probe scan is only a
+    // fallback: the option driver renumbers ttyUSB* on re-enumeration, and a
+    // different port can answer AT while this process holds TIOCEXCL on this
+    // one — so a self-probed value can contradict the live channel.
+    let daemon_port = crate::sock::daemon_cached()
+        .ok()
+        .and_then(|v| v.get("serial_port").and_then(|p| p.as_str()).map(|s| s.to_string()))
+        .filter(|s| !s.is_empty());
+    let at_port = daemon_port.clone().or_else(|| at::detect_mt5700m_at_port(&settings));
+    println!("at_port={}", at_port.clone().unwrap_or_else(|| settings.at_port.clone()));
     println!("host={}", settings.host);
     println!("port={}", settings.port);
     println!(
@@ -1448,28 +1471,172 @@ fn cmd_status(settings: &Settings) -> i32 {
     );
     if settings.mode == Mode::Network {
         println!("channel=network");
-    } else if detected.is_some() {
+    } else if at_port.is_some() {
         println!("channel=serial");
     } else {
         println!("channel=network");
     }
 
-    let probe = at::at_cmd(&settings, "AT");
-    let connected = probe.ok() && probe.text.lines().any(|l| l.trim() == "OK");
+    // `connected` is the master switch the LuCI parser gates the whole page on
+    // (`data.connected = manager.connected && reachable && sysmode ok`), so it
+    // must mean "the AT channel is usable", NOT "a network-mode TCP socket is
+    // open". `AT+CONNECT?` only exists on the network transport; asking it over
+    // an exclusive serial channel always answers ERROR, which pinned
+    // `connected=0` forever even with the modem attached and registered.
+    //
+    // Reachability of the channel, in order of cost:
+    //   1. daemon StateCache — free, already proven by `daemon_cached()` above;
+    //      a populated `signal`/`registration` entry means the daemon has had a
+    //      successful AT round-trip recently.
+    //   2. standalone CLI (no daemon) — one short `AT` probe.
+    let connected = match crate::sock::daemon_cached() {
+        Ok(snap) => {
+            let has_data = ["signal", "registration", "sim", "operator"]
+                .iter()
+                .any(|topic| {
+                    snap.get(topic)
+                        .and_then(|t| t.get("value"))
+                        .map(|v| !matches!(v, crate::json::Value::Null))
+                        .unwrap_or(false)
+                });
+            has_data
+                || at::at_cmd(&settings, "AT")
+                    .text
+                    .lines()
+                    .any(|l| l.trim() == "OK")
+        }
+        Err(_) => {
+            let probe = at::at_cmd(&settings, "AT");
+            probe.ok() && probe.text.lines().any(|l| l.trim() == "OK")
+        }
+    };
     println!("connected={}", connected as i32);
 
-    print!("{}", print_identity(&settings));
-    print!("{}", print_sim_operator(&settings));
-    print!("{}", print_sim_details(&settings));
-    print!("{}", print_qos(&settings));
-    print!("{}", print_active_apn(&settings));
-    print!("{}", print_subscriber_number(&settings));
-    print!("{}", print_signal(&settings));
-    print!("{}", print_subscription_rate(&settings));
-    print!("{}", print_carrier_aggregation(&settings));
-    print!("{}", print_temperature(&settings));
-    print!("{}", print_lock_status(&settings));
+    // Modem-derived values come from the background collectors' cache.
+    print!("{}", print_cached_status(&settings));
     0
+}
+
+/// Render the cached signal / SIM / carrier / temperature block.
+///
+/// Everything here is read from the daemon StateCache — no AT traffic. Values
+/// keep the exact `key=value` shape the existing LuCI parsers expect, so this
+/// is a drop-in replacement for the previous live-query version.
+fn print_cached_status(settings: &Settings) -> String {
+    let mut out = String::new();
+
+    // With no daemon there is no cache; fall back to the live path so the
+    // standalone CLI (daemon stopped) still reports something useful.
+    let Ok(snap) = crate::sock::daemon_cached() else {
+        print!("{}", print_identity(settings));
+        print!("{}", print_sim_operator(settings));
+        print!("{}", print_sim_details(settings));
+        print!("{}", print_qos(settings));
+        print!("{}", print_active_apn(settings));
+        print!("{}", print_subscriber_number(settings));
+        print!("{}", print_signal(settings));
+        print!("{}", print_subscription_rate(settings));
+        print!("{}", print_carrier_aggregation(settings));
+        print!("{}", print_temperature(settings));
+        print!("{}", print_lock_status(settings));
+        return out;
+    };
+
+    let topic = |name: &str| -> Option<crate::json::Value> {
+        // `cached()` wraps each entry as {value, fresh, age_ms, source}; only a
+        // real object carries fields, so anything else (null / stale marker)
+        // is treated as "no data" and simply omitted from the output.
+        snap.get(name)
+            .and_then(|t| t.get("value"))
+            .filter(|v| matches!(v, crate::json::Value::Obj(_)))
+            .cloned()
+    };
+
+    // --- signal -------------------------------------------------------
+    if let Some(sig) = topic("signal") {
+        let num = |k: &str| sig.get(k).and_then(|v| v.as_i64());
+        if let Some(sysmode) = sig.get("sysmode").and_then(|v| v.as_str()) {
+            let _ = writeln!(out, "sysmode={}", sysmode);
+        }
+        if let Some(v) = num("rsrp") {
+            let _ = writeln!(out, "rsrp={}", v);
+        }
+        if let Some(v) = num("rsrq") {
+            let _ = writeln!(out, "rsrq={}", v);
+        }
+        if let Some(v) = num("sinr") {
+            let _ = writeln!(out, "sinr={}", v);
+        }
+        if let Some(v) = num("rssi") {
+            let _ = writeln!(out, "rssi={}", v);
+        }
+        if let Some(v) = num("rscp") {
+            let _ = writeln!(out, "rscp={}", v);
+        }
+    }
+
+    // --- SIM / identity ----------------------------------------------
+    // Schema note: `sim` carries {status, iccid, imsi}; `modem` carries
+    // {imei, model, manufacturer, revision}. Output keys are the ones
+    // parser.js (parseStatus / carrierInfo / operatorInfo) already reads.
+    if let Some(sim) = topic("sim") {
+        if let Some(v) = sim.get("status").and_then(|v| v.as_str()) {
+            if !v.is_empty() {
+                let _ = writeln!(out, "sim_state={}", v);
+            }
+        }
+        for (key, field) in [("iccid", "iccid"), ("imsi", "imsi")] {
+            if let Some(v) = sim.get(key).and_then(|v| v.as_str()) {
+                if !v.is_empty() {
+                    let _ = writeln!(out, "{}={}", field, v);
+                }
+            }
+        }
+    }
+    if let Some(info) = topic("modem") {
+        for (key, field) in [
+            ("imei", "imei"),
+            ("model", "product_name"),
+            ("manufacturer", "manufacturer"),
+            ("revision", "revision"),
+        ] {
+            if let Some(v) = info.get(key).and_then(|v| v.as_str()) {
+                if !v.is_empty() {
+                    let _ = writeln!(out, "{}={}", field, v);
+                }
+            }
+        }
+    }
+
+    // --- carrier / network -------------------------------------------
+    // `network` carries {operator, sysmode, sysmode_detail}.
+    if let Some(net) = topic("network") {
+        if let Some(v) = net.get("operator").and_then(|v| v.as_str()) {
+            if !v.is_empty() {
+                let _ = writeln!(out, "operator={}", v);
+            }
+        }
+        if let Some(v) = net.get("sysmode").and_then(|v| v.as_str()) {
+            if !v.is_empty() {
+                let _ = writeln!(out, "network_mode={}", v);
+            }
+        }
+        if let Some(v) = net.get("sysmode_detail").and_then(|v| v.as_str()) {
+            if !v.is_empty() {
+                let _ = writeln!(out, "sysmode_detail={}", v);
+            }
+        }
+    }
+
+    // --- temperature ---------------------------------------------------
+    // Schema note: `temperature` carries {average, modem1, modem2, ap1, ...}.
+    if let Some(t) = topic("temperature") {
+        if let Some(v) = t.get("average").and_then(|v| v.as_f64()) {
+            let _ = writeln!(out, "temperature={}", v.round() as i64);
+        }
+    }
+
+    out
 }
 
 fn cmd_cellscan(settings: &Settings) -> i32 {

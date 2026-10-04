@@ -1,5 +1,158 @@
 # Changelog
 
+## [3.0.0] - 2026-10-04
+
+### Fixed
+- **修复 `connected` 恒为 0 导致 LuCI 全部标签页判定为未连接（P0，本次修复引入的回归）**：
+  - Background：本次为压缩 `status` 耗时，把 `connected` 判定从「短探测 `AT`」改成了
+    「查 `AT+CONNECT?` 是否回 `+CONNECT: 1`」。但 `AT+CONNECT?` **只存在于 network
+    传输通道**，串口独占通道下必然回 `ERROR` —— 于是 `connected` 永久为 0。而
+    `parser.js` 用它做**全页面总闸门**（`connected = manager.connected && reachable &&
+    sysmode 有效`），表现为概览 / 移动数据 / 无线与小区 / 短信 / 模组与 SIM 卡 /
+    高级设置**同时显示未连接**，而 `mt5700m-manager status` 明明报 `connected: true`。
+  - Changes（`at-webserver/src/cli.rs::cmd_status`）：语义纠正为「AT 通道是否可用」。
+    daemon 快照中 `signal` / `registration` / `sim` / `operator` 任一非空即视为可用
+    （零 AT 流量，因为上一行已经调过 `daemon_cached()`）；daemon 不可达时才回退一次
+    `AT` 短探测。
+  - 实测：`connected=0` → `connected=1`，`channel=serial`，`at_port=/dev/ttyUSB2`
+    （与 daemon 实际上报的 `serial_port` 及 `/proc/<pid>/fd` 三方一致），
+    `status` 26 行 / 0s / RC=0，5 路并发全部 RC=0。
+
+- **修复 LuCI「无线与小区」页整页渲染中断（P0）**：
+  - Background：`view/mt5700m/network.js` 调用 `c.circularGaugeCard(...)`，但组件库
+    `components.js` 从未导出该函数（导出名是 `svgCircularGauge`）。`TypeError: c.circularGaugeCard
+    is not a function` 在渲染期抛出，**中断整页渲染**。另外即便补上函数，参数顺序也是错的：
+    调用处传 `(label, value, unit, cls, min, max)`，而 `svgCircularGauge` 签名是
+    `(val, min, max, unit, label, cls)`。
+  - Changes：按 label 查表取量程（`gaugeScale`）而不是按下标硬编码 ——
+    `parser.js` 的 `cell.metrics` 会随 RAT 变化（NR: RSRP/RSRQ/SINR，LTE: RSRP/RSRQ/RSSI，
+    WCDMA: RSCP/RXLEV/ECIO），下标固定会在 LTE/WCDMA 下量程错配、指针顶到刻度外；
+    只渲染当前 RAT 实际存在的项。
+  - 验证：全量脚本比对 `components.js` 导出清单与 8 个视图的全部 `c.xxx()` 调用，
+    确认**这是唯一一处不存在的组件调用**。实测该页由 686 字符（残缺）恢复为 4183
+    字符完整渲染，含 Registered / RSRP -63 / RSRQ -10 / SINR 27 / 48°C。
+
+- **修复 LuCI「移动数据」页整页显示字面量 `[object Promise]`（P0）**：
+  - Background：`view/mt5700m/connection.js` 的 `load()` 写的是
+    `return m.render().then(...)`。LuCI 的 view 契约要求 `load()` **同步返回一个 DOM 节点**，
+    返回 Promise 会被当字符串塞进容器 —— 整个正文被这一行占满（页面文本仅 712 字符）。
+  - Changes：改为同步返回外层容器 + 骨架屏占位，`form.Map` 渲染完成后异步注入正文，
+    并补 `.catch` 把渲染失败显示为可读错误而非空白。与项目既有异步化架构一致。
+  - 注意：LuCI 的 `dom` 模块**只有 `dom.content()`，没有 `dom.prepend()`** —— 用原生
+    `appendChild` 组装容器。
+  - 实测：页面文本 712 → 2036 字符，「MOBILE DATA / Mobile data」标题与全部控件正常渲染。
+
+- **修复 LuCI 与 WebUI 的 AT 通道全哑（P0，实机三重根因叠加，缺任一层都导致全部 AT 命令超时）**：
+  - Background：
+    1. **BusyBox 缺 `stty` applet**。原 `serial.rs` 完全依赖外部 `stty -F /dev/ttyUSB1 ... raw` 配置串口，且**忽略退出码**。OpenWrt 镜像普遍不内置该 applet（实机 `stty: applet not found`），TTY 一直停留在内核默认 cooked 模式——`ICRNL`/`OPOST`/`ICANON`/`ECHO` 全开，回显与行缓冲让 AT 响应解析彻底失真。
+    2. **`VMIN=0` 的 EOF 陷阱**。Linux tty 在 `VMIN=0`/`VTIME=0` 下，空闲时 `read` **返回 0 字节**，被读循环当成 EOF → 读取线程刚连上就退出，后续所有 AT 命令必然超时。
+    3. **非阻塞下的 `EAGAIN` 被当成致命错误**。补上 `O_NONBLOCK` 后，`at.rs::spawn_reader`、`probe.rs`、`serial.rs::at_probe_ok` 三处读取循环均为 `Err(_) => break`；而 `EAGAIN` 是**正常空闲态**，等于每次空闲都拆掉读取线程。
+  - Changes（`mt5700webui-openwrt-server/at-webserver/src/`，实现对照姊妹项目 [`luci-app-mt5700`](https://github.com/LianXia233/luci-app-mt5700) 的 `src/rust/src/serial_linux.rs`，**std-only 零第三方依赖**）：
+    - `serial.rs` 新增 `termios_raw` 模块：`TCGETS`/`TCSETS`/`TCFLSH` ioctl 直配，必须**清除** cooked 位（`c_lflag &= !(ICANON|ECHO|...)`、`c_oflag &= !OPOST`、`c_iflag &= !(ICRNL|...)`），波特率 `(c_cflag & !CBAUD) | B115200`，8N1 且 `c_cflag |= CS8|CREAD|CLOCAL`，`VMIN=1`/`VTIME=0`，配 `tcflush(TCIOFLUSH)` 清残留；补齐缺失的 `CSTOPB` 常量。
+    - `serial.rs` 新增 `open_tty_raw()`：FFI `open(2)` 带 `O_RDWR|O_NOCTTY|O_NONBLOCK|O_CLOEXEC`（`OpenOptions` 无法表达后两个 flag），并新增 `set_modem_lines()` 经 `TIOCMGET`/`TIOCMSET` 拉高 DTR/RTS（`option` 驱动 open 后默认拉低）。
+    - `at.rs` / `probe.rs` / `serial.rs::at_probe_ok` 三处读取循环统一容忍 `WouldBlock`/`Interrupted`（短睡重试），不再拆线程。
+    - `probe.rs` 新增 **`atprobe` 诊断子命令**，绕开 daemon / 仲裁器 / 后台采集器直探 AT 口；配合 `AT_DEBUG_TERMIOS=1` 回读 termios 实际值。
+  - 实测（Airpi AP3000M + Fibocom MT5700M-CN）：
+
+    | 指标 | 修复前 | 修复后 |
+    |:--|:--|:--|
+    | 单次 `mt5700m-at status` | 25s 超时被杀（RC=143） | 0–1s RC=0，26 行完整 |
+    | 5 路并发 `status` | 全部 143 超时（30s） | 全部 0 成功 |
+    | `atprobe` 探测 5 条只读命令 | 5/5 TIMEOUT，0 字节 | 5/5 全部响应 |
+    | `cached` 快照 | 无数据 | 全字段 `fresh:true` |
+
+    实测数据：NR-5GC / RSRP -63 / RSRQ -5 / SINR 27~29 / band 41 / SIM READY / ICCID `898604891823D0000381` / 45°C。
+
+- **修复 `at_port` 上报值与 daemon 实际持有的串口不符**：USB 重新枚举时 `option` 驱动重编号 ttyUSB*（PCUI 口在 ttyUSB1 ↔ ttyUSB2 间互换），内核会把旧 fd 转移到新编号节点，而 daemon 日志里的 `attached to serial` 是**启动时快照**，因此 `status` 报告的端口可能并非实际在用的端口。`daemon.rs` 新增 `AtClient.attached_port` 字段，`cached` 响应新增 `serial_port`；`cli.rs::cmd_status` 优先采用 daemon 上报值，实机确认 CLI 报的 ttyUSB2 与 `/proc/<pid>/fd` 一致。
+
+- **修复 `interruptible_aborts_on_cancel` 测试竞态**：`at_queue.rs` 该测试的阻塞时长仅 20ms，却在 15ms 后置 cancel，留下 5ms 窗口，并行执行下必然失败。改为 `set_interruptible_block(600ms)` + 置位前 sleep 30ms，**连续 4 次全量 94 passed**。
+
+- **修复 WebUI 图表组件 21 个 class 零样式定义（P0，经线上产物 grep 实证）**：`sparkline` / `sparkline-canvas` / `sparkline-svg` / `sparkline-dot` / `chart-grid-line` / `sparkline-legend` / `quality-bar` / `quality-bar-track` / `quality-bar-fill` / `ring-gauge` / `ring-gauge-dial` / `ring-gauge-track` / `ring-gauge-arc` / `ring-gauge-value` / `ring-gauge-label` / `lock-row` / `chart-empty` 等在 `app.css` 中**全部 0 匹配**。后果：质量条与 7 路温度条渲染为 **0 高度（完全不可见）**、环形仪表数值掉到 SVG 下方、曲线采样点不定位。已补齐全套样式段。
+
+- **修复 `.net-hero` 在 961~1010px 视口静默丢内容（P0）**：该区硬编码 `minmax(720px, 1fr)` 双列，而 `.app-viewport` 是 `overflow-x: hidden` —— 视口窄于 1440px 时右侧内容**直接消失且无法滚动**。5 处网格统一改为 `repeat(auto-fit, minmax(…, 1fr))`，元素数量与列数不再错配。
+
+- **修复布局间距双重叠加**：`.page-card` / `.panel` 的 `margin-bottom:20px` 与父级 `.page-stack` 的 `gap:20px` 叠加成实际 **40px**，且 `.two-col` 内出现单侧偏置。改为间距统一由容器 `gap` 控制。
+
+- **修复 `.kv-grid` 无任何降列规则**：2~4 列键值表在任何断点都不降为单列，手机上 IPv6 长值只能挤在两列换行。手机档统一降为单列。
+
+- **修复 `Kv columns={1}` 静默失效**：该值生成不存在的 `kv-grid--1` 类，样式表未定义 → **静默退回 2 列**。新增 `kv-grid--single`。
+
+- **修复 `.quality-grid` 定义 4 列只放 2 项** → 右半永久空白；**`.net-cell-params` 内嵌 3 列 Kv 只占第 1 列** → 3 列挤在半宽、右半空。均改为 auto-fit / 跨列修正。
+
+- **修复窄屏溢出**：`.at-input-row` 无 `flex-wrap` 导致 3 个按钮永不换行、Input 被压至近 0 宽；`.sms-shell` 在 375px 下联系人栏与线程并排、正文不可读（改纵向堆叠）；`UssdPanel` 200px Input + 2 按钮 ≈408px > 375px 溢出。
+
+- **修复三级边框嵌套**：PageCard → Panel → kv-item 三层描边。`Panel` 新增 `variant="flat"`（`pages/network/Info.tsx` 三处启用）。
+
+- **修复 Semi Card 头部挤压**：Semi 实际类名是 `semi-card-header-wrapper`（且为 `row-reverse`），原先只写了 `semi-card-header`，补 `flex-wrap` + `row-gap`，并让 `header-extra` 用 `margin-left:auto` 保持右对齐。
+
+### Added
+- **新增前端构建配置（`semi-tcpweb/` 原先只有 `src/`，无任何构建入口，无法产出可发布产物）**：补齐 `package.json`（React 18 + Semi 2.103 + Vite 5 + TypeScript）、`vite.config.ts`（`base:'/5700/'`、构建期注入 `__APP_VERSION__`、hash 产物名 `assets/index-[hash].*`）、`tsconfig.json`、`index.html`。
+- **新增 `src/styles/breakpoints.ts` 断点契约**：CSS 与 JS 共用 `mobile 768 / compact 480 / tablet 1024`。改造前 CSS 断点（960/767）与 JS 断点（767/640/520）**互不重合**，≤640px 区间无任何 CSS 规则；5 处调用点（`Dial.tsx` / `Settings.tsx` / `ScanPanel.tsx` / `Upgrade.tsx` / `AppLayout.tsx`）已改为引用共享常量。响应式统一为**移动优先三档**：≥1024px 多列网格、768–1023px 两列、<768px 单列纵向堆叠、<480px 按钮全宽与 Steps 缩进复位。
+- **新增 `atprobe` 诊断子命令**：绕过 daemon 独占锁与仲裁器直探 AT 口，用于区分「通道/串口问题」与「模组注册态问题」。详见 Fixed 第一条。
+- **新增仲裁器通道占空比预算**：`at_queue.rs` 引入 `DutyWindow` 滑动窗口（`BACKGROUND_DUTY_LIMIT_PCT = 60`）限制后台采集器占用率，为用户可见流量保留带宽；用户请求被拒时置**用户饥饿锁存**，采集器据此退避。
+- **新增命令级超时表与 `AtRequestSpec::ui_query`**：UI 可见请求统一 High 优先级 + 零重试；`run_command` 与 daemon 控制通道 `send` 分支改用 `ui_query`。
+- **新增工具脚本**：`tools/stress.sh`（5 路并发 `mt5700m-at status` 压测，记录 RC/耗时/行数）、`tools/deploy_webui.py`（备份 → 空间检查 → `.new` 暂存上传 → 原子 `mv` 提升 → HTTP 验证，输出回滚命令）、`tools/shoot_webui.py`（三档 375/768/1440 截图 + 溢出探针，输出 `layout-report.json`）。
+
+- **新增 WebUI 动效体系（v3.1）**：`global.css` 末尾新增「动效体系」一节，并建立
+  分级动效令牌（`--app-dur-fast/base/slow`、`--app-t-lift/press/fade/slide/tint/shadow`）。
+  - **消除 `transition: all`**：原 `--app-transition-spring: all 0.22s` 让每次 hover 都
+    要监听全部可动画属性（width/height/margin/padding/border…），触发布局与重绘。
+    改为按属性分类，transform/opacity 走合成层。产物内 `transition:all` 从 13 处降到
+    6 处（剩余为 Semi 组件库自带，不可控）。
+  - **补 `prefers-reduced-motion` 分级降级**：此前是一条全局 `!important` 把所有动画
+    压到 0.01ms —— 连**承载语义的状态反馈**（色块切换、数值变化）也被压掉，依赖动画
+    确认操作结果的用户得不到任何反馈。改为分级：装饰性常驻循环（呼吸光晕、气泡、
+    骨架扫光）彻底 `animation: none`；状态切换与图表数值变化保留（去位移留颜色/宽度）。
+  - **图表数值不再瞬跳**：环形仪表按 `stroke-dashoffset` 从空环长到目标值（周长经
+    `--ring-circumference` 内联，不写死常量，`size` 变化时起点仍是空环）；质量条按
+    `width` 生长；迷你曲线按 `stroke-dasharray` 逐段画出 + 采样点按 `--dot-i` 依次点亮
+    （点越靠右越晚，与时间轴同向）。虚线序列只淡入不生长 —— `stroke-dasharray` 属性
+    复用会互相覆盖，且虚线本不该「长出来」。
+  - **新增加载骨架**（`Skeleton` / `SkeletonCards`）：此前数据到位前只渲染「--」，
+    「还在加载」与「加载完成但确实没数据」视觉上完全一样，弱信号区尤其误导。
+  - **指标数值变化轻抬**（`Metric` 加 `metric--updated`）：轮询场景下静默跳变会让人
+    怀疑「这次刷新到底生效没有」。
+  - **收敛重复断点**：删除两处遗留的 `@media (max-width: 960px)`（规则已被统一响应式层
+    覆盖，双份定义正是漂移来源），并合并文件中部与末尾**两份** `prefers-reduced-motion`
+    块（靠前那份与末尾分级版互相矛盾）。
+  - 移动端（<768px）停用装饰性循环动画，采样点 stagger 上限压缩到 6 个点。
+  - 验证：`tsc --noEmit` 全绿；Playwright 实测入场动画进行中
+    （10 个元素处于 `--enter`、`ring-gauge-sweep` 运行、`stroke-dashoffset: 216.77px`、
+    条宽 `0px` 起始），`prefers-reduced-motion: reduce` 下无限循环动画数从 23 降到 0。
+
+### Changed
+- **`make package` 版本 `2.8.7` → `3.0.0`（破坏性）**：AT 串口不再依赖 BusyBox `stty` applet，串口打开一律 `O_NONBLOCK` + `VMIN=1`/`VTIME=0`。旧版二进制在不修正 termios 的环境下会把 TTY 留在 cooked 模式导致 AT 全哑。
+- **`cmd_status` 瘦身**：派生值改从 StateCache 快照读取（零 AT 流量），仅保留一次短探测判断 `connected`，`status` 响应从 25s 超时降到 0–1s。
+- **快照慢查询加占空比门控与失败退避**（`snapshot.rs`），避免长周期采集挤占用户通道。
+- **包内补齐 `root/etc/init.d/at-webserver`**（原包内缺失）：`at-webserver` 是**独立 procd 服务**，不由 `mt5700m-manager monitor` 拉起（monitor 只管 netifd 与接口），缺失时 8765 端口永远不监听、`/5700` 无数据。
+- **修复 npm 侧构建阻塞**（两条均为真实 resolve 失败，非配置错误）：
+  - Semi 2.103 的 `exports` 只白名单 `lib/es` / `lib/cjs`，**不含 `dist/*`**，导致 `import '@douyinfe/semi-ui/dist/css/semi.min.css'` 被 resolve 拒绝（`Missing "./dist/css/semi.min.css" specifier`）。`vite.config.ts` 用 alias 指向物理文件绕过。
+  - `src/main.tsx` 原用 `../node_modules/...` 相对路径绕过解析器，改为 bare specifier + alias。
+
+### Verified
+- `cargo test`：连续 4 次全量 **94 passed / 0 failed**。
+- `tsc --noEmit` 全绿；顺带修两处既有类型错误（Semi `Collapse.onChange` 可能传 `undefined`，`SchedulePanel.tsx` / `Settings.tsx` 需窄化为 `[]`）。
+- 产物：CSS 724.02 kB / JS 986.95 kB，已同步至 `htdocs/5700/`（21 文件，清除旧 hash 产物）与 `root/usr/bin/at-webserver`（805,600 B）。
+- Playwright 三档实测**均无横向溢出**（`scrollWidth == clientWidth`）：
+
+  | 视口 | 375 | 768 | 1440 |
+  |:--|:--|:--|:--|
+  | 结果 | 无横向滚动 | 无横向滚动 | 无横向滚动 |
+
+  实测期间发现 `.metric-row` 的 `minmax(150px,1fr)` 下限在 485px 宽容器内只能排 2 列、第三个 Metric 落单，已将下限调至 130px（三列需 430px < 485px），实测三指标整齐同行。
+- **LF 换行校验：30 个文本文件全部合规**。
+
+### Note
+- **IMEI 红线**：全程仅通过**只读** `AT+CGSN` 读取并缓存；`atprobe` 默认命令集（`AT` / `AT+CSQ` / `AT+COPS?` / `AT+CGSN` / `AT^HCSQ?`）全部只读；本次全部代码改动、AT 指令与前端交互**未引入任何写入、修改、擦除 IMEI 或变更其相关存储的指令与入口**。
+- **排查手法记录**：本次 termios 修正中，「方向写反」把 raw 标志当置位用（等于主动打开 cooked 模式）是通过 `AT_DEBUG_TERMIOS=1` **回读实际 termios** 暴露的（`cflag=0x8bd`，CBAUD 位为 0）；波特率改用 `BOTHER`+`c_ispeed` 时内核不认，回读 `ispeed=0x0 ospeed=0x0`。裸 ioctl 配置必须回读验证，不能只看代码。
+- **luci-base 自身的两个加载顺序缺陷（非本包代码，实机确认）**：`luci.js` 调用
+  `String.prototype.format`（定义在 `cbi.js`，加载滞后），以及 `ui.js` 调用
+  `findParent`（定义在 `cbi.js`）。两者都会在控制台抛 `pageerror`，在 404 页面尤其明显。
+  文件属于 `luci-base` 而非本包，需设备侧运行时兜底（见 README 故障排查一节）。
+- **遗留观察（非本次修复范围）**：
+  - USB 偶发重新枚举（`dmesg: option1 ttyUSB4 disconnected` → `usb 2-1 new SuperSpeed device`），端口编号随之互换。daemon 能通过内核 fd 转移继续工作，但 `hotplug.d/usb/60-mt5700m` 是否需要触发 daemon 重 attach 待后续单独排查。
+  - 模组注册态瞬态：`AT+COPS?` 返回 `4`（registration denied）时 WebUI 会瞬时显示「4G LTE 0% / 暂无测量」，而同期 `AT^HCSQ?` 仍报 `"NR",78,246,30` —— 属模组注册态瞬态，非前端问题。
+
 ## [2.8.7] - 2026-10-03
 
 ### Fixed

@@ -8,7 +8,7 @@
 
 [![CI](https://github.com/LianXia233/luci-app-mt5700m/actions/workflows/ci.yml/badge.svg)](https://github.com/LianXia233/luci-app-mt5700m/actions/workflows/ci.yml)
 [![Build Release](https://github.com/LianXia233/luci-app-mt5700m/actions/workflows/release.yml/badge.svg)](https://github.com/LianXia233/luci-app-mt5700m/actions/workflows/release.yml)
-[![Version](https://img.shields.io/badge/Version-v2.4.8--r1-blue.svg?style=flat-square)](https://github.com/LianXia233/luci-app-mt5700m/releases)
+[![Version](https://img.shields.io/badge/Version-v3.0.0--r1-blue.svg?style=flat-square)](https://github.com/LianXia233/luci-app-mt5700m/releases)
 [![OpenWrt](https://img.shields.io/badge/OpenWrt-Filogic%20%7C%20ImmortalWrt-00C49F.svg?style=flat-square&logo=openwrt)](https://openwrt.org/)
 [![Backend](https://img.shields.io/badge/Backend-Rust%20(std--only)-DEA584.svg?style=flat-square&logo=rust)](mt5700webui-openwrt-server/at-webserver/)
 [![WebUI](https://img.shields.io/badge/WebUI-React%20%2B%20Semi%20Design-61DAFB.svg?style=flat-square&logo=react)](https://github.com/inotdream/mt5700webui-openwrt-server)
@@ -54,6 +54,11 @@
 系统采用**双前端共用统一后端通道**的设计，由 Rust 后端 `at-webserver` 独占 AT 串口
 （TIOCEXCL + 常驻描述符），LuCI 与 WebUI 都经它访问模组，彻底避免传统工具在 Web
 与后台同时调用时出现的 TTY 串口锁死。`ubus-at-daemon` 与 `sms-tool_q` 已完全移除。
+
+> **v3.0.0 起**：AT 串口由 Rust 后端直接用 termios ioctl 配置（`TCGETS`/`TCSETS`/
+> `TCFLSH`），**不再依赖 BusyBox `stty` applet**（OpenWrt 镜像普遍不内置），并统一
+> `O_NONBLOCK` + `VMIN=1`/`VTIME=0`。后端另提供 `atprobe` 诊断子命令，绕开 daemon
+> 独占锁与仲裁器直探 AT 口，用于区分「通道/串口问题」与「模组注册态问题」。
 
 <div align="center">
   <img src="docs/architecture.png" alt="系统拓扑与多层协同架构：双前端经 Rust 后端独占访问 MT5700M 模组" width="880"/>
@@ -111,6 +116,22 @@
 | **USB 热插拔** | DeviceMonitor 监听 USB 增删/重置，变化时：失效缓存 → 取消失效任务 → 重连 transport → 刷新状态 → 推送 `usb.*` / `modem.*` 事件 |
 | **慢任务隔离** | 扫频、短信收发、PDP 操作、网络恢复等一律后台执行；HTTP/WS 请求立即返回 `task_id`，结果通过 `task.*` 事件推送 |
 | **错误模型与重试** | 统一 `ModemUnavailable / TransportError / AtTimeout / AtRejected / Busy / TaskCancelled / TaskTimeout / InvalidParameter / PermissionDenied / UsbDisconnected / InternalError`，机器可读 `code` + 人类可读 `message` + `retryable`；超时/传输瞬时故障带退避重试，参数错误/模组明确拒绝绝不盲目重试 |
+
+### 动效与可访问性（v3.1 起）
+
+WebUI 的动效遵循三条原则，避免「看起来花哨但实际掉帧、且对部分用户有害」：
+
+1. **只动合成层属性**。过渡统一走 `--app-t-lift/press/fade/slide/tint/shadow` 六类令牌，
+   显式列出所动画的属性（transform / opacity / color / border-color / box-shadow）。
+   全站曾用 `transition: all 0.22s`，每次 hover 都要监听 width/height/margin/padding/
+   border，触发布局与重绘。
+2. **状态变化与装饰分离**。环形仪表从空环长到目标值、质量条按宽度生长、曲线按
+   `stroke-dasharray` 逐段画出、采样点按索引依次点亮——这些让用户能看出数值是升还是降，
+   属于信息而非装饰。呼吸光晕、气泡这类纯装饰循环动画在移动端与
+   `prefers-reduced-motion` 下一律停用。
+3. **`prefers-reduced-motion` 分级降级**。装饰性循环完全停用；但**保留**状态切换与图表
+   数值变化（去位移、留颜色/宽度）——把这些也压掉，等于让依赖动画确认操作结果的用户
+   得不到任何反馈，是有害而非无障碍。
 
 ### 前端配合（零轮询）
 
@@ -274,6 +295,11 @@ v2.6 对该后端做了一次彻底重构，前端（LuCI 与 WebUI）接口不�
   不再需要 `ubus-at-daemon` 与 `sms-tool_q`。后端默认自动扫描 `/dev/ttyUSB*` 定位
   MT5700M PCUI 串口（`serial_port=auto`），也可用 `mt5700m-at port set <path>` 手动指定。
 - **AT 通道**：`at-webserver`（SERIAL 默认）→ 控制套接字（LuCI）/ WebSocket（WebUI）。
+- **串口配置**：由后端内置的 `termios_raw` 模块直接发 ioctl 完成（8N1 / 115200 /
+  `VMIN=1` / `VTIME=0` / `tcflush(TCIOFLUSH)`），并经 `TIOCMSET` 拉高 DTR/RTS。
+  **不依赖 `stty`** —— v3.0.0 前若目标镜像缺少该 applet，TTY 会停留在内核默认
+  cooked 模式（`ICRNL`/`OPOST`/`ICANON`/`ECHO` 全开），表现为**所有 AT 命令全部
+  超时、LuCI 与 WebUI 同时空白**。
 
 ### 数据存储
 - **流量统计历史**：持久化存放于 `/etc/mt5700m/traffic-history`。直读内核网卡统计，升级时自动迁移，免除安装 `vnStat` 的额外系统损耗。
@@ -321,6 +347,103 @@ WebUI 按「`/cgi-bin/at-ws-info` → `/5700/config.json`」顺序发现后端 W
   192.168.10.x 等网段上 WebSocket 连到不可达主机，页面永远无数据。
 - 自查：`curl -s http://<网关>/cgi-bin/at-ws-info` 应返回 200 且 `host` 为实际网关。
 - 已装旧包可手工补：`cp files/www/cgi-bin/* /www/cgi-bin/ && chmod 755 /www/cgi-bin/at-*`。
+
+### AT 命令全部超时 / LuCI 与 WebUI 同时无数据（v3.0.0 前的高发问题）
+
+症状：`mt5700m-at status` 25s 超时被杀（RC=143），LuCI 各标签页与 WebUI 同时空白。
+v3.0.0 前有**三层叠加根因**，缺任一层都会导致 AT 全哑：
+
+1. **BusyBox 缺 `stty` applet**。旧实现完全依赖 `stty -F /dev/ttyUSB1 ... raw` 配置
+   串口且忽略退出码，TTY 一直是内核默认 cooked 模式，回显与行缓冲让响应解析失真。
+2. **`VMIN=0` 的 EOF 陷阱**。Linux tty 在 `VMIN=0`/`VTIME=0` 下空闲时 `read`
+   **返回 0 字节**，被读循环当成 EOF，读取线程刚连上就退出。
+3. **非阻塞下的 `EAGAIN` 被当成致命错误**。`at.rs` / `probe.rs` / `serial.rs` 三处
+   读取循环曾均为 `Err(_) => break`，而 `EAGAIN` 是正常空闲态。
+
+升级 v3.0.0 后按以下顺序自查：
+
+```sh
+# 1) 直探 AT 口（绕开 daemon / 仲裁器 / 采集器），期望 5/5 全部响应
+at-webserver probe
+
+# 2) 回读实际 termios，确认 cooked 位已清除、CBAUD=13(B115200)
+AT_DEBUG_TERMIOS=1 at-webserver probe
+
+# 3) 确认通道性能（0–1s 返回 26 行即为正常）
+time mt5700m-at status
+
+# 4) 确认并发不互相饿死（5 路并发应全部 RC=0）
+for i in 1 2 3 4 5; do (timeout 30 mt5700m-at status >/dev/null 2>&1; echo "$i:$?") & done; wait
+```
+
+### `connected` 恒为 0 导致 LuCI 标签页全部判定为未连接
+
+`mt5700m-at status` 的 `connected` 是 **LuCI 的全页面总闸门**
+（`parser.js`：`connected = manager.connected && reachable && sysmode 有效`），
+一旦为 0，概览 / 移动数据 / 无线与小区 / 短信 / 模组与 SIM 卡 等标签页会同时
+显示未连接，**即使模组已正常注册**。
+
+`connected` 的语义是「AT 通道可用」，**不是**「network 模式的 TCP 连接已建立」。
+`AT+CONNECT?` 只存在于 network 通道，在串口独占通道下恒返回 `ERROR`——用它判定
+会让 `connected` 永久为 0。v3.0.0 已改为：daemon 快照中有 `signal` / `registration` /
+`sim` / `operator` 任一非空即视为通道可用，daemon 不可达时才回退一次 `AT` 短探测。
+
+```sh
+mt5700m-at status | grep -E '^connected=|^channel=|^at_port='
+# 期望: connected=1 channel=serial at_port=/dev/ttyUSB2
+```
+
+若 `connected=1` 但页面仍未连接，按序检查：模组注册态（`AT+COPS?` 返 4 表示
+registration denied）、`sysmode` 是否为 `NOSERVICE`/`UNKNOWN`、以及
+`usb_state` 是否为 `upgrade`/`dump`（这三种情况下 `parser.js` 会强制置 0）。
+
+### LuCI 某个标签页内容明显残缺（不是「未连接」，而是没渲染出来）
+
+本项目实测踩过三种，都表现为「页面能打开但内容少得离谱」：
+
+1. **整页只有一行字面量 `[object Promise]`** —— 该视图的 `load()` 直接
+   `return xxx.render().then(...)`。LuCI 的 view 契约要求 `load()` **同步返回一个 DOM
+   节点**，返回 Promise 会被当字符串塞进容器，正文被这一行占满。改法：同步返回外层容器
+   （可先放骨架屏），渲染完成后异步 `dom.content()` 注入。
+2. **控制台报 `c.xxx is not a function`，整页空白或只剩首屏** —— 视图调用了组件库里
+   不存在的函数。核对方式是脚本比对 `components.js` 的 `return {...}` 导出清单与所有视图
+   的 `c.xxx()` 调用：
+   ```sh
+   # 本项目曾有一处 circularGaugeCard（真实名 svgCircularGauge）导致「无线与小区」页中断
+   ```
+   注意还要**核对参数顺序**——本项目同一处的参数顺序也是反的。
+3. **报错 `dom.prepend is not a function`** —— LuCI 的 `dom` 模块只有 `dom.content()`
+   与 `dom.append()`，**没有 `dom.prepend()`**，用原生 `appendChild`。
+
+改完必须清 LuCI 缓存（前端文件名不带 hash）：
+
+```sh
+rm -f /tmp/luci-indexcache*; rm -rf /tmp/luci-modulecache/; /etc/init.d/rpcd reload
+```
+
+### LuCI 全部标签页同时显示未连接，但 manager 报 connected=true
+
+两处 `connected` 不是同一个东西：`mt5700m-manager status` 的 `connected` 是数据面
+（netifd 接口 / carrier），`mt5700m-at status` 的 `connected` 是 **AT 通道**，
+后者才是 `parser.js` 的页面总闸门。详见上一条。
+
+### 控制台报 `findParent is not defined` / `E is not defined`
+
+`luci-base` 自身的模块加载顺序缺陷（`findParent` 定义在 `cbi.js`，却在 `ui.js` 里被
+调用；`E` 同理），与本包无关，在 404 页面尤其明显。需设备侧运行时兜底，见上文
+「所有 LuCI JS 视图都无法加载」一节。
+
+### `status` 报告的 `at_port` 与实际在用串口不一致
+
+USB 重新枚举时 `option` 驱动会重编号 `ttyUSB*`（PCUI 口在 ttyUSB1 ↔ ttyUSB2
+互换），内核会把旧 fd **转移到新编号节点**，而 daemon 日志里的 `attached to
+serial` 是**启动时快照**。v3.0.0 起 `cached` 响应新增 `serial_port` 字段上报
+daemon 实际持有的端口，`status` 优先采用该值：
+
+```sh
+ubus call mt5700 cached | grep serial_port   # daemon 自报
+ls -l /proc/$(pidof at-webserver)/fd | grep ttyUSB   # 实际 fd
+```
 
 ### 所有 LuCI JS 视图都无法加载（含登录表单）
 

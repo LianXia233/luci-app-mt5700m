@@ -1,4 +1,4 @@
-import React, { useId } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 
 // 轻量 SVG 图表，零依赖。
 //
@@ -31,6 +31,29 @@ interface SparklineProps {
 
 const VIEW_W = 100;
 const VIEW_H = 46;
+
+/**
+ * 入场动效开关：挂载后第一帧返回 false（触发 CSS 的起始态），第二帧翻 true
+ * （启动过渡）。用两个连续 rAF 而不是 setTimeout(0)——后者可能与首次样式
+ * 计算落在同一帧，浏览器会把起始态和目标态合并，过渡完全不播。
+ *
+ * 组件本身保持无副作用展示职责：动画的表现全在 CSS，这里只给一个阶段标记。
+ * prefers-reduced-motion 下的行为由 CSS 兜底（直接跳到终态，不做位移）。
+ */
+function useEnterPhase(): boolean {
+  const [entered, setEntered] = useState(false);
+  useEffect(() => {
+    let inner = 0;
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => setEntered(true));
+    });
+    return () => {
+      cancelAnimationFrame(outer);
+      if (inner) cancelAnimationFrame(inner);
+    };
+  }, []);
+  return entered;
+}
 
 // Catmull-Rom 样条转三次贝塞尔，得到平滑曲线；控制点夹在可视区内避免过冲。
 function buildSmoothPath(points: Array<{ x: number; y: number }>, viewH: number, tension = 0.2): string {
@@ -70,6 +93,22 @@ export const Sparkline: React.FC<SparklineProps> = ({
   const gradientId = useId();
   const allValues = series.flatMap((s) => s.values);
 
+  // 入场动效状态机（见 styles/global.css 的「动效体系」一节）：
+  //   enter —— 曲线按 stroke-dashoffset 从头「长」到末端
+  //   ready —— 采样点按索引依次点亮（点越靠右越晚，与时间轴同向）
+  // 两帧后进入 ready。用 rAF 而不是 setTimeout(0) 是为了确保浏览器先把
+  // enter 态样式提交一帧再切换，否则过渡不会触发。
+  const [phase, setPhase] = useState<'enter' | 'ready'>('enter');
+  const rafRef = useRef<number | null>(null);
+  useEffect(() => {
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = requestAnimationFrame(() => setPhase('ready'));
+    });
+    return () => {
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+    };
+  }, []);
+
   if (allValues.length === 0) {
     return (
       <div className={`chart-empty ${className || ''}`} style={{ height }}>
@@ -105,7 +144,7 @@ export const Sparkline: React.FC<SparklineProps> = ({
     });
 
   return (
-    <div className={`sparkline ${className || ''}`}>
+    <div className={`sparkline sparkline--${phase} ${className || ''}`}>
       <div className="sparkline-canvas" style={{ height }}>
         <svg
           className="sparkline-svg"
@@ -145,13 +184,17 @@ export const Sparkline: React.FC<SparklineProps> = ({
               <g key={s.label}>
                 <path d={`${curve} L ${VIEW_W},${VIEW_H} L 0,${VIEW_H} Z`} fill={`url(#${gradientId}-${i})`} />
                 <path
+                  className="sparkline-line"
                   d={curve}
                   fill="none"
                   stroke={s.color}
                   strokeWidth="1.6"
                   strokeLinejoin="round"
                   strokeLinecap="round"
-                  strokeDasharray={s.dashed ? '5 4' : undefined}
+                  /* 虚线序列已有 dasharray 表达「预测/次要」，若再复用同一个
+                     属性做入场生长，两者会互相覆盖。因此这类序列只做淡入，
+                     不做描边生长——视觉语义上虚线本就不该「长出来」。 */
+                  strokeDasharray={s.dashed ? '5 4' : VIEW_W * 2}
                   vectorEffect="non-scaling-stroke"
                 />
               </g>
@@ -159,8 +202,9 @@ export const Sparkline: React.FC<SparklineProps> = ({
           })}
         </svg>
 
-        {/* 最新采样点标记。用 HTML 定位保持正圆，不随 SVG 非等比缩放变形 */}
-        {series.map((s) => {
+        {/* 最新采样点标记。用 HTML 定位保持正圆，不随 SVG 非等比缩放变形。
+            --dot-i 交给 CSS 做 stagger，越靠右越晚亮（与时间轴同向）。 */}
+        {series.map((s, i) => {
           if (s.values.length === 0) return null;
           const last = s.values[s.values.length - 1];
           const clamped = Math.max(min, Math.min(max, last));
@@ -169,7 +213,7 @@ export const Sparkline: React.FC<SparklineProps> = ({
             <span
               key={`dot-${s.label}`}
               className="sparkline-dot"
-              style={{ top: `${yPct}%`, backgroundColor: s.color }}
+              style={{ top: `${yPct}%`, backgroundColor: s.color, ['--dot-i' as string]: i }}
               aria-hidden="true"
             />
           );
@@ -219,9 +263,10 @@ export const QualityBar: React.FC<QualityBarProps> = ({
   const goodness = higherIsWorse ? 1 - ratio : ratio;
   const tone =
     goodness >= 0.6 ? 'var(--app-success)' : goodness >= 0.35 ? 'var(--app-warning)' : 'var(--app-danger)';
+  const entered = useEnterPhase();
 
   return (
-    <div className="quality-bar">
+    <div className={`quality-bar ${entered ? 'quality-bar--ready' : 'quality-bar--enter'}`}>
       <div className="quality-bar-head">
         <span>{label}</span>
         <b>{value === null ? '—' : `${value}${unit}`}</b>
@@ -257,9 +302,10 @@ export const RingGauge: React.FC<RingGaugeProps> = ({ percent, label, size = 76,
   const r = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * r;
   const p = percent === null ? 0 : Math.max(0, Math.min(100, percent));
+  const entered = useEnterPhase();
 
   return (
-    <div className="ring-gauge">
+    <div className={`ring-gauge ${entered ? 'ring-gauge--ready' : 'ring-gauge--enter'}`}>
       <div className="ring-gauge-dial" style={{ width: size, height: size }}>
         <svg
           width={size}
@@ -269,6 +315,10 @@ export const RingGauge: React.FC<RingGaugeProps> = ({ percent, label, size = 76,
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={percent ?? undefined}
+          /* 周长写到 CSS 变量上：入场动画的起始 dashoffset 需要精确等于
+             整圈长度，写死一个常量会在 size 变化时与实际周长不符，
+             表现为「动画起点不是空环」。 */
+          style={{ ['--ring-circumference' as string]: circumference.toFixed(2) }}
         >
           <circle
             className="ring-gauge-track"
