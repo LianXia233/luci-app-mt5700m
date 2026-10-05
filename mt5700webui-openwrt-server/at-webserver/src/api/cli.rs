@@ -12,7 +12,7 @@ use crate::transport::client::{self, AtError, AtOutcome, Mode, Settings};
 // One implementation each: the CLI renders what the modules parsed. Keep the
 // historical local names so call sites and their tests stay readable.
 use crate::modules::network::parser::{
-    normalize_rat, parse_cops_operator as extract_cops_operator,
+    parse_cops_operator as extract_cops_operator,
     parse_cops_rat as extract_cops_rat, parse_sysinfo_mode as extract_sysinfo_mode,
 };
 use std::fmt::Write as FmtWrite;

@@ -862,8 +862,7 @@ fn spawn_control_socket(
 ) {
     #[cfg(unix)]
     {
-        use std::io::BufRead;
-        use std::os::unix::net::{UnixListener, UnixStream};
+        use std::os::unix::net::UnixListener;
         let _ = std::fs::remove_file(crate::transport::control::CONTROL_SOCKET);
         if let Some(parent) = std::path::Path::new(crate::transport::control::CONTROL_SOCKET).parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -991,7 +990,7 @@ fn handle_rpc_request(
             if path.is_empty() {
                 err_response("缺少参数 path")
             } else {
-                crate::api::rpc::control_response(arbiter, cache, bus, path, params)
+                crate::api::rpc::control_response(arbiter, cache, bus, path, &params)
             }
         }
         // 缓存快照：零 AT 流量，LuCI 首屏立即拿到后台采集器状态。

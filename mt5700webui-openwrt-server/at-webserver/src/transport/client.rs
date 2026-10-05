@@ -16,7 +16,7 @@
 use crate::serial::manager as serial;
 use crate::transport::control as sock;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 pub const PREFERRED_AT_PORT: &str = "/dev/ttyUSB1";
 
@@ -386,9 +386,4 @@ pub fn network_hosts(settings: &Settings) -> Vec<String> {
         hosts.push("10.0.0.1".into());
     }
     hosts
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
 }

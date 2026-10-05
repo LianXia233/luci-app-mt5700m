@@ -12,6 +12,8 @@
 //! Modules never reach into each other's internals: they talk through the
 //! scheduler (AT), the state cache/bus (data) and the API registry (actions).
 
+use crate::scheduler::jobs::TaskManager;
+
 pub mod cell;
 pub mod modem;
 pub mod network;

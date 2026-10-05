@@ -14,7 +14,6 @@
 //!     node from its USB sysfs (VID/PID + interface type) and/or by probing
 //!     `AT`, then pick the MT5700M PCUI port (or the first port that answers).
 
-use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::Path;
 use std::process::Stdio;
@@ -625,7 +624,7 @@ fn open_tty_raw(path: &str) -> std::io::Result<std::fs::File> {
 
 #[cfg(not(target_os = "linux"))]
 fn open_tty_raw(path: &str) -> std::io::Result<std::fs::File> {
-    OpenOptions::new().read(true).write(true).open(path)
+    std::fs::OpenOptions::new().read(true).write(true).open(path)
 }
 
 /// Open a serial device for read/write and request exclusive ownership.

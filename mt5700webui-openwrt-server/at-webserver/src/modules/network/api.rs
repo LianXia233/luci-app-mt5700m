@@ -9,7 +9,7 @@ use crate::core::error::BackendError;
 use crate::core::json::{self, Value};
 use crate::modules::network::service;
 use crate::modules::network::state::NetworkState;
-use crate::state::bus::{TOPIC_NETWORK, TOPIC_REGISTRATION};
+use crate::state::bus::TOPIC_NETWORK;
 
 /// Routes contributed by this module.
 pub fn routes() -> Vec<Route> {
