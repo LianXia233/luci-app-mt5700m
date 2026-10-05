@@ -1,0 +1,22 @@
+//! AT commands owned by the modem module.
+
+/// Identity block: `Manufacturer:` / `Model:` / `Revision:` lines.
+pub const ATI: &str = "ATI";
+/// IMEI.
+pub const CGSN: &str = "AT+CGSN";
+/// Firmware/version block used by the system page.
+pub const CGMR: &str = "AT+CGMR";
+/// Transmit power (GUL firmware only; NR answers with an error).
+pub const TXPOWER: &str = "AT^TXPOWER?";
+/// Per-carrier NR transmit power (~11.6 s response).
+pub const NTXPOWER: &str = "AT^NTXPOWER?";
+/// EN-DC status (5 field reply when queried, 4 when unsolicited).
+pub const LENDC: &str = "AT^LENDC?";
+
+/// Radio on/off (`0` = minimum functionality).
+pub fn cfun(state: u8) -> String {
+    format!("AT+CFUN={}", state)
+}
+
+/// Modem restart (vendor command).
+pub const RESET: &str = "AT^RESET";

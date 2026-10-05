@@ -9,6 +9,12 @@
 //! No behaviour change is permitted around IMEI handling.
 
 use crate::transport::client::{self, AtError, AtOutcome, Mode, Settings};
+// One implementation each: the CLI renders what the modules parsed. Keep the
+// historical local names so call sites and their tests stay readable.
+use crate::modules::network::parser::{
+    normalize_rat, parse_cops_operator as extract_cops_operator,
+    parse_cops_rat as extract_cops_rat, parse_sysinfo_mode as extract_sysinfo_mode,
+};
 use std::fmt::Write as FmtWrite;
 use std::thread::sleep;
 use std::time::Duration;
@@ -95,83 +101,9 @@ fn clean_line_value(s: &str) -> String {
     clean_value(s)
 }
 
-fn normalize_rat(rat: &str) -> String {
-    match rat {
-        "0" => "GSM".into(),
-        "2" => "UTRAN".into(),
-        "3" => "GSM EDGE".into(),
-        "4" => "HSDPA".into(),
-        "5" => "HSUPA".into(),
-        "6" => "HSDPA/HSUPA".into(),
-        "7" => "LTE".into(),
-        "9" => "NR".into(),
-        "10" => "LTE-M".into(),
-        "11" => "NB-IoT".into(),
-        "13" => "LTE".into(),
-        "20" => "NR".into(),
-        other => clean_line_value(other),
-    }
-}
 
-fn extract_cops_operator(raw: &str) -> Option<String> {
-    let line = first_match(raw, "+COPS:")?;
-    let line = line.trim_end_matches('\r');
 
-    // Quoted long name: awk -F" field 2.
-    if let Some(q1) = line.find('"') {
-        if let Some(q2) = line[q1 + 1..].find('"') {
-            let name = &line[q1 + 1..q1 + 1 + q2];
-            if !name.is_empty() {
-                return Some(clean_line_value(name));
-            }
-        }
-    }
 
-    // Numeric MCC-MNC: first 5-6 digit comma field.
-    let fields: Vec<&str> = line.split(',').collect();
-    for f in &fields {
-        let t = f.trim();
-        if t.len() >= 5 && t.len() <= 6 && t.bytes().all(|b| b.is_ascii_digit()) {
-            return Some(t.to_string());
-        }
-    }
-
-    let third = fields.get(2).copied().unwrap_or("");
-    let name = clean_line_value(third);
-    if !name.is_empty() {
-        return Some(name);
-    }
-    Some(clean_line_value(line))
-}
-
-fn extract_cops_rat(raw: &str) -> Option<String> {
-    let line = first_match(raw, "+COPS:")?;
-    let line: String = line.chars().filter(|c| !matches!(c, ' ' | '"' | '\r')).collect();
-    if line.is_empty() {
-        return None;
-    }
-    let rat = line.split(',').nth(3)?;
-    let rat = rat.trim();
-    if rat.is_empty() {
-        return None;
-    }
-    Some(normalize_rat(rat))
-}
-
-fn extract_sysinfo_mode(raw: &str) -> Option<String> {
-    let line = first_match(raw, "^SYSINFOEX:")?;
-    let line = line.trim_end_matches('\r');
-
-    if let Some(q1) = line.find('"') {
-        if let Some(q2) = line[q1 + 1..].find('"') {
-            let mode = &line[q1 + 1..q1 + 1 + q2];
-            if !mode.is_empty() {
-                return Some(clean_line_value(mode));
-            }
-        }
-    }
-    Some(clean_line_value(line))
-}
 
 // ---------------------------------------------------------------- CSV / lock validation
 
@@ -389,120 +321,11 @@ fn apply_frequency_lock(settings: &Settings, rat: &str, lock_type: &str, lock_cm
 // ---------------------------------------------------------------- print_* family
 
 pub fn print_signal(settings: &Settings) -> String {
+    // The `^HCSQ` decoder lives in the signal module (one implementation for
+    // the cache, the WebUI route and this CLI verb); this reads the modem
+    // through the daemon and renders the domain model as the legacy text.
     let raw = client::at_cmd(settings, "AT^HCSQ?");
-    let mut out = String::new();
-    let Some(line) = first_match(&raw.text, "^HCSQ:") else {
-        return out;
-    };
-    let fields: Vec<String> = line
-        .split(',')
-        .map(|f| f.chars().filter(|c| !matches!(c, ' ' | '\r' | '"')).collect())
-        .collect();
-    if fields.is_empty() {
-        return out;
-    }
-    let sys = &fields[0];
-    out.push_str(&format!("sysmode={}\n", sys));
-
-    let valid = |v: &str| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()) && v != "255";
-    let to_num = |v: &str| v.parse::<u64>().unwrap_or(0);
-
-    let push_rssi = |out: &mut String, v: &str| {
-        if valid(v) {
-            let _ = write!(out, "rssi={}\n", to_num(v) as i64 - 121);
-        }
-    };
-    let push_rsrp = |out: &mut String, v: &str| {
-        if !valid(v) {
-            return;
-        }
-        let n = to_num(v);
-        if n >= 97 {
-            let _ = writeln!(out, "rsrp=-44");
-        } else {
-            let _ = write!(out, "rsrp={}\n", n as i64 - 141);
-        }
-    };
-    let push_rscp = |out: &mut String, v: &str| {
-        if !valid(v) {
-            return;
-        }
-        let n = to_num(v);
-        if n >= 96 {
-            let _ = writeln!(out, "rscp=-25");
-        } else {
-            let _ = write!(out, "rscp={}\n", n as i64 - 121);
-        }
-    };
-    let push_sinr = |out: &mut String, v: &str| {
-        if !valid(v) {
-            return;
-        }
-        let n = to_num(v);
-        if n >= 251 {
-            let _ = writeln!(out, "sinr=30.0");
-        } else {
-            let _ = write!(out, "sinr={:.1}\n", -20.2 + n as f64 * 0.2);
-        }
-    };
-    let push_rsrq = |out: &mut String, v: &str| {
-        if !valid(v) {
-            return;
-        }
-        let n = to_num(v);
-        if n >= 34 {
-            let _ = writeln!(out, "rsrq=-3.0");
-        } else {
-            let _ = write!(out, "rsrq={:.1}\n", -20.0 + n as f64 * 0.5);
-        }
-    };
-
-    match sys.as_str() {
-        "NR" => {
-            if fields.len() > 1 {
-                push_rsrp(&mut out, &fields[1]);
-            }
-            if fields.len() > 2 {
-                push_sinr(&mut out, &fields[2]);
-            }
-            if fields.len() > 3 {
-                push_rsrq(&mut out, &fields[3]);
-            }
-        }
-        "LTE" => {
-            if fields.len() > 1 {
-                push_rssi(&mut out, &fields[1]);
-            }
-            if fields.len() > 2 {
-                push_rsrp(&mut out, &fields[2]);
-            }
-            if fields.len() > 3 {
-                push_sinr(&mut out, &fields[3]);
-            }
-            if fields.len() > 4 {
-                push_rsrq(&mut out, &fields[4]);
-            }
-        }
-        "WCDMA" => {
-            if fields.len() > 1 {
-                push_rssi(&mut out, &fields[1]);
-            }
-            if fields.len() > 2 {
-                push_rscp(&mut out, &fields[2]);
-            }
-            if fields.len() > 3 && valid(&fields[3]) {
-                let ecio = -32.5 + to_num(&fields[3]) as f64 * 0.5;
-                let _ = write!(out, "ecio={:.1}\n", ecio);
-            }
-        }
-        "GSM" => {
-            if fields.len() > 1 {
-                push_rssi(&mut out, &fields[1]);
-            }
-        }
-        _ => {}
-    }
-    out
+    crate::modules::signal::parser::parse(&raw.text).to_text()
 }
 
 pub fn print_identity(settings: &Settings) -> String {

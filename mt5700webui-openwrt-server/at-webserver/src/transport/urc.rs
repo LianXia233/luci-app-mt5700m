@@ -9,46 +9,13 @@ use std::time::Instant;
 const CALL_DEDUP_WINDOW_SECS: u64 = 30;
 const SIGNAL_CHANGE_THRESHOLD: f64 = 1.0;
 
-/// Field map of `^PDCPDATAINFO:`, port of the Python `PDCP_FIELDS` table.
-/// The bool flag marks "report in tenths" (value / 10). Query responses
-/// (`AT^PDCPDATAINFO?`) append two extra cumulative byte counters after
-/// these 14 fields; they are ignored here (the frontend regex captures
-/// them in an optional group for its own delta math).
-const PDCP_FIELDS: [(&str, bool); 14] = [
-    ("id", false),
-    ("pduSessionId", false),
-    ("discardTimerLen", false),
-    ("avgDelay", true),
-    ("minDelay", true),
-    ("maxDelay", true),
-    ("highPriQueMaxBuffTime", true),
-    ("lowPriQueMaxBuffTime", true),
-    ("highPriQueBuffPktNums", false),
-    ("lowPriQueBuffPktNums", false),
-    ("ulPdcpRate", false),
-    ("dlPdcpRate", false),
-    ("ulDiscardCnt", false),
-    ("dlDiscardCnt", false),
-];
-
-/// Parse one `^PDCPDATAINFO:` line into the `pdcp_data` payload. Shared by
-/// the URC stream path (SERIAL/NETWORK) and the WebSocket response path.
+/// Parse one `^PDCPDATAINFO:` line into the `pdcp_data` payload.
+///
+/// The field table and the arithmetic live in the traffic module; this is the
+/// transport-side adapter so the URC stream path (SERIAL/NETWORK) and the
+/// WebSocket response path share the one implementation.
 pub fn handle_pdcp(line: &str) -> Option<Value> {
-    let body = line.strip_prefix("^PDCPDATAINFO:")?.trim();
-    let parts: Vec<&str> = body.split(',').map(|p| p.trim()).collect();
-    if parts.len() < PDCP_FIELDS.len() {
-        return None;
-    }
-    let mut m = std::collections::BTreeMap::new();
-    for (i, (name, tenth)) in PDCP_FIELDS.iter().enumerate() {
-        let v: f64 = parts[i].parse().ok()?;
-        if *tenth {
-            m.insert(name.to_string(), json::num_val(v / 10.0));
-        } else {
-            m.insert(name.to_string(), json::num_val(v as u64));
-        }
-    }
-    Some(Value::Obj(m))
+    crate::modules::traffic::parser::parse_pdcp_value(line)
 }
 
 pub struct Dispatcher {

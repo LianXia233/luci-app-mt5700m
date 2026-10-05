@@ -12,11 +12,14 @@
 //! Modules never reach into each other's internals: they talk through the
 //! scheduler (AT), the state cache/bus (data) and the API registry (actions).
 
+pub mod cell;
+pub mod modem;
 pub mod network;
 pub mod signal;
+pub mod sim;
 pub mod sms;
-
-use crate::scheduler::jobs::TaskManager;
+pub mod system;
+pub mod traffic;
 
 /// Register every module's periodic refresh jobs on the shared task manager.
 ///
@@ -25,8 +28,9 @@ use crate::scheduler::jobs::TaskManager;
 pub fn spawn_all(tasks: &TaskManager) {
     signal::service::spawn(tasks);
     network::service::spawn(tasks);
-    // TRANSITIONAL: collectors that have not been migrated into a module yet
-    // are still scheduled from the legacy bundle. Every migration deletes its
-    // collector there, and the bundle disappears once the list is empty.
-    crate::state::collectors::spawn_all(tasks);
+    cell::service::spawn(tasks);
+    sim::service::spawn(tasks);
+    modem::service::spawn(tasks);
+    traffic::service::spawn(tasks);
+    system::service::spawn(tasks);
 }

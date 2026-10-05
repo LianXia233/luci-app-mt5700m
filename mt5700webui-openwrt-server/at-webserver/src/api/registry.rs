@@ -66,6 +66,11 @@ pub fn routes() -> Vec<Route> {
     let mut v: Vec<Route> = Vec::new();
     v.extend(crate::modules::signal::api::routes());
     v.extend(crate::modules::network::api::routes());
+    v.extend(crate::modules::cell::api::routes());
+    v.extend(crate::modules::sim::api::routes());
+    v.extend(crate::modules::modem::api::routes());
+    v.extend(crate::modules::traffic::api::routes());
+    v.extend(crate::modules::system::api::routes());
     v
 }
 
