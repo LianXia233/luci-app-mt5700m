@@ -79,7 +79,17 @@ jobs:
         run: |
           # v2.4.0: the Python backend was replaced by the std-only Rust
           # rewrite (at-webserver 4.0). Compile it and run its unit tests.
-          cargo test --locked --manifest-path mt5700webui-openwrt-server/at-webserver/Cargo.toml
+          #
+          # The diagnostics are also re-emitted as annotations: they are
+          # readable through the check-run API even when the job log is not,
+          # which is how maintainers on constrained networks debug a failure.
+          set +e
+          cargo test --locked --manifest-path mt5700webui-openwrt-server/at-webserver/Cargo.toml 2>&1 | tee /tmp/cargo.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            python3 scripts/ci-annotate-cargo.py /tmp/cargo.log
+            exit "$status"
+          fi
       - name: Validate JSON metadata
         run: |
           jq empty luci-app-mt5700m/root/usr/share/luci/menu.d/luci-app-mt5700m.json
