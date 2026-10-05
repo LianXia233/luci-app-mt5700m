@@ -4,7 +4,7 @@
 //! `registration.get` are what the dashboard, the network page and the CLI
 //! now read; `network.cached`/`registration.cached` never touch the modem.
 
-use crate::api::params::num;
+use crate::api::params::{num, required_num, required_text};
 use crate::api::registry::{ApiCtx, Route};
 use crate::core::error::BackendError;
 use crate::core::json::{self, Value};
@@ -35,7 +35,38 @@ pub fn routes() -> Vec<Route> {
         Route::on_demand("network.c5goption_set", c5goption_set),
         Route::display("network.radio", radio),
         Route::on_demand("network.radio_set", radio_set),
+        Route::display("network.syscfg", syscfg),
+        Route::on_demand("network.syscfg_set", syscfg_set),
     ]
+}
+
+/// Access-technology configuration (`^SYSCFGEX?`): the "网络系统配置" card.
+///
+/// Display route: an unanswered read (or an unexpected shape) is an empty
+/// object, and the page keeps the values it shows.
+fn syscfg(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    let refresh = ctx.refresh();
+    match service::read_syscfg(&refresh) {
+        Ok(st) => Ok(st.to_json()),
+        Err(_) => Ok(crate::modules::network::state::SysCfgState::default().to_json()),
+    }
+}
+
+/// Write the access-technology configuration.
+///
+/// Params: `{acqorder, band, roam, srvdomain, lteband}` — the five values the
+/// card edits; the manual's two reserved trailing arguments stay empty.
+fn syscfg_set(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+    let acqorder = required_text(params, "acqorder")?;
+    let band = required_text(params, "band")?;
+    let lteband = required_text(params, "lteband")?;
+    let roam = required_num(params, "roam")?;
+    let srvdomain = required_num(params, "srvdomain")?;
+    let refresh = ctx.refresh();
+    service::apply_syscfg(&refresh, acqorder, band, roam, srvdomain, lteband)?;
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("applied".to_string(), Value::Bool(true));
+    Ok(Value::Obj(m))
 }
 
 /// Airplane mode (`+CFUN?`): the switch the system page shows.

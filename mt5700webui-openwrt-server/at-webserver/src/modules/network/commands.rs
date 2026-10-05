@@ -321,3 +321,52 @@ pub fn ndisdup(up: bool) -> String {
 pub fn set_mode(value: u8) -> String {
     format!("AT^SETMODE={}", value)
 }
+
+// ------------------------------------------------- access-technology config
+//
+// `AT^SYSCFGEX="<acqorder>",<band>,<roam>,<srvdomain>,<lteband>,,` — the seven
+// arguments the manual requires (the last two are reserved and stay empty).
+// `acqorder` is a concatenation of two-digit RAT codes, most preferred first.
+
+/// Access-technology order (`^SYSCFGEX` first field). 3G / 4G / 5G and the
+/// combinations the manual and the UI offer.
+pub const ACQ_ORDERS: [&str; 6] = ["02", "03", "08", "0302", "0803", "080302"];
+
+/// Query the current system configuration.
+pub const SYSCFGEX_QUERY: &str = "AT^SYSCFGEX?";
+
+/// Full write. `band`/`lteband` are the modem's hex bitmasks, passed through.
+pub fn syscfgex(acqorder: &str, band: &str, roam: u8, srvdomain: u8, lteband: &str) -> String {
+    format!(
+        "AT^SYSCFGEX=\"{}\",{},{},{},{},,",
+        acqorder, band, roam, srvdomain, lteband
+    )
+}
+
+/// True when `acqorder` is one of the accepted values.
+pub fn valid_acq_order(acqorder: &str) -> bool {
+    ACQ_ORDERS.contains(&acqorder)
+}
+
+/// True when the string is a non-empty hex bitmask.
+pub fn is_hex_mask(v: &str) -> bool {
+    !v.is_empty() && v.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn syscfgex_write_and_validators() {
+        assert_eq!(
+            syscfgex("08030201", "3FFFFFFF", 1, 2, "7FFFFFFFFFFFFFFF"),
+            "AT^SYSCFGEX=\"08030201\",3FFFFFFF,1,2,7FFFFFFFFFFFFFFF,,"
+        );
+        assert_eq!(syscfgex("02", "1", 0, 1, "80"), "AT^SYSCFGEX=\"02\",1,0,1,80,,");
+        assert!(valid_acq_order("02") && valid_acq_order("080302"));
+        assert!(!valid_acq_order("01") && !valid_acq_order(""));
+        assert!(is_hex_mask("3FFFFFFF") && is_hex_mask("80"));
+        assert!(!is_hex_mask("") && !is_hex_mask("3FG"));
+    }
+}

@@ -101,8 +101,15 @@ aliases, so the move itself changed no behaviour.
    (`network.radio`/`network.radio_set`). The system page's identity card and NR
    transmit-power card now read `modem.get`/`modem.nr_txpower`. The only raw-AT
    surfaces left in the WebUI are the cell-scan panel, the FOTA page, the SMS
-   pages, the NR-capability/thermal/SYSCFGEX cards of the system page and the
-   deliberate `pages/at/Terminal.tsx` console.)
+   pages and the deliberate `pages/at/Terminal.tsx` console. The last three
+   system-page cards followed: `modules/modem` owns the NR capability reads and
+   writes (`modem.nr_capability`/`_set`, `^NRRCCAPQRY`/`^NRRCCAPCFG` for CA, VoNR
+   and DSS with the reply-kind matching and the range rules), `modules/network`
+   owns `network.syscfg`/`network.syscfg_set` (the seven-argument `^SYSCFGEX`
+   write plus the CLI's `set-radio-policy` validation) and `modules/system` owns
+   `system.thermal`/`system.thermal_set` (the four `^THERMLD*` reports and the
+   master switch). `pages/system/Info.tsx` therefore contains **no AT command at
+   all** — 35 raw call sites at the start of the session, 0 now.)
 2. **CLI adapter thinning**: `api/cli.rs` still holds the per-verb text
    formatters for those capabilities; they move into the modules' `api.rs`
    `render_text` as the modules land.

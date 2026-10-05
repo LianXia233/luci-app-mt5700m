@@ -185,6 +185,29 @@ pub fn parse_mcs(raw: &str) -> McsState {
     st
 }
 
+/// `^NRRCCAPQRY: <kind>,<values…>` -> the values after the kind.
+///
+/// The reply echoes the kind it answers (3 = CA, 2 = VoNR, 5 = DSS), so a page
+/// that asks for one ability cannot read another one's numbers.
+pub fn parse_nrrccap(raw: &str, kind: i64) -> Option<Vec<i64>> {
+    for line in raw.lines() {
+        let Some(rest) = line.trim().strip_prefix("^NRRCCAPQRY:") else {
+            continue;
+        };
+        let mut fields = rest.split(',').map(|f| f.trim());
+        let echoed = fields.next()?.parse::<i64>().ok()?;
+        if echoed != kind {
+            continue;
+        }
+        let values: Vec<i64> = fields.filter_map(|f| f.parse::<i64>().ok()).collect();
+        if values.is_empty() {
+            return None;
+        }
+        return Some(values);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,5 +279,15 @@ mod tests {
         let st2 = parse_lendc("^LENDC: 1,1,0,1");
         assert_eq!(st2.available, Some(1));
         assert_eq!(st2.restricted, Some(1));
+    }
+
+    #[test]
+    fn nr_capability_replies_are_matched_by_kind() {
+        let raw = "^NRRCCAPQRY: 3,1\n^NRRCCAPQRY: 2,3\n^NRRCCAPQRY: 5,0,1\nOK";
+        assert_eq!(parse_nrrccap(raw, 3), Some(vec![1]));
+        assert_eq!(parse_nrrccap(raw, 2), Some(vec![3]));
+        assert_eq!(parse_nrrccap(raw, 5), Some(vec![0, 1]));
+        assert_eq!(parse_nrrccap(raw, 4), None);
+        assert_eq!(parse_nrrccap("OK", 3), None);
     }
 }

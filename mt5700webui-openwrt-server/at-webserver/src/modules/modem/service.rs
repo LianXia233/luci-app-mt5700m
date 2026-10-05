@@ -8,9 +8,13 @@
 use crate::core::error::BackendError;
 use crate::core::json::Value;
 use crate::core::task::Priority;
-use crate::modules::modem::commands::{self, ATI, CGSN, LENDC, NTXPOWER, RESET, TXPOWER};
+use crate::modules::modem::commands::{
+    self, ATI, CGSN, LENDC, NRRCCAP_CA, NRRCCAP_DSS, NRRCCAP_VONR, NTXPOWER, RESET, TXPOWER, VONR_MAX,
+};
 use crate::modules::modem::parser;
-use crate::modules::modem::state::{EndcState, McsState, ModemState, NrTxPowerState, TxPowerState};
+use crate::modules::modem::state::{
+    EndcState, McsState, ModemState, NrCapabilityState, NrTxPowerState, TxPowerState,
+};
 use crate::scheduler::channel::run_in_task;
 use crate::scheduler::jobs::TaskManager;
 use crate::state::bus::{
@@ -129,6 +133,100 @@ pub fn set_imei(ctx: &RefreshCtx, imei: &str) -> Result<(), BackendError> {
     ctx.action(&commands::phynum_imei(imei))?;
     ctx.cache.invalidate(TOPIC_MODEM);
     Ok(())
+}
+
+/// Read the NR capability settings (`^NRRCCAPQRY=3/2/5`).
+///
+/// Each ability is one vendor query that carries its kind as the argument, so
+/// they are read one by one; whichever answers fills its field.
+pub fn read_nr_capability(ctx: &RefreshCtx) -> Result<NrCapabilityState, BackendError> {
+    let mut st = NrCapabilityState::default();
+    let mut errors = crate::state::refresh::ReadErrors::new();
+    let ca = errors.note(ctx.read(
+        &commands::nrrccapqry(NRRCCAP_CA),
+        DIAG_AT_TIMEOUT,
+        DIAG_QUEUED_TIMEOUT,
+        Priority::Normal,
+    ));
+    if let Some(values) = ca.as_deref().and_then(|t| parser::parse_nrrccap(t, NRRCCAP_CA)) {
+        st.ca = Some(values.first() == Some(&1));
+    }
+    let vonr = errors.note(ctx.read(
+        &commands::nrrccapqry(NRRCCAP_VONR),
+        DIAG_AT_TIMEOUT,
+        DIAG_QUEUED_TIMEOUT,
+        Priority::Normal,
+    ));
+    if let Some(values) = vonr
+        .as_deref()
+        .and_then(|t| parser::parse_nrrccap(t, NRRCCAP_VONR))
+    {
+        st.vonr = values.first().copied();
+    }
+    let dss = errors.note(ctx.read(
+        &commands::nrrccapqry(NRRCCAP_DSS),
+        DIAG_AT_TIMEOUT,
+        DIAG_QUEUED_TIMEOUT,
+        Priority::Normal,
+    ));
+    if let Some(values) = dss.as_deref().and_then(|t| parser::parse_nrrccap(t, NRRCCAP_DSS)) {
+        if values.len() >= 2 {
+            st.dss_rate_matching_lte = Some(values[0]);
+            st.dss_additional_dmrs = Some(values[1]);
+        }
+    }
+    if st.is_empty() {
+        if let Some(e) = errors.into_option() {
+            return Err(e);
+        }
+    }
+    Ok(st)
+}
+
+/// Write one or more NR capability settings.
+///
+/// The page sends whichever card changed (`ca`, `vonr`, `dss` — all optional);
+/// each one becomes its own `^NRRCCAPCFG` write, in the order the CLI and the
+/// page have always used, and abilities that were not asked for are left alone.
+pub fn set_nr_capability(
+    ctx: &RefreshCtx,
+    ca: Option<bool>,
+    vonr: Option<i64>,
+    dss: Option<(i64, i64)>,
+) -> Result<Vec<i64>, BackendError> {
+    if ca.is_none() && vonr.is_none() && dss.is_none() {
+        return Err(BackendError::InvalidParameter(
+            "modem.nr_capability_set needs ca, vonr or dss".to_string(),
+        ));
+    }
+    let mut wrote = Vec::new();
+    if let Some(enabled) = ca {
+        ctx.action(&commands::nrrccapcfg(NRRCCAP_CA, &[if enabled { 1 } else { 0 }]))?;
+        wrote.push(NRRCCAP_CA);
+    }
+    if let Some(mode) = vonr {
+        if !(0..=VONR_MAX).contains(&mode) {
+            return Err(BackendError::InvalidParameter(format!(
+                "VoNR 模式只能是 0-{}，收到 {}",
+                VONR_MAX, mode
+            )));
+        }
+        ctx.action(&commands::nrrccapcfg(NRRCCAP_VONR, &[mode]))?;
+        wrote.push(NRRCCAP_VONR);
+    }
+    if let Some((rate_matching, dmrs)) = dss {
+        for v in [rate_matching, dmrs] {
+            if !(0..=1).contains(&v) {
+                return Err(BackendError::InvalidParameter(format!(
+                    "DSS 取值只能是 0 或 1，收到 {}",
+                    v
+                )));
+            }
+        }
+        ctx.action(&commands::nrrccapcfg(NRRCCAP_DSS, &[rate_matching, dmrs]))?;
+        wrote.push(NRRCCAP_DSS);
+    }
+    Ok(wrote)
 }
 
 /// Register the four periodic jobs.

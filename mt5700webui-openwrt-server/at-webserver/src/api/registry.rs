@@ -193,6 +193,18 @@ mod tests {
             "system.power_control_set" => pairs(&[("enabled", Value::Bool(true))]),
             "modem.imei_set" => pairs(&[("imei", json::str_val("861234567890123"))]),
             "network.radio_set" => pairs(&[("airplane", Value::Bool(true))]),
+            "network.syscfg_set" => pairs(&[
+                ("acqorder", json::str_val("080302")),
+                ("band", json::str_val("3FFFFFFF")),
+                ("roam", json::num_val(1)),
+                ("srvdomain", json::num_val(2)),
+                ("lteband", json::str_val("7FFFFFFFFFFFFFFF")),
+            ]),
+            "system.thermal_set" => pairs(&[
+                ("enabled", Value::Bool(true)),
+                ("interval", json::num_val(2)),
+            ]),
+            "modem.nr_capability_set" => pairs(&[("ca", Value::Bool(true))]),
             _ => Value::Null,
         }
     }

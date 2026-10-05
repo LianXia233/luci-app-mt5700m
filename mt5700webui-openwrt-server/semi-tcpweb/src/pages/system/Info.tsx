@@ -562,22 +562,19 @@ const SystemInfo: React.FC = () => {
   const fetchNRCapability = async () => {
     setNrLoading(true);
     try {
-      const ca = await at().readCommand('AT^NRRCCAPQRY=3');
-      if (ca.success && typeof ca.data === 'string') {
-        const m = ca.data.match(/\^NRRCCAPQRY:\s*3,(\d+)/);
-        if (m) setNrCa(m[1] === '1');
-      }
-      await sleep(100);
-      const vonr = await at().readCommand('AT^NRRCCAPQRY=2');
-      if (vonr.success && typeof vonr.data === 'string') {
-        const m = vonr.data.match(/\^NRRCCAPQRY:\s*2,(\d+)/);
-        if (m) setNrVonr(parseInt(m[1], 10));
-      }
-      await sleep(100);
-      const dss = await at().readCommand('AT^NRRCCAPQRY=5');
-      if (dss.success && typeof dss.data === 'string') {
-        const m = dss.data.match(/\^NRRCCAPQRY:\s*5,(\d+),(\d+)/);
-        if (m) setNrDss({ rateMatchingLTE: parseInt(m[1], 10), additionalDMRS: parseInt(m[2], 10) });
+      // 三个 ^NRRCCAPQRY 查询（按 kind 匹配应答）在 modules/modem 解码；
+      // 没读到的项不会出现在返回里，卡片保持原值。
+      const res = await at().apiCommand<{
+        ca?: boolean;
+        vonr?: number;
+        dss?: { rateMatchingLTE?: number; additionalDMRS?: number };
+      }>('modem.nr_capability');
+      if (!res.success || !res.data) return;
+      if (typeof res.data.ca === 'boolean') setNrCa(res.data.ca);
+      if (typeof res.data.vonr === 'number') setNrVonr(res.data.vonr);
+      const dss = res.data.dss;
+      if (typeof dss?.rateMatchingLTE === 'number' && typeof dss?.additionalDMRS === 'number') {
+        setNrDss({ rateMatchingLTE: dss.rateMatchingLTE, additionalDMRS: dss.additionalDMRS });
       }
     } finally {
       setNrLoading(false);
@@ -587,7 +584,7 @@ const SystemInfo: React.FC = () => {
   const handleSetCA = async (checked: boolean) => {
     setNrLoading(true);
     try {
-      const res = await at().sendCommand(`AT^NRRCCAPCFG=3,${checked ? 1 : 0}`);
+      const res = await at().apiCommand('modem.nr_capability_set', { ca: checked });
       if (res.success) {
         setNrCa(checked);
         Toast.success(`${checked ? '开启' : '关闭'}载波聚合成功`);
@@ -607,7 +604,7 @@ const SystemInfo: React.FC = () => {
   const handleSetVoNR = async (value: number) => {
     setNrLoading(true);
     try {
-      const res = await at().sendCommand(`AT^NRRCCAPCFG=2,${value}`);
+      const res = await at().apiCommand('modem.nr_capability_set', { vonr: value });
       if (res.success) {
         setNrVonr(value);
         Toast.success(`VoNR 配置成功：${VONR_LABELS[value] || '未知'}`);
@@ -627,7 +624,9 @@ const SystemInfo: React.FC = () => {
   const handleSetDSS = async (rateMatchingLTE: number, additionalDMRS: number) => {
     setNrLoading(true);
     try {
-      const res = await at().sendCommand(`AT^NRRCCAPCFG=5,${rateMatchingLTE},${additionalDMRS}`);
+      const res = await at().apiCommand('modem.nr_capability_set', {
+        dss: { rateMatchingLTE, additionalDMRS },
+      });
       if (res.success) {
         setNrDss({ rateMatchingLTE, additionalDMRS });
         Toast.success('DSS 配置成功');
@@ -648,20 +647,23 @@ const SystemInfo: React.FC = () => {
   const fetchSysCfg = async () => {
     setSysCfgLoading(true);
     try {
-      const res = await at().readCommand('AT^SYSCFGEX?');
-      if (res.success && typeof res.data === 'string') {
-        const m = res.data.match(/\^SYSCFGEX:\s*"([^"]+)",([^,\s]+),(\d+),(\d+),([^,\s]+)/);
-        if (m) {
-          const cfg: SysCfgInfo = {
-            acqorder: m[1],
-            band: m[2].trim(),
-            roam: Number(m[3]),
-            srvdomain: Number(m[4]),
-            lteband: m[5].trim(),
-          };
-          setSysCfg(cfg);
-          setOriginalSysCfg(cfg);
-        }
+      // ^SYSCFGEX 的字段顺序（引号可有可无）在 modules/network 解码。
+      const res = await at().apiCommand<SysCfgInfo>('network.syscfg');
+      if (
+        res.success &&
+        res.data?.acqorder &&
+        typeof res.data.roam === 'number' &&
+        typeof res.data.srvdomain === 'number'
+      ) {
+        const cfg: SysCfgInfo = {
+          acqorder: res.data.acqorder,
+          band: res.data.band ?? '',
+          roam: res.data.roam,
+          srvdomain: res.data.srvdomain,
+          lteband: res.data.lteband ?? '',
+        };
+        setSysCfg(cfg);
+        setOriginalSysCfg(cfg);
       }
     } finally {
       setSysCfgLoading(false);
@@ -677,8 +679,14 @@ const SystemInfo: React.FC = () => {
       onOk: async () => {
         setSysCfgLoading(true);
         try {
-          const command = `AT^SYSCFGEX="${sysCfg.acqorder}",${sysCfg.band},${sysCfg.roam},${sysCfg.srvdomain},${sysCfg.lteband},,`;
-          const res = await at().sendCommand(command);
+          // 七个参数的拼接与取值范围校验都在 modules/network。
+          const res = await at().apiCommand('network.syscfg_set', {
+            acqorder: sysCfg.acqorder,
+            band: sysCfg.band,
+            roam: sysCfg.roam,
+            srvdomain: sysCfg.srvdomain,
+            lteband: sysCfg.lteband,
+          });
           if (res.success) {
             Toast.success('网络系统配置已更新');
             await fetchSysCfg();
@@ -732,44 +740,33 @@ const SystemInfo: React.FC = () => {
   const fetchThermConfig = async () => {
     setThermLoading(true);
     try {
-      const fun = await at().readCommand('AT^THERMAUTOFUN?');
-      if (fun.success && typeof fun.data === 'string') {
-        const m = fun.data.match(/\^THERMAUTOFUN:\s*(\d+)\s+(\d+)\s+(\d+)/);
-        if (m) {
-          setTherm((p) => ({
-            ...p,
-            enabled: m[1] === '1',
-            caMimoSwitch: m[2] === '1',
-            interval: parseInt(m[3], 10),
-          }));
-        }
-      }
-      await sleep(100);
-      const log = await at().readCommand('AT^THERMLDLOGSW?');
-      if (log.success && typeof log.data === 'string') {
-        const m = log.data.match(/\^THERMLDLOGSW:\s*(\d+)\s+(\d+)/);
-        if (m) {
-          setTherm((p) => ({
-            ...p,
-            logSwitch: { consoleLog: m[1] === '1', fileLog: m[2] === '1' },
-          }));
-        }
-      }
-      await sleep(100);
-      const para = await at().readCommand('AT^THERMLDAUTOPARA?');
-      if (para.success && typeof para.data === 'string') {
-        const m = para.data.match(/\^THERMLDAUTOPARA:\s*([\d,]+)/);
-        if (m) setTherm((p) => ({ ...p, thresholds: m[1].split(',').map(Number) }));
-      }
-      await sleep(100);
-      const status = await at().readCommand('AT^THERMLDAUTOSTATUS?');
-      if (status.success && typeof status.data === 'string') {
-        const m = status.data.match(/\^THERMLDAUTOSTATUS:\s*([\d,]+)/);
-        if (m) {
-          const nums = m[1].split(',').map(Number);
-          if (nums.length >= 6) setTherm((p) => ({ ...p, currentLevel: nums[5] }));
-        }
-      }
+      // 四条温保查询的字段顺序（含 status 第 6 个字段是当前等级）都在
+      // modules/system；返回里没有的字段表示这次没读到，保持原值。
+      const res = await at().apiCommand<{
+        enabled?: boolean;
+        caMimoSwitch?: boolean;
+        interval?: number;
+        logSwitch?: { consoleLog?: boolean; fileLog?: boolean };
+        thresholds?: number[];
+        currentLevel?: number;
+      }>('system.thermal');
+      if (!res.success || !res.data) return;
+      const t = res.data;
+      setTherm((p) => ({
+        enabled: typeof t.enabled === 'boolean' ? t.enabled : p.enabled,
+        caMimoSwitch: typeof t.caMimoSwitch === 'boolean' ? t.caMimoSwitch : p.caMimoSwitch,
+        interval: typeof t.interval === 'number' ? t.interval : p.interval,
+        logSwitch: {
+          consoleLog:
+            typeof t.logSwitch?.consoleLog === 'boolean'
+              ? t.logSwitch.consoleLog
+              : p.logSwitch.consoleLog,
+          fileLog:
+            typeof t.logSwitch?.fileLog === 'boolean' ? t.logSwitch.fileLog : p.logSwitch.fileLog,
+        },
+        thresholds: Array.isArray(t.thresholds) ? t.thresholds : p.thresholds,
+        currentLevel: typeof t.currentLevel === 'number' ? t.currentLevel : p.currentLevel,
+      }));
     } finally {
       setThermLoading(false);
     }
@@ -778,9 +775,11 @@ const SystemInfo: React.FC = () => {
   const handleSetThermEnabled = async (checked: boolean) => {
     setThermLoading(true);
     try {
-      const res = await at().sendCommand(
-        `AT^THERMAUTOFUN=${checked ? 1 : 0},${therm.caMimoSwitch ? 1 : 0},${therm.interval}`,
-      );
+      const res = await at().apiCommand('system.thermal_set', {
+        enabled: checked,
+        caMimoSwitch: therm.caMimoSwitch,
+        interval: therm.interval,
+      });
       if (res.success) {
         setTherm((p) => ({ ...p, enabled: checked }));
         Toast.success(`${checked ? '开启' : '关闭'}温度保护功能成功`);
@@ -795,9 +794,11 @@ const SystemInfo: React.FC = () => {
   const handleSetThermInterval = async (interval: number) => {
     setThermLoading(true);
     try {
-      const res = await at().sendCommand(
-        `AT^THERMAUTOFUN=${therm.enabled ? 1 : 0},${therm.caMimoSwitch ? 1 : 0},${interval}`,
-      );
+      const res = await at().apiCommand('system.thermal_set', {
+        enabled: therm.enabled,
+        caMimoSwitch: therm.caMimoSwitch,
+        interval,
+      });
       if (res.success) {
         setTherm((p) => ({ ...p, interval }));
         Toast.success('温度检测间隔设置成功');

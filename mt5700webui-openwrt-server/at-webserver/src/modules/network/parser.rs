@@ -6,6 +6,7 @@
 //! parsing fix can never land on one surface only.
 
 use crate::modules::network::state::{
+    SysCfgState,
     C5gOptionState, DhcpLease, LockItem, LockKind, LockState, PdpAddress, RegistrationState,
 };
 
@@ -496,6 +497,33 @@ pub fn parse_cfun(raw: &str) -> Option<u8> {
         .and_then(|rest| rest.trim().parse::<u8>().ok())
 }
 
+/// `^SYSCFGEX: "acqorder",band,roam,srvdomain,lteband,,` -> the settings.
+///
+/// The first field is quoted by some firmware and bare by others, and the two
+/// trailing reserves are ignored; both spellings are accepted here so the page
+/// never sees a raw reply.
+pub fn parse_syscfgex(raw: &str) -> Option<SysCfgState> {
+    let body = raw
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("^SYSCFGEX:"))?
+        .trim();
+    let fields: Vec<&str> = body.split(',').map(|f| f.trim()).collect();
+    if fields.len() < 5 {
+        return None;
+    }
+    let acqorder = fields[0].trim_matches('"');
+    if acqorder.is_empty() {
+        return None;
+    }
+    Some(SysCfgState {
+        acqorder: Some(acqorder.to_string()),
+        band: Some(fields[1].to_string()),
+        roam: fields[2].parse::<i64>().ok(),
+        srvdomain: fields[3].parse::<i64>().ok(),
+        lteband: Some(fields[4].to_string()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -674,5 +702,20 @@ mod tests {
         assert_eq!(parse_ipv6cap("^IPV6CAP: 7\nOK"), Some(7));
         assert_eq!(parse_ipv6cap("^IPV6CAP: 11"), Some(11));
         assert_eq!(parse_ipv6cap("OK"), None);
+    }
+
+    #[test]
+    fn syscfgex_parses_quoted_and_bare_orders() {
+        let st = parse_syscfgex("^SYSCFGEX: \"08030201\",3FFFFFFF,1,2,7FFFFFFFFFFFFFFF,,\nOK").unwrap();
+        assert_eq!(st.acqorder.as_deref(), Some("08030201"));
+        assert_eq!(st.band.as_deref(), Some("3FFFFFFF"));
+        assert_eq!(st.roam, Some(1));
+        assert_eq!(st.srvdomain, Some(2));
+        assert_eq!(st.lteband.as_deref(), Some("7FFFFFFFFFFFFFFF"));
+        let bare = parse_syscfgex("^SYSCFGEX: 02,1,0,1,80,,").unwrap();
+        assert_eq!(bare.acqorder.as_deref(), Some("02"));
+        assert_eq!(bare.roam, Some(0));
+        assert!(parse_syscfgex("OK").is_none());
+        assert!(parse_syscfgex("^SYSCFGEX: \"\",1,0,1,80,,").is_none());
     }
 }

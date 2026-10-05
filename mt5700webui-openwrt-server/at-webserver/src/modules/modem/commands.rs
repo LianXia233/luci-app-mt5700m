@@ -23,6 +23,37 @@ pub fn phynum_imei(imei: &str) -> String {
     format!("AT^PHYNUM=IMEI,{}", imei)
 }
 
+// ------------------------------------------------- NR capabilities
+//
+// `^NRRCCAPQRY=<kind>` is both a query and its argument (like `^MCS`), so the
+// kinds are named here and the write of the same ability uses the matching
+// `^NRRCCAPCFG` kind.
+
+/// NR carrier aggregation.
+pub const NRRCCAP_CA: i64 = 3;
+/// VoNR (5G voice) mode, 0..=3.
+pub const NRRCCAP_VONR: i64 = 2;
+/// DSS (dynamic spectrum sharing): LTE-CRS rate matching, additional DMRS.
+pub const NRRCCAP_DSS: i64 = 5;
+/// Highest VoNR mode the modem exposes.
+pub const VONR_MAX: i64 = 3;
+
+/// `AT^NRRCCAPQRY=<kind>`.
+pub fn nrrccapqry(kind: i64) -> String {
+    format!("AT^NRRCCAPQRY={}", kind)
+}
+
+/// `AT^NRRCCAPCFG=<kind>,<values…>`.
+pub fn nrrccapcfg(kind: i64, values: &[i64]) -> String {
+    let csv = values
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("AT^NRRCCAPCFG={},{}", kind, csv)
+}
+
+
 /// Modem restart (vendor command).
 pub const RESET: &str = "AT^RESET";
 
@@ -32,3 +63,18 @@ pub const MCS_DL: &str = "AT^MCS=1";
 
 /// Uplink MCS table, same command with the other direction.
 pub const MCS_UL: &str = "AT^MCS=0";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nr_capability_forms() {
+        assert_eq!(nrrccapqry(NRRCCAP_CA), "AT^NRRCCAPQRY=3");
+        assert_eq!(nrrccapqry(NRRCCAP_VONR), "AT^NRRCCAPQRY=2");
+        assert_eq!(nrrccapqry(NRRCCAP_DSS), "AT^NRRCCAPQRY=5");
+        assert_eq!(nrrccapcfg(NRRCCAP_CA, &[1]), "AT^NRRCCAPCFG=3,1");
+        assert_eq!(nrrccapcfg(NRRCCAP_VONR, &[0]), "AT^NRRCCAPCFG=2,0");
+        assert_eq!(nrrccapcfg(NRRCCAP_DSS, &[1, 1]), "AT^NRRCCAPCFG=5,1,1");
+    }
+}

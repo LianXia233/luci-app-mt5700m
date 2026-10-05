@@ -656,9 +656,11 @@ const mockDeviceApiResponse = (
   const key = commandLine.split(/\s+/)[0];
   const handled =
     key.startsWith('api.system.') ||
+    key.startsWith('api.modem.nr_capability') ||
     key === 'api.modem.reset' ||
     key === 'api.modem.imei_set' ||
-    key.startsWith('api.network.radio');
+    key.startsWith('api.network.radio') ||
+    key.startsWith('api.network.syscfg');
   if (!handled) return null;
   const params = mockApiParams(commandLine, key);
 
@@ -698,6 +700,55 @@ const mockDeviceApiResponse = (
       const airplane = params.airplane === true;
       state.cfun = airplane ? 0 : 1;
       return { success: true, data: { applied: true, airplane } };
+    }
+    case 'api.modem.nr_capability':
+      return {
+        success: true,
+        data: {
+          ca: state.nrCa,
+          vonr: state.nrVonr,
+          dss: { rateMatchingLTE: state.nrDss.rateMatchingLTE, additionalDMRS: state.nrDss.additionalDMRS },
+        },
+      };
+    case 'api.modem.nr_capability_set': {
+      if (typeof params.ca === 'boolean') state.nrCa = params.ca;
+      if (typeof params.vonr === 'number') state.nrVonr = params.vonr;
+      const dss = params.dss as { rateMatchingLTE?: number; additionalDMRS?: number } | undefined;
+      if (dss) {
+        state.nrDss = {
+          rateMatchingLTE: Number(dss.rateMatchingLTE) === 1 ? 1 : 0,
+          additionalDMRS: Number(dss.additionalDMRS) === 1 ? 1 : 0,
+        };
+      }
+      return { success: true, data: { applied: true } };
+    }
+    case 'api.network.syscfg':
+      return { success: true, data: { ...state.sysCfg } };
+    case 'api.network.syscfg_set': {
+      if (typeof params.acqorder === 'string') state.sysCfg.acqorder = params.acqorder;
+      if (typeof params.band === 'string') state.sysCfg.band = params.band;
+      if (typeof params.roam === 'number') state.sysCfg.roam = params.roam;
+      if (typeof params.srvdomain === 'number') state.sysCfg.srvdomain = params.srvdomain;
+      if (typeof params.lteband === 'string') state.sysCfg.lteband = params.lteband;
+      return { success: true, data: { applied: true } };
+    }
+    case 'api.system.thermal':
+      return {
+        success: true,
+        data: {
+          enabled: state.therm.enabled,
+          caMimoSwitch: state.therm.caMimoSwitch,
+          interval: state.therm.interval,
+          logSwitch: { consoleLog: true, fileLog: false },
+          thresholds: [50, 60, 70, 80, 90, 100],
+          currentLevel: 2,
+        },
+      };
+    case 'api.system.thermal_set': {
+      if (typeof params.enabled === 'boolean') state.therm.enabled = params.enabled;
+      if (typeof params.caMimoSwitch === 'boolean') state.therm.caMimoSwitch = params.caMimoSwitch;
+      if (typeof params.interval === 'number') state.therm.interval = params.interval;
+      return { success: true, data: { applied: true } };
     }
     default:
       return null;

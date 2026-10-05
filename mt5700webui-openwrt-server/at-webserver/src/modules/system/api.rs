@@ -4,12 +4,12 @@
 //! board switches (NIC rate, power management), the factory reset and the
 //! serial/network link kind.
 
-use crate::api::params::{required_bool, required_num};
+use crate::api::params::{boolean, required_bool, required_num};
 use crate::api::registry::{ApiCtx, Route};
 use crate::core::error::BackendError;
 use crate::core::json::{self, Value};
 use crate::modules::system::service;
-use crate::modules::system::state::{DeviceControlState, TemperatureState};
+use crate::modules::system::state::{DeviceControlState, TemperatureState, ThermalState};
 use crate::state::bus::TOPIC_TEMPERATURE;
 
 /// Routes contributed by this module.
@@ -22,7 +22,36 @@ pub fn routes() -> Vec<Route> {
         Route::on_demand("system.power_control_set", power_control_set),
         Route::on_demand("system.factory_reset", factory_reset),
         Route::display("system.service_mode", service_mode),
+        Route::display("system.thermal", thermal),
+        Route::on_demand("system.thermal_set", thermal_set),
     ]
+}
+
+/// Thermal protection settings (`^THERMAUTOFUN?` + the three reports).
+///
+/// Display route: unread fields stay absent, so the card keeps showing them.
+fn thermal(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    let refresh = ctx.refresh();
+    match service::read_thermal(&refresh) {
+        Ok(st) => Ok(st.to_json()),
+        Err(_) => Ok(ThermalState::default().to_json()),
+    }
+}
+
+/// Write the thermal master switch.
+///
+/// Params: `{enabled: bool, caMimoSwitch?: bool, interval: int}` — the page
+/// keeps the current CA/MIMO link when it only flips the switch, so that field is
+/// optional and defaults to off, exactly as the page's own command did.
+fn thermal_set(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+    let enabled = required_bool(params, "enabled")?;
+    let ca_mimo = boolean(params, "caMimoSwitch").unwrap_or(false);
+    let interval = required_num(params, "interval")?;
+    let refresh = ctx.refresh();
+    service::set_thermal(&refresh, enabled, ca_mimo, interval)?;
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("applied".to_string(), Value::Bool(true));
+    Ok(Value::Obj(m))
 }
 
 /// Cache-first temperature read.

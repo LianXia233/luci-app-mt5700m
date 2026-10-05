@@ -12,9 +12,13 @@ use crate::core::json::Value;
 use crate::core::task::Priority;
 use crate::modules::system::commands::{
     self, CHIPTEMP, FACTORY_RESET, NIC_RATES, TDPCIELANCFG_QUERY, TDPMCFG_QUERY,
+    THERMAUTOFUN_QUERY, THERMLDAUTOPARA_QUERY, THERMLDAUTOSTATUS_QUERY, THERMLDLOGSW_QUERY,
 };
-use crate::modules::system::parser::{parse_chiptemp, parse_nic_rate, parse_power_control};
-use crate::modules::system::state::{DeviceControlState, TemperatureState};
+use crate::modules::system::parser::{
+    parse_chiptemp, parse_nic_rate, parse_power_control, parse_thermautofun, parse_thermlevel,
+    parse_thermlogsw, parse_thermthresholds,
+};
+use crate::modules::system::state::{DeviceControlState, TemperatureState, ThermalState};
 use crate::scheduler::channel::run_in_task;
 use crate::scheduler::jobs::TaskManager;
 use crate::state::bus::{EVENT_TEMPERATURE_UPDATED, TOPIC_TEMPERATURE};
@@ -113,6 +117,82 @@ pub fn set_power_control(ctx: &RefreshCtx, on: bool) -> Result<(), BackendError>
 /// Restore the AT configuration defaults (`AT&F`).
 pub fn factory_reset(ctx: &RefreshCtx) -> Result<(), BackendError> {
     ctx.action(FACTORY_RESET)?;
+    Ok(())
+}
+
+/// Read the thermal-protection settings (four queries).
+///
+/// Best-effort like the board switches: whichever query answered fills its
+/// fields, and a modem that answered none reports the first error.
+pub fn read_thermal(ctx: &RefreshCtx) -> Result<ThermalState, BackendError> {
+    let mut st = ThermalState::default();
+    let mut errors = ReadErrors::new();
+
+    let fun = errors.note(ctx.read(
+        THERMAUTOFUN_QUERY,
+        CTRL_AT_TIMEOUT,
+        CTRL_QUEUED_TIMEOUT,
+        Priority::Normal,
+    ));
+    if let Some((enabled, ca_mimo, interval)) = fun.as_deref().and_then(parse_thermautofun) {
+        st.enabled = Some(enabled);
+        st.ca_mimo_switch = Some(ca_mimo);
+        st.interval = Some(interval);
+    }
+    let log = errors.note(ctx.read(
+        THERMLDLOGSW_QUERY,
+        CTRL_AT_TIMEOUT,
+        CTRL_QUEUED_TIMEOUT,
+        Priority::Normal,
+    ));
+    if let Some((console, file)) = log.as_deref().and_then(parse_thermlogsw) {
+        st.console_log = Some(console);
+        st.file_log = Some(file);
+    }
+    let para = errors.note(ctx.read(
+        THERMLDAUTOPARA_QUERY,
+        CTRL_AT_TIMEOUT,
+        CTRL_QUEUED_TIMEOUT,
+        Priority::Normal,
+    ));
+    if let Some(thresholds) = para.as_deref().and_then(parse_thermthresholds) {
+        st.thresholds = thresholds;
+    }
+    let status = errors.note(ctx.read(
+        THERMLDAUTOSTATUS_QUERY,
+        CTRL_AT_TIMEOUT,
+        CTRL_QUEUED_TIMEOUT,
+        Priority::Normal,
+    ));
+    if let Some(level) = status.as_deref().and_then(parse_thermlevel) {
+        st.current_level = Some(level);
+    }
+
+    if st.is_empty() {
+        if let Some(e) = errors.into_option() {
+            return Err(e);
+        }
+    }
+    Ok(st)
+}
+
+/// Write the thermal master switch (`^THERMAUTOFUN`).
+///
+/// The page sends all three fields because the command carries all three: the
+/// switch, the CA/MIMO link and the detection interval.
+pub fn set_thermal(
+    ctx: &RefreshCtx,
+    enabled: bool,
+    ca_mimo: bool,
+    interval: i64,
+) -> Result<(), BackendError> {
+    if !(1..=300).contains(&interval) {
+        return Err(BackendError::InvalidParameter(format!(
+            "温度检测间隔必须在 1-300 秒之间，收到 {}",
+            interval
+        )));
+    }
+    ctx.action(&commands::thermautofun(enabled, ca_mimo, interval))?;
     Ok(())
 }
 

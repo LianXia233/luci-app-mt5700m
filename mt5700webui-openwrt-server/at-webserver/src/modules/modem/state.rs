@@ -234,6 +234,53 @@ impl McsState {
     }
 }
 
+/// NR capability settings the system page's 5G cards render
+/// (`^NRRCCAPQRY=3/2/5`).
+///
+/// The JSON keys keep the page's camelCase spelling (`ca`, `vonr`,
+/// `dss.rateMatchingLTE`, `dss.additionalDMRS`); an ability the modem did not
+/// answer is omitted, which the page reads as "keep what I show".
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NrCapabilityState {
+    /// Carrier aggregation.
+    pub ca: Option<bool>,
+    /// VoNR mode, 0..=3.
+    pub vonr: Option<i64>,
+    /// DSS LTE-CRS rate matching.
+    pub dss_rate_matching_lte: Option<i64>,
+    /// DSS additional DMRS.
+    pub dss_additional_dmrs: Option<i64>,
+}
+
+impl NrCapabilityState {
+    pub fn is_empty(&self) -> bool {
+        self.ca.is_none()
+            && self.vonr.is_none()
+            && self.dss_rate_matching_lte.is_none()
+            && self.dss_additional_dmrs.is_none()
+    }
+
+    pub fn to_json(&self) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        let mut put = |k: &str, v: Value| {
+            m.insert(k.to_string(), v);
+        };
+        if let Some(ca) = self.ca {
+            put("ca", Value::Bool(ca));
+        }
+        if let Some(vonr) = self.vonr {
+            put("vonr", json::num_val(vonr));
+        }
+        if let (Some(rm), Some(dmrs)) = (self.dss_rate_matching_lte, self.dss_additional_dmrs) {
+            let mut dss = std::collections::BTreeMap::new();
+            dss.insert("rateMatchingLTE".to_string(), json::num_val(rm));
+            dss.insert("additionalDMRS".to_string(), json::num_val(dmrs));
+            put("dss", Value::Obj(dss));
+        }
+        Value::Obj(m)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,5 +331,35 @@ mod tests {
         };
         assert!(m.contains_key("plmnAvailable"));
         assert!(m.contains_key("restricted"));
+    }
+
+    #[test]
+    fn nr_capability_json_uses_the_page_field_names() {
+        let st = NrCapabilityState {
+            ca: Some(true),
+            vonr: Some(3),
+            dss_rate_matching_lte: Some(1),
+            dss_additional_dmrs: Some(0),
+        };
+        let Value::Obj(m) = st.to_json() else {
+            panic!("object")
+        };
+        assert_eq!(m.get("ca").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(m.get("vonr").and_then(|v| v.as_i64()), Some(3));
+        let Some(Value::Obj(dss)) = m.get("dss") else {
+            panic!("dss object")
+        };
+        assert_eq!(dss.get("rateMatchingLTE").and_then(|v| v.as_i64()), Some(1));
+        assert_eq!(dss.get("additionalDMRS").and_then(|v| v.as_i64()), Some(0));
+        // Half a DSS pair is not reported: the card shows both or neither.
+        let partial = NrCapabilityState {
+            dss_rate_matching_lte: Some(1),
+            ..Default::default()
+        };
+        let Value::Obj(m) = partial.to_json() else {
+            panic!("object")
+        };
+        assert!(!m.contains_key("dss"));
+        assert!(NrCapabilityState::default().is_empty());
     }
 }

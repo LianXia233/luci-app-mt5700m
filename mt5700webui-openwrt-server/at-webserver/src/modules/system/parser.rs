@@ -65,6 +65,64 @@ pub fn parse_power_control(raw: &str) -> Option<bool> {
     body.split(',').next()?.trim().parse::<i64>().ok().map(|n| n == 1)
 }
 
+/// Split a vendor payload into numbers, accepting spaces and commas.
+fn numbers(body: &str) -> Vec<i64> {
+    body.split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|f| !f.is_empty())
+        .filter_map(|f| f.parse::<i64>().ok())
+        .collect()
+}
+
+/// `^THERMAUTOFUN: <enabled> <caMimo> <interval>`.
+///
+/// The three fields are whitespace-separated on this firmware and
+/// comma-separated on others, so both are accepted.
+pub fn parse_thermautofun(raw: &str) -> Option<(bool, bool, i64)> {
+    let body = raw
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("^THERMAUTOFUN:"))?;
+    let v = numbers(body);
+    if v.len() < 3 {
+        return None;
+    }
+    Some((v[0] == 1, v[1] == 1, v[2]))
+}
+
+/// `^THERMLDLOGSW: <console> <file>` -> the two log switches.
+pub fn parse_thermlogsw(raw: &str) -> Option<(bool, bool)> {
+    let body = raw
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("^THERMLDLOGSW:"))?;
+    let v = numbers(body);
+    if v.len() < 2 {
+        return None;
+    }
+    Some((v[0] == 1, v[1] == 1))
+}
+
+/// `^THERMLDAUTOPARA: <nums…>` -> the threshold table.
+pub fn parse_thermthresholds(raw: &str) -> Option<Vec<i64>> {
+    let body = raw
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("^THERMLDAUTOPARA:"))?;
+    let v = numbers(body);
+    if v.is_empty() {
+        None
+    } else {
+        Some(v)
+    }
+}
+
+/// `^THERMLDAUTOSTATUS: <nums…>` -> the current protection level (field 6).
+pub fn parse_thermlevel(raw: &str) -> Option<i64> {
+    let body = raw
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("^THERMLDAUTOSTATUS:"))?;
+    let v = numbers(body);
+    v.get(crate::modules::system::commands::THERM_STATUS_LEVEL_INDEX)
+        .copied()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,5 +163,26 @@ mod tests {
         assert_eq!(parse_power_control("^TDPMCFG: 1\nOK"), Some(true));
         assert_eq!(parse_power_control("^TDPMCFG: 0\nOK"), Some(false));
         assert_eq!(parse_power_control("OK"), None);
+    }
+
+    #[test]
+    fn thermal_queries_accept_spaces_and_commas() {
+        assert_eq!(parse_thermautofun("^THERMAUTOFUN: 1 1 2\nOK"), Some((true, true, 2)));
+        assert_eq!(
+            parse_thermautofun("^THERMAUTOFUN: 0,0,30"),
+            Some((false, false, 30))
+        );
+        assert_eq!(parse_thermautofun("OK"), None);
+        assert_eq!(parse_thermlogsw("^THERMLDLOGSW: 1 0"), Some((true, false)));
+        assert_eq!(
+            parse_thermthresholds("^THERMLDAUTOPARA: 50,60,70,80,90,100"),
+            Some(vec![50, 60, 70, 80, 90, 100])
+        );
+        // Level is field 6 (index 5): a short reply has no level at all.
+        assert_eq!(
+            parse_thermlevel("^THERMLDAUTOSTATUS: 1,2,3,4,5,3"),
+            Some(3)
+        );
+        assert_eq!(parse_thermlevel("^THERMLDAUTOSTATUS: 1,2,3"), None);
     }
 }

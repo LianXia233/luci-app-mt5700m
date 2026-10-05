@@ -287,6 +287,46 @@ impl NetworkState {
     }
 }
 
+/// Access-technology configuration (`^SYSCFGEX`), the "网络系统配置" card.
+///
+/// Field names are the page's (`acqorder`, `band`, `roam`, `srvdomain`,
+/// `lteband`); absent means the reply did not carry it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SysCfgState {
+    pub acqorder: Option<String>,
+    pub band: Option<String>,
+    pub roam: Option<i64>,
+    pub srvdomain: Option<i64>,
+    pub lteband: Option<String>,
+}
+
+impl SysCfgState {
+    pub fn is_empty(&self) -> bool {
+        self.acqorder.is_none()
+    }
+
+    pub fn to_json(&self) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        let mut put = |k: &str, v: Value| {
+            m.insert(k.to_string(), v);
+        };
+        for (key, value) in [("acqorder", &self.acqorder), ("band", &self.band), ("lteband", &self.lteband)] {
+            if let Some(v) = value {
+                if !v.is_empty() {
+                    put(key, json::str_val(v));
+                }
+            }
+        }
+        if let Some(v) = self.roam {
+            put("roam", json::num_val(v));
+        }
+        if let Some(v) = self.srvdomain {
+            put("srvdomain", json::num_val(v));
+        }
+        Value::Obj(m)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,5 +386,26 @@ mod tests {
             panic!("object")
         };
         assert_eq!(NetworkState::from_json(&m), st);
+    }
+
+    #[test]
+    fn syscfg_json_uses_the_page_fields() {
+        let st = SysCfgState {
+            acqorder: Some("08030201".into()),
+            band: Some("3FFFFFFF".into()),
+            roam: Some(1),
+            srvdomain: Some(2),
+            lteband: Some("7FFFFFFFFFFFFFFF".into()),
+        };
+        let Value::Obj(m) = st.to_json() else {
+            panic!("object")
+        };
+        assert_eq!(m.get("acqorder").and_then(|v| v.as_str()), Some("08030201"));
+        assert_eq!(m.get("band").and_then(|v| v.as_str()), Some("3FFFFFFF"));
+        assert_eq!(m.get("roam").and_then(|v| v.as_i64()), Some(1));
+        assert_eq!(m.get("srvdomain").and_then(|v| v.as_i64()), Some(2));
+        assert_eq!(m.get("lteband").and_then(|v| v.as_str()), Some("7FFFFFFFFFFFFFFF"));
+        assert!(SysCfgState::default().is_empty());
+        assert!(!st.is_empty());
     }
 }

@@ -21,7 +21,8 @@ Two kinds of route, declared in the table itself (`Route::display` /
   `cell.neighbors`, `beam.ssb`, `sim.slot_set`, `sim.hotplug_set`,
   `sim.pin_status`, `sim.pin_apply`, `system.nic_rate_set`,
   `system.power_control_set`, `system.factory_reset`, `modem.reset`,
-  `modem.imei_set`, `network.radio_set`) — an explicit user action that
+  `modem.imei_set`, `network.radio_set`, `network.syscfg_set`,
+  `system.thermal_set`, `modem.nr_capability_set`) — an explicit user action that
   performs a live read; it may fail with a modem error, which the UI surfaces.
   It must never fail with a parameter/internal error (asserted by the registry
   test for every registered route).
@@ -41,6 +42,8 @@ Two kinds of route, declared in the table itself (`Route::display` /
 | `network.c5goption_set` | `{applied: true, cycled_radio}` — write with the radio cycled around it |
 | `network.radio` | `{airplane: bool, cfun}` — display route over `+CFUN?`; an empty object when the modem did not answer, so the switch keeps its position |
 | `network.radio_set` | `{applied: true, airplane}` — `{airplane: bool}` → `AT+CFUN=0\|1`; the network/registration snapshots are invalidated |
+| `network.syscfg` | `{acqorder, band, roam, srvdomain, lteband}` — display route over `^SYSCFGEX?`; the reply's quoted-or-bare order field and the two trailing reserves are handled here, an unanswered read is an empty object |
+| `network.syscfg_set` | `{applied: true}` — `{acqorder, band, roam, srvdomain, lteband}` → the seven-argument `AT^SYSCFGEX` write; the known acqorder list, the hex band masks and the roam/service-domain ranges are validated here (the CLI's `set-radio-policy` rules) |
 | `cell.neighbors` | `{cells: [{type, arfcn, pci, rsrp, rsrq, sinr, rxlev, band}]}` — on-demand `AT^MONNC`; hex PCI, the 1/8-unit NR scaling and the ARFCN→band table live here |
 | `beam.ssb` | `{servingCell: {arfcn, cid, pci, rsrp, sinr, ta, ssbs: [{ssbId, rsrp}]}, neighborCells: [{pci, arfcn, rsrp, sinr, ssbs}]}` — on-demand `AT^NRSSBID?`; the fixed offsets and the "not measured" slots (255/32767) are handled here |
 | `ca.get` / `ca.cached` | `{carriers: [{radio, band, source, dl_arfcn, ul_arfcn, dl_frequency_mhz, ul_frequency_mhz, dl_bandwidth_mhz, ul_bandwidth_mhz}], carrier_count, ca_active, dc_active, nr_carrier_count, lte_carrier_count, lte_secondary_count, secondary_connection_count, ca_mode, ca_dl_bandwidth, ca_ul_bandwidth}` (`ca.get?refresh=1` forces a live read) |
@@ -59,6 +62,8 @@ Two kinds of route, declared in the table itself (`Route::display` /
 | `modem.mcs` | `{downlink: {rat, carriers: [{index, mcs_table_index, code0, code1}], avg_mcs}, uplink: {…}}` — on-demand `AT^MCS=1` / `AT^MCS=0`; the page maps `code0` to modulation/level labels |
 | `modem.reset` | `{rebooting: true}` — `AT^RESET`; the snapshot is dropped so the next read is post-restart |
 | `modem.imei_set` | `{applied: true, imei}` — `{imei: "15 digits"}` → `^PHYNUM=IMEI,<imei>`; the digit rule is validated here |
+| `modem.nr_capability` | `{ca, vonr, dss: {rateMatchingLTE, additionalDMRS}}` — display route over `^NRRCCAPQRY=3/2/5`; each reply echoes its kind (the parser matches on it) and an ability that did not answer stays absent, including half a DSS pair |
+| `modem.nr_capability_set` | `{applied: true, wrote: [kind…]}` — `{ca?, vonr?, dss?: {rateMatchingLTE, additionalDMRS}}`, at least one; each ability becomes its own `^NRRCCAPCFG` write, with the VoNR 0–3 and DSS 0/1 ranges validated here |
 | `traffic.get` / `traffic.cached` | PDCP field map (`id`, `pduSessionId`, …, `dlDiscardCnt`) |
 | `traffic.netrate` | `{available, device, rx_bytes, tx_bytes, timestamp, source, traffic}` |
 | `traffic.clear` | `{cleared: true}` — on-demand write `AT^DSFLOWCLR`; the scheduler's action-invalidation drops the stale counters |
@@ -68,6 +73,8 @@ Two kinds of route, declared in the table itself (`Route::display` /
 | `system.power_control_set` | `{applied: true, power_control}` — `{enabled: bool}` → `^TDPMCFG=<0\|1>` |
 | `system.factory_reset` | `{restored: true}` — `AT&F` (AT defaults; the modem is not restarted) |
 | `system.service_mode` | `{mode: "serial"\|"network"}` — how the daemon reaches the modem, recorded once at startup (`core::modem`); replaces the pages' `AT+CONNECT?` probe |
+| `system.thermal` | `{enabled, caMimoSwitch, interval, logSwitch: {consoleLog, fileLog}, thresholds: [...], currentLevel}` — `^THERMAUTOFUN?` / `^THERMLDLOGSW?` / `^THERMLDAUTOPARA?` / `^THERMLDAUTOSTATUS?` (the level is the 6th status field, decoded here); a query that did not answer leaves its fields absent |
+| `system.thermal_set` | `{applied: true}` — `{enabled, caMimoSwitch?, interval}` → `^THERMAUTOFUN=<on>,<caMimo>,<interval>`; the interval range is validated here |
 
 Field names and types are exactly what the cache published before the refactor,
 so existing consumers (LuCI topics, WebUI `stateCache`, `mt5700m-at cached`)

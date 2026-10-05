@@ -1,6 +1,6 @@
 //! Modem API routes.
 
-use crate::api::params::required_text;
+use crate::api::params::{boolean, num, required_text};
 use crate::api::registry::{ApiCtx, Route};
 use crate::core::error::BackendError;
 use crate::core::json::{self, Value};
@@ -19,7 +19,51 @@ pub fn routes() -> Vec<Route> {
         Route::on_demand("modem.mcs", mcs),
         Route::on_demand("modem.reset", reset),
         Route::on_demand("modem.imei_set", imei_set),
+        Route::display("modem.nr_capability", nr_capability),
+        Route::on_demand("modem.nr_capability_set", nr_capability_set),
     ]
+}
+
+/// NR capability settings (`^NRRCCAPQRY=3/2/5`).
+///
+/// Display route: an ability the modem did not answer stays absent from the
+/// payload, and the page keeps the value it is showing.
+fn nr_capability(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    let refresh = ctx.refresh();
+    match service::read_nr_capability(&refresh) {
+        Ok(st) => Ok(st.to_json()),
+        Err(_) => Ok(crate::modules::modem::state::NrCapabilityState::default().to_json()),
+    }
+}
+
+/// Write one or more NR capability settings.
+///
+/// Params: `{ "ca": bool, "vonr": 0..3, "dss": {"rateMatchingLTE": 0|1,
+/// "additionalDMRS": 0|1} }` — every field optional, at least one required. The
+/// page's 5G cards send exactly the one that changed.
+fn nr_capability_set(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+    let ca = boolean(params, "ca");
+    let vonr = num(params, "vonr");
+    let dss = match params.get("dss") {
+        Some(dss) => Some((
+            num(dss, "rateMatchingLTE").ok_or_else(|| {
+                BackendError::InvalidParameter("dss.rateMatchingLTE is required".to_string())
+            })?,
+            num(dss, "additionalDMRS").ok_or_else(|| {
+                BackendError::InvalidParameter("dss.additionalDMRS is required".to_string())
+            })?,
+        )),
+        None => None,
+    };
+    let refresh = ctx.refresh();
+    let wrote = service::set_nr_capability(&refresh, ca, vonr, dss)?;
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("applied".to_string(), Value::Bool(true));
+    m.insert(
+        "wrote".to_string(),
+        Value::Arr(wrote.iter().map(|k| json::num_val(k)).collect()),
+    );
+    Ok(Value::Obj(m))
 }
 
 /// Restart the modem (`AT^RESET`).

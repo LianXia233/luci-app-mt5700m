@@ -12,10 +12,10 @@ use crate::core::channel::AtChannel;
 use crate::core::error::BackendError;
 use crate::core::json::Value;
 use crate::core::task::Priority;
-use crate::modules::network::commands::{self, COPS, SYSINFOEX};
+use crate::modules::network::commands::{self, COPS, SYSCFGEX_QUERY, SYSINFOEX};
 use crate::modules::network::parser;
 use crate::modules::network::state::{
-    C5gOptionState, LockKind, LockState, NetworkState, RegistrationState,
+    C5gOptionState, LockKind, LockState, NetworkState, RegistrationState, SysCfgState,
 };
 use crate::scheduler::channel::run_in_task;
 use crate::scheduler::jobs::TaskManager;
@@ -90,6 +90,73 @@ pub fn refresh(ctx: &RefreshCtx) -> Result<NetworkState, BackendError> {
     // TTL, and a genuine "no service" answer must be visible to the UI.
     ctx.store(TOPIC_NETWORK, EVENT_NETWORK_UPDATED, &st.to_json());
     Ok(st)
+}
+
+/// Read the access-technology configuration (`^SYSCFGEX?`).
+///
+/// The reply layout (quoted or bare `acqorder`, the two trailing reserves) is
+/// decoded by `parser::parse_syscfgex`; a reply without the expected line is an
+/// `AtRejected`, which the page treats as "keep what I show".
+pub fn read_syscfg(ctx: &RefreshCtx) -> Result<SysCfgState, BackendError> {
+    let text = ctx.read(
+        SYSCFGEX_QUERY,
+        Duration::from_secs(8),
+        Duration::from_secs(6),
+        Priority::Normal,
+    )?;
+    parser::parse_syscfgex(&text).ok_or_else(|| {
+        BackendError::AtRejected(format!("^SYSCFGEX? answered an unknown shape: {}", text.trim()))
+    })
+}
+
+/// Write the access-technology configuration.
+///
+/// Validation mirrors what the modem accepts (the CLI's `set-radio-policy`
+/// rules): a known `acqorder`, non-empty hex band masks, roam 0/1 and
+/// service-domain 0..=2 (the page offers 0 as "voice only").
+pub fn apply_syscfg(
+    ctx: &RefreshCtx,
+    acqorder: &str,
+    band: &str,
+    roam: i64,
+    srvdomain: i64,
+    lteband: &str,
+) -> Result<(), BackendError> {
+    if !commands::valid_acq_order(acqorder) {
+        return Err(BackendError::InvalidParameter(format!(
+            "网络制式优先级无效: {}",
+            acqorder
+        )));
+    }
+    for (label, value) in [("band", band), ("lteband", lteband)] {
+        if !commands::is_hex_mask(value) {
+            return Err(BackendError::InvalidParameter(format!(
+                "{} 必须是十六进制掩码，收到 {}",
+                label, value
+            )));
+        }
+    }
+    if !(0..=1).contains(&roam) {
+        return Err(BackendError::InvalidParameter(format!(
+            "漫游设置只能是 0 或 1，收到 {}",
+            roam
+        )));
+    }
+    if !(0..=2).contains(&srvdomain) {
+        return Err(BackendError::InvalidParameter(format!(
+            "服务域只能是 0-2，收到 {}",
+            srvdomain
+        )));
+    }
+    ctx.action(&commands::syscfgex(
+        acqorder,
+        band,
+        roam as u8,
+        srvdomain as u8,
+        lteband,
+    ))?;
+    ctx.cache.invalidate_many(&[TOPIC_NETWORK, TOPIC_REGISTRATION]);
+    Ok(())
 }
 
 /// Cache-first read for the API: the last published domain value.

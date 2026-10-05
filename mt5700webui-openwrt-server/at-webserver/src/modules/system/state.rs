@@ -130,6 +130,64 @@ impl DeviceControlState {
     }
 }
 
+/// Thermal protection settings (`^THERMAUTOFUN?`, `^THERMLDLOGSW?`,
+/// `^THERMLDAUTOPARA?`, `^THERMLDAUTOSTATUS?`) — the "温度保护控制" card.
+///
+/// Field names are the page's (`enabled`, `caMimoSwitch`, `interval`,
+/// `logSwitch.consoleLog`/`fileLog`, `thresholds`, `currentLevel`); a query that
+/// did not answer leaves its fields absent and the card keeps showing them.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ThermalState {
+    pub enabled: Option<bool>,
+    pub ca_mimo_switch: Option<bool>,
+    pub interval: Option<i64>,
+    pub console_log: Option<bool>,
+    pub file_log: Option<bool>,
+    pub thresholds: Vec<i64>,
+    pub current_level: Option<i64>,
+}
+
+impl ThermalState {
+    pub fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+            && self.console_log.is_none()
+            && self.thresholds.is_empty()
+            && self.current_level.is_none()
+    }
+
+    pub fn to_json(&self) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        let mut put = |k: &str, v: Value| {
+            m.insert(k.to_string(), v);
+        };
+        if let Some(on) = self.enabled {
+            put("enabled", Value::Bool(on));
+        }
+        if let Some(on) = self.ca_mimo_switch {
+            put("caMimoSwitch", Value::Bool(on));
+        }
+        if let Some(v) = self.interval {
+            put("interval", json::num_val(v));
+        }
+        if let (Some(console), Some(file)) = (self.console_log, self.file_log) {
+            let mut log = std::collections::BTreeMap::new();
+            log.insert("consoleLog".to_string(), Value::Bool(console));
+            log.insert("fileLog".to_string(), Value::Bool(file));
+            put("logSwitch", Value::Obj(log));
+        }
+        if !self.thresholds.is_empty() {
+            put(
+                "thresholds",
+                Value::Arr(self.thresholds.iter().map(|v| json::num_val(*v)).collect()),
+            );
+        }
+        if let Some(level) = self.current_level {
+            put("currentLevel", json::num_val(level));
+        }
+        Value::Obj(m)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,5 +239,44 @@ mod tests {
         assert_eq!(m.get("nic_rate").and_then(|v| v.as_i64()), Some(2));
         assert_eq!(m.get("power_control").and_then(|v| v.as_bool()), Some(false));
         assert!(!st.is_empty());
+    }
+
+    #[test]
+    fn thermal_json_uses_the_page_fields() {
+        let st = ThermalState {
+            enabled: Some(true),
+            ca_mimo_switch: Some(false),
+            interval: Some(2),
+            console_log: Some(true),
+            file_log: Some(false),
+            thresholds: vec![50, 60, 70],
+            current_level: Some(3),
+        };
+        let Value::Obj(m) = st.to_json() else {
+            panic!("object")
+        };
+        assert_eq!(m.get("enabled").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(m.get("caMimoSwitch").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(m.get("interval").and_then(|v| v.as_i64()), Some(2));
+        assert_eq!(m.get("currentLevel").and_then(|v| v.as_i64()), Some(3));
+        let Some(Value::Obj(log)) = m.get("logSwitch") else {
+            panic!("logSwitch object")
+        };
+        assert_eq!(log.get("consoleLog").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(log.get("fileLog").and_then(|v| v.as_bool()), Some(false));
+        let Some(Value::Arr(t)) = m.get("thresholds") else {
+            panic!("thresholds array")
+        };
+        assert_eq!(t.len(), 3);
+        // Half a log-switch pair is not reported.
+        let half = ThermalState {
+            console_log: Some(true),
+            ..Default::default()
+        };
+        let Value::Obj(m) = half.to_json() else {
+            panic!("object")
+        };
+        assert!(!m.contains_key("logSwitch"));
+        assert!(ThermalState::default().is_empty());
     }
 }
