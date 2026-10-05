@@ -154,6 +154,10 @@ fn resolve_serial_port(config: &DaemonConfig) -> String {
 impl AtClient {
     fn new(config: DaemonConfig) -> Arc<Self> {
         let kind = config.connection_type.clone();
+        // The link kind is a system fact the pages display: record it once here
+        // (the system module's `system.service_mode` route reads it) instead of
+        // letting a frontend ask the modem with `AT+CONNECT?`.
+        crate::core::modem::record(&kind);
         let mut attached_port: Option<String> = None;
         let stream = match kind.as_str() {
             "SERIAL" => {

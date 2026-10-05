@@ -11,7 +11,7 @@ use crate::core::json::{self, Value};
 use crate::core::task::Priority;
 use crate::modules::network::commands::{self, CGREG_DETAILED, CGPADDR, DHCP_V4, DHCP_V6, IPV6CAP};
 use crate::modules::network::parser::{
-    parse_cgpaddr, parse_dhcp_v4, parse_dhcp_v6, parse_ipv6cap,
+    self, parse_cgpaddr, parse_dhcp_v4, parse_dhcp_v6, parse_ipv6cap,
 };
 use crate::modules::network::state::LockKind;
 use crate::modules::network::service;
@@ -33,7 +33,39 @@ pub fn routes() -> Vec<Route> {
         Route::on_demand("network.lock_apply", lock_apply),
         Route::on_demand("network.c5goption", c5goption),
         Route::on_demand("network.c5goption_set", c5goption_set),
+        Route::display("network.radio", radio),
+        Route::on_demand("network.radio_set", radio_set),
     ]
+}
+
+/// Airplane mode (`+CFUN?`): the switch the system page shows.
+///
+/// Display route: a missing/busy modem answers an empty object, which the page
+/// reads as "keep the switch where it is" — the same as a failed raw read.
+fn radio(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    let refresh = ctx.refresh();
+    let mut m = std::collections::BTreeMap::new();
+    if let Ok(text) = refresh.query(commands::CFUN_QUERY) {
+        if let Some(state) = parser::parse_cfun(&text) {
+            m.insert("airplane".to_string(), Value::Bool(state == 0));
+            m.insert("cfun".to_string(), json::num_val(state));
+        }
+    }
+    Ok(Value::Obj(m))
+}
+
+/// Turn airplane mode on/off (`AT+CFUN=0|1`).
+fn radio_set(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+    let airplane = crate::api::params::required_bool(params, "airplane")?;
+    let refresh = ctx.refresh();
+    refresh.action(&commands::cfun(if airplane { 0 } else { 1 }))?;
+    // The radio state changed, so registration is stale either way.
+    ctx.cache
+        .invalidate_many(&[TOPIC_NETWORK, crate::state::bus::TOPIC_REGISTRATION]);
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("applied".to_string(), Value::Bool(true));
+    m.insert("airplane".to_string(), Value::Bool(airplane));
+    Ok(Value::Obj(m))
 }
 
 /// Cache-first domain read; one bounded refresh when the cache is cold.

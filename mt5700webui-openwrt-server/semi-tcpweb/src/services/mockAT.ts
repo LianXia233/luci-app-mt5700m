@@ -578,21 +578,23 @@ const MOCK_API_ROUTES: Record<string, unknown> = {
  * ^SCICHG / ^TDSIMHP / ^CLCK / ^CPWD 都由后端负责），演示模式从同一份
  * 状态派生，`?simlock=pin|puk` 仍然能模拟一张被锁的卡。
  */
+const mockApiParams = (commandLine: string, key: string): Record<string, unknown> => {
+  const body = commandLine.slice(key.length).trim();
+  if (!body) return {};
+  try {
+    return JSON.parse(body) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+};
+
 const mockSimApiResponse = (
   commandLine: string,
   state: MockModemState,
 ): MockCommandResponse | null => {
   const key = commandLine.split(/\s+/)[0];
   if (!key.startsWith('api.sim.')) return null;
-  const body = commandLine.slice(key.length).trim();
-  let params: Record<string, unknown> = {};
-  if (body) {
-    try {
-      params = JSON.parse(body) as Record<string, unknown>;
-    } catch {
-      params = {};
-    }
-  }
+  const params = mockApiParams(commandLine, key);
   const simLock = mockParam('simlock');
 
   switch (key) {
@@ -643,13 +645,73 @@ const mockSimApiResponse = (
   }
 };
 
+/**
+ * system / modem / radio 路由的演示应答：网卡速率、电源开关、飞行模式、IMEI
+ * 都是页面会改的，演示状态跟着走，和真机的 modules/system + modules/modem 一致。
+ */
+const mockDeviceApiResponse = (
+  commandLine: string,
+  state: MockModemState,
+): MockCommandResponse | null => {
+  const key = commandLine.split(/\s+/)[0];
+  const handled =
+    key.startsWith('api.system.') ||
+    key === 'api.modem.reset' ||
+    key === 'api.modem.imei_set' ||
+    key.startsWith('api.network.radio');
+  if (!handled) return null;
+  const params = mockApiParams(commandLine, key);
+
+  switch (key) {
+    case 'api.system.service_mode':
+      return { success: true, data: { mode: 'network' } };
+    case 'api.system.device_control':
+      return {
+        success: true,
+        data: { nic_rate: state.nicRate, power_control: state.powerControl },
+      };
+    case 'api.system.nic_rate_set': {
+      const rate = Number(params.rate) === 1 ? 1 : 2;
+      state.nicRate = rate;
+      return { success: true, data: { applied: true, nic_rate: rate } };
+    }
+    case 'api.system.power_control_set': {
+      const on = params.enabled === true;
+      state.powerControl = on;
+      return { success: true, data: { applied: true, power_control: on } };
+    }
+    case 'api.system.factory_reset':
+      return { success: true, data: { restored: true } };
+    case 'api.modem.reset':
+      return { success: true, data: { rebooting: true } };
+    case 'api.modem.imei_set': {
+      const imei = String(params.imei || '');
+      if (!/^\d{15}$/.test(imei)) {
+        return { success: false, error: '参数无效: IMEI必须是15位数字' };
+      }
+      state.imei = imei;
+      return { success: true, data: { applied: true, imei } };
+    }
+    case 'api.network.radio':
+      return { success: true, data: { airplane: state.cfun === 0, cfun: state.cfun } };
+    case 'api.network.radio_set': {
+      const airplane = params.airplane === true;
+      state.cfun = airplane ? 0 : 1;
+      return { success: true, data: { applied: true, airplane } };
+    }
+    default:
+      return null;
+  }
+};
+
 const mockApiResponse = (
   commandLine: string,
   state: MockModemState,
 ): MockCommandResponse | null => {
   const key = commandLine.split(/\s+/)[0];
   if (!key.startsWith('api.')) return null;
-  const dynamic = mockSimApiResponse(commandLine, state);
+  const dynamic =
+    mockSimApiResponse(commandLine, state) ?? mockDeviceApiResponse(commandLine, state);
   if (dynamic) return dynamic;
   const data = MOCK_API_ROUTES[key];
   if (data === undefined) return null;

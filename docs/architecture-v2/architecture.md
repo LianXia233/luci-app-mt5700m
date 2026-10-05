@@ -67,15 +67,15 @@ Modules present after this refactor:
 | Module | Topics | Routes | Owns |
 | ------ | ------ | ------ | ---- |
 | `signal` | `signal` | `signal.get`, `signal.cached` | `^HCSQ?` math |
-| `network` | `network`, `registration` | `network.get`, `network.cached`, `registration.get`, `network.pdp`, `network.dhcp`, `network.registration_urc`, `network.lock_get`, `network.lock_apply`, `network.c5goption`, `network.c5goption_set` | `+COPS?`, `^SYSINFOEX`, `+C5GREG/+CEREG/+CREG`, `^LTEFREQLOCK?`/`^NRFREQLOCK?` (inc. the grouped-CSV write and the radio-cycle apply), `^C5GOPTION`, `^DHCP?`/`^DHCPV6?`/`^IPV6CAP?` |
+| `network` | `network`, `registration` | `network.get`, `network.cached`, `registration.get`, `network.pdp`, `network.dhcp`, `network.registration_urc`, `network.lock_get`, `network.lock_apply`, `network.c5goption`, `network.c5goption_set`, `network.radio`, `network.radio_set` | `+COPS?`, `^SYSINFOEX`, `+C5GREG/+CEREG/+CREG`, `^LTEFREQLOCK?`/`^NRFREQLOCK?` (inc. the grouped-CSV write and the radio-cycle apply), `^C5GOPTION`, `^DHCP?`/`^DHCPV6?`/`^IPV6CAP?` |
 | `cell` | `cell` | `cell.get`, `cell.cached`, `cell.neighbors` | `^HFREQINFO?`, `^MONSC` (per-RAT offsets), `^MONNC` (neighbours + ARFCN→band table) |
 | `beam` | `beam` | `beam.ssb` | `^NRSSBID?` (SSB ids per serving/neighbour cell) |
 | `ca` | `ca` | `ca.get`, `ca.cached` | `^HFREQINFO?` groups, `^CASCELLINFO?`, `^MONSSC` (carrier aggregation) |
 | `qos` | `qos` | `qos.get`, `qos.cached` | `+CGACT?` active context, `^DSAMBR` AMBR/APN, `+CGEQOSRDP` QCI |
 | `sim` | `sim` | `sim.get`, `sim.cached`, `sim.number`, `sim.slot`, `sim.slot_set`, `sim.hotplug_set`, `sim.pin_status`, `sim.pin_apply` | `+CPIN?` (inc. the CME-error branch), `^ICCID?`, `+CIMI`, `+CNUM`, `^SIMSQ?`, `^SCICHG`/`^TDSIMHP`/`^HVSST` (slot switch), `+CLCK`/`+CPWD` (PIN enable/change) |
-| `modem` | `modem`, `txpower`, `nr_txpower`, `endc` | `modem.get`, `modem.cached`, `modem.txpower`, `modem.endc`, `modem.nr_txpower`, `modem.mcs` | `ATI`, `+CGSN`, `^TXPOWER?`, `^NTXPOWER?`, `^LENDC?`, `^MCS` |
+| `modem` | `modem`, `txpower`, `nr_txpower`, `endc` | `modem.get`, `modem.cached`, `modem.txpower`, `modem.endc`, `modem.nr_txpower`, `modem.mcs`, `modem.reset`, `modem.imei_set` | `ATI`, `+CGSN`, `^TXPOWER?`, `^NTXPOWER?`, `^LENDC?`, `^MCS`, `AT^RESET`, `^PHYNUM=IMEI` |
 | `traffic` | `traffic`, `netrate` | `traffic.get`, `traffic.cached`, `traffic.netrate`, `traffic.clear` | `^PDCPDATAINFO?`, `^DSFLOWCLR`, interface counters, accounting report |
-| `system` | `temperature` | `system.temperature`, `system.temperature.cached` | `^CHIPTEMP?` |
+| `system` | `temperature` | `system.temperature`, `system.temperature.cached`, `system.device_control`, `system.nic_rate_set`, `system.power_control_set`, `system.factory_reset`, `system.service_mode` | `^CHIPTEMP?`, `^TDPCIELANCFG`, `^TDPMCFG`, `AT&F` |
 | `sms` | `sms` | (in progress) | SMS-SUBMIT PDU codec, send transaction |
 
 ## 4. Frontends

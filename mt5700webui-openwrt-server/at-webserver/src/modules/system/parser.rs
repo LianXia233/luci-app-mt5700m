@@ -1,4 +1,4 @@
-//! `^CHIPTEMP?` decoder.
+//! `^CHIPTEMP?` / `^TDPCIELANCFG?` / `^TDPMCFG?` decoders.
 
 use crate::modules::system::state::{TemperatureState, SENSOR_NAMES};
 use crate::state::refresh::round1;
@@ -39,6 +39,32 @@ pub fn parse_chiptemp(raw: &str) -> TemperatureState {
     }
 }
 
+/// `^TDPCIELANCFG: <rate>` -> the NIC rate, when it is one the UI offers.
+///
+/// A modem reporting anything else keeps the page on the value it already has,
+/// which is exactly what the page did when it parsed this itself.
+pub fn parse_nic_rate(raw: &str) -> Option<i64> {
+    let body = raw
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("^TDPCIELANCFG:"))?
+        .trim();
+    let rate = body.split(',').next()?.trim().parse::<i64>().ok()?;
+    if crate::modules::system::commands::NIC_RATES.contains(&rate) {
+        Some(rate)
+    } else {
+        None
+    }
+}
+
+/// `^TDPMCFG: <0|1>` -> whether power management is on.
+pub fn parse_power_control(raw: &str) -> Option<bool> {
+    let body = raw
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("^TDPMCFG:"))?
+        .trim();
+    body.split(',').next()?.trim().parse::<i64>().ok().map(|n| n == 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,5 +90,20 @@ mod tests {
     #[test]
     fn missing_line_yields_empty_state() {
         assert!(parse_chiptemp("OK").is_empty());
+    }
+
+    #[test]
+    fn nic_rate_only_accepts_the_two_settings() {
+        assert_eq!(parse_nic_rate("^TDPCIELANCFG: 1"), Some(1));
+        assert_eq!(parse_nic_rate("^TDPCIELANCFG: 2\r\nOK"), Some(2));
+        assert_eq!(parse_nic_rate("^TDPCIELANCFG: 0"), None);
+        assert_eq!(parse_nic_rate("+CME ERROR: 3"), None);
+    }
+
+    #[test]
+    fn power_control_flag() {
+        assert_eq!(parse_power_control("^TDPMCFG: 1\nOK"), Some(true));
+        assert_eq!(parse_power_control("^TDPMCFG: 0\nOK"), Some(false));
+        assert_eq!(parse_power_control("OK"), None);
     }
 }

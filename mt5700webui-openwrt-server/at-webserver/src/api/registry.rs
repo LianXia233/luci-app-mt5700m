@@ -189,6 +189,10 @@ mod tests {
                 ("operation", json::str_val("verify")),
                 ("pin", json::str_val("1234")),
             ]),
+            "system.nic_rate_set" => pairs(&[("rate", json::num_val(1))]),
+            "system.power_control_set" => pairs(&[("enabled", Value::Bool(true))]),
+            "modem.imei_set" => pairs(&[("imei", json::str_val("861234567890123"))]),
+            "network.radio_set" => pairs(&[("airplane", Value::Bool(true))]),
             _ => Value::Null,
         }
     }

@@ -1,4 +1,5 @@
-//! System service: chip-temperature refresh.
+//! System service: chip-temperature refresh plus the board switches the
+//! system page reads and writes (NIC rate, power management, factory reset).
 //!
 //! `^CHIPTEMP?` is fast but its *queue* time is long while slow commands hold
 //! the port, so the read runs at `Low` priority with a 12 s AT timeout and no
@@ -9,18 +10,23 @@
 use crate::core::error::BackendError;
 use crate::core::json::Value;
 use crate::core::task::Priority;
-use crate::modules::system::commands::CHIPTEMP;
-use crate::modules::system::parser::parse_chiptemp;
-use crate::modules::system::state::TemperatureState;
+use crate::modules::system::commands::{
+    self, CHIPTEMP, FACTORY_RESET, NIC_RATES, TDPCIELANCFG_QUERY, TDPMCFG_QUERY,
+};
+use crate::modules::system::parser::{parse_chiptemp, parse_nic_rate, parse_power_control};
+use crate::modules::system::state::{DeviceControlState, TemperatureState};
 use crate::scheduler::channel::run_in_task;
 use crate::scheduler::jobs::TaskManager;
 use crate::state::bus::{EVENT_TEMPERATURE_UPDATED, TOPIC_TEMPERATURE};
-use crate::state::refresh::RefreshCtx;
+use crate::state::refresh::{ReadErrors, RefreshCtx};
 use std::time::Duration;
 
 const AT_TIMEOUT: Duration = Duration::from_secs(12);
 const QUEUED_TIMEOUT: Duration = Duration::from_secs(8);
 const PERIOD: Duration = Duration::from_secs(60);
+/// Board switches are fast reads; they do not need the temperature budget.
+const CTRL_AT_TIMEOUT: Duration = Duration::from_secs(6);
+const CTRL_QUEUED_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Refresh the temperature topic (never fails on a slow/absent modem).
 pub fn refresh(ctx: &RefreshCtx) -> Result<TemperatureState, BackendError> {
@@ -50,6 +56,64 @@ pub fn cached(cache: &std::sync::Arc<crate::state::cache::StateCache>) -> Option
         (Some(Value::Obj(m)), _) => Some(TemperatureState::from_json(&m)),
         _ => None,
     }
+}
+
+/// Read the board switches (`^TDPCIELANCFG?`, `^TDPMCFG?`).
+///
+/// Both are best-effort: whichever answered fills its field, and a modem that
+/// answered neither reports the first error so the caller can decide between
+/// "not now" (display route) and a failure.
+pub fn read_device_control(ctx: &RefreshCtx) -> Result<DeviceControlState, BackendError> {
+    let mut st = DeviceControlState::default();
+    let mut errors = ReadErrors::new();
+    let nic = errors.note(ctx.read(
+        TDPCIELANCFG_QUERY,
+        CTRL_AT_TIMEOUT,
+        CTRL_QUEUED_TIMEOUT,
+        Priority::Normal,
+    ));
+    if let Some(text) = nic {
+        st.nic_rate = parse_nic_rate(&text);
+    }
+    let power = errors.note(ctx.read(
+        TDPMCFG_QUERY,
+        CTRL_AT_TIMEOUT,
+        CTRL_QUEUED_TIMEOUT,
+        Priority::Normal,
+    ));
+    if let Some(text) = power {
+        st.power_control = parse_power_control(&text);
+    }
+    if st.is_empty() {
+        if let Some(e) = errors.into_option() {
+            return Err(e);
+        }
+    }
+    Ok(st)
+}
+
+/// Set the NIC rate (`^TDPCIELANCFG=<1|2>`); the change needs a reboot.
+pub fn set_nic_rate(ctx: &RefreshCtx, rate: i64) -> Result<(), BackendError> {
+    if !NIC_RATES.contains(&rate) {
+        return Err(BackendError::InvalidParameter(format!(
+            "网卡速率只能是 1 或 2，收到 {}",
+            rate
+        )));
+    }
+    ctx.action(&commands::tdpcpcielancfg(rate))?;
+    Ok(())
+}
+
+/// Enable/disable the PCIe controller power management (`^TDPMCFG=<0|1>`).
+pub fn set_power_control(ctx: &RefreshCtx, on: bool) -> Result<(), BackendError> {
+    ctx.action(&commands::tdpmcfg(on))?;
+    Ok(())
+}
+
+/// Restore the AT configuration defaults (`AT&F`).
+pub fn factory_reset(ctx: &RefreshCtx) -> Result<(), BackendError> {
+    ctx.action(FACTORY_RESET)?;
+    Ok(())
 }
 
 /// Register the periodic refresh job.

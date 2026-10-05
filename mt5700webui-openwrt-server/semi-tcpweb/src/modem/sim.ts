@@ -4,6 +4,8 @@
 //   * 后端返回码 -> 界面文案的映射；
 //   * CME 错误文案的翻译（纯展示）。
 
+import { backendMessage, isParameterError } from '@/services/backendError';
+
 export type SimLock = 'ready' | 'pin' | 'puk' | 'pin2' | 'puk2' | 'network' | 'absent' | 'unknown';
 
 /** 后端 `sim.pin_status` 解码出的卡状态（语义由后端给出，文案由这里补）。 */
@@ -167,11 +169,10 @@ export const simErrorMessage = (raw: string, fallback: string): string => {
 export const pinErrorMessage = (raw: string, fallback: string): string => {
   const text = String(raw || '').trim();
   if (!text) return fallback;
-  const stripped = text.replace(/^参数无效:\s*/, '');
-  const code = cmeErrorCode(stripped);
+  const code = cmeErrorCode(text);
   if (code !== null && CME_MESSAGES[code]) return CME_MESSAGES[code];
-  // 参数校验消息：只取规则本身那句话，措辞和以前一致。
-  if (stripped !== text) return stripped;
+  // 参数校验类消息（密码规则、操作名）只取规则本身那句话，措辞和以前一致。
+  if (isParameterError(text)) return backendMessage(text, fallback);
   return simErrorMessage(text, fallback);
 };
 

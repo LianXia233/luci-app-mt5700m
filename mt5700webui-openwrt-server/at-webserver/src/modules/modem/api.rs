@@ -1,5 +1,6 @@
 //! Modem API routes.
 
+use crate::api::params::required_text;
 use crate::api::registry::{ApiCtx, Route};
 use crate::core::error::BackendError;
 use crate::core::json::{self, Value};
@@ -16,7 +17,29 @@ pub fn routes() -> Vec<Route> {
         Route::display("modem.endc", endc),
         Route::display("modem.nr_txpower", nr_txpower),
         Route::on_demand("modem.mcs", mcs),
+        Route::on_demand("modem.reset", reset),
+        Route::on_demand("modem.imei_set", imei_set),
     ]
+}
+
+/// Restart the modem (`AT^RESET`).
+fn reset(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    let refresh = ctx.refresh();
+    service::reset(&refresh)?;
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("rebooting".to_string(), Value::Bool(true));
+    Ok(Value::Obj(m))
+}
+
+/// Write a new IMEI (`^PHYNUM=IMEI,<imei>`).
+fn imei_set(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+    let imei = required_text(params, "imei")?;
+    let refresh = ctx.refresh();
+    service::set_imei(&refresh, imei)?;
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("applied".to_string(), Value::Bool(true));
+    m.insert("imei".to_string(), json::str_val(imei));
+    Ok(Value::Obj(m))
 }
 
 /// Identity: cache-first with one bounded refresh when cold.

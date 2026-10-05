@@ -18,6 +18,11 @@ pub fn cfun(state: u8) -> String {
     format!("AT+CFUN={}", state)
 }
 
+/// IMEI write (vendor `^PHYNUM`; the CLI's `set-imei` verb uses the same form).
+pub fn phynum_imei(imei: &str) -> String {
+    format!("AT^PHYNUM=IMEI,{}", imei)
+}
+
 /// Modem restart (vendor command).
 pub const RESET: &str = "AT^RESET";
 

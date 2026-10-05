@@ -7,6 +7,7 @@
 pub mod channel;
 pub mod error;
 pub mod json;
+pub mod modem;
 pub mod runtime;
 pub mod sha1;
 pub mod task;

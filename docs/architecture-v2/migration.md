@@ -91,9 +91,18 @@ aliases, so the move itself changed no behaviour.
    branch, `^SIMSQ?` refinement and `+CLCK="SC",2`) and `sim.pin_apply` for the
    PIN verbs, so `modem/sim.ts` keeps only display text (code → label) and the
    CME-message translation, and `components/SimPinHandler.tsx` submits an
-   operation instead of building an AT command. The only raw-AT surfaces left in
-   the WebUI are the cell-scan panel, the system/FOTA pages, the SMS pages and
-   the deliberate `pages/at/Terminal.tsx` console.)
+   operation instead of building an AT command. `modules/system` then took the
+   system page's board cards (`system.device_control`, `system.nic_rate_set`,
+   `system.power_control_set`, `system.factory_reset`, plus `system.service_mode`
+   — the serial/network link kind recorded once at startup in `core::modem`, so
+   the page no longer probes with `AT+CONNECT?`), `modules/modem` took
+   `modem.reset` (`AT^RESET`) and `modem.imei_set` (`^PHYNUM=IMEI`, rule
+   included), and `modules/network` took the airplane switch
+   (`network.radio`/`network.radio_set`). The system page's identity card and NR
+   transmit-power card now read `modem.get`/`modem.nr_txpower`. The only raw-AT
+   surfaces left in the WebUI are the cell-scan panel, the FOTA page, the SMS
+   pages, the NR-capability/thermal/SYSCFGEX cards of the system page and the
+   deliberate `pages/at/Terminal.tsx` console.)
 2. **CLI adapter thinning**: `api/cli.rs` still holds the per-verb text
    formatters for those capabilities; they move into the modules' `api.rs`
    `render_text` as the modules land.

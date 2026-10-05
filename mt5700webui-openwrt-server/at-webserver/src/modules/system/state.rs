@@ -98,6 +98,38 @@ impl TemperatureState {
     }
 }
 
+/// Board switches the system page renders (`^TDPCIELANCFG?`, `^TDPMCFG?`).
+///
+/// Absent fields mean "the modem did not answer that one yet"; the page keeps
+/// whatever it is showing instead of blanking the control.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DeviceControlState {
+    /// 1 = RTL8111 (1G), 2 = RTL8125 (2.5G).
+    pub nic_rate: Option<i64>,
+    pub power_control: Option<bool>,
+}
+
+impl DeviceControlState {
+    /// True when neither switch was read.
+    pub fn is_empty(&self) -> bool {
+        self.nic_rate.is_none() && self.power_control.is_none()
+    }
+
+    pub fn to_json(&self) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        let mut put = |k: &str, v: Value| {
+            m.insert(k.to_string(), v);
+        };
+        if let Some(rate) = self.nic_rate {
+            put("nic_rate", json::num_val(rate));
+        }
+        if let Some(on) = self.power_control {
+            put("power_control", Value::Bool(on));
+        }
+        Value::Obj(m)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +163,23 @@ mod tests {
         assert_eq!(m.get("tcxo").and_then(|v| v.as_f64()), Some(45.0));
         assert_eq!(m.get("average").and_then(|v| v.as_f64()), Some(42.5));
         assert_eq!(TemperatureState::from_json(&m), st);
+    }
+
+    #[test]
+    fn device_control_omits_unread_switches() {
+        let Value::Obj(m) = DeviceControlState::default().to_json() else {
+            panic!("object")
+        };
+        assert!(m.is_empty());
+        let st = DeviceControlState {
+            nic_rate: Some(2),
+            power_control: Some(false),
+        };
+        let Value::Obj(m) = st.to_json() else {
+            panic!("object")
+        };
+        assert_eq!(m.get("nic_rate").and_then(|v| v.as_i64()), Some(2));
+        assert_eq!(m.get("power_control").and_then(|v| v.as_bool()), Some(false));
+        assert!(!st.is_empty());
     }
 }

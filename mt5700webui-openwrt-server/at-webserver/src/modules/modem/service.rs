@@ -8,7 +8,7 @@
 use crate::core::error::BackendError;
 use crate::core::json::Value;
 use crate::core::task::Priority;
-use crate::modules::modem::commands::{ATI, CGSN, LENDC, NTXPOWER, TXPOWER};
+use crate::modules::modem::commands::{self, ATI, CGSN, LENDC, NTXPOWER, RESET, TXPOWER};
 use crate::modules::modem::parser;
 use crate::modules::modem::state::{EndcState, McsState, ModemState, NrTxPowerState, TxPowerState};
 use crate::scheduler::channel::run_in_task;
@@ -103,6 +103,32 @@ pub fn cached_txpower(
         (Some(Value::Obj(m)), _) => Some(TxPowerState::from_json(&m)),
         _ => None,
     }
+}
+
+/// Restart the modem (`AT^RESET`).
+///
+/// The daemon keeps running and the modem comes back on its own; the snapshot is
+/// dropped so the next read is fresh rather than the pre-restart identity.
+pub fn reset(ctx: &RefreshCtx) -> Result<(), BackendError> {
+    ctx.action(RESET)?;
+    ctx.cache.invalidate(TOPIC_MODEM);
+    Ok(())
+}
+
+/// Write a new IMEI (`^PHYNUM=IMEI,<15 digits>`).
+///
+/// Manual: the argument is exactly 15 digits. The value is validated here so the
+/// page can show the backend's rejection instead of keeping a copy of the rule.
+pub fn set_imei(ctx: &RefreshCtx, imei: &str) -> Result<(), BackendError> {
+    let imei = imei.trim();
+    if imei.len() != 15 || !imei.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(BackendError::InvalidParameter(
+            "IMEI必须是15位数字".to_string(),
+        ));
+    }
+    ctx.action(&commands::phynum_imei(imei))?;
+    ctx.cache.invalidate(TOPIC_MODEM);
+    Ok(())
 }
 
 /// Register the four periodic jobs.

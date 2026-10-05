@@ -19,7 +19,9 @@ Two kinds of route, declared in the table itself (`Route::display` /
   `traffic.clear`, `network.registration_urc`, `network.lock_get`,
   `network.lock_apply`, `network.c5goption`, `network.c5goption_set`,
   `cell.neighbors`, `beam.ssb`, `sim.slot_set`, `sim.hotplug_set`,
-  `sim.pin_status`, `sim.pin_apply`) — an explicit user action that
+  `sim.pin_status`, `sim.pin_apply`, `system.nic_rate_set`,
+  `system.power_control_set`, `system.factory_reset`, `modem.reset`,
+  `modem.imei_set`, `network.radio_set`) — an explicit user action that
   performs a live read; it may fail with a modem error, which the UI surfaces.
   It must never fail with a parameter/internal error (asserted by the registry
   test for every registered route).
@@ -37,6 +39,8 @@ Two kinds of route, declared in the table itself (`Route::display` /
 | `network.lock_apply` | `{cycled_radio, results: [{rat, applied, error?, code?}]}` — takes `{rat, lock_type, mobility, items}` or `{locks: [ … ]}` for both RATs in one radio cycle; the grouped-CSV write is assembled here, and each RAT's failure is reported separately |
 | `network.c5goption` | `{nr_sa_support_flag, nr_dc_mode, gc_access_mode}` — on-demand `AT^C5GOPTION?` |
 | `network.c5goption_set` | `{applied: true, cycled_radio}` — write with the radio cycled around it |
+| `network.radio` | `{airplane: bool, cfun}` — display route over `+CFUN?`; an empty object when the modem did not answer, so the switch keeps its position |
+| `network.radio_set` | `{applied: true, airplane}` — `{airplane: bool}` → `AT+CFUN=0\|1`; the network/registration snapshots are invalidated |
 | `cell.neighbors` | `{cells: [{type, arfcn, pci, rsrp, rsrq, sinr, rxlev, band}]}` — on-demand `AT^MONNC`; hex PCI, the 1/8-unit NR scaling and the ARFCN→band table live here |
 | `beam.ssb` | `{servingCell: {arfcn, cid, pci, rsrp, sinr, ta, ssbs: [{ssbId, rsrp}]}, neighborCells: [{pci, arfcn, rsrp, sinr, ssbs}]}` — on-demand `AT^NRSSBID?`; the fixed offsets and the "not measured" slots (255/32767) are handled here |
 | `ca.get` / `ca.cached` | `{carriers: [{radio, band, source, dl_arfcn, ul_arfcn, dl_frequency_mhz, ul_frequency_mhz, dl_bandwidth_mhz, ul_bandwidth_mhz}], carrier_count, ca_active, dc_active, nr_carrier_count, lte_carrier_count, lte_secondary_count, secondary_connection_count, ca_mode, ca_dl_bandwidth, ca_ul_bandwidth}` (`ca.get?refresh=1` forces a live read) |
@@ -53,10 +57,17 @@ Two kinds of route, declared in the table itself (`Route::display` /
 | `modem.nr_txpower` | `{carriers: [{pusch, pucch, srs, prach, freq}]}` |
 | `modem.endc` | `{available, plmnAvailable, restricted, established}` |
 | `modem.mcs` | `{downlink: {rat, carriers: [{index, mcs_table_index, code0, code1}], avg_mcs}, uplink: {…}}` — on-demand `AT^MCS=1` / `AT^MCS=0`; the page maps `code0` to modulation/level labels |
+| `modem.reset` | `{rebooting: true}` — `AT^RESET`; the snapshot is dropped so the next read is post-restart |
+| `modem.imei_set` | `{applied: true, imei}` — `{imei: "15 digits"}` → `^PHYNUM=IMEI,<imei>`; the digit rule is validated here |
 | `traffic.get` / `traffic.cached` | PDCP field map (`id`, `pduSessionId`, …, `dlDiscardCnt`) |
 | `traffic.netrate` | `{available, device, rx_bytes, tx_bytes, timestamp, source, traffic}` |
 | `traffic.clear` | `{cleared: true}` — on-demand write `AT^DSFLOWCLR`; the scheduler's action-invalidation drops the stale counters |
 | `system.temperature` / `system.temperature.cached` | 12 sensor fields + `average` |
+| `system.device_control` | `{nic_rate: 1\|2, power_control: bool}` — `^TDPCIELANCFG?` and `^TDPMCFG?`; a switch that did not answer is omitted, and the page keeps the value it shows |
+| `system.nic_rate_set` | `{applied: true, nic_rate}` — `{rate: 1\|2}` → `^TDPCIELANCFG=<rate>` (takes effect after a reboot) |
+| `system.power_control_set` | `{applied: true, power_control}` — `{enabled: bool}` → `^TDPMCFG=<0\|1>` |
+| `system.factory_reset` | `{restored: true}` — `AT&F` (AT defaults; the modem is not restarted) |
+| `system.service_mode` | `{mode: "serial"\|"network"}` — how the daemon reaches the modem, recorded once at startup (`core::modem`); replaces the pages' `AT+CONNECT?` probe |
 
 Field names and types are exactly what the cache published before the refactor,
 so existing consumers (LuCI topics, WebUI `stateCache`, `mt5700m-at cached`)

@@ -17,7 +17,7 @@ import {
 import { ATService } from '@/services/at';
 import { getSharedStateFeed, refreshSharedStateFeed, useSharedStateTopic } from '@/services/stateCache';
 import { useATReady } from '@/hooks/useATReady';
-import { extractATData } from '@/modem/parse';
+import { backendMessage } from '@/services/backendError';
 import { sleep } from '@/modem/atx';
 import {
   READY_CARD,
@@ -225,31 +225,13 @@ const SystemInfo: React.FC = () => {
   // ---------- AT服务器配置 ----------
   const fetchConnectionMode = async () => {
     setServiceModeLoading(true);
-    let loaded = false;
     try {
-      for (let i = 0; i < 3; i += 1) {
-        const res = await at().readCommand('AT+CONNECT?');
-        if (res && res.success && res.data) {
-          const dataStr = String(res.data);
-          const lines = dataStr.split(/[\r\n]+/).filter((l) => l.trim());
-          const connectLine = lines.find((l) => l.includes('+CONNECT:'));
-          if (connectLine) {
-            const modeValue = connectLine.split('+CONNECT:')[1].trim();
-            if (modeValue === '0') setServiceMode('网络AT');
-            else if (modeValue === '1') setServiceMode('串口AT');
-            else setServiceMode('未知模式');
-            loaded = true;
-            return;
-          }
-          // 若返回 CPIN 状态则等待后重试
-          if (lines.some((l) => l.includes('+CPIN:'))) {
-            await sleep(500);
-            continue;
-          }
-        }
-        await sleep(100);
-      }
-      if (!loaded) {
+      // 链路类型由后端在启动时记录一次（core::modem），不再用 AT+CONNECT? 探测。
+      const res = await at().apiCommand<{ mode?: string }>('system.service_mode');
+      const mode = res.success ? res.data?.mode : undefined;
+      if (mode === 'network') setServiceMode('网络AT');
+      else if (mode === 'serial') setServiceMode('串口AT');
+      else {
         setServiceMode((previous) =>
           previous === '获取中...' || previous === '获取失败' ? '获取失败' : previous,
         );
@@ -286,22 +268,21 @@ const SystemInfo: React.FC = () => {
   const fetchDeviceInfo = async () => {
     setSystemInfoLoading(true);
     try {
-      const modemRes = await at().readCommand('ATI');
-      if (modemRes.success && typeof modemRes.data === 'string') {
-        const manufacturer = modemRes.data.match(/Manufacturer:\s*([^\r\n]+)/)?.[1]?.trim();
-        const model = modemRes.data.match(/Model:\s*([^\r\n]+)/)?.[1]?.trim();
-        const revision = modemRes.data.match(/Revision:\s*([^\r\n]+)/)?.[1]?.trim();
-        setDeviceInfo((prev) => ({
-          manufacturer: manufacturer || prev.manufacturer,
-          model: model || prev.model,
-          revision: revision || prev.revision,
-        }));
-      }
-      await sleep(100);
-      const imeiRes = await at().getIMEI();
-      if (imeiRes.success && typeof imeiRes.data === 'string') {
-        setImei(imeiRes.data.replace(/[\r\n]/g, '').trim());
-      }
+      // 身份块（ATI + AT+CGSN 的解码）由 modules/modem 负责，页面只渲染。
+      const res = await at().apiCommand<{
+        manufacturer?: string;
+        model?: string;
+        revision?: string;
+        imei?: string;
+      }>('modem.get');
+      if (!res.success || !res.data) return;
+      const info = res.data;
+      setDeviceInfo((prev) => ({
+        manufacturer: info.manufacturer || prev.manufacturer,
+        model: info.model || prev.model,
+        revision: info.revision || prev.revision,
+      }));
+      if (info.imei) setImei(info.imei);
     } finally {
       setSystemInfoLoading(false);
     }
@@ -432,17 +413,17 @@ const SystemInfo: React.FC = () => {
   };
 
   const fetchAirplaneMode = async () => {
-    const res = await at().readCommand('AT+CFUN?');
-    if (res.success && typeof res.data === 'string') {
-      const m = res.data.match(/\+CFUN:\s*(\d+)/);
-      if (m) setAirplaneMode(m[1] === '0');
+    // +CFUN? 的解码在 modules/network（network.radio）。
+    const res = await at().apiCommand<{ airplane?: boolean }>('network.radio');
+    if (res.success && typeof res.data?.airplane === 'boolean') {
+      setAirplaneMode(res.data.airplane);
     }
   };
 
   const handleAirplane = async (checked: boolean) => {
     setAirplaneLoading(true);
     try {
-      const res = await at().sendCommand(`AT+CFUN=${checked ? '0' : '1'}`);
+      const res = await at().apiCommand('network.radio_set', { airplane: checked });
       if (res.success) {
         setAirplaneMode(checked);
         Toast.success(`${checked ? '开启' : '关闭'}飞行模式成功`);
@@ -456,20 +437,14 @@ const SystemInfo: React.FC = () => {
 
   // ---------- 设备控制 ----------
   const fetchDeviceControl = async () => {
-    const nicRes = await at().readCommand('AT^TDPCIELANCFG?');
-    if (nicRes.success && typeof nicRes.data === 'string') {
-      const m = nicRes.data.match(/\^TDPCIELANCFG:\s*(\d+)/);
-      if (m) {
-        const v = parseInt(m[1], 10);
-        if (v === 1 || v === 2) setNicRate(v);
-      }
-    }
-    await sleep(100);
-    const pwrRes = await at().readCommand('AT^TDPMCFG?');
-    if (pwrRes.success && typeof pwrRes.data === 'string') {
-      const m = pwrRes.data.match(/\^TDPMCFG:\s*(\d+)/);
-      if (m) setPowerControl(m[1] === '1');
-    }
+    // 网卡速率与 PCIe 电源开关：两个读都在 modules/system 解码（缺失的字段
+    // 表示这次没读到，控件保持原值）。
+    const res = await at().apiCommand<{ nic_rate?: number; power_control?: boolean }>(
+      'system.device_control',
+    );
+    if (!res.success || !res.data) return;
+    if (typeof res.data.nic_rate === 'number') setNicRate(res.data.nic_rate);
+    if (typeof res.data.power_control === 'boolean') setPowerControl(res.data.power_control);
   };
 
   const handleSetNicRate = (value: number) => {
@@ -482,7 +457,7 @@ const SystemInfo: React.FC = () => {
       onOk: async () => {
         setNicLoading(true);
         try {
-          const res = await at().sendCommand(`AT^TDPCIELANCFG=${value}`);
+          const res = await at().apiCommand('system.nic_rate_set', { rate: value });
           if (res.success) {
             setNicRate(value);
             Toast.success('网卡速率设置成功');
@@ -494,7 +469,7 @@ const SystemInfo: React.FC = () => {
               okButtonProps: { theme: 'solid', type: 'danger' },
               onOk: async () => {
                 setRebootLoading(true);
-                const resetRes = await at().sendCommand('AT^RESET');
+                const resetRes = await at().apiCommand('modem.reset');
                 if (resetRes.success) {
                   Toast.success('重启指令已发送');
                   setTimeout(() => {
@@ -520,7 +495,7 @@ const SystemInfo: React.FC = () => {
   const handleSetPower = async (checked: boolean) => {
     setPowerLoading(true);
     try {
-      const res = await at().sendCommand(`AT^TDPMCFG=${checked ? '1' : '0'}`);
+      const res = await at().apiCommand('system.power_control_set', { enabled: checked });
       if (res.success) {
         setPowerControl(checked);
         Toast.success(`${checked ? '开启' : '关闭'}电源管理成功`);
@@ -542,7 +517,7 @@ const SystemInfo: React.FC = () => {
       onOk: async () => {
         setFactoryLoading(true);
         try {
-          const res = await at().sendCommand('AT&F');
+          const res = await at().apiCommand('system.factory_reset');
           if (res.success) {
             Toast.success('恢复出厂设置指令已发送');
             setTimeout(() => {
@@ -568,7 +543,7 @@ const SystemInfo: React.FC = () => {
       okButtonProps: { theme: 'solid', type: 'danger' },
       onOk: async () => {
         setRebootLoading(true);
-        const res = await at().sendCommand('AT^RESET');
+        const res = await at().apiCommand('modem.reset');
         if (res.success) {
           Toast.success('重启指令已发送');
           setTimeout(() => {
@@ -732,24 +707,21 @@ const SystemInfo: React.FC = () => {
   const fetchTxPower = async () => {
     setTxPowerLoading(true);
     try {
-      const res = await at().readCommand('AT^NTXPOWER?');
-      if (res.success && typeof res.data === 'string') {
-        const payload = extractATData(res.data, '^NTXPOWER');
-        const values = (payload || res.data)
-          .split(',')
-          .map((s) => parseInt(s.replace(/[^0-9-]/g, ''), 10))
-          .filter((n) => !Number.isNaN(n));
-        const carriers: TxPowerInfo[] = [];
-        for (let i = 0; i + 4 < values.length; i += 5) {
-          carriers.push({
-            PPusch: values[i],
-            PPucch: values[i + 1],
-            PSrs: values[i + 2],
-            PPrach: values[i + 3],
-            Freq: values[i + 4],
-          });
-        }
-        setTxPower(carriers);
+      // ^NTXPOWER 的分组（每载波 5 个字段）与 999=不适用 的映射都在
+      // modules/modem（modem.nr_txpower），这里只把字段名对到卡片上。
+      const res = await at().apiCommand<{ carriers?: Record<string, unknown>[] }>(
+        'modem.nr_txpower',
+      );
+      if (res.success && Array.isArray(res.data?.carriers)) {
+        setTxPower(
+          res.data.carriers.map((carrier) => ({
+            PPusch: typeof carrier.pusch === 'number' ? carrier.pusch : 999,
+            PPucch: typeof carrier.pucch === 'number' ? carrier.pucch : 999,
+            PSrs: typeof carrier.srs === 'number' ? carrier.srs : 999,
+            PPrach: typeof carrier.prach === 'number' ? carrier.prach : 999,
+            Freq: typeof carrier.freq === 'number' ? carrier.freq : 0,
+          })),
+        );
       }
     } finally {
       setTxPowerLoading(false);
@@ -839,10 +811,6 @@ const SystemInfo: React.FC = () => {
 
   // ---------- IMEI修改 ----------
   const handleModifyImei = () => {
-    if (!/^\d{15}$/.test(newImei)) {
-      Toast.error('IMEI必须是15位数字');
-      return;
-    }
     Modal.confirm({
       title: '高风险操作警告',
       content: `修改IMEI是高风险操作，可能违反相关法律法规并导致设备无法正常使用。您即将把IMEI修改为 ${newImei}，请确认已了解相关风险。`,
@@ -852,13 +820,14 @@ const SystemInfo: React.FC = () => {
       onOk: async () => {
         setImeiLoading(true);
         try {
-          const res = await at().sendCommand(`AT^PHYNUM=IMEI,${newImei.trim()}`);
+          // 15 位数字的规则在后端（modules/modem::set_imei），这里显示它拒绝的原因。
+          const res = await at().apiCommand('modem.imei_set', { imei: newImei.trim() });
           if (res.success) {
             Toast.success('IMEI修改成功');
             setNewImei('');
             fetchDeviceInfo();
           } else {
-            Toast.error('IMEI修改失败');
+            Toast.error(backendMessage(res.error, 'IMEI修改失败'));
           }
         } finally {
           setImeiLoading(false);
