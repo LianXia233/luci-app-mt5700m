@@ -24,8 +24,10 @@ ERROR = re.compile(
 WARNING = re.compile(r"^warning: unused")
 
 # rustc separates diagnostics with a blank line; the caret line that carries
-# `expected X, found Y` is up to ~8 lines into the block.
-MAX_BLOCK_LINES = 12
+# `expected X, found Y` is up to ~8 lines into the block. Failing-test blocks
+# interleave other tests' status lines before the assertion message, so the
+# window has to be generous — a truncated annotation is worse than a long one.
+MAX_BLOCK_LINES = 40
 
 
 def block(lines, start):

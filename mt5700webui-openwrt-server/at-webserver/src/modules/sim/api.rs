@@ -12,18 +12,9 @@ use crate::state::bus::TOPIC_SIM;
 /// Routes contributed by this module.
 pub fn routes() -> Vec<Route> {
     vec![
-        Route {
-            name: "sim.get",
-            handler: get,
-        },
-        Route {
-            name: "sim.cached",
-            handler: cached,
-        },
-        Route {
-            name: "sim.number",
-            handler: number,
-        },
+        Route::display("sim.get", get),
+        Route::display("sim.cached", cached),
+        Route::on_demand("sim.number", number),
     ]
 }
 

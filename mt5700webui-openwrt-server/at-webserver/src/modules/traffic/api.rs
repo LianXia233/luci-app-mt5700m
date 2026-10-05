@@ -9,18 +9,9 @@ use crate::state::bus::{TOPIC_NETRATE, TOPIC_TRAFFIC};
 /// Routes contributed by this module.
 pub fn routes() -> Vec<Route> {
     vec![
-        Route {
-            name: "traffic.get",
-            handler: get,
-        },
-        Route {
-            name: "traffic.cached",
-            handler: cached,
-        },
-        Route {
-            name: "traffic.netrate",
-            handler: netrate,
-        },
+        Route::display("traffic.get", get),
+        Route::display("traffic.cached", cached),
+        Route::display("traffic.netrate", netrate),
     ]
 }
 

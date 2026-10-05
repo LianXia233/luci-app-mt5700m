@@ -24,7 +24,13 @@ const PERIOD: Duration = Duration::from_secs(60);
 
 /// Refresh the temperature topic (never fails on a slow/absent modem).
 pub fn refresh(ctx: &RefreshCtx) -> Result<TemperatureState, BackendError> {
-    let text = ctx.read(CHIPTEMP, AT_TIMEOUT, QUEUED_TIMEOUT, Priority::Low)?;
+    // A missing or busy modem is "no answer this tick", not a failure: the
+    // temperature card is on every dashboard and a display route must always
+    // answer (see `Route::display`).
+    let text = match ctx.read(CHIPTEMP, AT_TIMEOUT, QUEUED_TIMEOUT, Priority::Low) {
+        Ok(text) => text,
+        Err(_) => String::new(),
+    };
     if text.trim().is_empty() {
         let _ = ctx.stale(TOPIC_TEMPERATURE, EVENT_TEMPERATURE_UPDATED);
         return Ok(TemperatureState::default());

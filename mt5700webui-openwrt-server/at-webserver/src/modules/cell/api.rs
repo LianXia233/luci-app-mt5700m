@@ -10,14 +10,8 @@ use crate::state::bus::TOPIC_CELL;
 /// Routes contributed by this module.
 pub fn routes() -> Vec<Route> {
     vec![
-        Route {
-            name: "cell.get",
-            handler: get,
-        },
-        Route {
-            name: "cell.cached",
-            handler: cached,
-        },
+        Route::display("cell.get", get),
+        Route::display("cell.cached", cached),
     ]
 }
 

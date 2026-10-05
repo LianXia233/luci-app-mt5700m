@@ -10,14 +10,8 @@ use crate::state::bus::TOPIC_CA;
 /// Routes contributed by this module.
 pub fn routes() -> Vec<Route> {
     vec![
-        Route {
-            name: "ca.get",
-            handler: get,
-        },
-        Route {
-            name: "ca.cached",
-            handler: cached,
-        },
+        Route::display("ca.get", get),
+        Route::display("ca.cached", cached),
     ]
 }
 

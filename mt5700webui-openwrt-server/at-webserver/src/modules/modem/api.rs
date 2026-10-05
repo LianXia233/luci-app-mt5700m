@@ -9,26 +9,11 @@ use crate::state::bus::TOPIC_MODEM;
 /// Routes contributed by this module.
 pub fn routes() -> Vec<Route> {
     vec![
-        Route {
-            name: "modem.get",
-            handler: get,
-        },
-        Route {
-            name: "modem.cached",
-            handler: cached,
-        },
-        Route {
-            name: "modem.txpower",
-            handler: txpower,
-        },
-        Route {
-            name: "modem.endc",
-            handler: endc,
-        },
-        Route {
-            name: "modem.nr_txpower",
-            handler: nr_txpower,
-        },
+        Route::display("modem.get", get),
+        Route::display("modem.cached", cached),
+        Route::display("modem.txpower", txpower),
+        Route::display("modem.endc", endc),
+        Route::display("modem.nr_txpower", nr_txpower),
     ]
 }
 

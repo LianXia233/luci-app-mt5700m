@@ -10,14 +10,8 @@ use crate::state::bus::TOPIC_TEMPERATURE;
 /// Routes contributed by this module.
 pub fn routes() -> Vec<Route> {
     vec![
-        Route {
-            name: "system.temperature",
-            handler: temperature,
-        },
-        Route {
-            name: "system.temperature.cached",
-            handler: temperature_cached,
-        },
+        Route::display("system.temperature", temperature),
+        Route::display("system.temperature.cached", temperature_cached),
     ]
 }
 

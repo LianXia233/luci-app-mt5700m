@@ -9,6 +9,17 @@ Registered by modules in `api/registry.rs`; dispatched identically from every
 transport. `*.get` answers cache-first and performs at most one bounded refresh
 when the topic is still cold; `*.cached` never touches the modem.
 
+Two kinds of route, declared in the table itself (`Route::display` /
+`Route::on_demand`):
+
+* **display** (`signal.get`, `system.temperature`, …) — every page load calls
+  these, so they must answer with domain JSON even when the modem is missing or
+  busy; a failed refresh degrades to the previous value.
+* **on-demand** (`sim.number`, `network.pdp`) — an explicit user action that
+  performs a live read; it may fail with a modem error, which the UI surfaces.
+  It must never fail with a parameter/internal error (asserted by the registry
+  test for every registered route).
+
 | Route | Returns (domain JSON) |
 | ----- | --------------------- |
 | `signal.get` / `signal.cached` | `{sysmode, rssi, rsrp, rsrq, sinr, rscp, ecio}` |

@@ -58,6 +58,35 @@ pub struct Route {
     /// Fully qualified method name, e.g. `signal.get`.
     pub name: &'static str,
     pub handler: Handler,
+    /// Whether calling this route needs a reachable modem.
+    ///
+    /// A display route answers from the cache and, when the topic is cold,
+    /// performs at most one bounded refresh — it must still return domain JSON
+    /// (placeholders and all) when the modem is missing, because the frontends
+    /// render it on every page load. An on-demand route is an explicit,
+    /// user-triggered modem read (`sim.number`, `network.pdp`): failing with a
+    /// modem error is the honest answer and the UI shows it as such.
+    pub requires_modem: bool,
+}
+
+impl Route {
+    /// Cache-first display route: always answers with domain JSON.
+    pub const fn display(name: &'static str, handler: Handler) -> Route {
+        Route {
+            name,
+            handler,
+            requires_modem: false,
+        }
+    }
+
+    /// Explicit on-demand modem read; may fail with a modem error.
+    pub const fn on_demand(name: &'static str, handler: Handler) -> Route {
+        Route {
+            name,
+            handler,
+            requires_modem: true,
+        }
+    }
 }
 
 /// The complete route table, composed from the modules. Adding a module means
@@ -132,12 +161,24 @@ mod tests {
         let bus = EventBus::new();
         let ch = NoModem;
         let ctx = ApiCtx::new(&ch, &cache, &bus);
-        for name in route_names() {
-            // A cold cache with no modem must still answer with a domain
-            // object (the frontends render placeholders), never panic.
-            let out = dispatch(&ctx, name, &Value::Null);
-            assert!(out.is_ok(), "route {} failed: {:?}", name, out.err());
+        let mut broken: Vec<String> = Vec::new();
+        for route in routes() {
+            let out = dispatch(&ctx, route.name, &Value::Null);
+            match (route.requires_modem, out) {
+                // A cold cache with no modem must still answer with a domain
+                // object (the frontends render placeholders), never panic.
+                (false, Err(e)) => broken.push(format!("{}: {} ({})", route.name, e.message(), e.code())),
+                // On-demand reads may fail, but only with a modem error the UI
+                // can explain — never a routing/parameter bug.
+                (true, Err(e)) => {
+                    if e.code() == "INVALID_PARAMETER" || e.code() == "INTERNAL" {
+                        broken.push(format!("{}: unexpected {} ({})", route.name, e.message(), e.code()));
+                    }
+                }
+                _ => {}
+            }
         }
+        assert!(broken.is_empty(), "routes misbehaving without a modem: {:#?}", broken);
         // The WebSocket/LuCI spelling must reach the same handler.
         assert!(dispatch(&ctx, "api.signal.get", &Value::Null).is_ok());
         let err = dispatch(&ctx, "nope.nope", &Value::Null).unwrap_err();

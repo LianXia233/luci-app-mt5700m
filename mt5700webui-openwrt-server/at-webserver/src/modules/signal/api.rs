@@ -13,14 +13,8 @@ use crate::modules::signal::state::SignalState;
 /// Routes contributed by this module.
 pub fn routes() -> Vec<Route> {
     vec![
-        Route {
-            name: "signal.get",
-            handler: get,
-        },
-        Route {
-            name: "signal.cached",
-            handler: cached,
-        },
+        Route::display("signal.get", get),
+        Route::display("signal.cached", cached),
     ]
 }
 

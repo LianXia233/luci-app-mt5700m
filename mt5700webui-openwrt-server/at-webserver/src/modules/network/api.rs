@@ -17,22 +17,10 @@ use crate::state::bus::TOPIC_NETWORK;
 /// Routes contributed by this module.
 pub fn routes() -> Vec<Route> {
     vec![
-        Route {
-            name: "network.get",
-            handler: get,
-        },
-        Route {
-            name: "network.cached",
-            handler: cached,
-        },
-        Route {
-            name: "registration.get",
-            handler: registration,
-        },
-        Route {
-            name: "network.pdp",
-            handler: pdp,
-        },
+        Route::display("network.get", get),
+        Route::display("network.cached", cached),
+        Route::display("registration.get", registration),
+        Route::on_demand("network.pdp", pdp),
     ]
 }
 
