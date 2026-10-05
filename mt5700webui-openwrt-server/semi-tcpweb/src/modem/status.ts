@@ -103,3 +103,30 @@ export interface NetworkDhcpPayload {
   /** `AT^IPV6CAP?` 的能力值，页面映射为说明文案 */
   ipv6_capability?: number;
 }
+
+/**
+ * `api.network.c5goption` —— 5G 接入模式（modules/network 解析 `AT^C5GOPTION?`）。
+ * 页面把三元组映射成「仅 SA / 仅 NSA / SA+NSA / 其他」文案。
+ */
+export interface C5gOptionPayload {
+  nr_sa_support_flag?: number;
+  nr_dc_mode?: number;
+  gc_access_mode?: number;
+}
+
+/**
+ * `api.cell.neighbors` —— `AT^MONNC` 的邻区列表。`band` 由后端的
+ * ARFCN->频段表算出，NR 的 1/8 倍率也已在后端还原。
+ */
+export interface NeighborsPayload {
+  cells?: Array<{
+    type: string;
+    arfcn?: number;
+    pci?: number;
+    rsrp?: string;
+    rsrq?: string;
+    sinr?: string;
+    rxlev?: string;
+    band?: number;
+  }>;
+}

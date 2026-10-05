@@ -424,31 +424,6 @@ export function parseCHIPTEMP(raw: string) {
   };
 }
 
-export function getBandFromArfcn(type: 'LTE' | 'NR', arfcn: number): number | undefined {
-  if (type === 'LTE') {
-    if (arfcn >= 0 && arfcn <= 599) return 1;
-    if (arfcn >= 1200 && arfcn <= 1949) return 3;
-    if (arfcn >= 2400 && arfcn <= 2649) return 5;
-    if (arfcn >= 3450 && arfcn <= 3799) return 8;
-    if (arfcn >= 36200 && arfcn <= 36349) return 34;
-    if (arfcn >= 37750 && arfcn <= 38249) return 38;
-    if (arfcn >= 38250 && arfcn <= 38649) return 39;
-    if (arfcn >= 38650 && arfcn <= 39649) return 40;
-    if (arfcn >= 39650 && arfcn <= 41589) return 41;
-  } else {
-    if (arfcn >= 422000 && arfcn <= 434000) return 1;
-    if (arfcn >= 361000 && arfcn <= 376000) return 3;
-    if (arfcn >= 173800 && arfcn <= 178800) return 5;
-    if (arfcn >= 185000 && arfcn <= 192000) return 8;
-    if (arfcn >= 151600 && arfcn <= 160600) return 28;
-    if (arfcn >= 499200 && arfcn <= 537999) return 41;
-    if (arfcn >= 620000 && arfcn <= 653333) return 78;
-    if (arfcn >= 653334 && arfcn <= 680000) return 77;
-    if (arfcn >= 693334 && arfcn <= 733333) return 79;
-  }
-  return undefined;
-}
-
 export function getDefaultScsType(band?: number): number {
   if (!band) return 1;
   if ([77, 78, 79, 41].includes(band)) return 1;

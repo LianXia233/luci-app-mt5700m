@@ -16,7 +16,9 @@ Two kinds of route, declared in the table itself (`Route::display` /
   these, so they must answer with domain JSON even when the modem is missing or
   busy; a failed refresh degrades to the previous value.
 * **on-demand** (`sim.number`, `network.pdp`, `network.dhcp`, `modem.mcs`,
-  `traffic.clear`, `network.registration_urc`) — an explicit user action that
+  `traffic.clear`, `network.registration_urc`, `network.lock_get`,
+  `network.lock_apply`, `network.c5goption`, `network.c5goption_set`,
+  `cell.neighbors`) — an explicit user action that
   performs a live read; it may fail with a modem error, which the UI surfaces.
   It must never fail with a parameter/internal error (asserted by the registry
   test for every registered route).
@@ -30,6 +32,11 @@ Two kinds of route, declared in the table itself (`Route::display` /
 | `network.pdp` | `{addresses: [{cid, address, family}]}` — on-demand `AT+CGPADDR` for the diagnostics panel |
 | `network.dhcp` | `{ipv4: {address, netmask, gateway, dhcp_server, primary_dns, secondary_dns}, ipv6: {…}, ipv6_capability}` — on-demand `AT^DHCP?`/`AT^DHCPV6?`/`AT^IPV6CAP?` (the hex little-endian decode happens here, not in the page); partial answers keep the fields that were read |
 | `network.registration_urc` | `{enabled: true}` — idempotent write `AT+CGREG=2`; the detailed PS registration report the Info page used to enable with raw AT |
+| `network.lock_get` | `{lock_type, mobility, items: [{band, arfcn, pci, scs}]}` — `rat=lte\|nr`, on-demand `AT^LTEFREQLOCK?`/`AT^NRFREQLOCK?`; the `mobility,num` row, the per-carrier rows and the hex PCI are decoded here |
+| `network.lock_apply` | `{cycled_radio, results: [{rat, applied, error?, code?}]}` — takes `{rat, lock_type, mobility, items}` or `{locks: [ … ]}` for both RATs in one radio cycle; the grouped-CSV write is assembled here, and each RAT's failure is reported separately |
+| `network.c5goption` | `{nr_sa_support_flag, nr_dc_mode, gc_access_mode}` — on-demand `AT^C5GOPTION?` |
+| `network.c5goption_set` | `{applied: true, cycled_radio}` — write with the radio cycled around it |
+| `cell.neighbors` | `{cells: [{type, arfcn, pci, rsrp, rsrq, sinr, rxlev, band}]}` — on-demand `AT^MONNC`; hex PCI, the 1/8-unit NR scaling and the ARFCN→band table live here |
 | `ca.get` / `ca.cached` | `{carriers: [{radio, band, source, dl_arfcn, ul_arfcn, dl_frequency_mhz, ul_frequency_mhz, dl_bandwidth_mhz, ul_bandwidth_mhz}], carrier_count, ca_active, dc_active, nr_carrier_count, lte_carrier_count, lte_secondary_count, secondary_connection_count, ca_mode, ca_dl_bandwidth, ca_ul_bandwidth}` (`ca.get?refresh=1` forces a live read) |
 | `cell.get` / `cell.cached` | `{band, channel, dlBandwidth, arfcn, sysmode, mcc, mnc, cid, pci, lac, operator, raw}` |
 | `sim.get` / `sim.cached` | `{status, iccid, imsi}` (+ `number` once read) |

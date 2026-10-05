@@ -20,8 +20,6 @@ use crate::modules::network::parser::{
     parse_cops_rat as extract_cops_rat, parse_sysinfo_mode as extract_sysinfo_mode,
 };
 use std::fmt::Write as FmtWrite;
-use std::thread::sleep;
-use std::time::Duration;
 
 // ---------------------------------------------------------------- UCI
 
@@ -104,215 +102,69 @@ fn clean_value(s: &str) -> String {
 
 
 
-// ---------------------------------------------------------------- CSV / lock validation
+// ---------------------------------------------------------------- frequency lock
+//
+// The lock AT strings, the validation ranges and the apply sequence all live in
+// the network module (`commands::lte_lock_command` / `nr_lock_command`,
+// `service::apply_lock` / `verify_lock`), so the shell verb, the WebUI route and
+// the day/night scheduler cannot drift apart. The CLI keeps only its text
+// contract: print the raw verification answer on success, exit non-zero when the
+// modem did not take the lock.
 
-fn csv_count(value: &str) -> usize {
-    let v: String = value.chars().filter(|c| *c != ' ').collect();
-    if v.is_empty() {
-        return 0;
-    }
-    v.split(',').count()
-}
+/// Historical local names for the module builders (the CLI tests and the
+/// `lock`/`preview-lock` verbs use them).
+use crate::modules::network::commands::{
+    lte_lock_command as build_lte_lock_command, nr_lock_command as build_nr_lock_command,
+};
+use crate::core::channel::AtChannel;
+use crate::core::error::BackendError;
+use crate::modules::network::service::{self, LockApply};
+use crate::modules::network::state::LockKind;
+use crate::transport::channel::DaemonChannel;
 
-fn clean_csv(value: &str) -> String {
-    let no_space: String = value.chars().filter(|c| *c != ' ').collect();
-    // trim leading/trailing commas and collapse duplicates
-    let t = no_space.trim_matches(',');
-    let mut out: Vec<&str> = Vec::new();
-    for part in t.split(',') {
-        if part.is_empty() {
-            continue;
-        }
-        // collapse consecutive empties is inherent; keep order
-        out.push(part);
-    }
-    out.join(",")
-}
-
-fn is_numeric_csv(v: &str) -> bool {
-    !v.is_empty()
-        && v.split(',').all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
-}
-
-fn numeric_csv_in_range(v: &str, min: u64, max: u64) -> bool {
-    is_numeric_csv(v)
-        && v.split(',').all(|p| {
-            p.parse::<u64>().map(|n| n >= min && n <= max).unwrap_or(false)
-        })
-}
-
-fn valid_lock_count(count: usize) -> bool {
-    (1..=20).contains(&count)
-}
-
-pub fn build_lte_lock_command(
-    lock_type: &str,
-    bands: &str,
-    arfcns: &str,
-    pcis: &str,
-) -> Option<String> {
-    let bands = clean_csv(bands);
-    let arfcns = clean_csv(arfcns);
-    let pcis = clean_csv(pcis);
-    let count = csv_count(&bands);
-    match lock_type {
-        "0" => Some("AT^LTEFREQLOCK=0".into()),
-        "3" => {
-            if !(valid_lock_count(count) && numeric_csv_in_range(&bands, 0, 65535)) {
-                return None;
-            }
-            Some(format!("AT^LTEFREQLOCK=3,0,{},\"{}\"", count, bands))
-        }
-        "1" => {
-            if !(valid_lock_count(count)
-                && numeric_csv_in_range(&bands, 0, 65535)
-                && numeric_csv_in_range(&arfcns, 0, 4294967295)
-                && count == csv_count(&arfcns))
-            {
-                return None;
-            }
-            Some(format!(
-                "AT^LTEFREQLOCK=1,0,{},\"{}\",\"{}\"",
-                count, bands, arfcns
-            ))
-        }
-        "2" => {
-            if !(valid_lock_count(count)
-                && numeric_csv_in_range(&bands, 0, 65535)
-                && numeric_csv_in_range(&arfcns, 0, 4294967295)
-                && numeric_csv_in_range(&pcis, 0, 503)
-                && count == csv_count(&arfcns)
-                && count == csv_count(&pcis))
-            {
-                return None;
-            }
-            Some(format!(
-                "AT^LTEFREQLOCK=2,0,{},\"{}\",\"{}\",\"{}\"",
-                count, bands, arfcns, pcis
-            ))
-        }
-        _ => None,
-    }
-}
-
-pub fn build_nr_lock_command(
-    lock_type: &str,
-    bands: &str,
-    arfcns: &str,
-    scs: &str,
-    pcis: &str,
-) -> Option<String> {
-    let bands = clean_csv(bands);
-    let arfcns = clean_csv(arfcns);
-    let scs = clean_csv(scs);
-    let pcis = clean_csv(pcis);
-    let count = csv_count(&bands);
-    match lock_type {
-        "0" => Some("AT^NRFREQLOCK=0".into()),
-        "3" => {
-            if !(valid_lock_count(count) && numeric_csv_in_range(&bands, 0, 65535)) {
-                return None;
-            }
-            Some(format!("AT^NRFREQLOCK=3,0,{},\"{}\"", count, bands))
-        }
-        "1" => {
-            if !(valid_lock_count(count)
-                && numeric_csv_in_range(&bands, 0, 65535)
-                && numeric_csv_in_range(&arfcns, 0, 4294967295)
-                && numeric_csv_in_range(&scs, 0, 4)
-                && count == csv_count(&arfcns)
-                && count == csv_count(&scs))
-            {
-                return None;
-            }
-            Some(format!(
-                "AT^NRFREQLOCK=1,0,{},\"{}\",\"{}\",\"{}\"",
-                count, bands, arfcns, scs
-            ))
-        }
-        "2" => {
-            if !(valid_lock_count(count)
-                && numeric_csv_in_range(&bands, 0, 65535)
-                && numeric_csv_in_range(&arfcns, 0, 4294967295)
-                && numeric_csv_in_range(&scs, 0, 4)
-                && numeric_csv_in_range(&pcis, 0, 1007)
-                && count == csv_count(&arfcns)
-                && count == csv_count(&scs)
-                && count == csv_count(&pcis))
-            {
-                return None;
-            }
-            Some(format!(
-                "AT^NRFREQLOCK=2,0,{},\"{}\",\"{}\",\"{}\",\"{}\"",
-                count, bands, arfcns, scs, pcis
-            ))
-        }
-        _ => None,
-    }
-}
-
+/// Apply a frequency lock and verify it, exactly the way the shell backend did:
+///
+/// 1. read `+CFUN?`; when the radio is on, cycle it around the write (the
+///    firmware only exposes a lock change after a function-level cycle) and keep
+///    polling the query afterwards, because the new lock appears asynchronously;
+/// 2. the write itself is the module's (grouped CSV syntax and range checks);
+/// 3. on success print the raw `^LTEFREQLOCK:` / `^NRFREQLOCK:` answer — LuCI
+///    parses that text — and exit 0; otherwise report what the modem still
+///    reports and exit 1.
 fn apply_frequency_lock(settings: &Settings, rat: &str, lock_type: &str, lock_cmd: &str) -> i32 {
-    let (query, prefix) = match rat {
-        "lte" => ("AT^LTEFREQLOCK?", "^LTEFREQLOCK:"),
-        "nr" => ("AT^NRFREQLOCK?", "^NRFREQLOCK:"),
-        _ => return EXIT_USAGE,
-    };
-
-    let raw = client::at_cmd(settings, "AT+CFUN?");
-    let mut previous = raw
-        .text
-        .lines()
-        .find_map(|l| l.strip_prefix("+CFUN:"))
-        .map(|r| clean_value(r.trim_start()))
-        .unwrap_or_default();
-    if previous != "0" && previous != "1" {
-        previous = "1".into();
-    }
-
-    let lock_out = client::at_cmd(settings, lock_cmd);
-    if lock_out.error.is_some() {
+    if !settings.enabled {
         return 1;
     }
-
-    // MT5700M only exposes a frequency-lock change after a radio function
-    // level cycle; keep an existing airplane-mode session offline.
-    if previous == "1" {
-        if client::at_cmd(settings, "AT+CFUN=0").error.is_some() {
-            return 1;
-        }
-        sleep(Duration::from_secs(1));
-        if client::at_cmd(settings, "AT+CFUN=1").error.is_some() {
-            return 1;
-        }
+    let kind = match rat {
+        "lte" => LockKind::Lte,
+        "nr" => LockKind::Nr,
+        _ => return EXIT_USAGE,
+    };
+    let channel = DaemonChannel::new();
+    let applies = [LockApply {
+        kind,
+        command: lock_cmd.to_string(),
+    }];
+    let report = match service::apply_lock(&channel, &applies, true) {
+        Ok(r) => r,
+        Err(_) => return 1,
+    };
+    // An airplane-mode session (radio already off) is deliberately left that
+    // way, and then the firmware has nothing to re-read: one probe, like before.
+    let attempts = if report.cycled_radio { 8 } else { 1 };
+    let verified = service::verify_lock(&channel, kind, lock_type, attempts);
+    if verified.ok {
+        println!("{}", verified.text);
+        return 0;
     }
-
-    let restore = previous == "1";
-    let mut current = String::from("no response");
-    for attempt in 0..8 {
-        let raw = client::at_cmd(settings, query);
-        current = raw
-            .text
-            .lines()
-            .find_map(|l| l.strip_prefix(prefix))
-            .map(|r| {
-                let v = clean_value(r.trim_start());
-                v.split(',').next().unwrap_or("").to_string()
-            })
-            .unwrap_or_else(|| current.clone());
-        if current == lock_type {
-            println!("{}", raw.text);
-            return 0;
-        }
-        if !restore {
-            break;
-        }
-        sleep(Duration::from_secs(2));
-        let _ = attempt;
-    }
-
+    let observed = if verified.observed.is_empty() {
+        "no response".to_string()
+    } else {
+        verified.observed
+    };
     eprintln!(
         "MT5700M frequency lock verification failed: expected {}, got {}",
-        lock_type, current
+        lock_type, observed
     );
     1
 }

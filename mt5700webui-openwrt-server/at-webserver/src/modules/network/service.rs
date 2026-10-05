@@ -8,12 +8,15 @@
 //!   * `network.refresh`, 30 s — operator (`+COPS?`, 60 s failure backoff) and
 //!     system mode (`^SYSINFOEX`, 300 s failure backoff), both non-fatal.
 
+use crate::core::channel::AtChannel;
 use crate::core::error::BackendError;
 use crate::core::json::Value;
 use crate::core::task::Priority;
 use crate::modules::network::commands::{self, COPS, SYSINFOEX};
 use crate::modules::network::parser;
-use crate::modules::network::state::{NetworkState, RegistrationState};
+use crate::modules::network::state::{
+    C5gOptionState, LockKind, LockState, NetworkState, RegistrationState,
+};
 use crate::scheduler::channel::run_in_task;
 use crate::scheduler::jobs::TaskManager;
 use crate::state::bus::{
@@ -22,6 +25,7 @@ use crate::state::bus::{
 use crate::state::cache::StateCache;
 use crate::state::refresh::RefreshCtx;
 use std::sync::Arc;
+use std::thread::sleep;
 use std::time::Duration;
 
 const REG_AT_TIMEOUT: Duration = Duration::from_secs(8);
@@ -120,6 +124,198 @@ pub fn cached_registration(cache: &Arc<StateCache>) -> Option<RegistrationState>
 
 fn str_field(m: &std::collections::BTreeMap<String, Value>, key: &str) -> Option<String> {
     m.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+}
+
+// ------------------------------------------------------------ frequency lock
+//
+// The lock apply sequence is one implementation for every caller: the CLI
+// (`mt5700m-at lock`), the WebUI route (`network.lock_apply`) and the day/night
+// scheduler all go through it, so the airplane-mode dance, the per-command
+// independence and the verification cannot drift apart. The AT strings
+// themselves are built by `commands::lte_lock_command`/`nr_lock_command`.
+
+/// One lock write to perform: the RAT it belongs to and the exact command.
+pub struct LockApply {
+    pub kind: LockKind,
+    pub command: String,
+}
+
+/// What an apply sequence did, for callers that need to know whether the radio
+/// was cycled (the CLI only polls for the new lock when the firmware had to be
+/// restarted for it).
+pub struct LockApplyReport {
+    pub outcomes: Vec<LockApplyOutcome>,
+    /// True when `+CFUN=0` … `+CFUN=1` was performed around the writes.
+    pub cycled_radio: bool,
+}
+
+/// Per-RAT result of an apply sequence, in the order the writes were issued.
+pub struct LockApplyOutcome {
+    pub kind: LockKind,
+    /// The raw modem answer, for callers that print it (the CLI).
+    pub text: String,
+    /// First error seen for this RAT, if any.
+    pub error: Option<BackendError>,
+}
+
+impl LockApplyOutcome {
+    pub fn ok(&self) -> bool {
+        self.error.is_none()
+    }
+}
+
+/// Read the current lock of one RAT (`^LTEFREQLOCK?` / `^NRFREQLOCK?`).
+pub fn read_lock(channel: &dyn AtChannel, kind: LockKind) -> Result<LockState, BackendError> {
+    let text = channel.query_prio(
+        commands::lock_query(kind),
+        Duration::from_secs(8),
+        Duration::from_secs(10),
+        Priority::Normal,
+    )?;
+    Ok(parser::parse_freq_lock(&text, kind).unwrap_or_default())
+}
+
+/// Apply one or more lock writes, cycling the radio exactly the way the pages
+/// always have:
+///
+/// 1. read `+CFUN?` — if the radio is on (and the caller wants a cycle), take
+///    it down first, because the firmware only exposes a lock change after a
+///    function-level cycle;
+/// 2. issue each RAT's write independently: a modem that rejects the NR lock
+///    must not stop the LTE one (and vice versa), so the first error of each
+///    RAT is kept and returned with its result;
+/// 3. bring the radio back up and give the modem 2 s to re-register.
+///
+/// Errors that mean "the whole sequence cannot start" (CFUN refused) are
+/// returned as `Err`; per-lock failures come back inside the outcomes.
+pub fn apply_lock(
+    channel: &dyn AtChannel,
+    applies: &[LockApply],
+    cycle_radio: bool,
+) -> Result<LockApplyReport, BackendError> {
+    let radio_on = radio_cycle_begin(channel, cycle_radio)?;
+    let mut out: Vec<LockApplyOutcome> = Vec::new();
+    for (i, a) in applies.iter().enumerate() {
+        let result = channel.action(&a.command);
+        let (text, error) = match result {
+            Ok(t) => (t, None),
+            Err(e) => (String::new(), Some(e)),
+        };
+        out.push(LockApplyOutcome {
+            kind: a.kind,
+            text,
+            error,
+        });
+        if i + 1 < applies.len() {
+            sleep(Duration::from_secs(1));
+        }
+    }
+    if radio_on {
+        radio_cycle_end(channel)?;
+    }
+    Ok(LockApplyReport {
+        outcomes: out,
+        cycled_radio: radio_on,
+    })
+}
+
+/// Take the radio down for a settings write when it is currently on.
+///
+/// Returns `true` when the caller must call [`radio_cycle_end`] afterwards. The
+/// vendor firmware only re-reads several settings (frequency lock, 5G access
+/// mode) after a function-level cycle, and an airplane-mode session that was
+/// already offline is left offline on purpose — hence the `+CFUN?` probe.
+fn radio_cycle_begin(channel: &dyn AtChannel, cycle: bool) -> Result<bool, BackendError> {
+    let previous = channel
+        .query(commands::CFUN_QUERY)
+        .ok()
+        .and_then(|t| parser::parse_cfun(&t));
+    let radio_on = cycle && previous != Some(0);
+    if radio_on {
+        channel.action(&commands::cfun(0))?;
+        sleep(Duration::from_secs(1));
+    }
+    Ok(radio_on)
+}
+
+/// Bring the radio back up and give the modem a moment to re-register.
+fn radio_cycle_end(channel: &dyn AtChannel) -> Result<(), BackendError> {
+    channel.action(&commands::cfun(1))?;
+    sleep(Duration::from_secs(2));
+    Ok(())
+}
+
+/// Write one setting that only takes effect after a function-level cycle.
+///
+/// `Ok((raw, cycled))`: the modem's answer to the write and whether the radio
+/// was cycled around it. The page's 5G-access-mode switch and the CLI's future
+/// verbs both go through here — the same sequence as the lock apply.
+pub fn write_with_radio_cycle(
+    channel: &dyn AtChannel,
+    command: &str,
+) -> Result<(String, bool), BackendError> {
+    let cycled = radio_cycle_begin(channel, true)?;
+    let result = channel.action(command)?;
+    if cycled {
+        radio_cycle_end(channel)?;
+    }
+    Ok((result, cycled))
+}
+
+/// Read the 5G access mode (`^C5GOPTION?`).
+pub fn read_c5goption(channel: &dyn AtChannel) -> Result<C5gOptionState, BackendError> {
+    let text = channel.query_prio(
+        commands::C5GOPTION_QUERY,
+        Duration::from_secs(8),
+        Duration::from_secs(10),
+        Priority::Normal,
+    )?;
+    Ok(parser::parse_c5goption(&text))
+}
+
+/// Outcome of a lock verification poll.
+pub struct LockVerify {
+    /// Raw answer of the last lock query (the CLI prints it verbatim).
+    pub text: String,
+    pub ok: bool,
+    /// Lock type the modem reported last (`""` when nothing parseable came
+    /// back), for the caller's error message.
+    pub observed: String,
+}
+
+/// Poll the lock query until it reports `expected` (up to `attempts` tries,
+/// 2 s apart) and return the last raw answer. The CLI prints it.
+pub fn verify_lock(
+    channel: &dyn AtChannel,
+    kind: LockKind,
+    expected: &str,
+    attempts: u32,
+) -> LockVerify {
+    let mut text = String::new();
+    let mut observed = String::new();
+    for i in 0..attempts {
+        if let Ok(answer) = channel.query(commands::lock_query(kind)) {
+            text = answer;
+            observed = parser::parse_freq_lock(&text, kind)
+                .map(|st| st.lock_type.to_string())
+                .unwrap_or_default();
+            if observed == expected {
+                return LockVerify {
+                    text,
+                    ok: true,
+                    observed,
+                };
+            }
+        }
+        if i + 1 < attempts {
+            sleep(Duration::from_secs(2));
+        }
+    }
+    LockVerify {
+        text,
+        ok: false,
+        observed,
+    }
 }
 
 /// Register both periodic jobs on the shared task manager.

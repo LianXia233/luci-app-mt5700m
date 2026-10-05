@@ -11,6 +11,7 @@
 
 use crate::core::json::Value;
 use crate::core::task::Priority;
+use crate::modules::network::commands;
 use crate::scheduler::jobs::{TaskCtx, TaskManager};
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
@@ -169,116 +170,64 @@ fn auto_detect_scs(bands: &[String]) -> Vec<String> {
         .collect()
 }
 
-pub fn lte_command(cfg: &SchedCfg, lock: &Lock) -> Option<(String, &'static str)> {
+/// The LTE lock write for a period configuration.
+///
+/// The grouped-CSV syntax lives in the network module
+/// (`commands::lte_lock_command`) — the same builder the CLI and the WebUI
+/// route use. The scheduler keeps its own safety rule: a configuration whose
+/// lists do not line up unlocks instead of locking a partly-parsed set.
+pub fn lte_command(cfg: &SchedCfg, lock: &Lock) -> Option<(String, String)> {
     if lock.ltype <= 0 {
         if !cfg.unlock_lte {
             return None;
         }
-        return Some(("AT^LTEFREQLOCK=0".into(), "LTE解锁"));
+        return Some(("AT^LTEFREQLOCK=0".into(), "LTE解锁".into()));
     }
     let bands = split_list(&lock.bands);
     if bands.is_empty() {
         return None;
     }
-    if lock.ltype == 3 {
-        return Some((
-            format!("AT^LTEFREQLOCK=3,0,{},\"{}\"", bands.len(), bands.join(",")),
-            "LTE锁频(类型3)",
-        ));
+    let label = format!("LTE锁频(类型{})", lock.ltype);
+    match commands::lte_lock_command(
+        &lock.ltype.to_string(),
+        &lock.bands,
+        &lock.arfcns,
+        &lock.pcis,
+    ) {
+        Some(cmd) => Some((cmd, label)),
+        None => Some(("AT^LTEFREQLOCK=0".into(), "LTE解锁".into())),
     }
-    if lock.ltype == 1 || lock.ltype == 2 {
-        let arfcns = split_list(&lock.arfcns);
-        if arfcns.len() != bands.len() {
-            return Some(("AT^LTEFREQLOCK=0".into(), "LTE解锁"));
-        }
-        if lock.ltype == 1 {
-            return Some((
-                format!(
-                    "AT^LTEFREQLOCK=1,0,{},\"{}\",\"{}\"",
-                    bands.len(),
-                    bands.join(","),
-                    arfcns.join(",")
-                ),
-                "LTE锁频(类型1)",
-            ));
-        }
-        let pcis = split_list(&lock.pcis);
-        if pcis.len() != bands.len() {
-            return Some(("AT^LTEFREQLOCK=0".into(), "LTE解锁"));
-        }
-        return Some((
-            format!(
-                "AT^LTEFREQLOCK=2,0,{},\"{}\",\"{}\",\"{}\"",
-                bands.len(),
-                bands.join(","),
-                arfcns.join(","),
-                pcis.join(",")
-            ),
-            "LTE锁频(类型2)",
-        ));
-    }
-    Some(("AT^LTEFREQLOCK=0".into(), "LTE解锁"))
 }
 
-pub fn nr_command(cfg: &SchedCfg, lock: &Lock) -> Option<(String, &'static str)> {
+/// The NR lock write for a period configuration (SCS defaults to the FR2/FR1
+/// auto-detection when the configuration leaves it empty).
+pub fn nr_command(cfg: &SchedCfg, lock: &Lock) -> Option<(String, String)> {
     if lock.ltype <= 0 {
         if !cfg.unlock_nr {
             return None;
         }
-        return Some(("AT^NRFREQLOCK=0".into(), "NR解锁"));
+        return Some(("AT^NRFREQLOCK=0".into(), "NR解锁".into()));
     }
     let bands = split_list(&lock.bands);
     if bands.is_empty() {
         return None;
     }
-    if lock.ltype == 3 {
-        return Some((
-            format!("AT^NRFREQLOCK=3,0,{},\"{}\"", bands.len(), bands.join(",")),
-            "NR锁频(类型3)",
-        ));
+    let scs = if lock.scs_types.trim().is_empty() {
+        auto_detect_scs(&bands)
+    } else {
+        split_list(&lock.scs_types)
+    };
+    let label = format!("NR锁频(类型{})", lock.ltype);
+    match commands::nr_lock_command(
+        &lock.ltype.to_string(),
+        &lock.bands,
+        &lock.arfcns,
+        &scs.join(","),
+        &lock.pcis,
+    ) {
+        Some(cmd) => Some((cmd, label)),
+        None => Some(("AT^NRFREQLOCK=0".into(), "NR解锁".into())),
     }
-    if lock.ltype == 1 || lock.ltype == 2 {
-        let arfcns = split_list(&lock.arfcns);
-        if arfcns.len() != bands.len() {
-            return Some(("AT^NRFREQLOCK=0".into(), "NR解锁"));
-        }
-        let scs = if lock.scs_types.trim().is_empty() {
-            auto_detect_scs(&bands)
-        } else {
-            split_list(&lock.scs_types)
-        };
-        if scs.len() != bands.len() {
-            return Some(("AT^NRFREQLOCK=0".into(), "NR解锁"));
-        }
-        if lock.ltype == 1 {
-            return Some((
-                format!(
-                    "AT^NRFREQLOCK=1,0,{},\"{}\",\"{}\",\"{}\"",
-                    bands.len(),
-                    bands.join(","),
-                    arfcns.join(","),
-                    scs.join(",")
-                ),
-                "NR锁频(类型1)",
-            ));
-        }
-        let pcis = split_list(&lock.pcis);
-        if pcis.len() != bands.len() {
-            return Some(("AT^NRFREQLOCK=0".into(), "NR解锁"));
-        }
-        return Some((
-            format!(
-                "AT^NRFREQLOCK=2,0,{},\"{}\",\"{}\",\"{}\",\"{}\"",
-                bands.len(),
-                bands.join(","),
-                arfcns.join(","),
-                scs.join(","),
-                pcis.join(",")
-            ),
-            "NR锁频(类型2)",
-        ));
-    }
-    Some(("AT^NRFREQLOCK=0".into(), "NR解锁"))
 }
 
 /// Port of `registered()`: any +CxxREG line whose second field is 1 or 5.

@@ -3,6 +3,12 @@
 //! Read commands are tried in order: the first one that answers with a
 //! `REG:` line wins. `C5GREG` carries the 5G fields (tac/ci/AcT/NSSAI), so it
 //! is preferred; `CEREG` and `CREG` are the fallbacks for 4G/2G-only firmware.
+//!
+//! The frequency-lock builders live here too: the manual's grouped-CSV syntax
+//! is AT knowledge, and the CLI, the day/night scheduler and the API route all
+//! build the same write through these functions.
+
+use crate::modules::network::state::{LockItem, LockKind};
 
 /// Registration queries, most specific first.
 pub const REG_QUERIES: [&str; 3] = ["AT+C5GREG?", "AT+CEREG?", "AT+CREG?"];
@@ -43,6 +49,261 @@ pub const CGREG_DETAILED: &str = "AT+CGREG=2";
 /// that as an answer would record `state=0` and stop the fallback chain.
 pub fn has_registration_line(text: &str) -> bool {
     text.lines().any(|l| l.trim().contains("REG:"))
+}
+
+/// Current LTE frequency lock (`^LTEFREQLOCK: <type>` …).
+pub const LTEFREQLOCK_QUERY: &str = "AT^LTEFREQLOCK?";
+
+/// Current NR frequency lock.
+pub const NRFREQLOCK_QUERY: &str = "AT^NRFREQLOCK?";
+
+/// Current radio function level (`+CFUN: <0|1>`), read before a lock change.
+pub const CFUN_QUERY: &str = "AT+CFUN?";
+
+/// 5G access mode (`^C5GOPTION: <sa>,<dc>,<gc>`): SA support, EN-DC mode and
+/// the 5G core access mode.
+pub const C5GOPTION_QUERY: &str = "AT^C5GOPTION?";
+
+/// Write the 5G access mode. The firmware only applies it after a radio
+/// function-level cycle, so callers run it through the shared write helper.
+pub fn c5goption_write(sa: u8, dc: u8, gc: u8) -> String {
+    format!("AT^C5GOPTION={},{},{}", sa, dc, gc)
+}
+
+/// The lock query for one RAT.
+pub fn lock_query(kind: LockKind) -> &'static str {
+    match kind {
+        LockKind::Lte => LTEFREQLOCK_QUERY,
+        LockKind::Nr => NRFREQLOCK_QUERY,
+    }
+}
+
+/// The reply prefix the query answers with (`^LTEFREQLOCK:` / `^NRFREQLOCK:`).
+pub fn lock_prefix(kind: LockKind) -> &'static str {
+    match kind {
+        LockKind::Lte => "^LTEFREQLOCK:",
+        LockKind::Nr => "^NRFREQLOCK:",
+    }
+}
+
+// Longest band-lock form from the manual: 20 bands × up to 5 digits.
+const MAX_LOCK_GROUPS: usize = 20;
+
+fn clean_csv(value: &str) -> String {
+    let no_space: String = value.chars().filter(|c| *c != ' ').collect();
+    let trimmed = no_space.trim_matches(',');
+    let parts: Vec<&str> = trimmed.split(',').filter(|p| !p.is_empty()).collect();
+    parts.join(",")
+}
+
+fn csv_count(value: &str) -> usize {
+    let v: String = value.chars().filter(|c| *c != ' ').collect();
+    if v.is_empty() {
+        0
+    } else {
+        v.split(',').count()
+    }
+}
+
+fn is_numeric_csv(v: &str) -> bool {
+    !v.is_empty() && v.split(',').all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
+fn numeric_csv_in_range(v: &str, min: u64, max: u64) -> bool {
+    is_numeric_csv(v)
+        && v.split(',')
+            .all(|p| p.parse::<u64>().map(|n| n >= min && n <= max).unwrap_or(false))
+}
+
+fn valid_lock_count(count: usize) -> bool {
+    (1..=MAX_LOCK_GROUPS).contains(&count)
+}
+
+/// LTE lock write (manual 13.12.3): type 0 unlock, 3 band-only, 1
+/// band+ARFCN, 2 band+ARFCN+PCI. `None` means the caller passed something the
+/// manual forbids (exit 64 in the CLI, a parameter error on the API).
+fn lte_lock_write(
+    lock_type: &str,
+    mobility: u8,
+    bands: &str,
+    arfcns: &str,
+    pcis: &str,
+) -> Option<String> {
+    let bands = clean_csv(bands);
+    let arfcns = clean_csv(arfcns);
+    let pcis = clean_csv(pcis);
+    let count = csv_count(&bands);
+    match lock_type {
+        "0" => Some("AT^LTEFREQLOCK=0".into()),
+        "3" => {
+            if !(valid_lock_count(count) && numeric_csv_in_range(&bands, 0, 65535)) {
+                return None;
+            }
+            Some(format!(
+                "AT^LTEFREQLOCK=3,{},{},\"{}\"",
+                mobility, count, bands
+            ))
+        }
+        "1" => {
+            if !(valid_lock_count(count)
+                && numeric_csv_in_range(&bands, 0, 65535)
+                && numeric_csv_in_range(&arfcns, 0, 4294967295)
+                && count == csv_count(&arfcns))
+            {
+                return None;
+            }
+            Some(format!(
+                "AT^LTEFREQLOCK=1,{},{},\"{}\",\"{}\"",
+                mobility, count, bands, arfcns
+            ))
+        }
+        "2" => {
+            if !(valid_lock_count(count)
+                && numeric_csv_in_range(&bands, 0, 65535)
+                && numeric_csv_in_range(&arfcns, 0, 4294967295)
+                && numeric_csv_in_range(&pcis, 0, 503)
+                && count == csv_count(&arfcns)
+                && count == csv_count(&pcis))
+            {
+                return None;
+            }
+            Some(format!(
+                "AT^LTEFREQLOCK=2,{},{},\"{}\",\"{}\",\"{}\"",
+                mobility, count, bands, arfcns, pcis
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// NR lock write (manual 13.13.3): NR carries one extra `scstype` group
+/// between the ARFCNs and the PCIs.
+fn nr_lock_write(
+    lock_type: &str,
+    mobility: u8,
+    bands: &str,
+    arfcns: &str,
+    scs: &str,
+    pcis: &str,
+) -> Option<String> {
+    let bands = clean_csv(bands);
+    let arfcns = clean_csv(arfcns);
+    let scs = clean_csv(scs);
+    let pcis = clean_csv(pcis);
+    let count = csv_count(&bands);
+    match lock_type {
+        "0" => Some("AT^NRFREQLOCK=0".into()),
+        "3" => {
+            if !(valid_lock_count(count) && numeric_csv_in_range(&bands, 0, 65535)) {
+                return None;
+            }
+            Some(format!("AT^NRFREQLOCK=3,{},{},\"{}\"", mobility, count, bands))
+        }
+        "1" => {
+            if !(valid_lock_count(count)
+                && numeric_csv_in_range(&bands, 0, 65535)
+                && numeric_csv_in_range(&arfcns, 0, 4294967295)
+                && numeric_csv_in_range(&scs, 0, 4)
+                && count == csv_count(&arfcns)
+                && count == csv_count(&scs))
+            {
+                return None;
+            }
+            Some(format!(
+                "AT^NRFREQLOCK=1,{},{},\"{}\",\"{}\",\"{}\"",
+                mobility, count, bands, arfcns, scs
+            ))
+        }
+        "2" => {
+            if !(valid_lock_count(count)
+                && numeric_csv_in_range(&bands, 0, 65535)
+                && numeric_csv_in_range(&arfcns, 0, 4294967295)
+                && numeric_csv_in_range(&scs, 0, 4)
+                && numeric_csv_in_range(&pcis, 0, 1007)
+                && count == csv_count(&arfcns)
+                && count == csv_count(&scs)
+                && count == csv_count(&pcis))
+            {
+                return None;
+            }
+            Some(format!(
+                "AT^NRFREQLOCK=2,{},{},\"{}\",\"{}\",\"{}\",\"{}\"",
+                mobility, count, bands, arfcns, scs, pcis
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// The CLI's grouped-CSV form (mobility 0, as the shell interface has always
+/// sent it).
+pub fn lte_lock_command(lock_type: &str, bands: &str, arfcns: &str, pcis: &str) -> Option<String> {
+    lte_lock_write(lock_type, 0, bands, arfcns, pcis)
+}
+
+/// The CLI's NR form (mobility 0).
+pub fn nr_lock_command(
+    lock_type: &str,
+    bands: &str,
+    arfcns: &str,
+    scs: &str,
+    pcis: &str,
+) -> Option<String> {
+    nr_lock_write(lock_type, 0, bands, arfcns, scs, pcis)
+}
+
+/// SCS code used when a lock item does not carry one: 30 kHz for the FR1 TDD
+/// bands the MT5700M locks (n41/n77/n78/n79), 15 kHz otherwise.
+///
+/// This is the same rule the Settings page applied in its lock form, so a
+/// request that omits `scs` writes exactly what the page used to write. The
+/// day/night scheduler keeps its own port of the shell's `auto_detect_scs`
+/// (FR2 -> 120 kHz) — two different inputs, two documented rules.
+fn default_scs(band: i64) -> i64 {
+    if matches!(band, 41 | 77 | 78 | 79) {
+        1
+    } else {
+        0
+    }
+}
+
+/// Build the lock write for one RAT from structured items (the API path).
+///
+/// Items without a band are ignored, exactly as the page filtered them. A
+/// missing ARFCN/PCI becomes `-1`, which fails the numeric range check and
+/// turns into a parameter error rather than a malformed AT write.
+pub fn lock_command_for(
+    kind: LockKind,
+    lock_type: u8,
+    mobility: u8,
+    items: &[LockItem],
+) -> Option<String> {
+    let used: Vec<&LockItem> = items.iter().filter(|i| i.band.is_some()).collect();
+    let list = |f: fn(&LockItem) -> Option<i64>| {
+        used.iter()
+            .map(|i| f(i).unwrap_or(-1).to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let bands = list(|i| i.band);
+    let arfcns = list(|i| i.arfcn);
+    let pcis = list(|i| i.pci);
+    let lock_type = lock_type.to_string();
+    match kind {
+        LockKind::Lte => lte_lock_write(&lock_type, mobility, &bands, &arfcns, &pcis),
+        LockKind::Nr => {
+            let scs = used
+                .iter()
+                .map(|i| {
+                    i.scs
+                        .unwrap_or_else(|| default_scs(i.band.unwrap_or(0)))
+                        .to_string()
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            nr_lock_write(&lock_type, mobility, &bands, &arfcns, &scs, &pcis)
+        }
+    }
 }
 
 /// AT command that selects `+CFUN` (radio on/off) when a caller needs to

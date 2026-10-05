@@ -32,6 +32,52 @@ pub struct CellState {
     pub raw: Option<String>,
 }
 
+/// One measured neighbour cell (`^MONNC`).
+///
+/// `rsrp`/`rsrq`/`sinr`/`rxlev` are kept as strings because that is exactly
+/// what the firmware prints (and what the table rendered); `pci` is decimal
+/// although the reply carries it in hex, and `band` is derived from the ARFCN
+/// by the module's band table.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NeighborCell {
+    /// `LTE` / `NR`.
+    pub rat: String,
+    pub arfcn: Option<i64>,
+    pub pci: Option<i64>,
+    pub rsrp: Option<String>,
+    pub rsrq: Option<String>,
+    pub sinr: Option<String>,
+    pub rxlev: Option<String>,
+    pub band: Option<i64>,
+}
+
+impl NeighborCell {
+    pub fn to_json(&self) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert("type".to_string(), json::str_val(&self.rat));
+        let mut put_str = |k: &str, v: &Option<String>| {
+            if let Some(v) = v {
+                if !v.is_empty() {
+                    m.insert(k.to_string(), json::str_val(v));
+                }
+            }
+        };
+        let mut put_num = |k: &str, v: Option<i64>| {
+            if let Some(v) = v {
+                m.insert(k.to_string(), json::num_val(v));
+            }
+        };
+        put_num("arfcn", self.arfcn);
+        put_num("pci", self.pci);
+        put_str("rsrp", &self.rsrp);
+        put_str("rsrq", &self.rsrq);
+        put_str("sinr", &self.sinr);
+        put_str("rxlev", &self.rxlev);
+        put_num("band", self.band);
+        Value::Obj(m)
+    }
+}
+
 impl CellState {
     /// True when nothing was learned about the serving cell.
     pub fn is_empty(&self) -> bool {

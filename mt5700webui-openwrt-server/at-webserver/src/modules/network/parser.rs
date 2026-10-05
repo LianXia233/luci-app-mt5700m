@@ -5,7 +5,9 @@
 //! the CLI's `status`/`network` verbs derive their output from here, so a
 //! parsing fix can never land on one surface only.
 
-use crate::modules::network::state::{DhcpLease, PdpAddress, RegistrationState};
+use crate::modules::network::state::{
+    C5gOptionState, DhcpLease, LockItem, LockKind, LockState, PdpAddress, RegistrationState,
+};
 
 /// Parse a `+CxxREG:` line: registration state + family-specific fields.
 ///
@@ -382,6 +384,118 @@ fn hex_to_ipv4(hex: &str) -> String {
         .join(".")
 }
 
+/// Decode `^C5GOPTION: <nr_sa_support_flag>,<nr_dc_mode>,<gc_access_mode>`.
+///
+/// An answer that does not carry all three fields leaves them `None`; the page
+/// then keeps the value it already had instead of showing zeros.
+pub fn parse_c5goption(raw: &str) -> C5gOptionState {
+    let mut st = C5gOptionState::default();
+    for line in raw.lines() {
+        let t = line.trim();
+        let Some(idx) = t.find("^C5GOPTION:") else { continue };
+        let body = t[idx + "^C5GOPTION:".len()..].trim();
+        let fields: Vec<&str> = body.split(',').map(|f| f.trim()).collect();
+        if fields.len() < 3 {
+            continue;
+        }
+        st.nr_sa_support_flag = fields[0].parse::<u8>().ok();
+        st.nr_dc_mode = fields[1].parse::<u8>().ok();
+        st.gc_access_mode = fields[2].parse::<u8>().ok();
+        break;
+    }
+    st
+}
+
+/// Decode `^LTEFREQLOCK?` / `^NRFREQLOCK?`.
+///
+/// Shape (manual 13.12.1 / 13.13.1):
+///
+/// ```text
+/// ^LTEFREQLOCK: <type>
+/// <mobility>,<num>
+/// <band>,<arfcn>,<pci>          (LTE, num rows)
+///
+/// ^NRFREQLOCK: <type>
+/// <mobility>,<num>
+/// <band>,<arfcn>,<scstype>,<pci> (NR, num rows)
+/// ```
+///
+/// `type 0` (unlocked) has no rows at all. PCI is printed in hex by the
+/// firmware and exposed in decimal — exactly what the page's parser did, since
+/// the lock write takes a decimal PCI.
+///
+/// `None` means the reply did not carry a lock line at all: callers keep the
+/// value they already had instead of showing "unlocked".
+pub fn parse_freq_lock(raw: &str, kind: LockKind) -> Option<LockState> {
+    let prefix = crate::modules::network::commands::lock_prefix(kind);
+    let lines: Vec<&str> = raw
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.contains("OK") && !l.starts_with("AT"))
+        .collect();
+    let head = lines.iter().position(|l| l.starts_with(prefix))?;
+    let lock_type = lines[head][prefix.len()..]
+        .trim_start()
+        .split(|c: char| !c.is_ascii_digit())
+        .next()
+        .and_then(|v| v.parse::<u8>().ok())?;
+    if lock_type == 0 {
+        return Some(LockState::default());
+    }
+    let (mobility, num) = match lines.get(head + 1) {
+        Some(row) => {
+            let mut parts = row.split(',');
+            let mobility = parts.next().and_then(|v| v.trim().parse::<u8>().ok()).unwrap_or(0);
+            let num = parts
+                .next()
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            (mobility, num)
+        }
+        None => (0, 0),
+    };
+    let mut items = Vec::new();
+    for i in 0..num {
+        let Some(row) = lines.get(head + i + 2) else { break };
+        let parts: Vec<&str> = row.split(',').map(|p| p.trim()).collect();
+        let num_at = |idx: usize, radix: u32| -> Option<i64> {
+            let raw = parts.get(idx)?.trim_matches('"');
+            if raw.is_empty() {
+                return None;
+            }
+            i64::from_str_radix(raw, radix).ok()
+        };
+        let item = match kind {
+            LockKind::Lte => LockItem {
+                band: num_at(0, 10),
+                arfcn: num_at(1, 10),
+                pci: num_at(2, 16),
+                scs: None,
+            },
+            LockKind::Nr => LockItem {
+                band: num_at(0, 10),
+                arfcn: num_at(1, 10),
+                scs: num_at(2, 10),
+                pci: num_at(3, 16),
+            },
+        };
+        items.push(item);
+    }
+    Some(LockState {
+        lock_type,
+        mobility,
+        items,
+    })
+}
+
+/// Radio function level from `+CFUN: <0|1>`; `None` when the reply has no
+/// parseable value (`apply` then treats the radio as on).
+pub fn parse_cfun(raw: &str) -> Option<u8> {
+    raw.lines()
+        .find_map(|l| l.trim().strip_prefix("+CFUN:"))
+        .and_then(|rest| rest.trim().parse::<u8>().ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -500,6 +614,59 @@ mod tests {
         assert!(parse_dhcp_v6("^DHCPV6: 2409:8a00::1,64,2409:8a00::").is_none());
         // The other family's line must not match.
         assert!(parse_dhcp_v6("^DHCP: 0100A8C0,00FFFFFF,1,2,3,4").is_none());
+    }
+
+    #[test]
+    fn c5goption_triple_and_partial_replies() {
+        let st = parse_c5goption("^C5GOPTION: 1,1,1\nOK");
+        assert_eq!(st.nr_sa_support_flag, Some(1));
+        assert_eq!(st.nr_dc_mode, Some(1));
+        assert_eq!(st.gc_access_mode, Some(1));
+        // Two fields: nothing is decoded (the page keeps its previous value).
+        assert!(parse_c5goption("^C5GOPTION: 1,1").is_empty());
+        assert!(parse_c5goption("OK").is_empty());
+    }
+
+    #[test]
+    fn freq_lock_lte_rows_and_hex_pci() {
+        let raw = "^LTEFREQLOCK: 2\n0,1\n3,1850,64\nOK";
+        let st = parse_freq_lock(raw, LockKind::Lte).expect("lock");
+        assert_eq!(st.lock_type, 2);
+        assert_eq!(st.mobility, 0);
+        assert_eq!(st.items.len(), 1);
+        assert_eq!(st.items[0].band, Some(3));
+        assert_eq!(st.items[0].arfcn, Some(1850));
+        assert_eq!(st.items[0].pci, Some(100)); // 0x64
+        assert_eq!(st.items[0].scs, None);
+    }
+
+    #[test]
+    fn freq_lock_nr_rows_carry_scs_before_pci() {
+        let raw = "^NRFREQLOCK: 2\n0,2\n78,643456,1,10\n41,504990,0,1A\nOK";
+        let st = parse_freq_lock(raw, LockKind::Nr).expect("lock");
+        assert_eq!(st.items.len(), 2);
+        assert_eq!(st.items[0].scs, Some(1));
+        assert_eq!(st.items[0].pci, Some(0x10));
+        assert_eq!(st.items[1].scs, Some(0));
+        assert_eq!(st.items[1].pci, Some(26));
+    }
+
+    #[test]
+    fn freq_lock_unlock_and_missing_line() {
+        let unlocked = parse_freq_lock("^LTEFREQLOCK: 0\nOK", LockKind::Lte).unwrap();
+        assert_eq!(unlocked.lock_type, 0);
+        assert!(unlocked.items.is_empty());
+        // A reply without the lock line keeps the caller's previous value.
+        assert!(parse_freq_lock("OK", LockKind::Lte).is_none());
+        // The other RAT's line must not match.
+        assert!(parse_freq_lock("^NRFREQLOCK: 2\n0,1\n78,1,1,2", LockKind::Lte).is_none());
+    }
+
+    #[test]
+    fn cfun_level_is_parsed() {
+        assert_eq!(parse_cfun("+CFUN: 1\nOK"), Some(1));
+        assert_eq!(parse_cfun("+CFUN: 0"), Some(0));
+        assert_eq!(parse_cfun("OK"), None);
     }
 
     #[test]

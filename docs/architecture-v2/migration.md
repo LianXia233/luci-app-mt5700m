@@ -75,6 +75,17 @@ aliases, so the move itself changed no behaviour.
    for `AT^DSFLOWCLR`). `Info.tsx` therefore contains no AT command at all, and
    the dead AT verb set in `services/at.ts` (`sendSMS`, call control,
    `parsePDU`, registration queries) was deleted rather than left to rot.)
+   The frequency lock went the same way: `modules/network` owns
+   `^LTEFREQLOCK?`/`^NRFREQLOCK?` (row layout, hex PCI), the grouped-CSV write
+   with its range tables, the radio-cycle apply sequence and the
+   `^C5GOPTION` get/set triple, so the CLI's `lock`/`preview-lock` verbs, the
+   day/night scheduler and the Settings page all build the same write through
+   `commands::lte_lock_command`/`nr_lock_command` + `service::apply_lock`, and
+   `modem/lock.ts` no longer builds an AT string. `modules/cell` owns the
+   neighbour scan (`cell.neighbors`, `AT^MONNC`) including the ARFCN→band
+   table the WebUI used to keep in `modem/parse.ts`. The only raw-AT surfaces
+   left in the WebUI are the NR SSB query, the cell-scan panel, the SMS pages
+   and the deliberate `pages/at/Terminal.tsx` console.)
 2. **CLI adapter thinning**: `api/cli.rs` still holds the per-verb text
    formatters for those capabilities; they move into the modules' `api.rs`
    `render_text` as the modules land.

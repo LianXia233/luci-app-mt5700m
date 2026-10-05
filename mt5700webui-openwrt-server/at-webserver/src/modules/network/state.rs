@@ -129,6 +129,115 @@ impl DhcpLease {
     }
 }
 
+/// 5G access mode (`^C5GOPTION`).
+///
+/// The page renders the triple as "仅 SA / 仅 NSA / SA+NSA / 其他"; that label
+/// mapping stays in the frontend, the values are the module's.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct C5gOptionState {
+    pub nr_sa_support_flag: Option<u8>,
+    pub nr_dc_mode: Option<u8>,
+    pub gc_access_mode: Option<u8>,
+}
+
+impl C5gOptionState {
+    /// True when the reply did not carry a parseable triple.
+    pub fn is_empty(&self) -> bool {
+        self.nr_sa_support_flag.is_none()
+            && self.nr_dc_mode.is_none()
+            && self.gc_access_mode.is_none()
+    }
+
+    pub fn to_json(&self) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        let mut put = |k: &str, v: Option<u8>| {
+            if let Some(v) = v {
+                m.insert(k.to_string(), json::num_val(v));
+            }
+        };
+        put("nr_sa_support_flag", self.nr_sa_support_flag);
+        put("nr_dc_mode", self.nr_dc_mode);
+        put("gc_access_mode", self.gc_access_mode);
+        Value::Obj(m)
+    }
+}
+
+/// Which radio access technology a frequency lock applies to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockKind {
+    Lte,
+    Nr,
+}
+
+impl LockKind {
+    /// Short name used in CLI arguments and JSON keys.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LockKind::Lte => "lte",
+            LockKind::Nr => "nr",
+        }
+    }
+
+    /// Largest PCI the manual allows (503 LTE / 1007 NR).
+    pub fn pci_max(self) -> u64 {
+        match self {
+            LockKind::Lte => 503,
+            LockKind::Nr => 1007,
+        }
+    }
+}
+
+/// One locked band entry (`^LTEFREQLOCK` / `^NRFREQLOCK` reply row).
+///
+/// `pci` is decimal here although the reply prints it in hex; `scs` only
+/// exists for NR. Values the row did not carry stay `None`, and the frontends
+/// render an empty input for them.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LockItem {
+    pub band: Option<i64>,
+    pub arfcn: Option<i64>,
+    pub pci: Option<i64>,
+    pub scs: Option<i64>,
+}
+
+impl LockItem {
+    pub fn to_json(&self) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        let mut put = |k: &str, v: Option<i64>| {
+            if let Some(v) = v {
+                m.insert(k.to_string(), json::num_val(v));
+            }
+        };
+        put("band", self.band);
+        put("arfcn", self.arfcn);
+        put("pci", self.pci);
+        put("scs", self.scs);
+        Value::Obj(m)
+    }
+}
+
+/// A frequency-lock reading.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LockState {
+    /// 0 = unlocked, 1 = ARFCN lock, 2 = cell lock, 3 = band lock.
+    pub lock_type: u8,
+    /// Mobility state the firmware reports next to the type (0 for an unlock).
+    pub mobility: u8,
+    /// Locked band entries; empty for an unlock or an unparseable reply.
+    pub items: Vec<LockItem>,
+}
+
+impl LockState {
+    pub fn to_json(&self) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert("lock_type".to_string(), json::num_val(self.lock_type));
+        m.insert("mobility".to_string(), json::num_val(self.mobility));
+        let items: Vec<Value> = self.items.iter().map(|i| i.to_json()).collect();
+        m.insert("items".to_string(), Value::Arr(items));
+        Value::Obj(m)
+    }
+}
+
 /// Network domain model (operator + system mode + registration).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct NetworkState {
@@ -181,6 +290,22 @@ impl NetworkState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn c5goption_json_omits_missing_fields() {
+        let st = C5gOptionState {
+            nr_sa_support_flag: Some(1),
+            nr_dc_mode: Some(1),
+            gc_access_mode: None,
+        };
+        let Value::Obj(m) = st.to_json() else {
+            panic!("object")
+        };
+        assert_eq!(m.get("nr_sa_support_flag").and_then(|v| v.as_i64()), Some(1));
+        assert!(!m.contains_key("gc_access_mode"));
+        assert!(!st.is_empty());
+        assert!(C5gOptionState::default().is_empty());
+    }
 
     #[test]
     fn registration_json_omits_absent_fields() {

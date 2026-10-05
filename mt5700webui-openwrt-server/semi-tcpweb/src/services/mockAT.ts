@@ -517,6 +517,26 @@ const MOCK_API_ROUTES: Record<string, unknown> = {
       avg_mcs: 18,
     },
   },
+  // modules/network：锁频读数/写入（^LTEFREQLOCK?/^NRFREQLOCK?）
+  'api.network.lock_get': {
+    lock_type: 2,
+    mobility: 0,
+    items: [{ band: 3, arfcn: 1850, pci: 100 }],
+  },
+  'api.network.lock_apply': {
+    cycled_radio: true,
+    results: [{ rat: 'lte', applied: true }],
+  },
+  // modules/network：5G 接入模式
+  'api.network.c5goption': { nr_sa_support_flag: 1, nr_dc_mode: 1, gc_access_mode: 1 },
+  'api.network.c5goption_set': { applied: true, cycled_radio: true },
+  // modules/cell：邻区扫描
+  'api.cell.neighbors': {
+    cells: [
+      { type: 'LTE', arfcn: 1650, pci: 476, rsrp: '-85', rsrq: '-12', rxlev: '30', band: 3 },
+      { type: 'NR', arfcn: 636648, pci: 64, rsrp: '-70', rsrq: '-10', sinr: '20', band: 78 },
+    ],
+  },
   // 幂等写：详细 PS 注册上报
   'api.network.registration_urc': { enabled: true },
   // 写：清空模组侧的流量计数器
