@@ -116,8 +116,6 @@ fn clean_value(s: &str) -> String {
 use crate::modules::network::commands::{
     lte_lock_command as build_lte_lock_command, nr_lock_command as build_nr_lock_command,
 };
-use crate::core::channel::AtChannel;
-use crate::core::error::BackendError;
 use crate::modules::network::service::{self, LockApply};
 use crate::modules::network::state::LockKind;
 use crate::transport::channel::DaemonChannel;

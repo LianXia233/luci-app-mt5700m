@@ -130,3 +130,31 @@ export interface NeighborsPayload {
     band?: number;
   }>;
 }
+
+/**
+ * `api.beam.ssb` —— NR SSB 波束报告（modules/beam 解析 `AT^NRSSBID?`）。
+ * 未测到的波束槽位（255/32767）已在后端剔除。
+ */
+export interface SsbBeam {
+  ssbId: number;
+  rsrp: number;
+}
+
+export interface SsbPayload {
+  servingCell?: {
+    arfcn?: string;
+    cid?: string;
+    pci?: string;
+    rsrp?: number;
+    sinr?: number;
+    ta?: number;
+    ssbs?: SsbBeam[];
+  } | null;
+  neighborCells?: Array<{
+    pci?: string;
+    arfcn?: string;
+    rsrp?: number;
+    sinr?: number;
+    ssbs?: SsbBeam[];
+  }>;
+}

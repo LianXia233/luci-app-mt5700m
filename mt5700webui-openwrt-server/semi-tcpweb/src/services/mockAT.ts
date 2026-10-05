@@ -530,6 +530,36 @@ const MOCK_API_ROUTES: Record<string, unknown> = {
   // modules/network：5G 接入模式
   'api.network.c5goption': { nr_sa_support_flag: 1, nr_dc_mode: 1, gc_access_mode: 1 },
   'api.network.c5goption_set': { applied: true, cycled_radio: true },
+  // modules/beam：NR SSB 波束报告
+  'api.beam.ssb': {
+    servingCell: {
+      arfcn: '636648',
+      cid: '1A2B3C',
+      pci: '506',
+      rsrp: 85,
+      sinr: 50,
+      ta: 1,
+      ssbs: [
+        { ssbId: 0, rsrp: 90 },
+        { ssbId: 1, rsrp: 80 },
+        { ssbId: 2, rsrp: 70 },
+        { ssbId: 3, rsrp: 60 },
+      ],
+    },
+    neighborCells: [
+      {
+        pci: '506',
+        arfcn: '632448',
+        rsrp: 88,
+        sinr: 45,
+        ssbs: [
+          { ssbId: 0, rsrp: 90 },
+          { ssbId: 1, rsrp: 80 },
+          { ssbId: 2, rsrp: 70 },
+        ],
+      },
+    ],
+  },
   // modules/cell：邻区扫描
   'api.cell.neighbors': {
     cells: [

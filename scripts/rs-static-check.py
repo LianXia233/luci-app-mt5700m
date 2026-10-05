@@ -22,7 +22,15 @@ Checked, in order:
   6. struct literals only name fields the struct declares;
   7. one item never carries two `#[derive(...)]` attributes, which is how a
      scripted insert that lands between an attribute and its item shows up
-     (the item below silently loses `Debug`/`Default`/`PartialEq`).
+     (the item below silently loses `Debug`/`Default`/`PartialEq`);
+  8. a module-qualified call (`commands::print_qos(…)`) is only used in a file
+     that actually imports that module — a moved line that kept the call but
+     lost the `use` compiles nowhere (this is how a scripted edit broke
+     `modules/network/api.rs` once);
+  9. two closures in one function never mutate the same local variable while
+     both are live (`put_str` and `put_num` both calling `m.insert(…)`): the
+     borrow checker rejects it, and it is how a JSON-rendering helper written
+     in the two-closure style breaks the build.
 
 Points 2-6 mirror the compiler errors a mechanical refactor produces most
 often, which is why this runs in CI next to `cargo test` (the Rust toolchain is
@@ -794,6 +802,165 @@ def check_split_derives(files):
     return errors
 
 
+# Sibling module names a file may call into without a `crate::` prefix. Kept
+# deliberately short: these are the file-per-concern names every module uses,
+# so a bare `commands::` / `parser::` / `state::` reference almost always means
+# "this file imported the module" — and when it did not, the compiler would
+# reject it. (`json::`, `parse::<…>` and friends are covered by the crate::-
+# path checker for qualified uses and are not listed here.)
+MODULE_QUALIFIERS = (
+    'commands', 'parser', 'state', 'service', 'api', 'channel', 'cache', 'bus',
+    'registry', 'refresh', 'jobs', 'arbiter', 'gate', 'plan', 'reports',
+)
+
+IMPORT_NAME_RE = re.compile(r'\b(?:use|pub\s+use)\b([^;]*);')
+
+
+def imported_names(code):
+    """Names a file's `use` items bring into scope, plus whether it globs.
+
+    Returns `(names, has_glob)`; a glob import that is not `super::*` makes the
+    check skip the file, because anything could be in scope.
+    """
+    names = set()
+    has_glob = False
+    for m in IMPORT_NAME_RE.finditer(code):
+        spec = m.group(1).strip()
+        if spec.startswith('super::*') or spec == '*':
+            continue
+        if '*' in spec:
+            has_glob = True
+            continue
+        if '{' in spec:
+            head, _, tail = spec.partition('{')
+            head = head.strip().rstrip(':')
+            for part in tail.rstrip('}').split(','):
+                part = part.strip()
+                if not part:
+                    continue
+                if part == 'self':
+                    names.add(head.split('::')[-1])
+                    continue
+                name = part.split(' as ')[-1].strip() if ' as ' in part else part
+                names.add(name)
+            continue
+        spec = spec.split(' as ')[-1].strip() if ' as ' in spec else spec
+        names.add(spec.split('::')[-1])
+    return names, has_glob
+
+
+def declared_module_names(code):
+    """Child module names this file declares (`mod x;` / `pub mod x;`).
+
+    A declaration puts the name in scope exactly like an import does, which is
+    why `main.rs` can write `api::cli::run(…)` after `mod api;`.
+    """
+    return set(re.findall(r'(?m)^\s*(?:pub\s+)?mod\s+([A-Za-z_]\w*)\s*;', code))
+
+
+def use_statement_lines(lines):
+    """Line indexes that belong to a `use` item (single- or multi-line)."""
+    skip = set()
+    in_use = False
+    for i, line in enumerate(lines):
+        if not in_use and re.match(r'\s*(?:pub\s+)?use\b', line):
+            in_use = True
+        if in_use:
+            skip.add(i)
+            if line.rstrip().endswith(';'):
+                in_use = False
+    return skip
+
+
+def check_bare_module_paths(files):
+    """`commands::f(…)` in a file that never imported `commands`."""
+    errors = []
+    for path in sorted(files):
+        code = open(path, encoding='utf-8').read()
+        stripped = strip_code(code)
+        names, has_glob = imported_names(stripped)
+        names |= declared_module_names(stripped)
+        if has_glob:
+            continue
+        lines = stripped.split('\n')
+        skip = use_statement_lines(lines)
+        for i, line in enumerate(lines):
+            if i in skip:
+                continue
+            for m in re.finditer(r'(?<![:\w])([A-Za-z_]\w*)::', line):
+                name = m.group(1)
+                if name in MODULE_QUALIFIERS and name not in names:
+                    errors.append(
+                        f'{path}:{i + 1}: `{name}::` is used but `{name}` is not imported '
+                        f'in this file')
+    return errors
+
+
+# Local mutators a closure body may use; the identifier in front of one of
+# these is what the closure captures mutably.
+MUTATOR_RE = re.compile(r'\b([A-Za-z_]\w*)\.(insert|push|extend|extend_from_slice|remove|clear|set|pop|append)\s*\(')
+
+
+def function_of(lines, index):
+    """Start line of the innermost `fn`/`impl fn` containing `index` (or 0)."""
+    for i in range(index, -1, -1):
+        if re.match(r'\s*(?:pub\s+)?(?:async\s+)?fn\s+\w+', lines[i]):
+            return i
+    return 0
+
+
+def function_end(lines, start):
+    """Last line of the function that begins at `start` (file end as a guard)."""
+    for i in range(start + 1, len(lines)):
+        if lines[i] and not lines[i][0].isspace() and lines[i].startswith('}'):
+            return i
+    return len(lines) - 1
+
+
+def closure_spans(lines):
+    """(name, start, end, mutated-locals) for every `let … = |…| {…}` closure."""
+    out = []
+    for i, line in enumerate(lines):
+        m = re.match(r'\s*let\s+(?:mut\s+)?([A-Za-z_]\w*)\s*=\s*(?:move\s+)?\|', line)
+        if not m:
+            continue
+        depth = line.count('{') - line.count('}')
+        j = i
+        while depth > 0 and j + 1 < len(lines):
+            j += 1
+            depth += lines[j].count('{') - lines[j].count('}')
+        body = '\n'.join(lines[i:j + 1])
+        mutated = {match[0] for match in MUTATOR_RE.findall(body)}
+        out.append((m.group(1), i, j, mutated))
+    return out
+
+
+def check_overlapping_closures(files):
+    """Two closures mutating one local, both still live when the other runs."""
+    errors = []
+    for path in sorted(files):
+        lines = strip_code(open(path, encoding='utf-8').read()).split('\n')
+        for name_a, start_a, end_a, muts_a in closure_spans(lines):
+            for name_b, start_b, end_b, muts_b in closure_spans(lines):
+                if name_b == name_a or start_b <= start_a:
+                    continue
+                if function_of(lines, start_a) != function_of(lines, start_b):
+                    continue
+                shared = muts_a & muts_b
+                if not shared:
+                    continue
+                # A later call of the first closure after the second was
+                # declared means both borrows are live at once.
+                call = re.compile(r'\b' + re.escape(name_a) + r'\s*\(')
+                fn_end = function_end(lines, function_of(lines, start_a))
+                if any(call.search(lines[k]) for k in range(start_b, fn_end + 1)):
+                    errors.append(
+                        f'{path}:{start_a + 1}: closures `{name_a}` and `{name_b}` both '
+                        f'mutate `{sorted(shared)[0]}` while both are live '
+                        f'(borrow-checked error: one closure must do both)')
+    return errors
+
+
 def main():
     src_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.getcwd(), 'src')
     root_file = os.path.join(src_dir, 'main.rs')
@@ -806,6 +973,8 @@ def main():
     errors.extend(check_struct_literals(files))
     errors.extend(check_enum_variants(files))
     errors.extend(check_split_derives(files))
+    errors.extend(check_bare_module_paths(files))
+    errors.extend(check_overlapping_closures(files))
     print(f'resolved {checked} crate:: path(s) through {count_mods(root)} module(s)')
     for file, line, name, path in MISSING:
         errors.append(

@@ -8,7 +8,7 @@ use crate::api::registry::{ApiCtx, Route};
 use crate::core::error::BackendError;
 use crate::core::json::{self, Value};
 use crate::core::task::Priority;
-use crate::modules::network::commands::{CGREG_DETAILED, CGPADDR, DHCP_V4, DHCP_V6, IPV6CAP};
+use crate::modules::network::commands::{self, CGREG_DETAILED, CGPADDR, DHCP_V4, DHCP_V6, IPV6CAP};
 use crate::modules::network::parser::{
     parse_cgpaddr, parse_dhcp_v4, parse_dhcp_v6, parse_ipv6cap,
 };

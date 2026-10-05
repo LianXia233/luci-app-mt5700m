@@ -55,25 +55,30 @@ impl NeighborCell {
     pub fn to_json(&self) -> Value {
         let mut m = std::collections::BTreeMap::new();
         m.insert("type".to_string(), json::str_val(&self.rat));
-        let mut put_str = |k: &str, v: &Option<String>| {
-            if let Some(v) = v {
+        let mut put = |k: &str, v: Value| {
+            m.insert(k.to_string(), v);
+        };
+        if let Some(v) = self.arfcn {
+            put("arfcn", json::num_val(v));
+        }
+        if let Some(v) = self.pci {
+            put("pci", json::num_val(v));
+        }
+        for (key, field) in [
+            ("rsrp", &self.rsrp),
+            ("rsrq", &self.rsrq),
+            ("sinr", &self.sinr),
+            ("rxlev", &self.rxlev),
+        ] {
+            if let Some(v) = field {
                 if !v.is_empty() {
-                    m.insert(k.to_string(), json::str_val(v));
+                    put(key, json::str_val(v));
                 }
             }
-        };
-        let mut put_num = |k: &str, v: Option<i64>| {
-            if let Some(v) = v {
-                m.insert(k.to_string(), json::num_val(v));
-            }
-        };
-        put_num("arfcn", self.arfcn);
-        put_num("pci", self.pci);
-        put_str("rsrp", &self.rsrp);
-        put_str("rsrq", &self.rsrq);
-        put_str("sinr", &self.sinr);
-        put_str("rxlev", &self.rxlev);
-        put_num("band", self.band);
+        }
+        if let Some(v) = self.band {
+            put("band", json::num_val(v));
+        }
         Value::Obj(m)
     }
 }

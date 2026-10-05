@@ -25,7 +25,7 @@ import {
   type LockStatePayload,
 } from '@/modem/lock';
 import { atErrorText, sleep } from '@/modem/atx';
-import type { C5gOptionPayload, NeighborsPayload } from '@/modem/status';
+import type { C5gOptionPayload, NeighborsPayload, SsbPayload } from '@/modem/status';
 import { type RejectInfo } from '@/modem/reject';
 import { AutoRefresh, Field, PageCard, Panel, SectionHeader, TwoCol } from '@/ui/widgets';
 import { LockEditor } from '@/ui/LockEditor';
@@ -279,46 +279,31 @@ const NetworkSettings: React.FC = () => {
     }
   };
 
+  // SSB 波束报告来自后端 modules/beam（beam.ssb，解析 AT^NRSSBID? 的固定偏移），
+  // 页面只把领域数据放进两组卡片。
   const querySSB = async () => {
     if (busy) return;
     setBusy(true);
     try {
-      const res = await at().readCommand('AT^NRSSBID?');
-      if (!res.success || !res.data) return;
-      const dataLine = String(res.data)
-        .split('\n')
-        .find((l) => l.startsWith('^NRSSBID:'));
-      if (!dataLine) return;
-      const data = dataLine.replace('^NRSSBID:', '').trim().split(',');
-      const [arfcn, cid, pci, rsrp, sinr, ta] = data;
-      const servingSSBs = [];
-      for (let i = 0; i < 8; i += 1) {
-        const ssbId = Number(data[6 + i * 2]);
-        const ssbRsrp = Number(data[7 + i * 2]);
-        if (ssbId !== 255 && ssbRsrp !== 32767) servingSSBs.push({ ssbId, rsrp: ssbRsrp });
-      }
-      const neighborCount = Number(data[22]);
-      const neighborCells = [];
-      let offset = 23;
-      for (let i = 0; i < neighborCount; i += 1) {
-        const nbSSBs = [];
-        for (let j = 0; j < 4; j += 1) {
-          const ssbId = Number(data[offset + 4 + j * 2]);
-          const ssbRsrp = Number(data[offset + 5 + j * 2]);
-          if (ssbId !== 255 && ssbRsrp !== 32767) nbSSBs.push({ ssbId, rsrp: ssbRsrp });
-        }
-        neighborCells.push({
-          pci: data[offset],
-          arfcn: data[offset + 1],
-          rsrp: Number(data[offset + 2]),
-          sinr: Number(data[offset + 3]),
-          ssbs: nbSSBs,
-        });
-        offset += 12;
-      }
+      const res = await at().apiCommand<SsbPayload>('beam.ssb');
+      if (!res.success || !res.data || !res.data.servingCell) return;
       setSsb({
-        servingCell: { arfcn, cid, pci, rsrp: Number(rsrp), sinr: Number(sinr), ta: Number(ta), ssbs: servingSSBs },
-        neighborCells,
+        servingCell: {
+          arfcn: res.data.servingCell.arfcn ?? '',
+          cid: res.data.servingCell.cid ?? '',
+          pci: res.data.servingCell.pci ?? '',
+          rsrp: res.data.servingCell.rsrp ?? 0,
+          sinr: res.data.servingCell.sinr ?? 0,
+          ta: res.data.servingCell.ta ?? 0,
+          ssbs: res.data.servingCell.ssbs ?? [],
+        },
+        neighborCells: (res.data.neighborCells ?? []).map((n) => ({
+          pci: n.pci ?? '',
+          arfcn: n.arfcn ?? '',
+          rsrp: n.rsrp ?? 0,
+          sinr: n.sinr ?? 0,
+          ssbs: n.ssbs ?? [],
+        })),
       });
     } catch {
       Toast.error('查询 SSB 失败');

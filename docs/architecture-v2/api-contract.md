@@ -18,7 +18,7 @@ Two kinds of route, declared in the table itself (`Route::display` /
 * **on-demand** (`sim.number`, `network.pdp`, `network.dhcp`, `modem.mcs`,
   `traffic.clear`, `network.registration_urc`, `network.lock_get`,
   `network.lock_apply`, `network.c5goption`, `network.c5goption_set`,
-  `cell.neighbors`) — an explicit user action that
+  `cell.neighbors`, `beam.ssb`) — an explicit user action that
   performs a live read; it may fail with a modem error, which the UI surfaces.
   It must never fail with a parameter/internal error (asserted by the registry
   test for every registered route).
@@ -37,6 +37,7 @@ Two kinds of route, declared in the table itself (`Route::display` /
 | `network.c5goption` | `{nr_sa_support_flag, nr_dc_mode, gc_access_mode}` — on-demand `AT^C5GOPTION?` |
 | `network.c5goption_set` | `{applied: true, cycled_radio}` — write with the radio cycled around it |
 | `cell.neighbors` | `{cells: [{type, arfcn, pci, rsrp, rsrq, sinr, rxlev, band}]}` — on-demand `AT^MONNC`; hex PCI, the 1/8-unit NR scaling and the ARFCN→band table live here |
+| `beam.ssb` | `{servingCell: {arfcn, cid, pci, rsrp, sinr, ta, ssbs: [{ssbId, rsrp}]}, neighborCells: [{pci, arfcn, rsrp, sinr, ssbs}]}` — on-demand `AT^NRSSBID?`; the fixed offsets and the "not measured" slots (255/32767) are handled here |
 | `ca.get` / `ca.cached` | `{carriers: [{radio, band, source, dl_arfcn, ul_arfcn, dl_frequency_mhz, ul_frequency_mhz, dl_bandwidth_mhz, ul_bandwidth_mhz}], carrier_count, ca_active, dc_active, nr_carrier_count, lte_carrier_count, lte_secondary_count, secondary_connection_count, ca_mode, ca_dl_bandwidth, ca_ul_bandwidth}` (`ca.get?refresh=1` forces a live read) |
 | `cell.get` / `cell.cached` | `{band, channel, dlBandwidth, arfcn, sysmode, mcc, mnc, cid, pci, lac, operator, raw}` |
 | `sim.get` / `sim.cached` | `{status, iccid, imsi}` (+ `number` once read) |

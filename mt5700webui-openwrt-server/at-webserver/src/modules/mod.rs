@@ -14,6 +14,7 @@
 
 use crate::scheduler::jobs::TaskManager;
 
+pub mod beam;
 pub mod ca;
 pub mod cell;
 pub mod modem;

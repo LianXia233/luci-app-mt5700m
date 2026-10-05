@@ -366,11 +366,11 @@ fn apply_lock(ctx: &TaskCtx, cfg: &SchedCfg, lte: &Lock, nr: &Lock, mode: &str) 
     }
 
     if let Some((cmd, action)) = lte_command(cfg, lte) {
-        run_lock_command(ctx, &cmd, action);
+        run_lock_command(ctx, &cmd, &action);
         sleep(Duration::from_secs(1));
     }
     if let Some((cmd, action)) = nr_command(cfg, nr) {
-        run_lock_command(ctx, &cmd, action);
+        run_lock_command(ctx, &cmd, &action);
         sleep(Duration::from_secs(1));
     }
 

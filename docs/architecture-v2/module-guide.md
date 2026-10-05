@@ -50,7 +50,8 @@ src/modules/<name>/
   from the field (truncated/odd variants included).
 * `python3 scripts/rs-static-check.py mt5700webui-openwrt-server/at-webserver/src`
   (module tree, `crate::` paths, call arity, local calls, trait impls, struct
-  fields, enum variants, stacked derives) and `cargo test` are clean; both run in
+  fields, enum variants, stacked derives, unimported module-qualified calls and
+  overlapping closures on one local) and `cargo test` are clean; both run in
   CI, and the checker's checks are themselves mutation-tested (see the "Errors &
   dead ends" list in `migration.md`).
 * Frontend diff contains **no** AT strings and no new business rule.

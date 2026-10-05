@@ -83,9 +83,11 @@ aliases, so the move itself changed no behaviour.
    `commands::lte_lock_command`/`nr_lock_command` + `service::apply_lock`, and
    `modem/lock.ts` no longer builds an AT string. `modules/cell` owns the
    neighbour scan (`cell.neighbors`, `AT^MONNC`) including the ARFCN→band
-   table the WebUI used to keep in `modem/parse.ts`. The only raw-AT surfaces
-   left in the WebUI are the NR SSB query, the cell-scan panel, the SMS pages
-   and the deliberate `pages/at/Terminal.tsx` console.)
+   table the WebUI used to keep in `modem/parse.ts`. `modules/beam` owns the NR
+   SSB report (`beam.ssb`, `AT^NRSSBID?`) with its fixed offsets, so the
+   Settings page contains no AT command at all. The only raw-AT surfaces left in
+   the WebUI are the cell-scan panel, the system/FOTA pages, the SMS pages and
+   the deliberate `pages/at/Terminal.tsx` console.)
 2. **CLI adapter thinning**: `api/cli.rs` still holds the per-verb text
    formatters for those capabilities; they move into the modules' `api.rs`
    `render_text` as the modules land.
