@@ -21,6 +21,9 @@ LUCI_MINIFY_JS:=0
 LUCI_MINIFY_CSS:=0
 
 PKG_NAME:=luci-app-mt5700m
+# v3.1.2 — 版本号提升并触发重新编译（3.1.0 → 3.1.2，跳过已被 manual-v3.1.1
+# 手动构建占用的 3.1.1），包含 v3.1.0 之后合入的模组状态视图共享异步状态重构。
+#
 # v3.1.0 — 异步化架构：后端读命令缓存闸门。渲染/轮询路径上的 AT 读命令
 # 全部改成只读 raw 缓存（命中秒回、未命中提交后台采集并立刻返回占位），
 # 前端刷新率与 AT 通道下发量彻底解耦。实测边际成本从 ~200ms/次 降到
@@ -32,7 +35,7 @@ PKG_NAME:=luci-app-mt5700m
 # ioctl；串口打开一律 O_NONBLOCK + VMIN=1/VTIME=0。旧版二进制在不修正
 # termios 的情况下会把 TTY 留在 cooked 模式，AT 读取全部超时。
 # 写命令、拨号、短信路径不变。
-PKG_VERSION:=3.1.0
+PKG_VERSION:=3.1.2
 PKG_RELEASE:=1
 PKG_LICENSE:=Apache-2.0
 

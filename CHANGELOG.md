@@ -4,6 +4,18 @@
 
 ---
 
+## [3.1.2] - 2026-10-06
+
+### Chore
+- **版本号提升并触发重新编译**：LuCI 包 `3.1.0 → 3.1.2`（跳过已被 manual-v3.1.1
+  手动构建占用的 3.1.1）。无功能性代码变更，用于触发 CI 静态检查 + `cargo test`
+  与 release.yml 的 OpenWrt SDK 全量构建，产出全新安装包并补挂正式 tag。
+- 本版本包含 v3.1.0 提交之后合入的 PR #6「Refactor modem status views around
+  shared async state」：模组状态视图重构为共享异步状态。该改动此前仅存在于
+  main 分支，从未进入任何正式发版。
+
+---
+
 ## [3.1.0] - 2026-10-05
 
 ### Added
