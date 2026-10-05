@@ -14,6 +14,7 @@
 
 use crate::scheduler::jobs::TaskManager;
 
+pub mod ca;
 pub mod cell;
 pub mod modem;
 pub mod network;
@@ -27,6 +28,9 @@ pub mod traffic;
 ///
 /// This is the single place the daemon learns what background work exists; a
 /// new module adds one line here (and its routes to the API registry).
+/// NOTE: `ca` is missing here on purpose — `^HFREQINFO?`/`^CASCELLINFO?` cost
+/// seconds each, so carrier aggregation is refreshed on demand (`ca.get`) and
+/// then served from cache, never polled.
 pub fn spawn_all(tasks: &TaskManager) {
     signal::service::spawn(tasks);
     network::service::spawn(tasks);

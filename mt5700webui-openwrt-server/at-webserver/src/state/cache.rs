@@ -76,6 +76,8 @@ pub fn default_ttl(topic: &str) -> Duration {
         "temperature" => Duration::from_secs(600),
         "traffic" => Duration::from_secs(35),
         "cell" => Duration::from_secs(130),
+        // 载波聚合按需刷新（三条慢命令），TTL 要覆盖两次点击之间。
+        "ca" => Duration::from_secs(240),
         "endc" => Duration::from_secs(320),
         "txpower" => Duration::from_secs(320),
         "nr_txpower" => Duration::from_secs(200),
