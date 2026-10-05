@@ -37,7 +37,13 @@ aliases, so the move itself changed no behaviour.
   GitHub annotations, because this repository's CI logs are served from a blob
   URL that some environments cannot fetch.
 * `scripts/rs-static-check.py`: the cargo-free structural checker described
-  above, now part of the repository and run by CI before `cargo test`.
+  above, now part of the repository and run by CI before `cargo test` (it also
+  checks enum variants, so a renamed/removed variant cannot slip through).
+* `daemon.rs`: the dead one-shot SMS writer (`AtClient::send_sms` and
+  `send_blocking`, which bypassed the arbiter) is deleted. Sending an SMS now
+  exists exactly once: `AtTransport::send_sms` → `send_pdu` → `+CMGS` on the
+  arbiter, reached by the control socket's `sms` verb, the WebSocket route and
+  the CLI alike.
 
 ## 2. Verification performed
 

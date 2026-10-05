@@ -720,6 +720,34 @@ def check_struct_literals(files):
     return errors
 
 
+
+def check_enum_variants(files):
+    """`Enum::Variant` paths must name a variant the enum declares."""
+    enums = {}
+    for path, code in files.items():
+        for m in re.finditer(r'\benum\s+([A-Za-z_]\w*)[^{;]*\{', code):
+            body, _ = balanced_body(code, m.end() - 1)
+            variants = set()
+            for vm in re.finditer(r'(?m)^[ \t]*([A-Za-z_]\w*)\s*(?:\(|\{|,|$|=)', body):
+                variants.add(vm.group(1))
+            enums.setdefault(m.group(1), (variants, path))
+    errors = []
+    for path, code in files.items():
+        for m in re.finditer(r'(?<![\w:.])([A-Z][A-Za-z0-9_]*)::([A-Z][A-Za-z0-9_]*)\s*(?:\(|\{|,|\)|;|\.)', code):
+            name, variant = m.group(1), m.group(2)
+            if name not in enums:
+                continue
+            variants, decl = enums[name]
+            # Self:: is resolved by the compiler against the surrounding impl
+            if variant in variants:
+                continue
+            line = code[:m.start()].count('\n') + 1
+            errors.append(
+                f'{path}:{line}: {name}::{variant} — enum {name} '
+                f'({os.path.relpath(decl, os.path.dirname(path))}) has no such variant')
+    return errors
+
+
 def main():
     src_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.getcwd(), 'src')
     root_file = os.path.join(src_dir, 'main.rs')
@@ -730,6 +758,7 @@ def main():
     traits, impls, files = collect_traits(src_dir)
     errors.extend(check_traits(traits, impls, src_dir))
     errors.extend(check_struct_literals(files))
+    errors.extend(check_enum_variants(files))
     print(f'resolved {checked} crate:: path(s) through {count_mods(root)} module(s)')
     for file, line, name, path in MISSING:
         errors.append(

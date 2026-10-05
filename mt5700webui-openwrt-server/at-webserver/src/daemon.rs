@@ -227,15 +227,6 @@ impl AtClient {
         }
     }
 
-    /// Send one AT command and wait for the final result (u64 seconds —
-    /// legacy one-shot paths). Serialized behind the exclusive serial lock
-    /// (acquired inside `stream_command`).
-    pub fn send_blocking(&self, command: &str, timeout: u64) -> Result<String, String> {
-        match self.config.connection_type.as_str() {
-            "SERIAL" | "NETWORK" => self.stream_command(command, timeout),
-            _ => Err("unknown connection type".into()),
-        }
-    }
 
     /// Send one SMS-SUBMIT PDU through the persistent stream (two-phase
     /// `AT+CMGS`). Used by the control socket so the exclusive serial owner
@@ -289,15 +280,6 @@ impl AtClient {
         }
     }
 
-    /// Send the whole PDU set for one logical SMS (multipart included).
-    pub fn send_sms(&self, number: &str, text: &str) -> Result<String, String> {
-        let pdus = crate::modules::sms::pdu::encode(number, text);
-        let mut last = String::new();
-        for pdu in &pdus {
-            last = self.send_pdu(pdu, self.config.serial_timeout)?;
-        }
-        Ok(last)
-    }
 
     fn write_locked(&self, guard: &mut std::sync::MutexGuard<'_, Stream>, wire: &[u8]) -> Result<(), String> {
         match &mut **guard {
