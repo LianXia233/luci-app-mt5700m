@@ -19,7 +19,10 @@ Checked, in order:
      is still referenced somewhere else in the crate);
   5. every `impl Trait for Type` defines the trait's required methods (catches
      the "trait gained a method" class of breakage);
-  6. struct literals only name fields the struct declares.
+  6. struct literals only name fields the struct declares;
+  7. one item never carries two `#[derive(...)]` attributes, which is how a
+     scripted insert that lands between an attribute and its item shows up
+     (the item below silently loses `Debug`/`Default`/`PartialEq`).
 
 Points 2-6 mirror the compiler errors a mechanical refactor produces most
 often, which is why this runs in CI next to `cargo test` (the Rust toolchain is
@@ -695,12 +698,18 @@ def check_struct_literals(files):
             if re.search(r'(?:^|[^\w])(?:struct|enum|impl|union|trait)\s+[\w<>, ]*$', before):
                 continue
             body, _ = balanced_body(code, m.end() - 1)
-            if '..' in body:
-                continue
+            # Struct-update syntax (`..base`) is allowed, but the fields named
+            # *before* it still have to exist — only the base's own fields are
+            # unknown to this check, so cut the body at the first top-level `..`.
             named = set()
             depth = 0
             cur = ''
-            for ch in body:
+            i = 0
+            while i < len(body):
+                ch = body[i]
+                if ch == '.' and body[i:i + 2] == '..' and depth == 0:
+                    break
+                i += 1
                 if ch in '([{<':
                     depth += 1
                 elif ch in ')]}>':
@@ -748,6 +757,43 @@ def check_enum_variants(files):
     return errors
 
 
+
+def check_split_derives(files):
+    """Two `#[derive(...)]` attributes on one item mean a scripted insert landed
+    between an item's attribute and the item — the second derive (and any doc
+    comment in between) actually belongs to the *next* declaration, which then
+    silently loses `Debug`/`Default`/`PartialEq` and produces a wall of E0277/
+    E0599 errors in a file the insert never meant to touch.
+    """
+    errors = []
+    for path, code in files.items():
+        lines = code.split('\n')
+        for i, line in enumerate(lines):
+            if not re.match(r'\s*(pub\s+)?(struct|enum|union)\b', line):
+                continue
+            derives = 0
+            j = i - 1
+            while j >= 0:
+                stripped = lines[j].strip()
+                if stripped.startswith('#[') or stripped.startswith('///') or stripped.startswith('//!'):
+                    if stripped.startswith('#[derive'):
+                        derives += 1
+                    j -= 1
+                    continue
+                # blank lines are skipped: `strip_code` blanks every comment, so
+                # doc comments (and therefore the gap they leave) must not end
+                # the block — otherwise a stacked derive is invisible.
+                if not stripped:
+                    j -= 1
+                    continue
+                break
+            if derives > 1:
+                errors.append(
+                    f'{path}:{i + 1}: {derives} derive attributes stacked on one item '
+                    f'(a declaration lost its own derives?)')
+    return errors
+
+
 def main():
     src_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.getcwd(), 'src')
     root_file = os.path.join(src_dir, 'main.rs')
@@ -759,6 +805,7 @@ def main():
     errors.extend(check_traits(traits, impls, src_dir))
     errors.extend(check_struct_literals(files))
     errors.extend(check_enum_variants(files))
+    errors.extend(check_split_derives(files))
     print(f'resolved {checked} crate:: path(s) through {count_mods(root)} module(s)')
     for file, line, name, path in MISSING:
         errors.append(

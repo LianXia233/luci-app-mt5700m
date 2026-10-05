@@ -62,8 +62,6 @@ impl RegistrationState {
     }
 }
 
-/// Network domain model (operator + system mode + registration).
-#[derive(Debug, Clone, Default, PartialEq)]
 /// One activated PDP context address (`AT+CGPADDR`), as the diagnostics panel
 /// displays it.
 #[derive(Debug, Clone, PartialEq)]
@@ -84,6 +82,8 @@ impl PdpAddress {
     }
 }
 
+/// Network domain model (operator + system mode + registration).
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct NetworkState {
     pub operator: Option<String>,
     /// Access technology as the UI prints it (`LTE`, `NR`, `WCDMA`, ...).
