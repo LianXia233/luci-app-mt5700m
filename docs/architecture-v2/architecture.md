@@ -70,6 +70,7 @@ Modules present after this refactor:
 | `network` | `network`, `registration` | `network.get`, `network.cached`, `registration.get` | `+COPS?`, `^SYSINFOEX`, `+C5GREG/+CEREG/+CREG` |
 | `cell` | `cell` | `cell.get`, `cell.cached` | `^HFREQINFO?`, `^MONSC` (per-RAT offsets) |
 | `ca` | `ca` | `ca.get`, `ca.cached` | `^HFREQINFO?` groups, `^CASCELLINFO?`, `^MONSSC` (carrier aggregation) |
+| `qos` | `qos` | `qos.get`, `qos.cached` | `+CGACT?` active context, `^DSAMBR` AMBR/APN, `+CGEQOSRDP` QCI |
 | `sim` | `sim` | `sim.get`, `sim.cached`, `sim.number` | `+CPIN?`, `^ICCID?`, `+CIMI`, `+CNUM` |
 | `modem` | `modem`, `txpower`, `nr_txpower`, `endc` | `modem.get`, `modem.cached`, `modem.txpower`, `modem.endc`, `modem.nr_txpower` | `ATI`, `+CGSN`, `^TXPOWER?`, `^NTXPOWER?`, `^LENDC?` |
 | `traffic` | `traffic`, `netrate` | `traffic.get`, `traffic.cached`, `traffic.netrate` | `^PDCPDATAINFO?`, interface counters, accounting report |

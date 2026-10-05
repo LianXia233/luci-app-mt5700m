@@ -12,6 +12,7 @@ use crate::transport::client::{self, AtError, AtOutcome, Mode, Settings};
 // One implementation each: the CLI renders what the modules parsed. Keep the
 // historical local names so call sites and their tests stay readable.
 use crate::modules::ca::{commands as ca_commands, parser as ca_parser};
+use crate::modules::qos::{commands as qos_commands, parser as qos_parser, state::QosState};
 use crate::modules::system::parser::parse_chiptemp;
 use crate::modules::system::state::TemperatureState;
 use crate::modules::network::parser::{
@@ -407,22 +408,11 @@ pub fn print_sim_details(settings: &Settings) -> String {
 }
 
 pub fn print_qos(settings: &Settings) -> String {
-    let raw = client::at_cmd(settings, "AT+CGEQOSRDP=1");
-    for line in raw.text.lines() {
-        if let Some(rest) = line.strip_prefix("+CGEQOSRDP:") {
-            let fields: Vec<&str> = rest.split(',').collect();
-            if let Some(second) = fields.get(1) {
-                let qci: String = second
-                    .chars()
-                    .filter(|c| !matches!(c, ' ' | '\r' | '"'))
-                    .collect();
-                if !qci.is_empty() {
-                    return format!("qci={}\n", qci);
-                }
-            }
-        }
-    }
-    String::new()
+    // `+CGEQOSRDP` 的解码与 `qci=` 文本都在 modules/qos；这里只取数。
+    let raw = client::at_cmd(settings, &qos_commands::cgeqosrdp(1));
+    let mut st = QosState::default();
+    st.qci = qos_parser::parse_cgeqosrdp(&raw.text, Some(1));
+    st.qci_text()
 }
 
 pub fn print_active_apn(settings: &Settings) -> String {
@@ -517,46 +507,22 @@ pub fn print_temperature(settings: &Settings) -> String {
 }
 
 pub fn print_subscription_rate(settings: &Settings) -> String {
-    let mut raw = client::at_cmd(settings, "AT^DSAMBR=1");
+    // 候选 cid 顺序与模块里的 `qos::service::refresh` 一致：1、1 重试、8。
+    // 解码与 `ambr_*` 文本只有 modules/qos 一份。
+    let mut raw = client::at_cmd(settings, &qos_commands::dsambr(1));
     if !raw.text.lines().any(|l| l.starts_with("^DSAMBR:")) {
-        raw = client::at_cmd(settings, "AT^DSAMBR=1");
+        raw = client::at_cmd(settings, &qos_commands::dsambr(1));
     }
     if !raw.text.lines().any(|l| l.starts_with("^DSAMBR:")) {
-        raw = client::at_cmd(settings, "AT^DSAMBR=8");
+        raw = client::at_cmd(settings, &qos_commands::dsambr(8));
     }
-    for line in raw.text.lines() {
-        if let Some(rest) = line.strip_prefix("^DSAMBR:") {
-            let fields: Vec<String> = rest
-                .split(',')
-                .map(|f| f.trim().trim_end_matches('\r').to_string())
-                .collect();
-            if fields.len() >= 3 {
-                let down: String = fields[1]
-                    .chars()
-                    .filter(|c| !matches!(c, ' ' | '\r' | '"'))
-                    .collect();
-                let up: String = fields[2]
-                    .chars()
-                    .filter(|c| !matches!(c, ' ' | '\r' | '"'))
-                    .collect();
-                let down_ok = !down.is_empty()
-                    && down
-                        .split('.')
-                        .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
-                let up_ok = !up.is_empty()
-                    && up
-                        .split('.')
-                        .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
-                if down_ok && up_ok {
-                    let d: f64 = down.parse().unwrap_or(0.0);
-                    let u: f64 = up.parse().unwrap_or(0.0);
-                    return format!("ambr_down_mbps={:.1}\nambr_up_mbps={:.1}\n", d / 1000.0, u / 1000.0);
-                }
-            }
-            return String::new();
-        }
+    let mut st = QosState::default();
+    if let Some(ambr) = qos_parser::parse_dsambr(&raw.text) {
+        st.ambr_down_kbps = Some(ambr.down_kbps);
+        st.ambr_up_kbps = Some(ambr.up_kbps);
+        st.ambr_apn = ambr.apn;
     }
-    String::new()
+    st.ambr_text()
 }
 
 pub fn print_carrier_aggregation(settings: &Settings) -> String {

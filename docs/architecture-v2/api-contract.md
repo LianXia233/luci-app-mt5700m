@@ -25,6 +25,7 @@ Two kinds of route, declared in the table itself (`Route::display` /
 | `signal.get` / `signal.cached` | `{sysmode, rssi, rsrp, rsrq, sinr, rscp, ecio}` |
 | `network.get` / `network.cached` | `{operator, sysmode, sysmode_detail}` |
 | `registration.get` | `{state, tac, ci, act, nssai, mcc, mnc, lac}` |
+| `qos.get` / `qos.cached` | `{active_cid, ambr_down_kbps, ambr_up_kbps, ambr_apn, qci}` |
 | `network.pdp` | `{addresses: [{cid, address, family}]}` — on-demand `AT+CGPADDR` for the diagnostics panel |
 | `ca.get` / `ca.cached` | `{carriers: [{radio, band, source, dl_arfcn, ul_arfcn, dl_frequency_mhz, ul_frequency_mhz, dl_bandwidth_mhz, ul_bandwidth_mhz}], carrier_count, ca_active, dc_active, nr_carrier_count, lte_carrier_count, lte_secondary_count, secondary_connection_count, ca_mode, ca_dl_bandwidth, ca_ul_bandwidth}` (`ca.get?refresh=1` forces a live read) |
 | `cell.get` / `cell.cached` | `{band, channel, dlBandwidth, arfcn, sysmode, mcc, mnc, cid, pci, lac, operator, raw}` |

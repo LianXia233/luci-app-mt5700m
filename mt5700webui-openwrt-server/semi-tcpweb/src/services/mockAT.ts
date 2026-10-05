@@ -468,6 +468,13 @@ const MOCK_API_ROUTES: Record<string, unknown> = {
       { pusch: 21, pucch: 2, srs: 20, prach: 21, freq: 2593330 },
     ],
   },
+  'api.qos.get': {
+    active_cid: 1,
+    ambr_down_kbps: 20000,
+    ambr_up_kbps: 10000,
+    ambr_apn: 'cmnet',
+    qci: '9',
+  },
   'api.network.pdp': {
     addresses: [
       { cid: 8, address: '10.101.2.15', family: 'IPv4' },

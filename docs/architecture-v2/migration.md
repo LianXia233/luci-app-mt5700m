@@ -58,13 +58,16 @@ aliases, so the move itself changed no behaviour.
 
 ## 3. What remains (in order)
 
-1. **Remaining modules**: `qos` (`+CGEQOSRDP`), `beam` (beam/scan commands),
+1. **Remaining modules**: `beam` (beam/scan commands),
    `diagnostics` (`cellscan`, port scan), `sms` service (list/send/receive
    behind routes). Each follows [module-guide.md](module-guide.md); the CLI
-   verbs are the source of truth until they move. (`ca` landed with this
-   commit: `modules/ca/{commands,state,parser,service,api}.rs` owns carrier
-   aggregation, the CLI's `append_hfreqinfo_line`/`CaTotals` are gone, and the
-   frozen `carrier_*`/`ca_*` text comes from `CaState::to_text()`.)
+   verbs are the source of truth until they move. (`ca` and `qos` landed
+   already: carrier aggregation lives in `modules/ca` — the CLI's
+   `append_hfreqinfo_line`/`CaTotals` are gone and the frozen
+   `carrier_*`/`ca_*` text comes from `CaState::to_text()` — and
+   `modules/qos` owns `+CGACT?`/`^DSAMBR`/`+CGEQOSRDP`, rendering both CLI
+   verbs (`qci_text()`, `ambr_text()`) and serving `qos.get` to the WebUI,
+   whose `Info.tsx` no longer parses them.)
 2. **CLI adapter thinning**: `api/cli.rs` still holds the per-verb text
    formatters for those capabilities; they move into the modules' `api.rs`
    `render_text` as the modules land.

@@ -18,6 +18,7 @@ pub mod ca;
 pub mod cell;
 pub mod modem;
 pub mod network;
+pub mod qos;
 pub mod signal;
 pub mod sim;
 pub mod sms;

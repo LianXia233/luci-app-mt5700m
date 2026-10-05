@@ -4,6 +4,7 @@ import { IconArrowDown, IconArrowUp, IconSetting } from '@douyinfe/semi-icons';
 import { ATResponse, ATService, PDCPData, URCData, type StateSnapshot } from '@/services/at';
 import { refreshSharedStateFeed, useSharedStateTopic } from '@/services/stateCache';
 import { useATReady } from '@/hooks/useATReady';
+import type { QosPayload } from '@/modem/qos';
 import { useCommandQueue } from '@/hooks/useCommandQueue';
 import { SvgSignalTower, SvgDataStream } from '@/ui/svgVisuals';
 import {
@@ -178,7 +179,6 @@ const NetworkInfo: React.FC = () => {
     tempMonitor: { enabled: true, interval: 5 },
   });
   const timers = useRef<Record<string, number>>({});
-  const activeCidRef = useRef<number | null>(null);
   const appliedTopicValues = useRef<Record<string, string>>({});
   const pdcpOnRef = useRef(false);
   pdcpOnRef.current = pdcpOn;
@@ -293,51 +293,17 @@ const NetworkInfo: React.FC = () => {
     applyTopic('netrate', applyNetrate);
   };
 
-  // Preserve the existing per-PDP-context AMBR/QCI lookup; these values are
-  // not part of the shared StateCache topics and remain normal async reads.
-  const resolveActiveCid = async (force = false): Promise<number | null> => {
-    if (!force && activeCidRef.current !== null) return activeCidRef.current;
-    const res = await at().readCommand('AT+CGACT?');
-    if (!res.success || !res.data) return activeCidRef.current;
-    const active: number[] = [];
-    for (const row of extractATDataMultiline(res.data as string, '+CGACT')) {
-      const [cid, state] = row.split(',');
-      if (state?.trim() === '1' && Number(cid) > 0) active.push(Number(cid));
-    }
-    activeCidRef.current = active.length ? Math.min(...active) : null;
-    return activeCidRef.current;
-  };
-
-  const getAMBR = async () => {
-    const cid = await resolveActiveCid();
-    const candidates = Array.from(new Set([cid, 1].filter((v): v is number => !!v && v > 0)));
-    for (const candidate of candidates) {
-      const res = await at().readCommand(`AT^DSAMBR=${candidate}`);
-      const str = res.success && res.data ? extractATData(res.data as string, '^DSAMBR') : null;
-      if (!str) continue;
-      const parts = str.split(',');
-      if (parts.length >= 3) {
-        setDownSpeed((parseInt(parts[1], 10) || 0) / 1000);
-        setUpSpeed((parseInt(parts[2], 10) || 0) / 1000);
-      }
-      if (parts.length >= 4) {
-        setApn(parts[3].trim().replace(/^["']|["']$/g, '') || '未知');
-      }
-      return;
-    }
-    activeCidRef.current = null;
-  };
-
-  const getQCI = async () => {
-    const cid = await resolveActiveCid();
-    let res = await at().readCommand('AT+CGEQOSRDP');
-    if ((!res.success || !res.data) && cid) {
-      res = await at().readCommand(`AT+CGEQOSRDP=${cid}`);
-    }
+  // APN / QCI / AMBR 来自统一 API：后端 modules/qos 解析 +CGACT?、^DSAMBR、
+  // +CGEQOSRDP（候选 cid 顺序也在后端），页面只做 kbps -> Mbps 与 QCI 文案映射，
+  // 不再自己发 AT、也不再自己解析应答。
+  const getQos = async () => {
+    const res = await at().apiCommand<QosPayload>('qos.get');
     if (!res.success || !res.data) return;
-    const rows = extractATDataMultiline(res.data as string, '+CGEQOSRDP');
-    const row = rows.find((r) => cid !== null && Number(r.split(',')[0]) === cid) ?? rows[0];
-    if (row) setQci(qciLabel(row.split(',')[1]?.trim()));
+    const { active_cid, ambr_down_kbps, ambr_up_kbps, ambr_apn, qci } = res.data;
+    if (typeof ambr_down_kbps === 'number') setDownSpeed(ambr_down_kbps / 1000);
+    if (typeof ambr_up_kbps === 'number') setUpSpeed(ambr_up_kbps / 1000);
+    if (typeof ambr_apn === 'string' && ambr_apn) setApn(ambr_apn);
+    if (typeof qci === 'string' && qci) setQci(qciLabel(qci));
   };
 
   const getDHCP = async () => {
@@ -453,8 +419,7 @@ const NetworkInfo: React.FC = () => {
     enqueue(async () => {
       // 保留原有的注册状态详细上报设置副作用；注册值本身只由共享缓存/事件更新。
       await at().sendCommand('AT+CGREG=2');
-      await getAMBR();
-      await getQCI();
+      await getQos();
       await getDHCP();
       await getMCS();
       // 保留页面特有的 PDCP 实时速率开关；累计流量仍使用与 LuCI 相同的 netrate。

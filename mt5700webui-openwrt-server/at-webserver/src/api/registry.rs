@@ -100,6 +100,7 @@ pub fn routes() -> Vec<Route> {
     v.extend(crate::modules::sim::api::routes());
     v.extend(crate::modules::modem::api::routes());
     v.extend(crate::modules::traffic::api::routes());
+    v.extend(crate::modules::qos::api::routes());
     v.extend(crate::modules::system::api::routes());
     v
 }

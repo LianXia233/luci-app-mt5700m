@@ -78,6 +78,8 @@ pub fn default_ttl(topic: &str) -> Duration {
         "cell" => Duration::from_secs(130),
         // 载波聚合按需刷新（三条慢命令），TTL 要覆盖两次点击之间。
         "ca" => Duration::from_secs(240),
+        // 按需读取（^DSAMBR 序列较慢），TTL 覆盖两次页面加载。
+        "qos" => Duration::from_secs(240),
         "endc" => Duration::from_secs(320),
         "txpower" => Duration::from_secs(320),
         "nr_txpower" => Duration::from_secs(200),

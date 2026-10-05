@@ -26,6 +26,7 @@ cannot reach the AT layer: it can only call a route or read a topic.
 | `registration` | `network::service::refresh_registration` | 20 s | topic always written |
 | `cell` | `cell::service::refresh` | 120 s | per-command backoff, TAC/CI from `registration` |
 | `ca` | `ca::service::refresh` | **on demand** (`ca.get`) | previous picture kept, 60/120/300 s per-command backoff |
+| `qos` | `qos::service::refresh` | **on demand** (`qos.get`) | partial values kept, 60/120 s per-command backoff |
 | `sim` | `sim::service::refresh` | 60 s | per-command backoff |
 | `modem` | `modem::service::refresh_info` | 60 s | 60 s backoff, explicit 60 s TTL |
 | `txpower` / `endc` | `modem::service::refresh_*` | 300 s | 600 s backoff |

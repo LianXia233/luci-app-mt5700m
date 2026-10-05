@@ -49,6 +49,8 @@ pub const TOPIC_CELL: &str = "cell";
 /// Carrier aggregation (`ca.get`). Written on demand only — see
 /// `modules::ca::service`.
 pub const TOPIC_CA: &str = "ca";
+/// Data-session QoS parameters (`qos.get`).
+pub const TOPIC_QOS: &str = "qos";
 pub const TOPIC_TEMPERATURE: &str = "temperature";
 pub const TOPIC_TRAFFIC: &str = "traffic";
 pub const TOPIC_SIM: &str = "sim";
@@ -81,6 +83,8 @@ pub const EVENT_REGISTRATION_UPDATED: &str = "registration.updated";
 pub const EVENT_CELL_UPDATED: &str = "cell.updated";
 /// Carrier list refreshed (`ca.get`).
 pub const EVENT_CA_UPDATED: &str = "ca.updated";
+/// Data-session parameters refreshed (`qos.get`).
+pub const EVENT_QOS_UPDATED: &str = "qos.updated";
 pub const EVENT_ENDC_UPDATED: &str = "endc.updated";
 pub const EVENT_TXPOWER_UPDATED: &str = "txpower.updated";
 pub const EVENT_NR_TXPOWER_UPDATED: &str = "nr_txpower.updated";
@@ -93,11 +97,12 @@ pub const EVENT_USB_CHANGED: &str = "usb.changed";
 pub const EVENT_SMS_RECEIVED: &str = "sms.received";
 
 
-pub const DEFAULT_TOPICS: [&str; 18] = [
+pub const DEFAULT_TOPICS: [&str; 19] = [
     TOPIC_SIGNAL,
     TOPIC_NETWORK,
     TOPIC_CELL,
     TOPIC_CA,
+    TOPIC_QOS,
     TOPIC_TEMPERATURE,
     TOPIC_TRAFFIC,
     TOPIC_SIM,
