@@ -12,8 +12,8 @@
 //!   * performs exclusive serial open (via `serial`), used when the daemon is
 //!     not running or for the CLI's own one-shot transport.
 
-use crate::serial;
-use crate::sock;
+use crate::serial::manager as serial;
+use crate::transport::control as sock;
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -210,7 +210,7 @@ pub fn serial_sendat(device: &str, timeout_s: u64, command: &str) -> Result<Stri
 pub fn serial_cmgs(
     device: &str,
     timeout_s: u64,
-    pdu: &crate::sms::SmsPdu,
+    pdu: &crate::modules::sms::pdu::SmsPdu,
 ) -> Result<String, AtError> {
     let mut port = serial::open_serial_exclusive(device).map_err(|_| AtError::NoSerialPort)?;
     let buffer: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));

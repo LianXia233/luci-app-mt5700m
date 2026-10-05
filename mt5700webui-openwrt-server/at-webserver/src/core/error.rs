@@ -5,7 +5,7 @@
 //! and carry a `retryable` hint so schedulers do not blindly retry faults
 //! that retrying cannot fix (e.g. an anchored modem ERROR).
 
-use crate::at::AtError;
+use crate::transport::client::AtError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendError {
@@ -93,18 +93,18 @@ impl From<AtError> for BackendError {
 }
 
 /// JSON payload for an error (used by HTTP/WS error envelopes).
-pub fn error_json(err: &BackendError) -> crate::json::Value {
+pub fn error_json(err: &BackendError) -> crate::core::json::Value {
     let mut m = std::collections::BTreeMap::new();
-    m.insert("code".to_string(), crate::json::str_val(err.code()));
+    m.insert("code".to_string(), crate::core::json::str_val(err.code()));
     m.insert(
         "message".to_string(),
-        crate::json::str_val(&err.message()),
+        crate::core::json::str_val(&err.message()),
     );
     m.insert(
         "retryable".to_string(),
-        crate::json::Value::Bool(err.retryable()),
+        crate::core::json::Value::Bool(err.retryable()),
     );
-    crate::json::Value::Obj(m)
+    crate::core::json::Value::Obj(m)
 }
 
 #[cfg(test)]

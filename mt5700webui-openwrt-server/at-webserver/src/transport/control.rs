@@ -18,7 +18,7 @@
 //! Response: `{"ok":true,"response":"..."}` (or `"ports":[...]` for scan) and
 //! `{"ok":false,"error":"..."}` on failure.
 
-use crate::json;
+use crate::core::json;
 
 /// Default control-socket path (OpenWrt: /var/run → /tmp).
 #[cfg_attr(not(unix), allow(dead_code))]

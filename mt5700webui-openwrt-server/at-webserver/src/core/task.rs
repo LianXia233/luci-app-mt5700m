@@ -10,7 +10,7 @@
 //! so callers (WebSocket, control socket, LuCI) can observe them
 //! independently of the AT channel.
 
-use crate::json::Value;
+use crate::core::json::Value;
 use std::time::Instant;
 
 /// Monotonic task id.
@@ -142,7 +142,7 @@ impl TaskRecord {
             progress: 0,
             error: None,
             result: None,
-            created_at_ms: crate::runtime::now_ms(),
+            created_at_ms: crate::core::runtime::now_ms(),
             started_at_ms: None,
             finished_at_ms: None,
         }
@@ -151,27 +151,27 @@ impl TaskRecord {
     /// JSON form for `/api/task/:id` and WS `task.status` events.
     pub fn to_json(&self) -> Value {
         let mut m = std::collections::BTreeMap::new();
-        m.insert("task_id".to_string(), crate::json::num_val(self.id));
-        m.insert("name".to_string(), crate::json::str_val(&self.name));
-        m.insert("status".to_string(), crate::json::str_val(self.status.name()));
-        m.insert("kind".to_string(), crate::json::str_val(kind_name(self.kind)));
+        m.insert("task_id".to_string(), crate::core::json::num_val(self.id));
+        m.insert("name".to_string(), crate::core::json::str_val(&self.name));
+        m.insert("status".to_string(), crate::core::json::str_val(self.status.name()));
+        m.insert("kind".to_string(), crate::core::json::str_val(kind_name(self.kind)));
         m.insert(
             "priority".to_string(),
-            crate::json::str_val(self.priority.name()),
+            crate::core::json::str_val(self.priority.name()),
         );
-        m.insert("progress".to_string(), crate::json::num_val(self.progress));
+        m.insert("progress".to_string(), crate::core::json::num_val(self.progress));
         if let Some(e) = &self.error {
-            m.insert("error".to_string(), crate::json::str_val(e));
+            m.insert("error".to_string(), crate::core::json::str_val(e));
         }
         if let Some(r) = &self.result {
             m.insert("result".to_string(), r.clone());
         }
-        m.insert("created_at".to_string(), crate::json::num_val(self.created_at_ms));
+        m.insert("created_at".to_string(), crate::core::json::num_val(self.created_at_ms));
         if let Some(s) = self.started_at_ms {
-            m.insert("started_at".to_string(), crate::json::num_val(s));
+            m.insert("started_at".to_string(), crate::core::json::num_val(s));
         }
         if let Some(f) = self.finished_at_ms {
-            m.insert("finished_at".to_string(), crate::json::num_val(f));
+            m.insert("finished_at".to_string(), crate::core::json::num_val(f));
         }
         Value::Obj(m)
     }

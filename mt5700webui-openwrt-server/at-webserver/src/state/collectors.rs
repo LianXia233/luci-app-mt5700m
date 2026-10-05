@@ -19,15 +19,15 @@
 //! and `sim` values are stored in the cache (read by authorized frontends)
 //! but only non-secret summary fields are echoed in events.
 
-use crate::at_queue::{AtPayload, AtRequestSpec, AtResult, RetryPolicy};
-use crate::event_bus::{
+use crate::scheduler::arbiter::{AtPayload, AtRequestSpec, AtResult, RetryPolicy};
+use crate::state::bus::{
     EventBus, TOPIC_CELL, TOPIC_ENDC, TOPIC_MODEM, TOPIC_NETRATE, TOPIC_NETWORK, TOPIC_NR_TXPOWER,
     TOPIC_REGISTRATION, TOPIC_SIGNAL, TOPIC_SIM, TOPIC_TEMPERATURE, TOPIC_TRAFFIC, TOPIC_TXPOWER,
 };
-use crate::json::{self, Value};
-use crate::state_cache::{Freshness, StateCache};
-use crate::task::Priority;
-use crate::task_manager::{TaskCtx, TaskManager};
+use crate::core::json::{self, Value};
+use crate::state::cache::{Freshness, StateCache};
+use crate::core::task::Priority;
+use crate::scheduler::jobs::{TaskCtx, TaskManager};
 use std::time::Duration;
 
 /// Register every background collector as a periodic task on the manager.
@@ -186,7 +186,7 @@ fn detect_netrate_iface() -> Option<&'static str> {
 /// （只有它知道 history 的格式），而不是各自解析文件。
 ///
 /// 实时速率由前端按两次采样差计算，这里只给原始累计计数。
-fn collect_netrate(ctx: &TaskCtx) -> Result<Value, crate::error::BackendError> {
+fn collect_netrate(ctx: &TaskCtx) -> Result<Value, crate::core::error::BackendError> {
     let dev = match detect_netrate_iface() {
         Some(d) => d,
         None => {
@@ -273,7 +273,7 @@ fn run_traffic_json() -> Option<Value> {
         return None;
     }
     // json::parse 失败时返回 None（不是 Result），无需再 .ok()
-    crate::json::parse(text)
+    crate::core::json::parse(text)
 }
 
 /// Seconds since the Unix epoch, as f64. Used for event timestamps only.
@@ -322,7 +322,7 @@ fn slow_query(
     // user page has just been turned away for lack of capacity — stay off it.
     // Skipping costs nothing observable (the pages render the cached snapshot)
     // and is what stops the two frontends from starving each other.
-    if crate::at_queue::channel_budget_exhausted() || crate::at_queue::channel_user_starved() {
+    if crate::scheduler::arbiter::channel_budget_exhausted() || crate::scheduler::arbiter::channel_user_starved() {
         return None;
     }
     let bk = format!("snapshot.backoff.{}", backoff_key);
@@ -362,11 +362,11 @@ fn round1(v: f64) -> f64 {
 /// Non-fatal collector wrapper: modem/transport errors are expected (absent
 /// modem, USB in upgrade mode, ...) and must never poison the scheduler.
 /// Returns the trimmed raw response so callers can feed it to their parser.
-fn soft(r: AtResult) -> Result<String, crate::error::BackendError> {
+fn soft(r: AtResult) -> Result<String, crate::core::error::BackendError> {
     r.map(|text| text.trim().to_string())
 }
 
-fn collect_signal(ctx: &TaskCtx) -> Result<Value, crate::error::BackendError> {
+fn collect_signal(ctx: &TaskCtx) -> Result<Value, crate::core::error::BackendError> {
     // HCSQ 实测约 4 s 才响应：fast_query 的 3 s 超时会误判超时并重试 2 次，
     // 反而把通道占更久。改用 12 s 宽松 spec、不重试；失败静默跳过（不 store，
     // 页面 SWR 继续显示旧缓存），不把任务标记为失败。
@@ -393,7 +393,7 @@ fn collect_signal(ctx: &TaskCtx) -> Result<Value, crate::error::BackendError> {
     // Same duty gate as slow_query: signal is the most expensive collector
     // (4 s per attempt, 15 s period), so it is the one that must yield first
     // when the channel is oversubscribed or a user page is waiting.
-    if crate::at_queue::channel_budget_exhausted() || crate::at_queue::channel_user_starved() {
+    if crate::scheduler::arbiter::channel_budget_exhausted() || crate::scheduler::arbiter::channel_user_starved() {
         return Ok(stale_refresh(ctx, TOPIC_SIGNAL, "signal.updated"));
     }
     let Ok(text) = ctx.at_request(spec) else {
@@ -498,7 +498,7 @@ pub fn parse_hcsq(raw: &str) -> Value {
     Value::Obj(m)
 }
 
-fn collect_registration(ctx: &TaskCtx) -> Result<Value, crate::error::BackendError> {
+fn collect_registration(ctx: &TaskCtx) -> Result<Value, crate::core::error::BackendError> {
     // C5GREG 优先（实测后端通道可用，带 tac/ci/act/nssai，如
     // +C5GREG: 2,1,"149002","0000000C2840C001",11,4,"80.03ffff"），
     // 失败再 CEREG?（快）→ CREG? 兜底。
@@ -633,7 +633,7 @@ pub fn parse_registration(raw: &str) -> Value {
     Value::Obj(m)
 }
 
-fn collect_network(ctx: &TaskCtx) -> Result<Value, crate::error::BackendError> {
+fn collect_network(ctx: &TaskCtx) -> Result<Value, crate::core::error::BackendError> {
     // COPS? 实测偶发失败（占 8 s+，多为被慢命令排队挤爆），用退避保护；
     // SYSINFOEX 非关键，失败静默。
     let mut m = std::collections::BTreeMap::new();
@@ -726,7 +726,7 @@ fn extract_sysinfo_mode(raw: &str) -> Option<String> {
     Some(body.trim_matches('"').to_string())
 }
 
-fn collect_temperature(ctx: &TaskCtx) -> Result<Value, crate::error::BackendError> {
+fn collect_temperature(ctx: &TaskCtx) -> Result<Value, crate::core::error::BackendError> {
     // CHIPTEMP 本身是快命令（0.1 s），但 fast_query（3 s 超时 + 2 次重试）
     // 在 AT 通道被慢命令（LENDC/TXPOWER/MONSC 等 8~15 s）占用时排队等不及，
     // 整体失败且不发事件，页面温度就掉回"—"。改用与 HCSQ 相同的宽松 spec
@@ -791,17 +791,17 @@ pub fn parse_chiptemp(raw: &str) -> Value {
     Value::Obj(m)
 }
 
-fn collect_traffic(ctx: &TaskCtx) -> Result<Value, crate::error::BackendError> {
+fn collect_traffic(ctx: &TaskCtx) -> Result<Value, crate::core::error::BackendError> {
     let text = soft(ctx.query("AT^PDCPDATAINFO?"))?;
     let value = text
         .lines()
-        .find_map(|l| crate::dispatcher::handle_pdcp(l))
+        .find_map(|l| crate::transport::urc::handle_pdcp(l))
         .unwrap_or(Value::Null);
     store(ctx, TOPIC_TRAFFIC, "traffic.updated", &value);
     Ok(value)
 }
 
-fn collect_cell(ctx: &TaskCtx) -> Result<Value, crate::error::BackendError> {
+fn collect_cell(ctx: &TaskCtx) -> Result<Value, crate::core::error::BackendError> {
     // Serving cell: best-effort raw snapshot. Full per-carrier analysis stays
     // in the interactive WebUI flows (MONSC/HFREQINFO/MONSSC); the cache only
     // guarantees the dashboard has *something* instantly available. Besides
@@ -925,7 +925,7 @@ fn hex_dec(s: &str) -> Option<u64> {
     u64::from_str_radix(s.trim().trim_matches('"'), 16).ok()
 }
 
-fn collect_endc(ctx: &TaskCtx) -> Result<Value, crate::error::BackendError> {
+fn collect_endc(ctx: &TaskCtx) -> Result<Value, crate::core::error::BackendError> {
     // AT^LENDC? 实测在 NR 组网不支持（失败也要占 8 s+），走 600 s 退避，
     // 避免周期性占死通道；查询应答带 <enable> 前缀，URC 不带；按字段数
     // 区分（同前端 parseLendc）。
@@ -954,7 +954,7 @@ fn collect_endc(ctx: &TaskCtx) -> Result<Value, crate::error::BackendError> {
     Ok(value)
 }
 
-fn collect_txpower(ctx: &TaskCtx) -> Result<Value, crate::error::BackendError> {
+fn collect_txpower(ctx: &TaskCtx) -> Result<Value, crate::core::error::BackendError> {
     // AT^TXPOWER? 实测仅 GUL 组网有效，NR 下失败（占 8 s+），600 s 退避；
     // 无效功率（999）按空处理（同前端 parseTxPower）。
     let mut m = std::collections::BTreeMap::new();
@@ -990,7 +990,7 @@ fn collect_txpower(ctx: &TaskCtx) -> Result<Value, crate::error::BackendError> {
     Ok(value)
 }
 
-fn collect_nr_txpower(ctx: &TaskCtx) -> Result<Value, crate::error::BackendError> {
+fn collect_nr_txpower(ctx: &TaskCtx) -> Result<Value, crate::core::error::BackendError> {
     // AT^NTXPOWER? 实测 ~11.6 s 才响应（NR 组网有效），15 s 宽松超时 + 不
     // 重试 + 600 s 失败退避；每 5 个字段一个载波，最多 4 个。
     let mut carriers: Vec<Value> = Vec::new();
@@ -1035,7 +1035,7 @@ fn collect_nr_txpower(ctx: &TaskCtx) -> Result<Value, crate::error::BackendError
     Ok(value)
 }
 
-fn collect_sim(ctx: &TaskCtx) -> Result<Value, crate::error::BackendError> {
+fn collect_sim(ctx: &TaskCtx) -> Result<Value, crate::core::error::BackendError> {
     let mut m = std::collections::BTreeMap::new();
     if let Some(text) = slow_query(ctx, "sim_cpin", "AT+CPIN?", Duration::from_secs(6), Duration::from_secs(5), Duration::from_secs(60)) {
         for line in text.lines() {
@@ -1073,7 +1073,7 @@ fn collect_sim(ctx: &TaskCtx) -> Result<Value, crate::error::BackendError> {
     Ok(value)
 }
 
-fn collect_modem_info(ctx: &TaskCtx) -> Result<Value, crate::error::BackendError> {
+fn collect_modem_info(ctx: &TaskCtx) -> Result<Value, crate::core::error::BackendError> {
     let mut m = std::collections::BTreeMap::new();
     if let Some(text) = slow_query(ctx, "modem_ati", "ATI", Duration::from_secs(6), Duration::from_secs(5), Duration::from_secs(60)) {
         for (prefix, key) in [

@@ -27,13 +27,13 @@
 //! blocks waiting for the modem — callers either read the cache or receive a
 //! `task_id` and observe events.
 
-use crate::at_queue::{AtArbiter, AtRequestSpec, AtResult};
-use crate::error::BackendError;
-use crate::event_bus::{EventBus, TOPIC_TASK};
-use crate::json::{self, Value};
-use crate::runtime::{next_id, now_ms, spawn_thread};
-use crate::state_cache::StateCache;
-use crate::task::{PeriodicJob, Priority, TaskId, TaskKind, TaskRecord, TaskStatus};
+use crate::scheduler::arbiter::{AtArbiter, AtRequestSpec, AtResult};
+use crate::core::error::BackendError;
+use crate::state::bus::{EventBus, TOPIC_TASK};
+use crate::core::json::{self, Value};
+use crate::core::runtime::{next_id, now_ms, spawn_thread};
+use crate::state::cache::StateCache;
+use crate::core::task::{PeriodicJob, Priority, TaskId, TaskKind, TaskRecord, TaskStatus};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -386,7 +386,7 @@ impl TaskManager {
     }
 
     fn prune(&self) {
-        let now = crate::runtime::now_ms();
+        let now = crate::core::runtime::now_ms();
         let mut inner = self.inner.lock().unwrap();
         let stale: Vec<TaskId> = inner
             .records
@@ -498,7 +498,7 @@ impl TaskManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::at_queue::AtTransport;
+    use crate::scheduler::arbiter::AtTransport;
 
     /// Minimal fake transport for task-manager tests (single OK response).
     struct FakeT {

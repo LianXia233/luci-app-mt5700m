@@ -31,7 +31,7 @@ fn raw_fd(_f: &std::fs::File) -> Option<i32> {
 
 #[cfg(target_os = "linux")]
 fn set_modem_lines(fd: i32, on: bool) {
-    crate::serial::set_modem_lines(fd, on)
+    crate::serial::manager::set_modem_lines(fd, on)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -44,7 +44,7 @@ pub fn run(args: &[String]) -> i32 {
             args[1..].iter().map(|s| s.as_str().to_string()).collect(),
         ),
         _ => (
-            crate::serial::auto_detect_serial()
+            crate::serial::manager::auto_detect_serial()
                 .or_else(|| Some("/dev/ttyUSB1".to_string()))
                 .unwrap_or_default(),
             if args.is_empty() {
@@ -61,7 +61,7 @@ pub fn run(args: &[String]) -> i32 {
     }
     println!("atprobe: device={}", device);
 
-    let mut port = match crate::serial::open_serial_exclusive(&device) {
+    let mut port = match crate::serial::manager::open_serial_exclusive(&device) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("atprobe: open failed: {}", e);

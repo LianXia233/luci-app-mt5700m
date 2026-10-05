@@ -9,9 +9,9 @@
 //! snapshot collectors for the serial channel, and a slow modem only delays
 //! the next check — never a UI path.
 
-use crate::json::Value;
-use crate::task::Priority;
-use crate::task_manager::{TaskCtx, TaskManager};
+use crate::core::json::Value;
+use crate::core::task::Priority;
+use crate::scheduler::jobs::{TaskCtx, TaskManager};
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::Duration;
@@ -383,7 +383,7 @@ fn run_lock_command(ctx: &TaskCtx, cmd: &str, action: &str) -> bool {
     eprintln!("scheduler: {} -> {}", action, cmd);
     match ctx.action(cmd) {
         Ok(text) => {
-            if crate::at::response_ok(&text) {
+            if crate::transport::client::response_ok(&text) {
                 true
             } else {
                 eprintln!("scheduler: {} failed: {}", action, text.trim());
@@ -410,7 +410,7 @@ fn apply_lock(ctx: &TaskCtx, cfg: &SchedCfg, lte: &Lock, nr: &Lock, mode: &str) 
     eprintln!("scheduler: switching to {} (#{})", mode, count);
 
     if cfg.toggle_airplane {
-        if ctx.action("AT+CFUN=0").map(|t| crate::at::response_ok(&t)) == Ok(true) {
+        if ctx.action("AT+CFUN=0").map(|t| crate::transport::client::response_ok(&t)) == Ok(true) {
             eprintln!("scheduler: airplane mode on");
             sleep(Duration::from_secs(2));
         }
@@ -426,7 +426,7 @@ fn apply_lock(ctx: &TaskCtx, cfg: &SchedCfg, lte: &Lock, nr: &Lock, mode: &str) 
     }
 
     if cfg.toggle_airplane {
-        if ctx.action("AT+CFUN=1").map(|t| crate::at::response_ok(&t)) == Ok(true) {
+        if ctx.action("AT+CFUN=1").map(|t| crate::transport::client::response_ok(&t)) == Ok(true) {
             eprintln!("scheduler: airplane mode off");
         }
         sleep(Duration::from_secs(3));

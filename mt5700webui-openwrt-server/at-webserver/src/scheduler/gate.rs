@@ -33,12 +33,12 @@
 //! 这里的采集任务用 `Priority::Low` + 长 `queued_timeout`，且**永远不阻塞
 //! 调用方**：闸门在提交后立即返回，采集在后台worker 线程上跑完再写缓存。
 
-use crate::at_queue::AtRequestSpec;
-use crate::event_bus::TOPIC_RAW;
-use crate::json::Value;
-use crate::state_cache::StateCache;
-use crate::task::{Priority, TaskKind};
-use crate::task_manager::{TaskCtx, TaskManager};
+use crate::scheduler::arbiter::AtRequestSpec;
+use crate::state::bus::TOPIC_RAW;
+use crate::core::json::Value;
+use crate::state::cache::StateCache;
+use crate::core::task::{Priority, TaskKind};
+use crate::scheduler::jobs::{TaskCtx, TaskManager};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};

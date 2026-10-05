@@ -18,9 +18,9 @@
 //!   * **cooperative cancellation** (a cancel flag can inject an abort
 //!     token on the wire for interruptible commands like scan).
 
-use crate::error::BackendError;
-use crate::runtime::now_ms;
-use crate::task::Priority;
+use crate::core::error::BackendError;
+use crate::core::runtime::now_ms;
+use crate::core::task::Priority;
 use std::collections::{BinaryHeap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -456,7 +456,7 @@ impl AtArbiter {
             max_queue: 256,
         });
         let runner = arbiter.clone();
-        crate::runtime::spawn_thread("at-arbiter", move || runner.executor_loop());
+        crate::core::runtime::spawn_thread("at-arbiter", move || runner.executor_loop());
         arbiter
     }
 
@@ -482,7 +482,7 @@ impl AtArbiter {
             // collectors are overrunning the channel. Latch it so they can
             // back off; otherwise the page stays blank indefinitely while the
             // collectors keep winning every arbitration round.
-            if spec.priority.rank() >= crate::task::Priority::High.rank() {
+            if spec.priority.rank() >= crate::core::task::Priority::High.rank() {
                 USER_STARVED.store(true, Ordering::Relaxed);
             }
             let _ = tx.send(Err(BackendError::Busy));
@@ -572,7 +572,7 @@ impl AtArbiter {
         if req.enqueued_at.elapsed() > req.spec.queued_timeout {
             // Same signal as the queue-depth rejection: the channel is
             // oversubscribed and a user page is being turned away.
-            if req.spec.priority.rank() >= crate::task::Priority::High.rank() {
+            if req.spec.priority.rank() >= crate::core::task::Priority::High.rank() {
                 USER_STARVED.store(true, Ordering::Relaxed);
             }
             self.finish(req, Err(BackendError::Busy));
@@ -597,7 +597,7 @@ impl AtArbiter {
                 DUTY.record_and_check(started.elapsed().as_millis() as u64);
                 // A served user-visible read proves the channel has room, so
                 // let the collectors resume.
-                if result.is_ok() && req.spec.priority.rank() >= crate::task::Priority::High.rank()
+                if result.is_ok() && req.spec.priority.rank() >= crate::core::task::Priority::High.rank()
                 {
                     clear_channel_starvation();
                 }

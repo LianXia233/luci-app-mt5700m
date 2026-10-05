@@ -9,7 +9,7 @@
 //! Every event envelope follows:
 //!   { "topic": "signal", "event": "signal.updated", "data": {...}, "timestamp": ... }
 
-use crate::json::Value;
+use crate::core::json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -35,9 +35,9 @@ impl Event {
     /// Kept in the same `{type,data}` shape the WebUI already consumes.
     pub fn to_json(&self) -> Value {
         let mut m = std::collections::BTreeMap::new();
-        m.insert("type".to_string(), crate::json::str_val(&self.event));
+        m.insert("type".to_string(), crate::core::json::str_val(&self.event));
         m.insert("data".to_string(), self.data.clone());
-        m.insert("timestamp".to_string(), crate::json::num_val(self.timestamp));
+        m.insert("timestamp".to_string(), crate::core::json::num_val(self.timestamp));
         Value::Obj(m)
     }
 }
@@ -141,7 +141,7 @@ impl EventBus {
             }),
         });
         let ticker = bus.clone();
-        crate::runtime::spawn_thread("event-bus", move || {
+        crate::core::runtime::spawn_thread("event-bus", move || {
             let tick = Duration::from_millis(EMIT_TICK_MS);
             loop {
                 if ticker.stop.load(Ordering::Relaxed) {
@@ -213,7 +213,7 @@ impl EventBus {
             topic: topic.to_string(),
             event: event.to_string(),
             data,
-            timestamp: crate::runtime::now_secs(),
+            timestamp: crate::core::runtime::now_secs(),
         };
         self.record(&ev);
         let immediate = IMMEDIATE_TOPICS.contains(&topic);
@@ -231,7 +231,7 @@ impl EventBus {
             topic: topic.to_string(),
             event: event.to_string(),
             data,
-            timestamp: crate::runtime::now_secs(),
+            timestamp: crate::core::runtime::now_secs(),
         };
         self.record(&ev);
         self.deliver(&ev);
@@ -301,8 +301,8 @@ mod tests {
     fn subscribe_filters_topics() {
         let bus = EventBus::new();
         let (rx, sub) = bus.subscribe(&["signal".to_string(), "network".to_string()]);
-        bus.publish("signal", "signal.updated", crate::json::num_val(1));
-        bus.publish("temperature", "temperature.updated", crate::json::num_val(2));
+        bus.publish("signal", "signal.updated", crate::core::json::num_val(1));
+        bus.publish("temperature", "temperature.updated", crate::core::json::num_val(2));
         // signal is immediate; temperature is coalesced -> wait one tick
         let ev = rx.recv_timeout(Duration::from_millis(200)).expect("signal event");
         assert_eq!(ev.topic, "signal");
@@ -317,7 +317,7 @@ mod tests {
         let (rx, sub) = bus.subscribe(&["signal".to_string()]);
         // burst of identical-ish updates within one tick
         for i in 0..10 {
-            bus.publish("signal", "signal.updated", crate::json::num_val(i));
+            bus.publish("signal", "signal.updated", crate::core::json::num_val(i));
         }
         std::thread::sleep(Duration::from_millis(EMIT_TICK_MS + 50));
         let mut count = 0;
@@ -337,7 +337,7 @@ mod tests {
         let ev = Event {
             topic: "signal".into(),
             event: "signal.updated".into(),
-            data: crate::json::num_val(-86),
+            data: crate::core::json::num_val(-86),
             timestamp: 123,
         };
         let j = ev.to_json();

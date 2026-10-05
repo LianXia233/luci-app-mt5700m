@@ -9,19 +9,19 @@
 //! exclusive serial port through a local Unix control socket. `ubus-at-daemon`
 //! and `sms-tool_q` are no longer used.
 
-use crate::at;
-use crate::at_queue::{AtArbiter, AtRequestSpec, AtResult, AtTransport};
-use crate::device_monitor::DeviceMonitor;
-use crate::dispatcher::Dispatcher;
-use crate::error::BackendError;
-use crate::event_bus::{Event, EventBus, Subscription, DEFAULT_TOPICS};
-use crate::json::{self, Value};
-use crate::scheduler;
-use crate::serial;
-use crate::state_cache::StateCache;
-use crate::task::{Priority, TaskKind};
-use crate::task_manager::{TaskCtx, TaskManager};
-use crate::ws::{self, WsError};
+use crate::transport::client;
+use crate::scheduler::arbiter::{AtArbiter, AtRequestSpec, AtResult, AtTransport};
+use crate::serial::presence::DeviceMonitor;
+use crate::transport::urc::Dispatcher;
+use crate::core::error::BackendError;
+use crate::state::bus::{Event, EventBus, Subscription, DEFAULT_TOPICS};
+use crate::core::json::{self, Value};
+use crate::scheduler::plan;
+use crate::serial::manager;
+use crate::state::cache::StateCache;
+use crate::core::task::{Priority, TaskKind};
+use crate::scheduler::jobs::{TaskCtx, TaskManager};
+use crate::transport::ws::{self, WsError};
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -78,7 +78,7 @@ fn as_bool(v: &str) -> bool {
 
 pub fn load_config() -> DaemonConfig {
     let mut c = DaemonConfig::default();
-    if !at::uci_available() {
+    if !client::uci_available() {
         return c;
     }
     let g = |k: &str| uci_get(&format!("at-webserver.config.{}", k));
@@ -147,7 +147,7 @@ fn resolve_serial_port(config: &DaemonConfig) -> String {
     if !p.is_empty() && p != "auto" && p != "custom" {
         return p.to_string();
     }
-    at::auto_detect_serial().unwrap_or_else(|| at::PREFERRED_AT_PORT.to_string())
+    client::auto_detect_serial().unwrap_or_else(|| client::PREFERRED_AT_PORT.to_string())
 }
 
 #[cfg_attr(not(unix), allow(dead_code))]
@@ -158,7 +158,7 @@ impl AtClient {
         let stream = match kind.as_str() {
             "SERIAL" => {
                 let path = resolve_serial_port(&config);
-                match serial::open_serial_exclusive(&path) {
+                match manager::open_serial_exclusive(&path) {
                     Ok(f) => {
                         eprintln!("at-webserver: attached to serial {}", path);
                         attached_port = Some(path);
@@ -240,7 +240,7 @@ impl AtClient {
     /// Send one SMS-SUBMIT PDU through the persistent stream (two-phase
     /// `AT+CMGS`). Used by the control socket so the exclusive serial owner
     /// performs the whole transaction.
-    fn send_pdu(&self, pdu: &crate::sms::SmsPdu, timeout: u64) -> Result<String, String> {
+    fn send_pdu(&self, pdu: &crate::modules::sms::pdu::SmsPdu, timeout: u64) -> Result<String, String> {
         self.in_flight.store(true, Ordering::SeqCst);
         let mut guard = self.lock.lock().map_err(|_| "client lock poisoned")?;
         {
@@ -291,7 +291,7 @@ impl AtClient {
 
     /// Send the whole PDU set for one logical SMS (multipart included).
     pub fn send_sms(&self, number: &str, text: &str) -> Result<String, String> {
-        let pdus = crate::sms::encode(number, text);
+        let pdus = crate::modules::sms::pdu::encode(number, text);
         let mut last = String::new();
         for pdu in &pdus {
             last = self.send_pdu(pdu, self.config.serial_timeout)?;
@@ -466,7 +466,7 @@ impl AtTransport for AtClient {
     }
 
     fn send_sms(&self, number: &str, text: &str) -> Result<String, BackendError> {
-        let pdus = crate::sms::encode(number, text);
+        let pdus = crate::modules::sms::pdu::encode(number, text);
         let mut last = String::new();
         for pdu in &pdus {
             last = self
@@ -561,7 +561,7 @@ fn handle_cellscan(tasks: &Arc<TaskManager>, command: &str) -> Option<Value> {
                 }
                 // Protocol-compatible `cellscan` broadcast (WebUI parity).
                 ctx.bus
-                    .publish_now(crate::event_bus::TOPIC_SCAN, "cellscan", Value::Obj(obj.clone()));
+                    .publish_now(crate::state::bus::TOPIC_SCAN, "cellscan", Value::Obj(obj.clone()));
                 result.map(|_| Value::Obj(obj))
             }),
         );
@@ -740,19 +740,19 @@ fn handle_control_request(
                 // daemon_transport -> 这里），不在 run_command 里；漏了
                 // 这里闸门等于没装 —— 实测表现为cached 里始终没有
                 // raw: topic。
-                match crate::read_gate::gate(&command, cache, tasks) {
-                    crate::read_gate::Gate::Cached(text) => {
+                match crate::scheduler::gate::gate(&command, cache, tasks) {
+                    crate::scheduler::gate::Gate::Cached(text) => {
                         ok.insert("ok".to_string(), Value::Bool(true));
                         ok.insert("response".to_string(), json::str_val(text.trim()));
                         return Value::Obj(ok).dump();
                     }
-                    crate::read_gate::Gate::Pending => {
+                    crate::scheduler::gate::Gate::Pending => {
                         ok.insert("ok".to_string(), Value::Bool(true));
                         ok.insert("pending".to_string(), Value::Bool(true));
                         ok.insert("response".to_string(), json::str_val(""));
                         return Value::Obj(ok).dump();
                     }
-                    crate::read_gate::Gate::Passthrough => {}
+                    crate::scheduler::gate::Gate::Passthrough => {}
                 }
                 let mut spec = if command.ends_with('?') {
                     AtRequestSpec::ui_query(&command)
@@ -763,13 +763,13 @@ fn handle_control_request(
                 spec.queued_timeout = spec
                     .queued_timeout
                     .max(Duration::from_secs(timeout + 2));
-                let is_write = !crate::read_gate::is_read_command(&command);
+                let is_write = !crate::scheduler::gate::is_read_command(&command);
                 match await_request(arbiter, spec) {
                     Ok(text) => {
                         // 写操作改了模组状态，读缓存必须立刻作废
                         // （改 APN 后旧的 DHCP 地址不能继续显示）。
                         if is_write {
-                            crate::read_gate::invalidate_related(cache, &command);
+                            crate::scheduler::gate::invalidate_related(cache, &command);
                         }
                         ok.insert("ok".to_string(), Value::Bool(true));
                         ok.insert("response".to_string(), json::str_val(text.trim()));
@@ -818,7 +818,7 @@ fn handle_control_request(
             ok.insert("snapshot".to_string(), cache.snapshot());
         }
         "scan" => {
-            let ports: Vec<Value> = at::scan_serial_ports()
+            let ports: Vec<Value> = client::scan_serial_ports()
                 .iter()
                 .map(|p| {
                     let mut m = std::collections::BTreeMap::new();
@@ -864,16 +864,16 @@ fn spawn_control_socket(
     {
         use std::io::BufRead;
         use std::os::unix::net::{UnixListener, UnixStream};
-        let _ = std::fs::remove_file(crate::sock::CONTROL_SOCKET);
-        if let Some(parent) = std::path::Path::new(crate::sock::CONTROL_SOCKET).parent() {
+        let _ = std::fs::remove_file(crate::transport::control::CONTROL_SOCKET);
+        if let Some(parent) = std::path::Path::new(crate::transport::control::CONTROL_SOCKET).parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let listener = match UnixListener::bind(crate::sock::CONTROL_SOCKET) {
+        let listener = match UnixListener::bind(crate::transport::control::CONTROL_SOCKET) {
             Ok(l) => l,
             Err(e) => {
                 eprintln!(
                     "at-webserver: could not bind control socket {}: {}",
-                    crate::sock::CONTROL_SOCKET,
+                    crate::transport::control::CONTROL_SOCKET,
                     e
                 );
                 return;
@@ -881,7 +881,7 @@ fn spawn_control_socket(
         };
         eprintln!(
             "at-webserver: control socket {} ready",
-            crate::sock::CONTROL_SOCKET
+            crate::transport::control::CONTROL_SOCKET
         );
         thread::spawn(move || {
             for incoming in listener.incoming() {
@@ -1009,7 +1009,7 @@ fn handle_rpc_request(
             Value::Obj(m)
         }
         "scan" => {
-            let ports: Vec<Value> = at::scan_serial_ports()
+            let ports: Vec<Value> = client::scan_serial_ports()
                 .iter()
                 .map(|p| {
                     let mut m = std::collections::BTreeMap::new();
@@ -1249,10 +1249,10 @@ fn spawn_urc_monitor(client: Arc<AtClient>, bus: Arc<EventBus>) {
                 }
                 for (msg_type, data) in dispatcher.handle_line(&line) {
                     let topic = match msg_type {
-                        "new_sms" | "memory_full" => crate::event_bus::TOPIC_SMS,
-                        "signal" => crate::event_bus::TOPIC_SIGNAL,
-                        "pdcp_data" => crate::event_bus::TOPIC_TRAFFIC,
-                        _ => crate::event_bus::TOPIC_MODEM,
+                        "new_sms" | "memory_full" => crate::state::bus::TOPIC_SMS,
+                        "signal" => crate::state::bus::TOPIC_SIGNAL,
+                        "pdcp_data" => crate::state::bus::TOPIC_TRAFFIC,
+                        _ => crate::state::bus::TOPIC_MODEM,
                     };
                     bus.publish_now(topic, msg_type, data);
                 }
@@ -1299,8 +1299,8 @@ pub fn run(args: &[String]) -> i32 {
     // Background collectors (signal/network/registration/temperature/traffic/
     // cell/sim/modem_info) + the day/night band-lock scheduler run as periodic
     // tasks, so the cache is warm before the first page load.
-    crate::snapshot::spawn_all(&tasks);
-    scheduler::register(&tasks);
+    crate::state::collectors::spawn_all(&tasks);
+    plan::register(&tasks);
 
     // USB hotplug: presence transitions invalidate the cache, cancel modem
     // tasks and push `usb.*` / `modem.*` events.
@@ -1524,19 +1524,19 @@ fn run_command(
     // 写操作（拨号/设值/短信/清流量/升级/SIM PIN/终端）走Passthrough，
     // 行为与改造前完全一致。
     if let Some(cache) = Some(cache) {
-        match crate::read_gate::gate(&command, cache, tasks) {
-            crate::read_gate::Gate::Cached(text) => {
-                if at::response_ok(&text) {
+        match crate::scheduler::gate::gate(&command, cache, tasks) {
+            crate::scheduler::gate::Gate::Cached(text) => {
+                if client::response_ok(&text) {
                     return ok_response(text.trim());
                 }
                 return err_response(text.trim());
             }
-            crate::read_gate::Gate::Pending => {
+            crate::scheduler::gate::Gate::Pending => {
                 // 无缓存可返：告知前端正在采集。前端据此显示「采集中」
                 // 占位而不是空值，采集完成后由 EventBus 推真实值。
                 return pending_response(&command);
             }
-            crate::read_gate::Gate::Passthrough => {}
+            crate::scheduler::gate::Gate::Passthrough => {}
         }
     }
     // Reads deduplicate with the snapshot collectors; writes are serialised
@@ -1548,7 +1548,7 @@ fn run_command(
     // commands' real latency, so a read would fail, retry while holding the
     // channel, and starve the other frontend — the two sides fighting over the
     // AT port rather than over-reading it.
-    let is_write = !crate::read_gate::is_read_command(&command);
+    let is_write = !crate::scheduler::gate::is_read_command(&command);
     let spec = if command.ends_with('?') {
         AtRequestSpec::ui_query(&command)
     } else {
@@ -1556,13 +1556,13 @@ fn run_command(
     };
     match await_request(arbiter, spec) {
         Ok(text) => {
-            if at::response_ok(&text) {
+            if client::response_ok(&text) {
                 // 写操作改变了模组状态，之前采集的 raw 读缓存已经过期
                 // （例如改 APN 后 AT^CGPADDR/AT^DHCP? 的旧地址必须丢掉）。
                 // 保守作废全部 raw：条目数 < 100，且写是低频用户行为，
                 // 代价（下次读重新采一次）远小于漏作废导致页面显示旧值。
                 if is_write {
-                    crate::read_gate::invalidate_related(cache, &command);
+                    crate::scheduler::gate::invalidate_related(cache, &command);
                 }
                 ok_response(text.trim())
             } else {
@@ -1890,7 +1890,7 @@ mod tests {
         assert_eq!(resolve_serial_port(&c), "/dev/ttyUSB3");
         // "auto" falls back to system scan (host: none -> default path).
         c.serial_port = "auto".into();
-        assert_eq!(resolve_serial_port(&c), at::PREFERRED_AT_PORT);
+        assert_eq!(resolve_serial_port(&c), client::PREFERRED_AT_PORT);
     }
 
     #[test]
@@ -1904,7 +1904,7 @@ mod tests {
     fn event_envelope_is_nested_data() {
         // The frontend consumes msg.data.xxx (Python ws.broadcast parity);
         // the event bridge adds a timestamp without breaking that shape.
-        let data = crate::dispatcher::handle_pdcp(
+        let data = crate::transport::urc::handle_pdcp(
             "^PDCPDATAINFO: 1,5,65535,0,0,0,0,0,0,0,0,512,0,0,1,2",
         )
         .unwrap();

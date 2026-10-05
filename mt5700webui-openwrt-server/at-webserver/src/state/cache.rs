@@ -12,7 +12,7 @@
 //! Writers (`set`) replace entries; destructive operations (`invalidate`)
 //! drop them so the next read triggers a refresh.
 
-use crate::json::Value;
+use crate::core::json::Value;
 use std::collections::HashMap;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
@@ -180,8 +180,8 @@ impl StateCache {
             let mut m = std::collections::BTreeMap::new();
             m.insert("value".to_string(), e.value.clone());
             m.insert("fresh".to_string(), Value::Bool(fresh));
-            m.insert("age_ms".to_string(), crate::json::num_val(e.timestamp.elapsed().as_millis() as u64));
-            m.insert("source".to_string(), crate::json::str_val(&e.source));
+            m.insert("age_ms".to_string(), crate::core::json::num_val(e.timestamp.elapsed().as_millis() as u64));
+            m.insert("source".to_string(), crate::core::json::str_val(&e.source));
             map.insert(topic.clone(), Value::Obj(m));
         }
         Value::Obj(map)
@@ -199,7 +199,7 @@ mod tests {
     use super::*;
 
     fn num(n: i64) -> Value {
-        crate::json::num_val(n)
+        crate::core::json::num_val(n)
     }
 
     #[test]

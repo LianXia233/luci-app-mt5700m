@@ -3,7 +3,7 @@
 //! MT5700M WebUI protocol caps payloads well below 64 KiB; anything larger is
 //! rejected to bound memory.
 
-use crate::sha1::{base64, sha1};
+use crate::core::sha1::{base64, sha1};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;

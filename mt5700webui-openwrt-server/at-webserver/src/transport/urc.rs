@@ -3,7 +3,7 @@
 //! signal changes (^HCSQ) and passthrough lines (^REJINFO/+CUSD).
 //! Produces `(type, data)` pairs ready for the WebSocket broadcast.
 
-use crate::json::{self, Value};
+use crate::core::json::{self, Value};
 use std::time::Instant;
 
 const CALL_DEDUP_WINDOW_SECS: u64 = 30;

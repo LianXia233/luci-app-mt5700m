@@ -19,12 +19,12 @@
 //! hotplug daemon or inotify dependency — plain `std::fs` works on every
 //! platform the crate builds for.
 
-use crate::event_bus::{EventBus, TOPIC_MODEM, TOPIC_TASK, TOPIC_USB};
-use crate::json::{self, Value};
-use crate::serial::{scan_serial_ports, QUECTEL_VID};
-use crate::state_cache::StateCache;
-use crate::task::TaskKind;
-use crate::task_manager::TaskManager;
+use crate::state::bus::{EventBus, TOPIC_MODEM, TOPIC_TASK, TOPIC_USB};
+use crate::core::json::{self, Value};
+use crate::serial::manager::{scan_serial_ports, QUECTEL_VID};
+use crate::state::cache::StateCache;
+use crate::core::task::TaskKind;
+use crate::scheduler::jobs::TaskManager;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -35,15 +35,15 @@ const SCAN_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Topic that are invalidated whenever the device set changes.
 const STATE_TOPICS: [&str; 9] = [
-    crate::event_bus::TOPIC_SIGNAL,
-    crate::event_bus::TOPIC_NETWORK,
-    crate::event_bus::TOPIC_CELL,
-    crate::event_bus::TOPIC_TEMPERATURE,
-    crate::event_bus::TOPIC_TRAFFIC,
-    crate::event_bus::TOPIC_SIM,
-    crate::event_bus::TOPIC_REGISTRATION,
-    crate::event_bus::TOPIC_MODEM,
-    crate::event_bus::TOPIC_USB,
+    crate::state::bus::TOPIC_SIGNAL,
+    crate::state::bus::TOPIC_NETWORK,
+    crate::state::bus::TOPIC_CELL,
+    crate::state::bus::TOPIC_TEMPERATURE,
+    crate::state::bus::TOPIC_TRAFFIC,
+    crate::state::bus::TOPIC_SIM,
+    crate::state::bus::TOPIC_REGISTRATION,
+    crate::state::bus::TOPIC_MODEM,
+    crate::state::bus::TOPIC_USB,
 ];
 
 /// Task kinds that cannot outlive the modem they talk to.
@@ -148,7 +148,7 @@ impl DeviceMonitor {
     /// Start the background poll loop.
     pub fn start(self: &Arc<Self>) {
         let mon = self.clone();
-        crate::runtime::spawn_thread("device-monitor", move || mon.poll_loop());
+        crate::core::runtime::spawn_thread("device-monitor", move || mon.poll_loop());
         // Seed the baseline immediately so the first transition is detected.
         let now = ModemPresence::detect();
         *self.last.lock().unwrap() = Some(now.clone());
