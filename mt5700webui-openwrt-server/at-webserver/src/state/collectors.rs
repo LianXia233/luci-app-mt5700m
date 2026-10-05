@@ -51,15 +51,6 @@ use std::time::Duration;
 /// 后进入退避期（退避期内直接跳过，不占通道）。WebUI 走事件推送 + SWR
 /// 快照，10~300 s 的数据新鲜度完全够用。
 pub fn spawn_all(tasks: &TaskManager) {
-    // signal: HCSQ ~4 s，15 s 周期约占通道 27%；页面核心数据，Normal 优先
-    // 级（页面读缓存不阻塞，交互操作优先于刷新）。
-    tasks.add_periodic(
-        "snapshot.signal",
-        Duration::from_secs(15),
-        Priority::Normal,
-        Some(Duration::from_secs(15)),
-        Box::new(|ctx| collect_signal(ctx)),
-    );
     // registration: C5GREG 优先（带 tac/ci/act/nssai），失败退回 CEREG/CREG；20 s 周期。
     tasks.add_periodic(
         "snapshot.registration",
@@ -366,137 +357,9 @@ fn soft(r: AtResult) -> Result<String, crate::core::error::BackendError> {
     r.map(|text| text.trim().to_string())
 }
 
-fn collect_signal(ctx: &TaskCtx) -> Result<Value, crate::core::error::BackendError> {
-    // HCSQ 实测约 4 s 才响应：fast_query 的 3 s 超时会误判超时并重试 2 次，
-    // 反而把通道占更久。改用 12 s 宽松 spec、不重试；失败静默跳过（不 store，
-    // 页面 SWR 继续显示旧缓存），不把任务标记为失败。
-    //
-    // 失败后退避：`collect_signal` 是最高频的采集器（15 s 周期），而 HCSQ 在
-    // 弱信号下会反复慢响应。没有退避时，每次失败都会独占通道整整一个
-    // at_timeout 秒，叠加其余采集器即可把通道吃满（实测占用 >100%），
-    // 用户命令（LuCI 与 WebUI 两侧）于是全部 Busy/超时 —— 这就是两侧
-    // 「互相干扰」的实际成因：不是抢锁，而是后台刷新把独占通道占满。
-    // 退避期内直接跳过且不占通道，页面继续显示上一份 SWR 缓存。
-    let spec = AtRequestSpec {
-        command: "AT^HCSQ?".to_string(),
-        priority: Priority::Normal,
-        timeout: Duration::from_secs(12),
-        queued_timeout: Duration::from_secs(8),
-        exclusive: false,
-        dedup_key: Some("AT^HCSQ?".to_string()),
-        retry: RetryPolicy::none(),
-        cancel: None,
-        abort_wire: None,
-        payload: AtPayload::None,
-        label: "snapshot AT^HCSQ?".to_string(),
-    };
-    // Same duty gate as slow_query: signal is the most expensive collector
-    // (4 s per attempt, 15 s period), so it is the one that must yield first
-    // when the channel is oversubscribed or a user page is waiting.
-    if crate::scheduler::arbiter::channel_budget_exhausted() || crate::scheduler::arbiter::channel_user_starved() {
-        return Ok(stale_refresh(ctx, TOPIC_SIGNAL, "signal.updated"));
-    }
-    let Ok(text) = ctx.at_request(spec) else {
-        return Ok(stale_refresh(ctx, TOPIC_SIGNAL, "signal.updated"));
-    };
-    if text.trim().is_empty() {
-        return Ok(stale_refresh(ctx, TOPIC_SIGNAL, "signal.updated"));
-    }
-    let value = parse_hcsq(text.trim());
-    store(ctx, TOPIC_SIGNAL, "signal.updated", &value);
-    Ok(value)
-}
 
 /// Parse `^HCSQ: "LTE",rssi,rsrp,sinr,rsrq,...` into the same field names the
 /// dashboard already consumes (sysmode/rsrp/rsrq/sinr/rssi).
-pub fn parse_hcsq(raw: &str) -> Value {
-    let mut m = std::collections::BTreeMap::new();
-    let Some(body) = raw
-        .lines()
-        .find_map(|l| l.trim().strip_prefix("^HCSQ:"))
-    else {
-        return Value::Obj(m);
-    };
-    let fields: Vec<String> = body
-        .split(',')
-        .map(|f| f.trim().trim_matches('"').to_string())
-        .collect();
-    if fields.is_empty() {
-        return Value::Obj(m);
-    }
-    let valid = |v: &str| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()) && v != "255";
-    let to_num = |v: &str| v.parse::<u64>().unwrap_or(0);
-    m.insert("sysmode".to_string(), json::str_val(&fields[0]));
-    let get = |i: usize| fields.get(i).map(|s| s.as_str()).unwrap_or("");
-    match fields[0].as_str() {
-        "NR" => {
-            if valid(get(1)) {
-                let n = to_num(get(1)) as i64;
-                m.insert("rsrp".to_string(), json::num_val(if n >= 97 { -44 } else { n - 141 }));
-            }
-            if valid(get(2)) {
-                let n = to_num(get(2));
-                m.insert(
-                    "sinr".to_string(),
-                    json::num_val(if n >= 251 { 30.0 } else { round1(-20.2 + n as f64 * 0.2) }),
-                );
-            }
-            if valid(get(3)) {
-                let n = to_num(get(3));
-                m.insert(
-                    "rsrq".to_string(),
-                    json::num_val(if n >= 34 { -3.0 } else { round1(-20.0 + n as f64 * 0.5) }),
-                );
-            }
-        }
-        "LTE" => {
-            if valid(get(1)) {
-                m.insert("rssi".to_string(), json::num_val(to_num(get(1)) as i64 - 121));
-            }
-            if valid(get(2)) {
-                let n = to_num(get(2)) as i64;
-                m.insert("rsrp".to_string(), json::num_val(if n >= 97 { -44 } else { n - 141 }));
-            }
-            if valid(get(3)) {
-                let n = to_num(get(3));
-                m.insert(
-                    "sinr".to_string(),
-                    json::num_val(if n >= 251 { 30.0 } else { round1(-20.2 + n as f64 * 0.2) }),
-                );
-            }
-            if valid(get(4)) {
-                let n = to_num(get(4));
-                m.insert(
-                    "rsrq".to_string(),
-                    json::num_val(if n >= 34 { -3.0 } else { round1(-20.0 + n as f64 * 0.5) }),
-                );
-            }
-        }
-        "WCDMA" => {
-            if valid(get(1)) {
-                m.insert("rssi".to_string(), json::num_val(to_num(get(1)) as i64 - 121));
-            }
-            if valid(get(2)) {
-                let n = to_num(get(2)) as i64;
-                m.insert("rscp".to_string(), json::num_val(if n >= 96 { -25 } else { n - 121 }));
-            }
-            if valid(get(3)) {
-                let n = to_num(get(3));
-                m.insert(
-                    "ecio".to_string(),
-                    json::num_val(round1(-32.5 + n as f64 * 0.5)),
-                );
-            }
-        }
-        "GSM" => {
-            if valid(get(1)) {
-                m.insert("rssi".to_string(), json::num_val(to_num(get(1)) as i64 - 121));
-            }
-        }
-        _ => {}
-    }
-    Value::Obj(m)
-}
 
 fn collect_registration(ctx: &TaskCtx) -> Result<Value, crate::core::error::BackendError> {
     // C5GREG 优先（实测后端通道可用，带 tac/ci/act/nssai，如
@@ -1118,37 +981,6 @@ pub fn snapshot_rate_per_minute() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn hcsq_lte_parse() {
-        let v = parse_hcsq("^HCSQ: \"LTE\",62,52,22,30\r\nOK");
-        assert_eq!(v.get("sysmode").and_then(|x| x.as_str()), Some("LTE"));
-        assert_eq!(v.get("rssi").and_then(|x| x.as_i64()), Some(-59));
-        assert_eq!(v.get("rsrp").and_then(|x| x.as_i64()), Some(-89));
-        // sinr = -20.2 + 22 * 0.2 ≈ -15.8
-        assert!((v.get("sinr").and_then(|x| x.as_f64()).unwrap_or(0.0) + 15.8).abs() < 1e-6);
-        // rsrq = -20.0 + 30 * 0.5 = -5.0
-        assert_eq!(v.get("rsrq").and_then(|x| x.as_f64()), Some(-5.0));
-    }
-
-    #[test]
-    fn hcsq_nr_parse() {
-        let v = parse_hcsq("^HCSQ: \"NR\",132,200,26\r\nOK");
-        assert_eq!(v.get("sysmode").and_then(|x| x.as_str()), Some("NR"));
-        // rsrp raw 132 >= 97 clamps to -44 (frontend convertRsrp behaviour).
-        assert_eq!(v.get("rsrp").and_then(|x| x.as_i64()), Some(-44));
-        // sinr = -20.2 + 200 * 0.2 = 19.8
-        assert!((v.get("sinr").and_then(|x| x.as_f64()).unwrap_or(0.0) - 19.8).abs() < 1e-6);
-        // rsrq = -20.0 + 26 * 0.5 = -7.0
-        assert_eq!(v.get("rsrq").and_then(|x| x.as_f64()), Some(-7.0));
-    }
-
-    #[test]
-    fn hcsq_unknown_ignored() {
-        let v = parse_hcsq("^HCSQ: \"CDMA\",1,2,3\r\nOK");
-        assert_eq!(v.get("sysmode").and_then(|x| x.as_str()), Some("CDMA"));
-        assert!(v.get("rsrp").is_none());
-    }
 
     #[test]
     fn registration_parse_cereg() {

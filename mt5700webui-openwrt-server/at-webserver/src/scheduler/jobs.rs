@@ -192,6 +192,13 @@ impl TaskManager {
         id
     }
 
+    /// The event bus this manager publishes task events on. Exposed so the
+    /// control-socket API path (which has no bus handle of its own) can serve
+    /// the same registry as the WebSocket and RPC transports.
+    pub fn bus(&self) -> &Arc<EventBus> {
+        &self.bus
+    }
+
     /// Register a periodic job. Runs immediately on the next job tick, then
     /// every `interval`. Never overlaps (a long run delays the next run).
     pub fn add_periodic(

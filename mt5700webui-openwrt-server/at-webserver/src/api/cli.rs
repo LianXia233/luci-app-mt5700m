@@ -1288,10 +1288,12 @@ fn valid_thermal_thresholds(args: &[String]) -> bool {
         && values[8] < values[7]
 }
 
-/// Send one SMS. `sms-tool_q` has been removed; messages are PDU-encoded
-/// in-process (`crate::modules::sms::pdu`) and delivered either through the exclusive AT
-/// daemon (preferred) or, when the daemon is not listening, over a direct
-/// exclusive serial port (or the network endpoint as a final fallback).
+/// Send one SMS through the daemon, which owns the AT port (and the PDU codec).
+///
+/// There is deliberately no serial or raw-TCP fallback here: writing `+CMGS`
+/// to the tty from the CLI would put a second writer on the modem, and writing
+/// AT to `host:port` would do the same over the network bridge. When the daemon
+/// is down, SMS is unavailable — the same contract the WebUI has.
 fn at_sms_send(settings: &Settings, number: &str, text: &str) -> i32 {
     if !settings.enabled {
         return 2;
@@ -1302,91 +1304,20 @@ fn at_sms_send(settings: &Settings, number: &str, text: &str) -> i32 {
         return 1;
     }
 
-    if matches!(settings.mode, Mode::Serial | Mode::Auto) {
-        // Preferred: the daemon owns the serial port exclusively, so route the
-        // whole PDU transaction through its control socket.
-        match crate::transport::control::daemon_sms(&number, &text) {
-            Ok(_) => return 0,
-            Err(crate::transport::control::ControlError::Unavailable) => { /* fall through to direct */ }
-            Err(e) => {
-                eprintln!("{}", e.message());
-                return 1;
-            }
+    match crate::transport::control::daemon_sms(&number, &text) {
+        Ok(_) => 0,
+        Err(crate::transport::control::ControlError::Unavailable) => {
+            eprintln!(
+                "AT serial port is owned by the at-webserver daemon; start it to send SMS \
+                 (/etc/init.d/at-webserver start)"
+            );
+            1
         }
-
-        if let Some(device) = client::detect_mt5700m_at_port(settings) {
-            let pdus = crate::modules::sms::pdu::encode(&number, &text);
-            let mut ok = true;
-            for pdu in &pdus {
-                if let Err(e) = client::serial_cmgs(&device, settings.timeout_s, pdu) {
-                    eprintln!("{}", e.message());
-                    ok = false;
-                    break;
-                }
-            }
-            if ok {
-                return 0;
-            }
-            if matches!(settings.mode, Mode::Serial) {
-                return 1;
-            }
-        } else if matches!(settings.mode, Mode::Serial) {
-            eprintln!("AT serial port not found");
-            return 1;
+        Err(e) => {
+            eprintln!("{}", e.message());
+            1
         }
     }
-
-    // Network fallback via nc-equivalent stream (kept for hosts without a
-    // serial node or daemon; no third-party dependency involved).
-    match text_mode_sms_network(settings, &number, &text) {
-        Ok(()) => 0,
-        Err(e) => e,
-    }
-}
-
-fn text_mode_sms_network(settings: &Settings, number: &str, text: &str) -> Result<(), i32> {
-    use std::io::{Read, Write};
-    let addr = (settings.host.as_str(), settings.port);
-    let mut stream = std::net::TcpStream::connect(addr).map_err(|_| 1)?;
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
-    let _ = stream
-        .write_all(b"AT+CMGF=1\r")
-        .and_then(|_| stream.flush());
-    sleep(Duration::from_secs(1));
-    let _ = stream
-        .write_all(format!("AT+CMGS=\"{}\"\r", number).as_bytes())
-        .and_then(|_| stream.flush());
-    sleep(Duration::from_secs(1));
-    let _ = stream
-        .write_all(format!("{}\u{1a}", text).as_bytes())
-        .and_then(|_| stream.flush());
-
-    let deadline = std::time::Instant::now() + Duration::from_secs(settings.timeout_s + 20);
-    let mut acc: Vec<u8> = Vec::new();
-    loop {
-        let mut chunk = [0u8; 1024];
-        match stream.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(n) => acc.extend_from_slice(&chunk[..n]),
-            Err(_) => {
-                if std::time::Instant::now() >= deadline {
-                    break;
-                }
-            }
-        }
-        let text_now = String::from_utf8_lossy(&acc).replace('\r', "");
-        if text_now.lines().any(|l| {
-            let t = l.trim();
-            t == "OK" || t == "ERROR" || t.starts_with("+CME ERROR") || t.starts_with("+CMS ERROR")
-        }) {
-            break;
-        }
-        if std::time::Instant::now() >= deadline {
-            break;
-        }
-    }
-    print!("{}", String::from_utf8_lossy(&acc).replace('\r', ""));
-    Ok(())
 }
 
 // ---------------------------------------------------------------- Status

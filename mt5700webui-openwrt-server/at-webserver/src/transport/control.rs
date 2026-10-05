@@ -117,6 +117,29 @@ pub fn daemon_send(command: &str, timeout: u64) -> Result<String, ControlError> 
         .ok_or_else(|| ControlError::BadResponse("missing response field".into()))
 }
 
+/// Call a unified API route on the daemon and return its domain JSON.
+///
+/// Used by the CLI so the shell-facing verbs run the *same* module code as
+/// LuCI and the WebUI instead of a second implementation.
+pub fn daemon_api(method: &str, params: &json::Value, timeout: u64) -> Result<json::Value, ControlError> {
+    let mut map = std::collections::BTreeMap::new();
+    map.insert("cmd".to_string(), json::str_val("api"));
+    map.insert("path".to_string(), json::str_val(method));
+    map.insert("params".to_string(), params.clone());
+    map.insert("timeout".to_string(), json::num_val(timeout));
+    let resp = request(&json::Value::Obj(map))?;
+    let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !ok {
+        let err = resp
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown error")
+            .to_string();
+        return Err(ControlError::BadResponse(err));
+    }
+    Ok(resp.get("result").cloned().unwrap_or(json::Value::Null))
+}
+
 /// Request the daemon to enable PDU-mode SMS sending.
 pub fn daemon_sms(number: &str, text: &str) -> Result<String, ControlError> {
     let mut map = std::collections::BTreeMap::new();

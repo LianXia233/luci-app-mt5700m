@@ -70,6 +70,24 @@ pub const TOPIC_NETRATE: &str = "netrate";
 /// 不需要改后端。
 pub const TOPIC_RAW: &str = "raw:";
 
+/// Event names published with the topics above. Kept next to the topics so a
+/// producer and its subscribers can never drift apart on a string literal.
+pub const EVENT_SIGNAL_UPDATED: &str = "signal.updated";
+pub const EVENT_NETWORK_UPDATED: &str = "network.updated";
+pub const EVENT_REGISTRATION_UPDATED: &str = "registration.updated";
+pub const EVENT_CELL_UPDATED: &str = "cell.updated";
+pub const EVENT_ENDC_UPDATED: &str = "endc.updated";
+pub const EVENT_TXPOWER_UPDATED: &str = "txpower.updated";
+pub const EVENT_NR_TXPOWER_UPDATED: &str = "nr_txpower.updated";
+pub const EVENT_SIM_UPDATED: &str = "sim.updated";
+pub const EVENT_TEMPERATURE_UPDATED: &str = "temperature.updated";
+pub const EVENT_TRAFFIC_UPDATED: &str = "traffic.updated";
+pub const EVENT_NETRATE_UPDATED: &str = "netrate.updated";
+pub const EVENT_MODEM_INFO: &str = "modem.info";
+pub const EVENT_USB_CHANGED: &str = "usb.changed";
+pub const EVENT_SMS_RECEIVED: &str = "sms.received";
+
+
 pub const DEFAULT_TOPICS: [&str; 17] = [
     TOPIC_SIGNAL,
     TOPIC_NETWORK,

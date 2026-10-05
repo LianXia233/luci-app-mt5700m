@@ -247,6 +247,21 @@ pub fn scan_serial_ports() -> Vec<SerialPortInfo> {
 
 /// Auto-scan discovery: prefer the explicit MT5700M PCUI (sysfs ff:06:12 +
 /// 3466:3301), then any node that answers `AT`.
+/// Descriptor-only port detection for CLI clients.
+///
+/// Picks the PCUI interface from the USB descriptors without sending a single
+/// AT byte: while the daemon is running it holds the port with `TIOCEXCL`, so
+/// a probe from another process would either fail or block. The daemon itself
+/// uses `auto_detect_serial()` (which may probe) *before* taking ownership.
+pub fn detect_pcui_port() -> Option<String> {
+    for name in candidate_names() {
+        if is_pcui_interface(&name) {
+            return Some(name);
+        }
+    }
+    None
+}
+
 pub fn auto_detect_serial() -> Option<String> {
     let scanned = scan_serial_ports();
     for p in &scanned {
@@ -575,7 +590,7 @@ pub fn set_modem_lines(fd: i32, on: bool) {
 ///   would deliver SIGHUP/SIGINT to the daemon on every modem reset.
 /// * `O_NONBLOCK` — an idle modem must never park the reader thread inside
 ///   `read(2)`. Paired with `VMIN=1`/`VTIME=0` the kernel instead returns
-///   `-1/EAGAIN`, which the reader loop retries (see `at::spawn_reader`).
+///   `-1/EAGAIN`, which the daemon reader loop retries (`daemon::AtClient::spawn_reader`).
 ///
 /// `std::fs::OpenOptions` cannot express `O_NONBLOCK`/`O_NOCTTY` in a portable
 /// way, and this crate is intentionally std-only, so the three-line FFI is the

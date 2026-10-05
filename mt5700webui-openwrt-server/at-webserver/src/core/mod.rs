@@ -4,6 +4,7 @@
 //! `core` is dependency-free infrastructure (JSON codec, error model, task
 //! vocabulary, runtime helpers, crypto helpers).
 
+pub mod channel;
 pub mod error;
 pub mod json;
 pub mod runtime;

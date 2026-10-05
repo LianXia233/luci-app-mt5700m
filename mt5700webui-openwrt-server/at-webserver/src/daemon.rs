@@ -715,6 +715,25 @@ fn handle_control_request(
         .unwrap_or("");
     let mut ok = std::collections::BTreeMap::new();
     match cmd {
+        // Unified API over the control socket: the CLI (and therefore the LuCI
+        // dial manager) consumes exactly the same registry as the frontends.
+        "api" => {
+            let path = parsed
+                .as_ref()
+                .and_then(|v| v.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if path.is_empty() {
+                return err_response("缺少参数 path").dump();
+            }
+            let params = parsed
+                .as_ref()
+                .and_then(|v| v.get("params"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            let resp = crate::api::rpc::control_response(arbiter, cache, tasks.bus(), path, &params);
+            return resp.dump();
+        }
         "send" => {
             let command = parsed
                 .as_ref()
@@ -736,10 +755,9 @@ fn handle_control_request(
                 // `ui_query` so a slow command is not retried against the
                 // shared channel (see AtRequestSpec::ui_query).
                 // 读命令闸门。**LuCI 的全部读命令都走这条 control
-                // socket**（mt5700m-at command -> auto_cascade ->
-                // daemon_transport -> 这里），不在 run_command 里；漏了
-                // 这里闸门等于没装 —— 实测表现为cached 里始终没有
-                // raw: topic。
+                // socket**（mt5700m-at -> client::at_cmd ->
+                // 这里），不在 run_command 里；漏了这里闸门等于没装 ——
+                // 实测表现为 cached 里始终没有 raw: topic。
                 match crate::scheduler::gate::gate(&command, cache, tasks) {
                     crate::scheduler::gate::Gate::Cached(text) => {
                         ok.insert("ok".to_string(), Value::Bool(true));
@@ -981,6 +999,17 @@ fn handle_rpc_request(
                 // 缺省时后端对 cmd 做空格分词，兼容旧协议。
                 let args = params.get("args").and_then(|v| v.as_arr()).cloned();
                 handle_at_command(client, arbiter, tasks, bus, cache, cmd, args)
+            }
+        }
+        // Unified API: {"method":"api","params":{"path":"signal.get"}}.
+        // LuCI calls this through the ucode bridge, the WebUI through the
+        // WebSocket envelope below; both reach the same module code.
+        "api" => {
+            let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if path.is_empty() {
+                err_response("缺少参数 path")
+            } else {
+                crate::api::rpc::control_response(arbiter, cache, bus, path, params)
             }
         }
         // 缓存快照：零 AT 流量，LuCI 首屏立即拿到后台采集器状态。
@@ -1299,7 +1328,7 @@ pub fn run(args: &[String]) -> i32 {
     // Background collectors (signal/network/registration/temperature/traffic/
     // cell/sim/modem_info) + the day/night band-lock scheduler run as periodic
     // tasks, so the cache is warm before the first page load.
-    crate::state::collectors::spawn_all(&tasks);
+    crate::modules::spawn_all(&tasks);
     plan::register(&tasks);
 
     // USB hotplug: presence transitions invalidate the cache, cancel modem
@@ -1507,6 +1536,12 @@ fn run_command(
     cache: &Arc<StateCache>,
     command: &str,
 ) -> Value {
+    // Unified API over the WebSocket/LuCI command path: a command that reads
+    // `api.<module>.<verb>` is dispatched to the module registry, so frontends
+    // ask for domain data instead of building AT strings and parsing replies.
+    if crate::api::rpc::is_api_method(command) {
+        return crate::api::rpc::ws_response(arbiter, cache, bus, command.trim(), &json::Value::Null);
+    }
     if command.trim() == "AT+CONNECT?" {
         let kind = if client.describe() == "SERIAL" { "1" } else { "0" };
         return ok_response(&format!("+CONNECT: {}\r\nOK", kind));

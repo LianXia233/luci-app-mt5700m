@@ -5,6 +5,7 @@
 //! `plan` carries the day/night band-lock plan.
 
 pub mod arbiter;
+pub mod channel;
 pub mod gate;
 pub mod jobs;
 pub mod plan;

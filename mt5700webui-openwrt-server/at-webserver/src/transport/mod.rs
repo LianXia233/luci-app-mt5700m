@@ -6,6 +6,7 @@
 //! * `client`  — AT transport client (serial/TCP) plus port discovery.
 //! * `urc`     — unsolicited-result-code translation into bus events.
 
+pub mod channel;
 pub mod client;
 pub mod control;
 pub mod urc;
