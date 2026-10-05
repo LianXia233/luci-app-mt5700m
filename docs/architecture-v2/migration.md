@@ -60,14 +60,21 @@ aliases, so the move itself changed no behaviour.
 
 1. **Remaining modules**: `beam` (beam/scan commands),
    `diagnostics` (`cellscan`, port scan), `sms` service (list/send/receive
-   behind routes). Each follows [module-guide.md](module-guide.md); the CLI
-   verbs are the source of truth until they move. (`ca` and `qos` landed
-   already: carrier aggregation lives in `modules/ca` — the CLI's
-   `append_hfreqinfo_line`/`CaTotals` are gone and the frozen
-   `carrier_*`/`ca_*` text comes from `CaState::to_text()` — and
-   `modules/qos` owns `+CGACT?`/`^DSAMBR`/`+CGEQOSRDP`, rendering both CLI
-   verbs (`qci_text()`, `ambr_text()`) and serving `qos.get` to the WebUI,
-   whose `Info.tsx` no longer parses them.)
+   behind routes — the WebUI SMS pages still build PDUs in TS, which is the
+   last duplicated AT surface). Each follows [module-guide.md](module-guide.md);
+   the CLI verbs are the source of truth until they move. (`ca`, `qos` and the
+   Info page's data-call fields landed already: carrier aggregation lives in
+   `modules/ca` — the CLI's `append_hfreqinfo_line`/`CaTotals` are gone and the
+   frozen `carrier_*`/`ca_*` text comes from `CaState::to_text()` —
+   `modules/qos` owns `+CGACT?`/`^DSAMBR`/`+CGEQOSRDP` rendering both CLI verbs
+   (`qci_text()`, `ambr_text()`) and serving `qos.get`, and `modules/network` /
+   `modules/modem` / `modules/traffic` now own the Info page's remaining raw
+   reads and writes (`network.dhcp` for `AT^DHCP?`/`AT^DHCPV6?`/`AT^IPV6CAP?`
+   including the IPv4 hex decode, `modem.mcs` for `AT^MCS=1`/`=0`,
+   `network.registration_urc` for the `AT+CGREG=2` side effect, `traffic.clear`
+   for `AT^DSFLOWCLR`). `Info.tsx` therefore contains no AT command at all, and
+   the dead AT verb set in `services/at.ts` (`sendSMS`, call control,
+   `parsePDU`, registration queries) was deleted rather than left to rot.)
 2. **CLI adapter thinning**: `api/cli.rs` still holds the per-verb text
    formatters for those capabilities; they move into the modules' `api.rs`
    `render_text` as the modules land.

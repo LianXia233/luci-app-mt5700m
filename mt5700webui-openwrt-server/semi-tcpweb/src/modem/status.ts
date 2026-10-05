@@ -78,3 +78,28 @@ export interface PdpAddress {
   address: string;
   family: 'IPv4' | 'IPv6' | '未知';
 }
+
+/**
+ * `api.network.dhcp` —— 数据会话的地址族参数（modules/network 解析
+ * `AT^DHCP?` / `AT^DHCPV6?` / `AT^IPV6CAP?`）。
+ *
+ * 字段名与页面一直渲染的一致；IPv4 那六个字段的十六进制小端解码在后端完成，
+ * 页面只做展示（含未知能力值的文案映射）。
+ */
+export interface DhcpLease {
+  address?: string;
+  netmask?: string;
+  gateway?: string;
+  dhcp_server?: string;
+  primary_dns?: string;
+  secondary_dns?: string;
+}
+
+export interface NetworkDhcpPayload {
+  /** `AT^DHCP?`（IPv4） */
+  ipv4?: DhcpLease;
+  /** `AT^DHCPV6?` */
+  ipv6?: DhcpLease;
+  /** `AT^IPV6CAP?` 的能力值，页面映射为说明文案 */
+  ipv6_capability?: number;
+}

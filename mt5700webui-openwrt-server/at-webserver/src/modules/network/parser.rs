@@ -5,7 +5,7 @@
 //! the CLI's `status`/`network` verbs derive their output from here, so a
 //! parsing fix can never land on one surface only.
 
-use crate::modules::network::state::{PdpAddress, RegistrationState};
+use crate::modules::network::state::{DhcpLease, PdpAddress, RegistrationState};
 
 /// Parse a `+CxxREG:` line: registration state + family-specific fields.
 ///
@@ -285,6 +285,103 @@ pub fn parse_sysinfo_mode(raw: &str) -> Option<String> {
     Some(body.trim_matches('"').to_string())
 }
 
+/// Decode one field block of `^DHCP` / `^DHCPV6` into a [`DhcpLease`].
+///
+/// Both commands answer `^DHCP: <a>,<b>,<c>,<d>,<e>,<f>` with `a`..`f` =
+/// address, netmask, gateway, DHCP server, primary DNS, secondary DNS. IPv6
+/// fields are already textual; IPv4 fields are hex-encoded little-endian
+/// 32-bit values, exactly as the WebUI decoded them (byte-reversed dotted
+/// quad). Fewer than six fields means the firmware answered something else, so
+/// nothing is decoded rather than shifting values into the wrong slots.
+fn parse_dhcp(raw: &str, marker: &str, ipv4: bool) -> Option<DhcpLease> {
+    for line in raw.lines() {
+        let t = line.trim();
+        let Some(idx) = t.find(marker) else { continue };
+        let body = t[idx + marker.len()..].trim_start_matches(':').trim();
+        if body.is_empty() {
+            continue;
+        }
+        let fields: Vec<&str> = body.split(',').map(|f| f.trim()).collect();
+        if fields.len() < 6 {
+            continue;
+        }
+        let conv = |s: &str| {
+            let s = s.trim().trim_matches('"');
+            if ipv4 {
+                hex_to_ipv4(s)
+            } else {
+                s.to_string()
+            }
+        };
+        return Some(DhcpLease {
+            address: Some(conv(fields[0])),
+            netmask: Some(conv(fields[1])),
+            gateway: Some(conv(fields[2])),
+            dhcp_server: Some(conv(fields[3])),
+            primary_dns: Some(conv(fields[4])),
+            secondary_dns: Some(conv(fields[5])),
+        });
+    }
+    None
+}
+
+/// `^DHCP?` (IPv4, hex fields) -> [`DhcpLease`].
+pub fn parse_dhcp_v4(raw: &str) -> Option<DhcpLease> {
+    parse_dhcp(raw, "^DHCP:", true)
+}
+
+/// `^DHCPV6?` (IPv6, textual fields) -> [`DhcpLease`].
+pub fn parse_dhcp_v6(raw: &str) -> Option<DhcpLease> {
+    parse_dhcp(raw, "^DHCPV6:", false)
+}
+
+/// IPv6 capability code from `^IPV6CAP?` (single decimal value).
+pub fn parse_ipv6cap(raw: &str) -> Option<u32> {
+    for line in raw.lines() {
+        let t = line.trim();
+        let Some(idx) = t.find("^IPV6CAP:") else {
+            continue;
+        };
+        let body = t[idx + "^IPV6CAP:".len()..].trim();
+        if let Some(code) = body
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .find_map(|f| f.trim().parse::<u32>().ok())
+        {
+            return Some(code);
+        }
+    }
+    None
+}
+
+/// Hex-encoded little-endian IPv4 field -> dotted quad.
+///
+/// The firmware sends each 4-byte address as 8 hex digits in reverse byte
+/// order, so `0100A8C0` is `192.168.0.1`. Unparseable input keeps the WebUI's
+/// historical placeholder instead of dropping the row.
+fn hex_to_ipv4(hex: &str) -> String {
+    let clean = hex.trim().replace('\r', "").replace('\n', "");
+    if clean.is_empty() || !clean.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return "0.0.0.0".to_string();
+    }
+    let mut padded = clean.to_ascii_uppercase();
+    if padded.len() != 8 {
+        while padded.len() < 8 {
+            padded.push('0');
+        }
+        padded.truncate(8);
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    for i in (0..8).step_by(2) {
+        bytes.push(u8::from_str_radix(&padded[i..i + 2], 16).unwrap_or(0));
+    }
+    bytes.reverse();
+    bytes
+        .iter()
+        .map(|b| b.to_string())
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,5 +470,42 @@ mod tests {
             Some("2,1,0,1")
         );
         assert_eq!(parse_sysinfo_mode("OK"), None);
+    }
+
+    #[test]
+    fn dhcp_v4_decodes_hex_little_endian_fields() {
+        // 0100A8C0 == 192.168.0.1 (bytes reversed), the firmware's byte order.
+        let raw = "^DHCP: 0100A8C0,00FFFFFF,0100A8C0,0100A8C0,08080808,08080404\nOK";
+        let lease = parse_dhcp_v4(raw).expect("lease");
+        assert_eq!(lease.address.as_deref(), Some("192.168.0.1"));
+        assert_eq!(lease.netmask.as_deref(), Some("255.255.255.0"));
+        assert_eq!(lease.primary_dns.as_deref(), Some("8.8.8.8"));
+        assert_eq!(lease.secondary_dns.as_deref(), Some("4.4.8.8"));
+    }
+
+    #[test]
+    fn dhcp_v4_invalid_hex_keeps_placeholder() {
+        let lease = parse_dhcp_v4("^DHCP: zz,00FFFFFF,0100A8C0,0100A8C0,08080808,08080404").unwrap();
+        assert_eq!(lease.address.as_deref(), Some("0.0.0.0"));
+    }
+
+    #[test]
+    fn dhcp_v6_keeps_textual_fields_and_ignores_short_answers() {
+        let raw = "^DHCPV6: 2409:8a00::1,64,2409:8a00::,2409:8a00::1,2400:3200::1,2400:3200:baba::1";
+        let lease = parse_dhcp_v6(raw).expect("lease");
+        assert_eq!(lease.address.as_deref(), Some("2409:8a00::1"));
+        assert_eq!(lease.netmask.as_deref(), Some("64"));
+        assert_eq!(lease.secondary_dns.as_deref(), Some("2400:3200:baba::1"));
+        // Wrong slot count: nothing is decoded (no shifting).
+        assert!(parse_dhcp_v6("^DHCPV6: 2409:8a00::1,64,2409:8a00::").is_none());
+        // The other family's line must not match.
+        assert!(parse_dhcp_v6("^DHCP: 0100A8C0,00FFFFFF,1,2,3,4").is_none());
+    }
+
+    #[test]
+    fn ipv6cap_reads_single_code() {
+        assert_eq!(parse_ipv6cap("^IPV6CAP: 7\nOK"), Some(7));
+        assert_eq!(parse_ipv6cap("^IPV6CAP: 11"), Some(11));
+        assert_eq!(parse_ipv6cap("OK"), None);
     }
 }

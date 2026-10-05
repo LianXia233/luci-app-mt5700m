@@ -57,19 +57,6 @@ export function parseHexValue(hexStr: string): number {
   return parseInt(hexStr, 16) || 0;
 }
 
-export function hexToIP(hex: string): string {
-  if (!hex || typeof hex !== 'string') return '0.0.0.0';
-  let clean = hex.trim().replace(/[\r\n]/g, '');
-  if (!/^[0-9A-Fa-f]+$/.test(clean)) return '0.0.0.0';
-  if (clean.length !== 8) clean = clean.padStart(8, '0').substring(0, 8);
-  const bytes: number[] = [];
-  for (let i = 0; i < 8; i += 2) {
-    bytes.push(parseInt(clean.substring(i, i + 2), 16) || 0);
-  }
-  while (bytes.length < 4) bytes.push(0);
-  return bytes.reverse().join('.');
-}
-
 export function parseTemperature(rawValue: string | number): number {
   const intValue = typeof rawValue === 'number' ? rawValue : parseInt(rawValue, 10);
   if (intValue >= 65535 || Number.isNaN(intValue) || intValue > 1500) return 0;
@@ -414,54 +401,6 @@ export function deriveNetworkMode(carriers: CarrierInfo[], hcsqFallback?: string
   const mode = hcsqFallback?.split(',')[0]?.replace(/"/g, '') || '';
   if (mode === 'NR' || mode === 'LTE' || mode === 'WCDMA') return mode;
   return '未知';
-}
-
-export interface MCSCarrier {
-  index: number;
-  mcsTableIndex: number;
-  code0: number;
-  code1: number;
-  modulation: string;
-  performance: string;
-  color: string;
-}
-
-export interface MCSInfo {
-  rat: 'LTE' | 'NR' | 'UNKNOWN';
-  carriers: MCSCarrier[];
-  avgMCS: number;
-}
-
-export function parseMCS(raw: string): MCSInfo {
-  const carriers: MCSCarrier[] = [];
-  let rat: MCSInfo['rat'] = 'UNKNOWN';
-  extractATDataMultiline(raw, '^MCS').forEach((dataStr) => {
-    const match = dataStr.match(/(\d+),(\d+),(.+)/);
-    if (!match) return;
-    const ratValue = match[2];
-    if (ratValue === '1') rat = 'NR';
-    else if (ratValue === '0' && rat === 'UNKNOWN') rat = 'LTE';
-    const values = match[3].split(',').map((v) => parseInt(v.trim(), 10));
-    for (let i = 0; i + 2 < values.length; i += 3) {
-      const code0 = values[i + 1];
-      const perf = getMCSPerformance(code0);
-      carriers.push({
-        index: carriers.length + 1,
-        mcsTableIndex: values[i],
-        code0,
-        code1: values[i + 2],
-        modulation: getMCSModulation(code0),
-        performance: perf.level,
-        color: perf.color,
-      });
-    }
-  });
-  const valid = carriers.map((c) => c.code0).filter((mcs) => mcs !== 255);
-  return {
-    rat,
-    carriers,
-    avgMCS: valid.length ? Math.round(valid.reduce((s, v) => s + v, 0) / valid.length) : 0,
-  };
 }
 
 export function parseCHIPTEMP(raw: string) {

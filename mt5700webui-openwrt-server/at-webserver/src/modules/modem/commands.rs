@@ -20,3 +20,10 @@ pub fn cfun(state: u8) -> String {
 
 /// Modem restart (vendor command).
 pub const RESET: &str = "AT^RESET";
+
+/// Downlink MCS table of the serving carriers. A vendor *query* that takes the
+/// direction as its argument, so the scheduler classifies it as a write.
+pub const MCS_DL: &str = "AT^MCS=1";
+
+/// Uplink MCS table, same command with the other direction.
+pub const MCS_UL: &str = "AT^MCS=0";

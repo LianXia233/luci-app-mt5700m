@@ -39,6 +39,42 @@ pub fn read_counter(path: &str) -> Option<u64> {
     raw.trim().parse::<u64>().ok()
 }
 
+/// First-error collector for best-effort read sequences.
+///
+/// Some routes read several commands and answer with whatever came back
+/// (`network.dhcp`, `modem.mcs`): a modem that only supports part of them must
+/// still produce a useful object, but if *nothing* could be read the route
+/// should fail with the first real reason instead of answering an empty object.
+/// One implementation, used by every module that needs it.
+#[derive(Default)]
+pub struct ReadErrors {
+    first: Option<BackendError>,
+}
+
+impl ReadErrors {
+    pub fn new() -> Self {
+        ReadErrors { first: None }
+    }
+
+    /// `Some(value)` on success, `None` on failure while remembering the error.
+    pub fn note<T>(&mut self, r: Result<T, BackendError>) -> Option<T> {
+        match r {
+            Ok(v) => Some(v),
+            Err(e) => {
+                if self.first.is_none() {
+                    self.first = Some(e);
+                }
+                None
+            }
+        }
+    }
+
+    /// The first error seen, if any.
+    pub fn into_option(self) -> Option<BackendError> {
+        self.first
+    }
+}
+
 /// The refresh context handed to every module service.
 pub struct RefreshCtx<'a> {
     pub channel: &'a dyn AtChannel,

@@ -3,6 +3,7 @@
 use crate::api::registry::{ApiCtx, Route};
 use crate::core::error::BackendError;
 use crate::core::json::{self, Value};
+use crate::modules::traffic::commands::DSFLOWCLR;
 use crate::modules::traffic::service;
 use crate::state::bus::{TOPIC_NETRATE, TOPIC_TRAFFIC};
 
@@ -12,6 +13,7 @@ pub fn routes() -> Vec<Route> {
         Route::display("traffic.get", get),
         Route::display("traffic.cached", cached),
         Route::display("traffic.netrate", netrate),
+        Route::on_demand("traffic.clear", clear),
     ]
 }
 
@@ -62,4 +64,17 @@ pub fn netrate_value(ctx: &ApiCtx) -> Value {
         (Some(v @ Value::Obj(_)), _) => v,
         _ => Value::Null,
     }
+}
+
+/// Clear the modem's data-flow counters (`AT^DSFLOWCLR`).
+///
+/// On-demand write: the Info page's "clear" button, nothing else. The network
+/// module's cache invalidation already drops the stale counters after this
+/// command, so the next `traffic.*`/`netrate` read reflects the reset.
+fn clear(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    let refresh = ctx.refresh();
+    refresh.action(DSFLOWCLR)?;
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("cleared".to_string(), Value::Bool(true));
+    Ok(Value::Obj(m))
 }

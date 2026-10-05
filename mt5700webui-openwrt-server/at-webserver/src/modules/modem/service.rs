@@ -10,7 +10,7 @@ use crate::core::json::Value;
 use crate::core::task::Priority;
 use crate::modules::modem::commands::{ATI, CGSN, LENDC, NTXPOWER, TXPOWER};
 use crate::modules::modem::parser;
-use crate::modules::modem::state::{EndcState, ModemState, NrTxPowerState, TxPowerState};
+use crate::modules::modem::state::{EndcState, McsState, ModemState, NrTxPowerState, TxPowerState};
 use crate::scheduler::channel::run_in_task;
 use crate::scheduler::jobs::TaskManager;
 use crate::state::bus::{
@@ -27,6 +27,9 @@ const SLOW_QUEUED_TIMEOUT: Duration = Duration::from_secs(12);
 const BACKOFF: Duration = Duration::from_secs(60);
 const SLOW_BACKOFF: Duration = Duration::from_secs(600);
 const INFO_TTL: Duration = Duration::from_secs(60);
+/// Diagnostic reads the Info page triggers on load: bounded, interactive-ish.
+const DIAG_AT_TIMEOUT: Duration = Duration::from_secs(8);
+const DIAG_QUEUED_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Identity refresh (`ATI` + `AT+CGSN`).
 pub fn refresh_info(ctx: &RefreshCtx) -> Result<ModemState, BackendError> {
@@ -73,6 +76,16 @@ pub fn refresh_endc(ctx: &RefreshCtx) -> Result<EndcState, BackendError> {
     }
     ctx.store(TOPIC_ENDC, EVENT_ENDC_UPDATED, &st.to_json());
     Ok(st)
+}
+
+/// Modulation/coding scheme of one direction (`AT^MCS=1` downlink,
+/// `AT^MCS=0` uplink).
+///
+/// A page-load diagnostic read: no topic, no polling, no cache — the reply is
+/// only meaningful at the moment the user looks at it.
+pub fn refresh_mcs(ctx: &RefreshCtx, command: &str) -> Result<McsState, BackendError> {
+    let text = ctx.read(command, DIAG_AT_TIMEOUT, DIAG_QUEUED_TIMEOUT, Priority::Normal)?;
+    Ok(parser::parse_mcs(&text))
 }
 
 /// Cache-first reads for the API.

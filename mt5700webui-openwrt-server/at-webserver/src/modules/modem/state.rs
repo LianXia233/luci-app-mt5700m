@@ -172,6 +172,68 @@ impl EndcState {
     }
 }
 
+/// One carrier row of an `^MCS` reading: an MCS table index plus the two
+/// modulation/coding codes the firmware reports for it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct McsCarrier {
+    /// 1-based position, in the order the modem listed the carriers.
+    pub index: usize,
+    pub mcs_table_index: i64,
+    /// Primary code (`255` = the carrier is not in use).
+    pub code0: i64,
+    pub code1: i64,
+}
+
+impl McsCarrier {
+    pub fn to_json(&self) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert("index".to_string(), json::num_val(self.index));
+        m.insert("mcs_table_index".to_string(), json::num_val(self.mcs_table_index));
+        m.insert("code0".to_string(), json::num_val(self.code0));
+        m.insert("code1".to_string(), json::num_val(self.code1));
+        Value::Obj(m)
+    }
+}
+
+/// One direction's `^MCS` reading (downlink or uplink).
+///
+/// `rat` is the access technology the modem attributed the table to: `NR`
+/// when any row says so, otherwise `LTE` when the first row says so, otherwise
+/// `UNKNOWN`. The frontends map the codes to modulation names and colours —
+/// that part is presentation, so it stays out of here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct McsState {
+    pub rat: &'static str,
+    pub carriers: Vec<McsCarrier>,
+    pub avg_mcs: i64,
+}
+
+impl Default for McsState {
+    fn default() -> Self {
+        McsState {
+            rat: "UNKNOWN",
+            carriers: Vec::new(),
+            avg_mcs: 0,
+        }
+    }
+}
+
+impl McsState {
+    /// True when the reply carried no carrier row at all.
+    pub fn is_empty(&self) -> bool {
+        self.carriers.is_empty()
+    }
+
+    pub fn to_json(&self) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert("rat".to_string(), json::str_val(self.rat));
+        let carriers: Vec<Value> = self.carriers.iter().map(|c| c.to_json()).collect();
+        m.insert("carriers".to_string(), Value::Arr(carriers));
+        m.insert("avg_mcs".to_string(), json::num_val(self.avg_mcs));
+        Value::Obj(m)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +251,24 @@ mod tests {
         };
         assert!(!m.contains_key("imei"));
         assert_eq!(ModemState::from_json(&m), st);
+    }
+
+    #[test]
+    fn mcs_json_lists_carriers_and_average() {
+        let st = McsState {
+            rat: "NR",
+            carriers: vec![
+                McsCarrier { index: 1, mcs_table_index: 0, code0: 25, code1: 23 },
+                McsCarrier { index: 2, mcs_table_index: 1, code0: 255, code1: 21 },
+            ],
+            avg_mcs: 25,
+        };
+        let Value::Obj(m) = st.to_json() else {
+            panic!("object")
+        };
+        assert_eq!(m.get("rat").and_then(|v| v.as_str()), Some("NR"));
+        assert_eq!(m.get("avg_mcs").and_then(|v| v.as_i64()), Some(25));
+        assert_eq!(m.get("carriers").map(|v| v.as_arr().map(|a| a.len())), Some(Some(2)));
     }
 
     #[test]

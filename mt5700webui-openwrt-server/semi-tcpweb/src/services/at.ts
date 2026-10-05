@@ -589,10 +589,6 @@ export class WebSocketATAdapter implements ATAdapter {
     }
   }
 
-  private isErrorResponse(data: string): boolean {
-    return data.includes('ERROR');
-  }
-
   async connect(authKey?: string): Promise<boolean> {
     if (this.isReady()) {
       console.log('WebSocket 已连接，复用现有连接');
@@ -1087,66 +1083,6 @@ export class WebSocketATAdapter implements ATAdapter {
   }
 
   // PDU解析辅助方法
-  private parsePDU(pdu: string): {
-    sender: string;
-    timestamp: string;
-    content: string;
-  } | null {
-    try {
-      if (!pdu || pdu.length < 20) return null;
-
-      // 解析PDU长度
-      const pduLength = parseInt(pdu.substring(0, 2), 16);
-      if (pduLength <= 0 || pduLength > pdu.length) return null;
-
-      // 解析发送者号码
-      const senderLength = parseInt(pdu.substring(2, 4), 16);
-      if (senderLength <= 0 || senderLength > pdu.length - 6) return null;
-
-      const senderType = pdu.substring(4, 6);
-      let sender = '';
-      if (senderType === '91') {
-        // 国际格式
-        const senderNumber = pdu.substring(6, 6 + senderLength);
-        sender = '+' + senderNumber.split('').reduce((acc, curr, idx) => {
-          if (idx % 2 === 0) {
-            return acc + curr;
-          }
-          return acc + curr + (idx < senderLength - 1 ? '' : '');
-        }, '');
-      } else {
-        // 本地格式
-        sender = pdu.substring(6, 6 + senderLength);
-      }
-
-      // 解析时间戳
-      const timestampStart = 6 + senderLength + 2; // +2 for protocol identifier and data coding scheme
-      if (timestampStart + 14 > pdu.length) return null;
-      const timestamp = pdu.substring(timestampStart, timestampStart + 14);
-      const year = '20' + timestamp.substring(0, 2);
-      const month = timestamp.substring(2, 4);
-      const day = timestamp.substring(4, 6);
-      const hour = timestamp.substring(6, 8);
-      const minute = timestamp.substring(8, 10);
-      const second = timestamp.substring(10, 12);
-      const formattedTimestamp = `${year}-${month}-${day} ${hour}:${minute}:${second}`;
-
-      // 解析内容
-      const contentStart = timestampStart + 14;
-      if (contentStart >= pdu.length) return null;
-      const content = this.decodePDUContent(pdu.substring(contentStart));
-
-      return {
-        sender,
-        timestamp: formattedTimestamp,
-        content
-      };
-    } catch (error) {
-      console.error('PDU解析失败:', error);
-      return null;
-    }
-  }
-
   // PDU内容解码
   private decodePDUContent(pduContent: string): string {
     try {
@@ -1670,86 +1606,14 @@ export class ATService {
   }
 
   // 网络相关AT指令
-  public async getSignalStrength(): Promise<ATResponse> {
-    return this.sendCommand('AT+CSQ');
-  }
-
-  public async getNetworkRegistration(): Promise<ATResponse> {
-    await this.sendCommand('AT+CREG=2'); // 先设置为详细信息模式
-    return this.sendCommand('AT+CREG?'); // 然后查询状态
-  }
-
   // 短信相关AT指令
-  public async sendSMS(number: string, message: string): Promise<ATResponse> {
-    await this.sendCommand('AT+CMGF=0'); // 设置文本模式
-    return this.sendCommand(`AT+CMGS="${number}"\r${message}\x1A`);
-  }
-
-  public async readSMS(index: number): Promise<ATResponse> {
-    try {
-      // 设置PDU模式
-      const cmgfResponse = await this.sendCommand('AT+CMGF=0');
-      if (!cmgfResponse.success) {
-        console.warn('设置PDU模式失败，但继续执行:', cmgfResponse.error);
-      }
-
-      // 等待一段时间确保命令执行完成
-      await new Promise((resolve) => setTimeout(resolve, 500));
-
-      // 读取指定索引的短信
-      console.log(`读取短信索引 ${index}`);
-      const response = await this.sendCommand(`AT+CMGR=${index}`);
-
-      return response;
-    } catch (error) {
-      console.error(`读取短信索引 ${index} 失败:`, error);
-      return {
-        success: false,
-        error: `读取短信失败: ${error}`,
-      };
-    }
-  }
-
   // 设置短信服务中心号码
-  public async setSMSCenter(number: string): Promise<ATResponse> {
-    return this.sendCommand(`AT+CSCA="${number}"`);
-  }
-
   // 获取短信服务中心号码
-  public async getSMSCenter(): Promise<ATResponse> {
-    return this.sendCommand('AT+CSCA?');
-  }
-
   // 设置短信服务类型
-  public async setSMSService(service: number): Promise<ATResponse> {
-    return this.sendCommand(`AT+CSMS=${service}`);
-  }
-
   // 获取短信服务类型
-  public async getSMSService(): Promise<ATResponse> {
-    return this.sendCommand('AT+CSMS?');
-  }
-
   // 设置短信文本模式参数
-  public async setSMSTextParameters(
-    fo: number,
-    vp: number,
-    pid: number,
-    dcs: number,
-  ): Promise<ATResponse> {
-    return this.sendCommand(`AT+CSMP=${fo},${vp},${pid},${dcs}`);
-  }
-
   // 获取短信文本模式参数
-  public async getSMSTextParameters(): Promise<ATResponse> {
-    return this.sendCommand('AT+CSMP?');
-  }
-
   // 按状态读取短信
-  public async listSMSByStatus(status: number): Promise<ATResponse> {
-    return this.sendCommand(`AT+CMGL=${status}`);
-  }
-
   // 获取所有短信，先检查模式再设置
   public async listAllSMS(): Promise<ATResponse> {
     try {
@@ -1778,40 +1642,15 @@ export class ATService {
   }
 
   // 存储短信
-  public async storeSMS(number: string, message: string): Promise<ATResponse> {
-    await this.sendCommand('AT+CMGF=1'); // 设置文本模式
-    return this.sendCommand(`AT+CMGW="${number}"\r${message}\x1A`);
-  }
-
   // 从存储器发送短信
-  public async sendStoredSMS(index: number): Promise<ATResponse> {
-    return this.sendCommand(`AT+CMSS=${index}`);
-  }
-
   // 设置短信存储器
-  public async setSMSStorage(mem1?: string, mem2?: string, mem3?: string): Promise<ATResponse> {
-    const command = `AT+CPMS=${mem1 ? `"${mem1}"` : ''}${mem2 ? `,"${mem2}"` : ''}${
-      mem3 ? `,"${mem3}"` : ''
-    }`;
-    return this.sendCommand(command);
-  }
-
   // 查询短信存储器状态
   public async getSMSStorage(): Promise<ATResponse> {
     return this.readCommand('AT+CPMS?');
   }
 
   // 设置短信格式（PDU/Text）
-  public async setSMSFormat(mode: 0 | 1): Promise<ATResponse> {
-    return this.sendCommand(`AT+CMGF=${mode}`);
-  }
-
   // 删除短信
-  public async deleteSMS(index: number, delflag?: number): Promise<ATResponse> {
-    const command = `AT+CMGD=${index}${delflag !== undefined ? `,${delflag}` : ''}`;
-    return this.sendCommand(command);
-  }
-
   // 获取IMEI
   public async getIMEI(): Promise<ATResponse> {
     const response = await this.sendCommand('AT+CGSN');
@@ -1864,96 +1703,12 @@ export class ATService {
     return this.sendCommand(command);
   }
 
-  // 添加到 ATService 类中
-  public async getCSRegStatus(): Promise<ATResponse> {
-    await this.sendCommand('AT+CREG=2'); // 设置详细信息模式
-    return this.sendCommand('AT+CREG?');
-  }
-
-  public async getPSRegStatus(): Promise<ATResponse> {
-    try {
-      // 先设置为支持详细信息的模式
-      await this.sendCommand('AT+CGREG=2');
-
-      // 查询PS域注册状态。华为 MT5700 固件对 5G 注册的应答前缀是 +C5GREG，
-      // 且可能只回单个状态值（如 "+C5GREG: 2"），没有 <n>,<stat> 两段，
-      // 这里两种前缀、两种长度都要兼容，否则匹配失败会原样返回纯文本，
-      // 调用方再 JSON.parse 就会抛 SyntaxError。
-      const response = await this.sendCommand('AT+CGREG?');
-      if (response.success && typeof response.data === 'string') {
-        console.log('PS域注册状态响应:', response.data);
-        const matches = response.data.match(
-          /\+C5?GREG:\s*(?:(\d+),)?(\d+)(?:,([^,]*),([^,]*)(?:,(\d+))?)?/,
-        );
-        if (matches) {
-          const [, n, stat, lac, ci, act] = matches;
-          const status = parseInt(stat);
-
-          // 返回PS域注册状态数据
-          return {
-            success: true,
-            data: JSON.stringify({
-              stat: status,
-              lac: lac?.replace(/"/g, '') || '',
-              ci: ci?.replace(/"/g, '') || '',
-              act: act ? parseInt(act) : -1,
-            }),
-          };
-        }
-      }
-      return response;
-    } catch (error) {
-      console.error('获取PS域注册状态失败:', error);
-      return {
-        success: false,
-        error: `获取PS域注册状态失败: ${error}`,
-      };
-    }
-  }
-
-  // 发起呼叫
-  public async makeCall(phoneNumber: string): Promise<ATResponse> {
-    return this.sendCommand(`ATD${phoneNumber};`);
-  }
-
   // 接听来电
-  public async answerCall(): Promise<ATResponse> {
-    return this.sendCommand('ATA');
-  }
-
   // 挂断电话
-  public async hangupCall(): Promise<ATResponse> {
-    return this.sendCommand('ATH');
-  }
-
   // 发送DTMF音
-  public async sendDTMF(dtmf: string, duration?: number): Promise<ATResponse> {
-    const command = duration ? `AT+VTS=${dtmf},${duration}` : `AT+VTS=${dtmf}`;
-    return this.sendCommand(command);
-  }
-
   // 挂断所有呼叫
-  public async hangupAllCalls(): Promise<ATResponse> {
-    return this.sendCommand('AT+CHUP');
-  }
-
   // 设置来电指示扩展上报格式
-  public async setCallRingExtendedFormat(enable: boolean): Promise<ATResponse> {
-    return this.sendCommand(`AT+CRC=${enable ? 1 : 0}`);
-  }
-
   // 设置IMS业务能力开关
-  public async setIMSSwitch(enable: boolean): Promise<ATResponse> {
-    return this.sendCommand(`AT^IMSSWITCH=${enable ? 1 : 0}`);
-  }
-
   // 查询IMS业务能力开关状态
-  public async queryIMSSwitch(): Promise<ATResponse> {
-    return this.readCommand('AT^IMSSWITCH?');
-  }
-
   // 查询当前呼叫状态
-  public async queryCallState(): Promise<ATResponse> {
-    return this.sendCommand('AT+CLCC');
-  }
 }

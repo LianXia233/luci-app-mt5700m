@@ -481,6 +481,46 @@ const MOCK_API_ROUTES: Record<string, unknown> = {
       { cid: 9, address: '2008:2:2:1:ffff:ffff:ffff:ffff', family: 'IPv6' },
     ],
   },
+  // modules/network：AT^DHCP? / AT^DHCPV6? / AT^IPV6CAP? 的领域模型
+  'api.network.dhcp': {
+    ipv4: {
+      address: '10.101.2.15',
+      netmask: '255.255.255.0',
+      gateway: '10.101.2.1',
+      dhcp_server: '10.101.2.1',
+      primary_dns: '211.136.115.8',
+      secondary_dns: '211.136.115.9',
+    },
+    ipv6: {
+      address: '2409:8a00:1234::1',
+      netmask: '64',
+      gateway: '2409:8a00:1234::',
+      dhcp_server: '2409:8a00:1234::1',
+      primary_dns: '2400:3200::1',
+      secondary_dns: '2400:3200:baba::1',
+    },
+    ipv6_capability: 7,
+  },
+  // modules/modem：AT^MCS=1 / AT^MCS=0
+  'api.modem.mcs': {
+    downlink: {
+      rat: 'NR',
+      carriers: [
+        { index: 1, mcs_table_index: 0, code0: 25, code1: 23 },
+        { index: 2, mcs_table_index: 1, code0: 21, code1: 19 },
+      ],
+      avg_mcs: 23,
+    },
+    uplink: {
+      rat: 'NR',
+      carriers: [{ index: 1, mcs_table_index: 0, code0: 18, code1: 16 }],
+      avg_mcs: 18,
+    },
+  },
+  // 幂等写：详细 PS 注册上报
+  'api.network.registration_urc': { enabled: true },
+  // 写：清空模组侧的流量计数器
+  'api.traffic.clear': { cleared: true },
 };
 
 const mockApiResponse = (commandLine: string): MockCommandResponse | null => {

@@ -1,6 +1,8 @@
 //! Decoders for modem identity, transmit power and EN-DC status.
 
-use crate::modules::modem::state::{EndcState, ModemState, NrCarrier, NrTxPowerState, TxPowerState};
+use crate::modules::modem::state::{
+    EndcState, McsCarrier, McsState, ModemState, NrCarrier, NrTxPowerState, TxPowerState,
+};
 use crate::state::refresh::round1;
 
 /// `ATI` lines `Manufacturer:` / `Model:` / `Revision:`.
@@ -124,6 +126,65 @@ pub fn parse_lendc(raw: &str) -> EndcState {
     st
 }
 
+/// `^MCS` table decode: one line per carrier group, three values per carrier.
+///
+/// Line shape `^MCS: <group>,<rat>,<table0>,<code0>,<code1>[,<table1>,<code1a>,
+/// <code1b>...]`; `<rat>` is `1` for NR and `0` for LTE. Rows whose group did
+/// not survive the regex-free split (fewer than three values left over) are
+/// dropped, exactly as the WebUI's loop did — this decoder replaces that loop,
+/// it does not change what the page shows.
+pub fn parse_mcs(raw: &str) -> McsState {
+    let mut st = McsState::default();
+    for line in raw.lines() {
+        let t = line.trim();
+        let Some(idx) = t.find("^MCS:") else { continue };
+        let body = t[idx + "^MCS:".len()..].trim();
+        let mut head = body.splitn(3, ',');
+        let group = head.next().map(|f| f.trim());
+        let rat = head.next().map(|f| f.trim());
+        let rest = head.next().map(|f| f.trim());
+        let (Some(group), Some(rat), Some(rest)) = (group, rat, rest) else {
+            continue;
+        };
+        if group.is_empty() || !group.bytes().all(|b| b.is_ascii_digit()) || rest.is_empty() {
+            continue;
+        }
+        if rat == "1" {
+            st.rat = "NR";
+        } else if rat == "0" && st.rat == "UNKNOWN" {
+            st.rat = "LTE";
+        }
+        // Unparseable codes are treated as "not in use" (255), the same value
+        // the firmware uses, so one bad token cannot poison the average.
+        let values: Vec<i64> = rest
+            .split(',')
+            .map(|v| v.trim().parse::<i64>().unwrap_or(255))
+            .collect();
+        let mut i = 0;
+        while i + 2 < values.len() {
+            st.carriers.push(McsCarrier {
+                index: st.carriers.len() + 1,
+                mcs_table_index: values[i],
+                code0: values[i + 1],
+                code1: values[i + 2],
+            });
+            i += 3;
+        }
+    }
+    let valid: Vec<i64> = st
+        .carriers
+        .iter()
+        .map(|c| c.code0)
+        .filter(|c| *c != 255)
+        .collect();
+    st.avg_mcs = if valid.is_empty() {
+        0
+    } else {
+        ((valid.iter().sum::<i64>() as f64) / (valid.len() as f64)).round() as i64
+    };
+    st
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +214,35 @@ mod tests {
         assert_eq!(st.carriers.len(), 2);
         assert_eq!(st.carriers[0].freq, Some(500));
         assert_eq!(st.carriers[1].pusch, Some(20));
+    }
+
+    #[test]
+    fn mcs_groups_three_values_per_carrier() {
+        let st = parse_mcs("^MCS: 1,1,0,25,23,1,21,19\n^MCS: 2,0,0,18,17\nOK");
+        assert_eq!(st.rat, "NR");
+        assert_eq!(st.carriers.len(), 3);
+        assert_eq!(st.carriers[0].index, 1);
+        assert_eq!(st.carriers[0].mcs_table_index, 0);
+        assert_eq!(st.carriers[0].code0, 25);
+        assert_eq!(st.carriers[0].code1, 23);
+        assert_eq!(st.carriers[2].code0, 18);
+        // 25, 21 and 18 -> 64/3 = 21.33 -> 21
+        assert_eq!(st.avg_mcs, 21);
+    }
+
+    #[test]
+    fn mcs_lte_only_when_no_nr_row_seen() {
+        let lte = parse_mcs("^MCS: 1,0,0,12,11");
+        assert_eq!(lte.rat, "LTE");
+        assert_eq!(lte.avg_mcs, 12);
+        // An NR row anywhere wins, even after an LTE row.
+        let mixed = parse_mcs("^MCS: 1,0,0,12,11\n^MCS: 2,1,0,25,23");
+        assert_eq!(mixed.rat, "NR");
+        // Unused carriers do not drag the average down.
+        let unused = parse_mcs("^MCS: 1,1,0,255,23,1,20,19");
+        assert_eq!(unused.avg_mcs, 20);
+        assert_eq!(parse_mcs("OK").avg_mcs, 0);
+        assert!(parse_mcs("OK").is_empty());
     }
 
     #[test]

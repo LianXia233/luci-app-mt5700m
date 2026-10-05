@@ -3,6 +3,7 @@
 use crate::api::registry::{ApiCtx, Route};
 use crate::core::error::BackendError;
 use crate::core::json::{self, Value};
+use crate::modules::modem::commands::{MCS_DL, MCS_UL};
 use crate::modules::modem::service;
 use crate::state::bus::TOPIC_MODEM;
 
@@ -14,6 +15,7 @@ pub fn routes() -> Vec<Route> {
         Route::display("modem.txpower", txpower),
         Route::display("modem.endc", endc),
         Route::display("modem.nr_txpower", nr_txpower),
+        Route::on_demand("modem.mcs", mcs),
     ]
 }
 
@@ -71,4 +73,32 @@ fn endc(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
 fn nr_txpower(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
     let refresh = ctx.refresh();
     Ok(service::refresh_nr_txpower(&refresh)?.to_json())
+}
+
+/// Modulation/coding scheme tables of both directions (`AT^MCS=1`/`=0`).
+///
+/// On-demand: the Info page reads it once per load. The three-value grouping,
+/// the RAT field and the average are the module's; the page turns `code0` into
+/// modulation names and colours. As with `network.dhcp`, a partial answer is
+/// still an answer — the error is only reported when nothing could be read.
+fn mcs(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    let refresh = ctx.refresh();
+    let mut m = std::collections::BTreeMap::new();
+    let mut errors = crate::state::refresh::ReadErrors::new();
+    if let Some(st) = errors.note(service::refresh_mcs(&refresh, MCS_DL)) {
+        if !st.is_empty() {
+            m.insert("downlink".to_string(), st.to_json());
+        }
+    }
+    if let Some(st) = errors.note(service::refresh_mcs(&refresh, MCS_UL)) {
+        if !st.is_empty() {
+            m.insert("uplink".to_string(), st.to_json());
+        }
+    }
+    if m.is_empty() {
+        if let Some(e) = errors.into_option() {
+            return Err(e);
+        }
+    }
+    Ok(Value::Obj(m))
 }

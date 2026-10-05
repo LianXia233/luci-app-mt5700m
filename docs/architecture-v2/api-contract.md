@@ -15,7 +15,8 @@ Two kinds of route, declared in the table itself (`Route::display` /
 * **display** (`signal.get`, `system.temperature`, …) — every page load calls
   these, so they must answer with domain JSON even when the modem is missing or
   busy; a failed refresh degrades to the previous value.
-* **on-demand** (`sim.number`, `network.pdp`) — an explicit user action that
+* **on-demand** (`sim.number`, `network.pdp`, `network.dhcp`, `modem.mcs`,
+  `traffic.clear`, `network.registration_urc`) — an explicit user action that
   performs a live read; it may fail with a modem error, which the UI surfaces.
   It must never fail with a parameter/internal error (asserted by the registry
   test for every registered route).
@@ -27,6 +28,8 @@ Two kinds of route, declared in the table itself (`Route::display` /
 | `registration.get` | `{state, tac, ci, act, nssai, mcc, mnc, lac}` |
 | `qos.get` / `qos.cached` | `{active_cid, ambr_down_kbps, ambr_up_kbps, ambr_apn, qci}` |
 | `network.pdp` | `{addresses: [{cid, address, family}]}` — on-demand `AT+CGPADDR` for the diagnostics panel |
+| `network.dhcp` | `{ipv4: {address, netmask, gateway, dhcp_server, primary_dns, secondary_dns}, ipv6: {…}, ipv6_capability}` — on-demand `AT^DHCP?`/`AT^DHCPV6?`/`AT^IPV6CAP?` (the hex little-endian decode happens here, not in the page); partial answers keep the fields that were read |
+| `network.registration_urc` | `{enabled: true}` — idempotent write `AT+CGREG=2`; the detailed PS registration report the Info page used to enable with raw AT |
 | `ca.get` / `ca.cached` | `{carriers: [{radio, band, source, dl_arfcn, ul_arfcn, dl_frequency_mhz, ul_frequency_mhz, dl_bandwidth_mhz, ul_bandwidth_mhz}], carrier_count, ca_active, dc_active, nr_carrier_count, lte_carrier_count, lte_secondary_count, secondary_connection_count, ca_mode, ca_dl_bandwidth, ca_ul_bandwidth}` (`ca.get?refresh=1` forces a live read) |
 | `cell.get` / `cell.cached` | `{band, channel, dlBandwidth, arfcn, sysmode, mcc, mnc, cid, pci, lac, operator, raw}` |
 | `sim.get` / `sim.cached` | `{status, iccid, imsi}` (+ `number` once read) |
@@ -35,8 +38,10 @@ Two kinds of route, declared in the table itself (`Route::display` /
 | `modem.txpower` | `{total, pusch, pucch, srs, prach}` |
 | `modem.nr_txpower` | `{carriers: [{pusch, pucch, srs, prach, freq}]}` |
 | `modem.endc` | `{available, plmnAvailable, restricted, established}` |
+| `modem.mcs` | `{downlink: {rat, carriers: [{index, mcs_table_index, code0, code1}], avg_mcs}, uplink: {…}}` — on-demand `AT^MCS=1` / `AT^MCS=0`; the page maps `code0` to modulation/level labels |
 | `traffic.get` / `traffic.cached` | PDCP field map (`id`, `pduSessionId`, …, `dlDiscardCnt`) |
 | `traffic.netrate` | `{available, device, rx_bytes, tx_bytes, timestamp, source, traffic}` |
+| `traffic.clear` | `{cleared: true}` — on-demand write `AT^DSFLOWCLR`; the scheduler's action-invalidation drops the stale counters |
 | `system.temperature` / `system.temperature.cached` | 12 sensor fields + `average` |
 
 Field names and types are exactly what the cache published before the refactor,

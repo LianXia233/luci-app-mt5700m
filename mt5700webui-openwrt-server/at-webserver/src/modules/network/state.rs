@@ -82,6 +82,53 @@ impl PdpAddress {
     }
 }
 
+/// One address family of the data call as the modem's DHCP client reports it
+/// (`AT^DHCP?` for IPv4, `AT^DHCPV6?` for IPv6).
+///
+/// Field names match what the Info page has always rendered, so the frontends
+/// keep their `{address, netmask, gateway, dhcpServer, ...}` shape while the
+/// AT syntax and the hex decoding live here.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DhcpLease {
+    pub address: Option<String>,
+    pub netmask: Option<String>,
+    pub gateway: Option<String>,
+    pub dhcp_server: Option<String>,
+    pub primary_dns: Option<String>,
+    pub secondary_dns: Option<String>,
+}
+
+impl DhcpLease {
+    /// True when no field was decoded at all.
+    pub fn is_empty(&self) -> bool {
+        self.address.is_none()
+            && self.netmask.is_none()
+            && self.gateway.is_none()
+            && self.dhcp_server.is_none()
+            && self.primary_dns.is_none()
+            && self.secondary_dns.is_none()
+    }
+
+    /// Domain JSON: snake_case keys, absent fields omitted.
+    pub fn to_json(&self) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        let mut put = |k: &str, v: &Option<String>| {
+            if let Some(s) = v {
+                if !s.is_empty() {
+                    m.insert(k.to_string(), json::str_val(s));
+                }
+            }
+        };
+        put("address", &self.address);
+        put("netmask", &self.netmask);
+        put("gateway", &self.gateway);
+        put("dhcp_server", &self.dhcp_server);
+        put("primary_dns", &self.primary_dns);
+        put("secondary_dns", &self.secondary_dns);
+        Value::Obj(m)
+    }
+}
+
 /// Network domain model (operator + system mode + registration).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct NetworkState {

@@ -9,15 +9,10 @@ import { useCommandQueue } from '@/hooks/useCommandQueue';
 import { SvgSignalTower, SvgDataStream } from '@/ui/svgVisuals';
 import {
   calculateSignalPercent,
-  extractATData,
-  extractATDataMultiline,
   formatDuration,
   formatFlow,
   splitSpeed,
-  hexToIP,
   ipv6CapDescription,
-  parseMCS,
-  parseHexValue,
   psRegText,
   operatorFromCode,
   qciLabel,
@@ -25,8 +20,9 @@ import {
   signalColor,
   SIGNAL_RSRP_RANGE,
   type CarrierInfo,
-  type MCSInfo,
 } from '@/modem/parse';
+import { mcsInfoFromPayload, type MCSInfo, type McsPayload } from '@/modem/mcs';
+import type { NetworkDhcpPayload } from '@/modem/status';
 import { AutoRefresh, Kv, Metric, PageCard, Panel, SectionHeader, TwoCol } from '@/ui/widgets';
 import { QualityBar, RingGauge, Sparkline } from '@/ui/charts';
 import { Diagnostics } from './Diagnostics';
@@ -306,48 +302,34 @@ const NetworkInfo: React.FC = () => {
     if (typeof qci === 'string' && qci) setQci(qciLabel(qci));
   };
 
+  // 数据会话参数来自统一 API：后端 modules/network 解析 AT^DHCP? / AT^DHCPV6? /
+  // AT^IPV6CAP?（含 IPv4 十六进制小端解码），页面只把值填进卡片。
   const getDHCP = async () => {
-    const v6 = await at().readCommand('AT^DHCPV6?');
-    if (v6.success && v6.data) {
-      const str = extractATData(v6.data as string, '^DHCPV6');
-      if (str) {
-        const d = str.split(',');
-        if (d.length >= 6) {
-          setDhcpv6({
-            ipv6Address: d[0].trim(),
-            netmask: d[1].trim(),
-            gateway: d[2].trim(),
-            dhcpServer: d[3].trim(),
-            primaryDNS: d[4].trim(),
-            secondaryDNS: d[5].trim(),
-          });
-        }
-      }
+    const res = await at().apiCommand<NetworkDhcpPayload>('network.dhcp');
+    if (!res.success || !res.data) return;
+    const { ipv4, ipv6, ipv6_capability } = res.data;
+    if (ipv4) {
+      setDhcpv4({
+        ipv4Address: ipv4.address || '',
+        subnetMask: ipv4.netmask || '',
+        gateway: ipv4.gateway || '',
+        dhcpServer: ipv4.dhcp_server || '',
+        primaryDNS: ipv4.primary_dns || '',
+        secondaryDNS: ipv4.secondary_dns || '',
+      });
     }
-    const v4 = await at().readCommand('AT^DHCP?');
-    if (v4.success && v4.data) {
-      const str = extractATData(v4.data as string, '^DHCP');
-      if (str) {
-        const d = str.split(',');
-        if (d.length >= 6) {
-          setDhcpv4({
-            ipv4Address: hexToIP(d[0].trim()),
-            subnetMask: hexToIP(d[1].trim()),
-            gateway: hexToIP(d[2].trim()),
-            dhcpServer: hexToIP(d[3].trim()),
-            primaryDNS: hexToIP(d[4].trim()),
-            secondaryDNS: hexToIP(d[5].trim()),
-          });
-        }
-      }
+    if (ipv6) {
+      setDhcpv6({
+        ipv6Address: ipv6.address || '',
+        netmask: ipv6.netmask || '',
+        gateway: ipv6.gateway || '',
+        dhcpServer: ipv6.dhcp_server || '',
+        primaryDNS: ipv6.primary_dns || '',
+        secondaryDNS: ipv6.secondary_dns || '',
+      });
     }
-    const cap = await at().readCommand('AT^IPV6CAP?');
-    if (cap.success && cap.data) {
-      const str = extractATData(cap.data as string, '^IPV6CAP');
-      if (str) {
-        const value = parseInt(str.trim(), 10);
-        if (!Number.isNaN(value)) setIpv6Cap({ capValue: value, description: ipv6CapDescription(value) });
-      }
+    if (typeof ipv6_capability === 'number') {
+      setIpv6Cap({ capValue: ipv6_capability, description: ipv6CapDescription(ipv6_capability) });
     }
   };
 
@@ -405,11 +387,15 @@ const NetworkInfo: React.FC = () => {
 
   const refreshSharedMeasurements = () => refreshSharedStateFeed();
 
+  // MCS 同样来自统一 API：后端 modules/modem 发 AT^MCS=1 / AT^MCS=0 并按三值
+  // 分组解码，页面只把 code0 映射成调制方式与等级。
   const getMCS = async () => {
-    const dl = await at().sendCommand('AT^MCS=1');
-    if (dl.success && dl.data) setDownlinkMCS(parseMCS(dl.data as string));
-    const ul = await at().sendCommand('AT^MCS=0');
-    if (ul.success && ul.data) setUplinkMCS(parseMCS(ul.data as string));
+    const res = await at().apiCommand<McsPayload>('modem.mcs');
+    if (!res.success || !res.data) return;
+    const dl = mcsInfoFromPayload(res.data.downlink);
+    if (dl) setDownlinkMCS(dl);
+    const ul = mcsInfoFromPayload(res.data.uplink);
+    if (ul) setUplinkMCS(ul);
   };
 
   const loadAll = () => {
@@ -417,8 +403,9 @@ const NetworkInfo: React.FC = () => {
     // APN/QCI/AMBR 等未纳入主题缓存的只读字段，以及页面特有的 MCS 诊断值；
     // 页面本身不再用 AT 轮询覆盖信号、注册、温度或累计流量。
     enqueue(async () => {
-      // 保留原有的注册状态详细上报设置副作用；注册值本身只由共享缓存/事件更新。
-      await at().sendCommand('AT+CGREG=2');
+      // 详细的 PS 注册上报（原页面自己发的 AT+CGREG=2）现在是后端的幂等动作路由；
+      // 注册值本身只由共享缓存/事件更新。
+      await at().apiCommand('network.registration_urc');
       await getQos();
       await getDHCP();
       await getMCS();
@@ -526,7 +513,7 @@ const NetworkInfo: React.FC = () => {
   };
 
   const clearFlow = async () => {
-    const res = await at().sendCommand('AT^DSFLOWCLR');
+    const res = await at().apiCommand('traffic.clear');
     if (res.success) {
       Toast.success('流量已清零');
       await refreshSharedMeasurements();
