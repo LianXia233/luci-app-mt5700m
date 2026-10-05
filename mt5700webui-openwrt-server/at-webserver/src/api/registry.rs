@@ -134,6 +134,7 @@ pub fn dispatch(ctx: &ApiCtx, method: &str, params: &Value) -> Result<Value, Bac
 mod tests {
     use super::*;
     use crate::core::channel::AtChannel;
+    use crate::core::json;
 
     struct NoModem;
     impl AtChannel for NoModem {
@@ -157,6 +158,41 @@ mod tests {
         }
     }
 
+    /// Plausible parameters for the routes that take any.
+    ///
+    /// The sweep below has to reach the modem call, not stop at parameter
+    /// validation: a route that only misbehaves when called properly would
+    /// otherwise slip through (this is how the lock routes' required `rat`
+    /// went unnoticed).
+    fn sample_params(name: &str) -> Value {
+        let pairs = |items: &[(&str, Value)]| -> Value {
+            let mut m = std::collections::BTreeMap::new();
+            for (k, v) in items {
+                m.insert(k.to_string(), v.clone());
+            }
+            Value::Obj(m)
+        };
+        match name {
+            "network.lock_get" => pairs(&[("rat", json::str_val("lte"))]),
+            "network.lock_apply" => pairs(&[
+                ("rat", json::str_val("lte")),
+                ("lock_type", json::num_val(0)),
+            ]),
+            "network.c5goption_set" => pairs(&[
+                ("nr_sa_support_flag", json::num_val(1)),
+                ("nr_dc_mode", json::num_val(1)),
+                ("gc_access_mode", json::num_val(1)),
+            ]),
+            "sim.slot_set" => pairs(&[("slot", json::num_val(0))]),
+            "sim.hotplug_set" => pairs(&[("hotplug", Value::Bool(true))]),
+            "sim.pin_apply" => pairs(&[
+                ("operation", json::str_val("verify")),
+                ("pin", json::str_val("1234")),
+            ]),
+            _ => Value::Null,
+        }
+    }
+
     #[test]
     fn every_route_is_reachable_and_unknown_methods_fail_cleanly() {
         let cache = Arc::new(StateCache::new());
@@ -165,7 +201,7 @@ mod tests {
         let ctx = ApiCtx::new(&ch, &cache, &bus);
         let mut broken: Vec<String> = Vec::new();
         for route in routes() {
-            let out = dispatch(&ctx, route.name, &Value::Null);
+            let out = dispatch(&ctx, route.name, &sample_params(route.name));
             match (route.requires_modem, out) {
                 // A cold cache with no modem must still answer with a domain
                 // object (the frontends render placeholders), never panic.

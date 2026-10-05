@@ -255,14 +255,17 @@ mod tests {
 
     #[test]
     fn monnc_scales_oversized_nr_values() {
-        // 1/8-unit reporting: -760/8 = -95.0, -96/8 = -12.0
-        let cells = parse_monnc("^MONNC: NR,643456,1A,-760,-96,-40");
+        // 1/8-unit reporting: -760/8 = -95.0, -96/8 = -12.0, -320/8 = -40.0
+        let cells = parse_monnc("^MONNC: NR,643456,1A,-760,-96,-320");
         assert_eq!(cells[0].rsrp.as_deref(), Some("-95.0"));
         assert_eq!(cells[0].rsrq.as_deref(), Some("-12.0"));
-        assert_eq!(cells[0].sinr.as_deref(), Some("-5"));
-        // Values inside the legal range are passed through untouched.
-        let cells = parse_monnc("^MONNC: NR,643456,1A,-95,-11,-5");
+        assert_eq!(cells[0].sinr.as_deref(), Some("-40.0"));
+        // At the limit the value is already in dB, so it is passed through
+        // untouched (the -40 dB SINR check) — the same rule the WebUI had.
+        let cells = parse_monnc("^MONNC: NR,643456,1A,-95,-11,-40");
         assert_eq!(cells[0].rsrp.as_deref(), Some("-95"));
+        assert_eq!(cells[0].rsrq.as_deref(), Some("-11"));
+        assert_eq!(cells[0].sinr.as_deref(), Some("-40"));
     }
 
     #[test]
