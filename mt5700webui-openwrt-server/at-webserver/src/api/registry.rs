@@ -65,6 +65,7 @@ pub struct Route {
 pub fn routes() -> Vec<Route> {
     let mut v: Vec<Route> = Vec::new();
     v.extend(crate::modules::signal::api::routes());
+    v.extend(crate::modules::network::api::routes());
     v
 }
 
@@ -99,11 +100,12 @@ mod tests {
         fn query_timeout(&self, _c: &str, _t: std::time::Duration) -> Result<String, BackendError> {
             Err(BackendError::ModemUnavailable)
         }
-        fn query_background(
+        fn query_prio(
             &self,
             _c: &str,
             _t: std::time::Duration,
             _q: std::time::Duration,
+            _p: crate::core::task::Priority,
         ) -> Result<String, BackendError> {
             Err(BackendError::ModemUnavailable)
         }

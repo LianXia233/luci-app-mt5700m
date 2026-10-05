@@ -11,6 +11,7 @@
 
 use crate::core::channel::{soft, AtChannel};
 use crate::core::error::BackendError;
+use crate::core::task::Priority;
 use crate::core::json::{self, Value};
 use crate::state::bus::EventBus;
 use crate::state::cache::{Freshness, StateCache};
@@ -111,7 +112,7 @@ impl<'a> RefreshCtx<'a> {
         }
         match self
             .channel
-            .query_background(command, at_timeout, queued_timeout)
+            .query_prio(command, at_timeout, queued_timeout, Priority::Low)
         {
             Ok(text) if !text.trim().is_empty() => Some(text.trim().to_string()),
             _ => {
@@ -119,6 +120,23 @@ impl<'a> RefreshCtx<'a> {
                 None
             }
         }
+    }
+
+    /// Background read with an explicit priority (periodic collectors).
+    ///
+    /// Transport errors that just mean "no answer right now" (timeout, busy
+    /// channel) are softened to an empty string, so a collector records a
+    /// stale value instead of failing a task the UI depends on.
+    pub fn read(
+        &self,
+        command: &str,
+        at_timeout: Duration,
+        queued_timeout: Duration,
+        priority: Priority,
+    ) -> Result<String, BackendError> {
+        soft(self
+            .channel
+            .query_prio(command, at_timeout, queued_timeout, priority))
     }
 
     /// Fast read (cache-gated through the arbiter).

@@ -15,6 +15,7 @@
 //! `transport::channel` (out-of-process).
 
 use crate::core::error::BackendError;
+use crate::core::task::Priority;
 use std::time::Duration;
 
 /// Read/write access to the modem, already serialized by the AT scheduler.
@@ -28,14 +29,27 @@ pub trait AtChannel: Send + Sync {
     /// (`AT^HCSQ?` needs ~4 s on the MT5700M, `AT^NTXPOWER?` ~12 s).
     fn query_timeout(&self, command: &str, timeout: Duration) -> Result<String, BackendError>;
 
-    /// Background read: low priority, no retry, dedicated queue budget. Used
-    /// by periodic collectors so they can never starve an interactive user.
+    /// Background read with an explicit scheduler priority: no retry, its own
+    /// queue budget. Periodic collectors use it so they can never starve an
+    /// interactive user; the priority is the only knob that differs between a
+    /// routine snapshot (`Low`) and a state the UI waits on (`Normal`).
+    fn query_prio(
+        &self,
+        command: &str,
+        at_timeout: Duration,
+        queued_timeout: Duration,
+        priority: Priority,
+    ) -> Result<String, BackendError>;
+
+    /// Low-priority background read (the common collector case).
     fn query_background(
         &self,
         command: &str,
         at_timeout: Duration,
         queued_timeout: Duration,
-    ) -> Result<String, BackendError>;
+    ) -> Result<String, BackendError> {
+        self.query_prio(command, at_timeout, queued_timeout, Priority::Low)
+    }
 
     /// Write/action AT command. Bypasses the read cache entirely — a write
     /// must always reach the modem.

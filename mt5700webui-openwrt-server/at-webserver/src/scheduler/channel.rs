@@ -38,10 +38,15 @@ pub fn await_spec(arbiter: &Arc<AtArbiter>, spec: AtRequestSpec) -> AtResult {
 
 /// Background read spec shared by every module collector: low priority, no
 /// retry, generous timeout.
-pub fn background_spec(command: &str, at_timeout: Duration, queued_timeout: Duration) -> AtRequestSpec {
+pub fn background_spec(
+    command: &str,
+    at_timeout: Duration,
+    queued_timeout: Duration,
+    priority: Priority,
+) -> AtRequestSpec {
     AtRequestSpec {
         command: command.to_string(),
-        priority: Priority::Low,
+        priority,
         timeout: at_timeout,
         queued_timeout,
         exclusive: false,
@@ -81,14 +86,15 @@ impl AtChannel for TaskChannel<'_> {
         self.ctx.at_request(self.spec(command, timeout))
     }
 
-    fn query_background(
+    fn query_prio(
         &self,
         command: &str,
         at_timeout: Duration,
         queued_timeout: Duration,
+        priority: Priority,
     ) -> Result<String, BackendError> {
         self.ctx
-            .at_request(background_spec(command, at_timeout, queued_timeout))
+            .at_request(background_spec(command, at_timeout, queued_timeout, priority))
     }
 
     fn action(&self, command: &str) -> Result<String, BackendError> {
@@ -98,6 +104,20 @@ impl AtChannel for TaskChannel<'_> {
     fn duty_gate(&self) -> bool {
         channel_budget_exhausted() || channel_user_starved()
     }
+}
+
+/// Run a module's refresh function inside a periodic task.
+///
+/// Every module service looks the same at the edges — build the task channel,
+/// wrap it in a `RefreshCtx`, call one `refresh()` — so that adapter lives here
+/// once instead of in each `service.rs`.
+pub fn run_in_task<F>(ctx: &TaskCtx, f: F) -> Result<crate::core::json::Value, BackendError>
+where
+    F: FnOnce(&crate::state::refresh::RefreshCtx) -> Result<crate::core::json::Value, BackendError>,
+{
+    let channel = TaskChannel::new(ctx);
+    let refresh = crate::state::refresh::RefreshCtx::new(&channel, &ctx.cache, &ctx.bus);
+    f(&refresh)
 }
 
 /// AT channel for request handlers that are not tasks (RPC / control socket).
@@ -123,15 +143,16 @@ impl AtChannel for DirectChannel<'_> {
         await_spec(self.arbiter, spec)
     }
 
-    fn query_background(
+    fn query_prio(
         &self,
         command: &str,
         at_timeout: Duration,
         queued_timeout: Duration,
+        priority: Priority,
     ) -> Result<String, BackendError> {
         await_spec(
             self.arbiter,
-            background_spec(command, at_timeout, queued_timeout),
+            background_spec(command, at_timeout, queued_timeout, priority),
         )
     }
 
@@ -190,6 +211,7 @@ mod tests {
             "AT^NTXPOWER?",
             Duration::from_secs(12),
             Duration::from_secs(20),
+            Priority::Low,
         );
         assert_eq!(spec.priority, Priority::Low);
         assert_eq!(spec.retry.max_retries, 0);

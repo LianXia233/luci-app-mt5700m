@@ -48,11 +48,12 @@ impl AtChannel for DaemonChannel {
         control::daemon_send(command, secs).map_err(to_backend)
     }
 
-    fn query_background(
+    fn query_prio(
         &self,
         command: &str,
         at_timeout: Duration,
         _queued_timeout: Duration,
+        _priority: crate::core::task::Priority,
     ) -> Result<String, BackendError> {
         // The daemon decides priority; the client only bounds its own wait.
         let secs = at_timeout.as_secs().max(1) + 4;

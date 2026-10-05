@@ -51,22 +51,6 @@ use std::time::Duration;
 /// 后进入退避期（退避期内直接跳过，不占通道）。WebUI 走事件推送 + SWR
 /// 快照，10~300 s 的数据新鲜度完全够用。
 pub fn spawn_all(tasks: &TaskManager) {
-    // registration: C5GREG 优先（带 tac/ci/act/nssai），失败退回 CEREG/CREG；20 s 周期。
-    tasks.add_periodic(
-        "snapshot.registration",
-        Duration::from_secs(20),
-        Priority::Normal,
-        Some(Duration::from_secs(16)),
-        Box::new(|ctx| collect_registration(ctx)),
-    );
-    // network: COPS? 偶发失败占 8 s+，退避保护，30 s 周期。
-    tasks.add_periodic(
-        "snapshot.network",
-        Duration::from_secs(30),
-        Priority::Normal,
-        Some(Duration::from_secs(12)),
-        Box::new(|ctx| collect_network(ctx)),
-    );
     // temperature: CHIPTEMP ~0.1 s 快命令；60 s 周期，TTL 与
     // mt5700m-manager 的温度缓存刷新保持匹配。
     tasks.add_periodic(
@@ -361,39 +345,6 @@ fn soft(r: AtResult) -> Result<String, crate::core::error::BackendError> {
 /// Parse `^HCSQ: "LTE",rssi,rsrp,sinr,rsrq,...` into the same field names the
 /// dashboard already consumes (sysmode/rsrp/rsrq/sinr/rssi).
 
-fn collect_registration(ctx: &TaskCtx) -> Result<Value, crate::core::error::BackendError> {
-    // C5GREG 优先（实测后端通道可用，带 tac/ci/act/nssai，如
-    // +C5GREG: 2,1,"149002","0000000C2840C001",11,4,"80.03ffff"），
-    // 失败再 CEREG?（快）→ CREG? 兜底。
-    // 注意不能用「文本非空即采用」：失败的应答可能携带非空文本但没有
-    // REG: 行，会误把 state=0 当作结果并 break，永远轮不到下一个命令。
-    let has_reg = |text: &str| text.lines().any(|l| l.trim().contains("REG:"));
-    let mut value = Value::Null;
-    for cmd in ["AT+C5GREG?", "AT+CEREG?", "AT+CREG?"] {
-        let spec = AtRequestSpec {
-            command: cmd.to_string(),
-            priority: Priority::Normal,
-            timeout: Duration::from_secs(8),
-            queued_timeout: Duration::from_secs(6),
-            exclusive: false,
-            dedup_key: Some(cmd.to_string()),
-            retry: RetryPolicy::none(),
-            cancel: None,
-            abort_wire: None,
-            payload: AtPayload::None,
-            label: format!("snapshot {}", cmd),
-        };
-        if let Ok(text) = ctx.at_request(spec) {
-            let t = text.trim();
-            if !t.is_empty() && has_reg(t) {
-                value = parse_registration(t);
-                break;
-            }
-        }
-    }
-    store(ctx, TOPIC_REGISTRATION, "registration.updated", &value);
-    Ok(value)
-}
 
 /// Parse a `+CxxREG:` line: registration state + family-specific fields.
 /// `+CxxREG: <mode>,<stat>[,...]` — the first field is the unsolicited-report
@@ -407,187 +358,12 @@ fn collect_registration(ctx: &TaskCtx) -> Result<Value, crate::core::error::Back
 /// The WebUI Diagnostics panel renders tac/ci/nssai from the 5G family, so we
 /// expose a unified field set (tac/ci/act/nssai/mcc/mnc/lac) and let each
 /// consumer pick what it understands.
-pub fn parse_registration(raw: &str) -> Value {
-    let mut m = std::collections::BTreeMap::new();
-    let mut best: Option<(u8, String)> = None;
-    for line in raw.lines() {
-        let t = line.trim();
-        let Some(idx) = t.find("REG:") else { continue };
-        let body = t[idx + 4..].trim().trim_matches(|c| c == '"' || c == ' ');
-        let fields: Vec<&str> = body.split(',').map(|f| f.trim()).collect();
-        let stat_field = fields.get(1).or_else(|| fields.first());
-        let Some(state) = stat_field.and_then(|f| f.parse::<u8>().ok()) else {
-            continue;
-        };
-        // Keep the most specific registration family (C5GREG > CEREG > CREG)
-        // by preferring lines with more fields.
-        let score = if t.contains("C5GREG") {
-            3
-        } else if t.contains("CEREG") {
-            2
-        } else {
-            1
-        };
-        if best.as_ref().map(|(s, _)| *s < score).unwrap_or(true) {
-            best = Some((score, body.to_string()));
-        }
-        m.insert("state".to_string(), json::num_val(state));
-        let mut put = |key: &str, i: usize| {
-            if let Some(v) = fields.get(i) {
-                let s = v.trim().trim_matches('"');
-                if !s.is_empty() {
-                    m.insert(key.to_string(), json::str_val(s));
-                }
-            }
-        };
-        // 3 位十进制数字即 MCC，用来识别带 mcc/mnc 的厂商变体格式。
-        let is_mcc = |s: &str| {
-            let t = s.trim().trim_matches('"');
-            t.len() == 3 && t.bytes().all(|b| b.is_ascii_digit())
-        };
-        match score {
-            3 => {
-                // C5GREG 标准：<n>,<stat>[,<tac>,<ci>,<AcT>,<len>,<NSSAI>]
-                // 厂商变体：<n>,<stat>,<mcc>,<mnc>,<tac>,<ci>,<AcT>,<len>,<NSSAI>
-                if fields.get(2).map(|s| is_mcc(s)).unwrap_or(false) && fields.len() >= 7 {
-                    put("mcc", 2);
-                    put("mnc", 3);
-                    put("tac", 4);
-                    put("ci", 5);
-                    put("act", 6);
-                    put("nssai", 8);
-                } else {
-                    put("tac", 2);
-                    put("ci", 3);
-                    put("act", 4);
-                    put("nssai", 6);
-                }
-            }
-            2 => {
-                // CEREG 标准：<n>,<stat>[,<tac>,<ci>[,<AcT>]]
-                // 厂商变体：<n>,<stat>,<mcc>,<mnc>,<lac>,<ci>
-                if fields.get(2).map(|s| is_mcc(s)).unwrap_or(false) {
-                    put("mcc", 2);
-                    put("mnc", 3);
-                    put("tac", 4);
-                    put("ci", 5);
-                } else {
-                    put("tac", 2);
-                    put("ci", 3);
-                    put("act", 4);
-                }
-            }
-            _ => {
-                if fields.len() >= 6 {
-                    put("mcc", 2);
-                    put("mnc", 3);
-                    put("lac", 4);
-                    put("ci", 5);
-                } else {
-                    put("lac", 2);
-                    put("ci", 3);
-                }
-            }
-        }
-    }
-    if best.is_none() {
-        m.insert("state".to_string(), json::num_val(0));
-    }
-    Value::Obj(m)
-}
 
-fn collect_network(ctx: &TaskCtx) -> Result<Value, crate::core::error::BackendError> {
-    // COPS? 实测偶发失败（占 8 s+，多为被慢命令排队挤爆），用退避保护；
-    // SYSINFOEX 非关键，失败静默。
-    let mut m = std::collections::BTreeMap::new();
-    if let Some(cops) = slow_query(ctx, "network_cops", "AT+COPS?", Duration::from_secs(8), Duration::from_secs(6), Duration::from_secs(60)) {
-        if let Some(op) = extract_cops_operator(&cops) {
-            m.insert("operator".to_string(), json::str_val(&op));
-        }
-        if let Some(rat) = extract_cops_rat(&cops) {
-            m.insert("sysmode".to_string(), json::str_val(&rat));
-        }
-    }
-    if let Some(sysinfo) = slow_query(ctx, "network_sysinfo", "AT^SYSINFOEX", Duration::from_secs(6), Duration::from_secs(5), Duration::from_secs(300)) {
-        if let Some(mode) = extract_sysinfo_mode(&sysinfo) {
-            m.insert("sysmode_detail".to_string(), json::str_val(&mode));
-        }
-    }
-    let value = Value::Obj(m);
-    store(ctx, TOPIC_NETWORK, "network.updated", &value);
-    Ok(value)
-}
 
 /// Quoted or numeric MCC-MNC operator name from `+COPS:`.
-fn extract_cops_operator(raw: &str) -> Option<String> {
-    let line = raw.lines().find(|l| l.trim().starts_with("+COPS:"))?;
-    let body = line.trim().strip_prefix("+COPS:")?.trim();
-    if let Some(q1) = body.find('"') {
-        if let Some(q2) = body[q1 + 1..].find('"') {
-            let name = &body[q1 + 1..q1 + 1 + q2];
-            if !name.is_empty() {
-                return Some(name.trim_matches('"').to_string());
-            }
-        }
-    }
-    let fields: Vec<&str> = body.split(',').collect();
-    for f in &fields {
-        let t = f.trim();
-        if t.len() >= 5 && t.len() <= 6 && t.bytes().all(|b| b.is_ascii_digit()) {
-            return Some(t.to_string());
-        }
-    }
-    fields
-        .get(2)
-        .map(|s| s.trim().trim_matches('"').to_string())
-        .filter(|s| !s.is_empty())
-}
 
-fn extract_cops_rat(raw: &str) -> Option<String> {
-    let line = raw.lines().find(|l| l.trim().starts_with("+COPS:"))?;
-    let cleaned: String = line
-        .trim()
-        .chars()
-        .filter(|c| !matches!(c, ' ' | '"' | '\r'))
-        .collect();
-    let rat = cleaned.split(',').nth(3)?.trim();
-    if rat.is_empty() {
-        return None;
-    }
-    Some(normalize_rat(rat))
-}
 
-fn normalize_rat(rat: &str) -> String {
-    match rat {
-        "0" => "GSM".into(),
-        "2" => "UTRAN".into(),
-        "3" => "GSM EDGE".into(),
-        "4" => "HSDPA".into(),
-        "5" => "HSUPA".into(),
-        "6" => "HSDPA/HSUPA".into(),
-        "7" => "LTE".into(),
-        "9" => "NR".into(),
-        "10" => "LTE-M".into(),
-        "11" => "NB-IoT".into(),
-        "13" => "LTE".into(),
-        "20" => "NR".into(),
-        other => other.trim_matches('"').to_string(),
-    }
-}
 
-fn extract_sysinfo_mode(raw: &str) -> Option<String> {
-    let line = raw.lines().find(|l| l.trim().starts_with("^SYSINFOEX:"))?;
-    let body = line.trim().strip_prefix("^SYSINFOEX:")?.trim();
-    if let Some(q1) = body.find('"') {
-        if let Some(q2) = body[q1 + 1..].find('"') {
-            let mode = &body[q1 + 1..q1 + 1 + q2];
-            if !mode.is_empty() {
-                return Some(mode.trim_matches('"').to_string());
-            }
-        }
-    }
-    Some(body.trim_matches('"').to_string())
-}
 
 fn collect_temperature(ctx: &TaskCtx) -> Result<Value, crate::core::error::BackendError> {
     // CHIPTEMP 本身是快命令（0.1 s），但 fast_query（3 s 超时 + 2 次重试）
@@ -696,7 +472,9 @@ fn collect_cell(ctx: &TaskCtx) -> Result<Value, crate::core::error::BackendError
         }
     }
     if let Some(cops) = slow_query(ctx, "cell_cops", "AT+COPS?", Duration::from_secs(8), Duration::from_secs(6), Duration::from_secs(60)) {
-        if let Some(op) = extract_cops_operator(&cops) {
+        // TRANSITIONAL: the operator parser now lives in the network module;
+        // this collector is deleted when the cell module takes over.
+        if let Some(op) = crate::modules::network::parser::parse_cops_operator(&cops) {
             m.insert("operator".to_string(), json::str_val(&op));
         }
     }
@@ -983,37 +761,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registration_parse_cereg() {
-        let v = parse_registration("+CEREG: 0,1,\"460\",\"00\",7A32,7\r\nOK");
-        assert_eq!(v.get("state").and_then(|x| x.as_u64()), Some(1));
-        assert_eq!(v.get("mcc").and_then(|x| x.as_str()), Some("460"));
-    }
-
-    #[test]
     fn chiptemp_parse() {
         let v = parse_chiptemp("^CHIPTEMP: 432,445,451,398,401,407,460,455,470,468,410,415\r\nOK");
         assert_eq!(v.get("tcxo").and_then(|x| x.as_f64()), Some(39.8));
         assert_eq!(v.get("ap1").and_then(|x| x.as_f64()), Some(46.0));
         assert!(v.get("average").and_then(|x| x.as_f64()).unwrap_or(0.0) > 0.0);
-    }
-
-    #[test]
-    fn cops_operator_extraction() {
-        assert_eq!(
-            extract_cops_operator("+COPS: 0,0,\"CHN-UNICOM\",7\r\nOK").as_deref(),
-            Some("CHN-UNICOM")
-        );
-        assert_eq!(
-            extract_cops_rat("+COPS: 0,0,\"CHN-UNICOM\",7\r\nOK").as_deref(),
-            Some("LTE")
-        );
-    }
-
-    #[test]
-    fn sysinfo_mode_extraction() {
-        assert_eq!(
-            extract_sysinfo_mode("^SYSINFOEX: \"NR\",...\r\nOK").as_deref(),
-            Some("NR")
-        );
     }
 }
