@@ -1521,7 +1521,11 @@ fn run_command(
     // `api.<module>.<verb>` is dispatched to the module registry, so frontends
     // ask for domain data instead of building AT strings and parsing replies.
     if crate::api::rpc::is_api_method(command) {
-        return crate::api::rpc::ws_response(arbiter, cache, bus, command.trim(), &json::Value::Null);
+        // `api.<route>` or `api.<route> {<json params>}` — see
+        // `api::rpc::split_api_command`; the registry strips nothing here, it
+        // just never sees an AT string.
+        let (method, params) = crate::api::rpc::split_api_command(command);
+        return crate::api::rpc::ws_response(arbiter, cache, bus, &method, &params);
     }
     if command.trim() == "AT+CONNECT?" {
         let kind = if client.describe() == "SERIAL" { "1" } else { "0" };

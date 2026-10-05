@@ -7,8 +7,11 @@
 use crate::api::registry::{ApiCtx, Route};
 use crate::core::error::BackendError;
 use crate::core::json::{self, Value};
+use crate::modules::network::commands::CGPADDR;
+use crate::modules::network::parser::parse_cgpaddr;
 use crate::modules::network::service;
 use crate::modules::network::state::NetworkState;
+use std::time::Duration;
 use crate::state::bus::TOPIC_NETWORK;
 
 /// Routes contributed by this module.
@@ -25,6 +28,10 @@ pub fn routes() -> Vec<Route> {
         Route {
             name: "registration.get",
             handler: registration,
+        },
+        Route {
+            name: "network.pdp",
+            handler: pdp,
         },
     ]
 }
@@ -69,4 +76,23 @@ fn registration(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
     }
     let refresh = ctx.refresh();
     Ok(service::refresh_registration(&refresh).to_json())
+}
+
+/// Activated PDP addresses (`AT+CGPADDR`), decoded here and nowhere else.
+///
+/// On-demand read: the diagnostics panel asks when the user hits refresh, so
+/// there is no topic and no polling — but the decode is the module's, which is
+/// what keeps the manual refresh and the pushed topics in agreement.
+fn pdp(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    let refresh = ctx.refresh();
+    let raw = refresh.read(
+        CGPADDR,
+        Duration::from_secs(8),
+        Duration::from_secs(10),
+        crate::core::task::Priority::Interactive,
+    )?;
+    let addresses: Vec<Value> = parse_cgpaddr(&raw).iter().map(|a| a.to_json()).collect();
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("addresses".to_string(), Value::Arr(addresses));
+    Ok(Value::Obj(m))
 }

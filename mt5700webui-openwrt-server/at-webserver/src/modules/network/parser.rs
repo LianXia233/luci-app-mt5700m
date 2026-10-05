@@ -5,7 +5,7 @@
 //! the CLI's `status`/`network` verbs derive their output from here, so a
 //! parsing fix can never land on one surface only.
 
-use crate::modules::network::state::RegistrationState;
+use crate::modules::network::state::{PdpAddress, RegistrationState};
 
 /// Parse a `+CxxREG:` line: registration state + family-specific fields.
 ///
@@ -157,6 +157,101 @@ pub fn parse_cops_rat(raw: &str) -> Option<String> {
 }
 
 /// Map the 3GPP AcT code to the string the frontends display.
+/// One `+CGPADDR` line: `1,"10.0.0.1"` or `1,"32.8.0.2.0.2..."`.
+///
+/// Port of the WebUI's `parseCgpaddr`/`formatPdpAddress` so the diagnostics
+/// panel gets the same strings it used to build in TypeScript — including the
+/// IPv6 case, where the modem reports the address as 16 dotted bytes and the
+/// UI shows the compressed form.
+pub fn parse_cgpaddr(raw: &str) -> Vec<PdpAddress> {
+    let mut out = Vec::new();
+    for line in raw.lines() {
+        let Some(rest) = line.trim().strip_prefix("+CGPADDR:") else {
+            continue;
+        };
+        // <cid> then the first quoted field (the regex the WebUI used also
+        // stopped at the first quote, so a dual-stack line contributes the IPv4
+        // address only — same behaviour, on purpose).
+        let mut parts = rest.splitn(2, ',');
+        let cid = match parts.next().map(|c| c.trim().parse::<u32>()) {
+            Some(Ok(cid)) => cid,
+            _ => continue,
+        };
+        let tail = parts.next().unwrap_or("").trim();
+        let raw_address = if let Some(stripped) = tail.strip_prefix('"') {
+            stripped.split('"').next().unwrap_or("").trim()
+        } else {
+            tail.trim_matches('"').trim()
+        };
+        if raw_address.is_empty() {
+            continue;
+        }
+        let (address, family) = format_pdp_address(raw_address);
+        out.push(PdpAddress {
+            cid,
+            address,
+            family,
+        });
+    }
+    out
+}
+
+/// Dotted-bytes address -> display form (IPv4 as-is, IPv6 compressed).
+fn format_pdp_address(raw: &str) -> (String, &'static str) {
+    let parts: Vec<Option<u8>> = raw.split('.').map(|p| p.trim().parse::<u8>().ok()).collect();
+    if parts.len() == 4 && parts.iter().all(|p| p.is_some()) {
+        let bytes: Vec<u8> = parts.into_iter().flatten().collect();
+        return (
+            bytes
+                .iter()
+                .map(|b| b.to_string())
+                .collect::<Vec<_>>()
+                .join("."),
+            "IPv4",
+        );
+    }
+    if parts.len() == 16 && parts.iter().all(|p| p.is_some()) {
+        let bytes: Vec<u8> = parts.into_iter().flatten().collect();
+        let groups: Vec<String> = bytes
+            .chunks(2)
+            .map(|c| format!("{:x}", ((c[0] as u16) << 8) | c[1] as u16))
+            .collect();
+        return (compress_ipv6(&groups), "IPv6");
+    }
+    (
+        raw.to_string(),
+        if raw.contains(':') { "IPv6" } else { "未知" },
+    )
+}
+
+/// Fold the longest run of zero groups into `::` (RFC 5952's usual spelling),
+/// exactly like the TypeScript helper it replaces.
+fn compress_ipv6(groups: &[String]) -> String {
+    let (mut best_start, mut best_len) = (0usize, 0usize);
+    let (mut start, mut len) = (usize::MAX, 0usize);
+    for (i, g) in groups.iter().enumerate() {
+        if g == "0" {
+            if start == usize::MAX {
+                start = i;
+            }
+            len += 1;
+            if len > best_len {
+                best_len = len;
+                best_start = start;
+            }
+        } else {
+            start = usize::MAX;
+            len = 0;
+        }
+    }
+    if best_len < 2 {
+        return groups.join(":");
+    }
+    let head = groups[..best_start].join(":");
+    let tail = groups[best_start + best_len..].join(":");
+    format!("{}::{}", head, tail)
+}
+
 pub fn normalize_rat(rat: &str) -> String {
     match rat {
         "0" => "GSM".into(),
@@ -227,6 +322,36 @@ mod tests {
         let st = parse_registration("ERROR");
         assert!(st.is_empty());
         assert_eq!(st.state, 0);
+    }
+
+    #[test]
+    fn cgpaddr_ipv4_and_dotted_ipv6() {
+        // The IPv6 example is the one in the manual (7.8.5): the modem reports
+        // 16 dotted bytes, the UI shows the standard spelling.
+        let out = parse_cgpaddr(
+            "+CGPADDR: 1,\"10.0.0.1\"\r\n\
+             +CGPADDR: 2,\"32.8.0.2.0.2.0.1.255.255.255.255.255.255.255.255\"\r\nOK",
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!((out[0].cid, out[0].address.as_str(), out[0].family), (1, "10.0.0.1", "IPv4"));
+        assert_eq!(out[1].address, "2008:2:2:1:ffff:ffff:ffff:ffff");
+        assert_eq!(out[1].family, "IPv6");
+    }
+
+    #[test]
+    fn cgpaddr_compresses_zero_runs_and_skips_empties() {
+        let out = parse_cgpaddr("+CGPADDR: 1,\"\"\n+CGPADDR: 3,\"0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.1\"\n");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].cid, 3);
+        assert_eq!(out[0].address, "::1");
+    }
+
+    #[test]
+    fn cgpaddr_keeps_plain_ipv6_text_and_unquoted_lines() {
+        let out = parse_cgpaddr("+CGPADDR: 4,2001:db8::1\n+AT+CGPADDR: nope\n");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].address, "2001:db8::1");
+        assert_eq!(out[0].family, "IPv6");
     }
 
     #[test]

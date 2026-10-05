@@ -34,6 +34,19 @@ interface BaseATResponse {
   error?: string;
 }
 
+/**
+ * 统一后端 API 的应答：`api.<route>` 命令由后端注册表分发，
+ * `data` 是路由返回的域对象（不是 AT 文本）。
+ *
+ * 页面用它读取/刷新数据，而不是自己拼 AT 命令再解析应答 —— 解析只有
+ * 后端模块一份，页面拿到的值必然与事件推送同源。
+ */
+export interface ApiResponse<T = unknown> extends BaseATResponse {
+  data?: T;
+  code?: string;
+  retryable?: boolean;
+}
+
 interface CommandATResponse extends BaseATResponse {
   type?: never;
   data?: string;
@@ -1578,6 +1591,28 @@ export class ATService {
     if (this.adapter instanceof WebSocketATAdapter) return this.adapter.onConnectSuccess(callback);
     if (this.adapter instanceof MockWebSocketATAdapter) return this.adapter.onConnectSuccess(callback);
     return () => {};
+  }
+
+  /**
+   * 调用后端注册的 API 路由：`api.signal.get`、`api.modem.endc`、
+   * `api.network.pdp` …… 走既有命令通道，服务端把它分发给模块注册表。
+   * `params` 会作为行尾 JSON 附在命令后（后端 split_api_command 解析）。
+   */
+  public async apiCommand<T = unknown>(
+    path: string,
+    params?: Record<string, unknown>,
+  ): Promise<ApiResponse<T>> {
+    const line =
+      params && Object.keys(params).length ? `api.${path} ${JSON.stringify(params)}` : `api.${path}`;
+    const response = await this.sendCommand(line);
+    const raw = response as unknown as ApiResponse<T>;
+    return {
+      success: raw.success,
+      error: raw.error,
+      code: raw.code,
+      retryable: raw.retryable,
+      data: raw.data,
+    };
   }
 
   /**

@@ -64,6 +64,26 @@ impl RegistrationState {
 
 /// Network domain model (operator + system mode + registration).
 #[derive(Debug, Clone, Default, PartialEq)]
+/// One activated PDP context address (`AT+CGPADDR`), as the diagnostics panel
+/// displays it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PdpAddress {
+    pub cid: u32,
+    pub address: String,
+    /// `IPv4` / `IPv6` / `未知`.
+    pub family: &'static str,
+}
+
+impl PdpAddress {
+    pub fn to_json(&self) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert("cid".to_string(), json::num_val(self.cid as u64));
+        m.insert("address".to_string(), json::str_val(&self.address));
+        m.insert("family".to_string(), json::str_val(self.family));
+        Value::Obj(m)
+    }
+}
+
 pub struct NetworkState {
     pub operator: Option<String>,
     /// Access technology as the UI prints it (`LTE`, `NR`, `WCDMA`, ...).

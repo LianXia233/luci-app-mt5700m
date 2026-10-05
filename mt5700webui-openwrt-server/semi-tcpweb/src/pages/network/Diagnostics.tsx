@@ -4,11 +4,6 @@ import { ATService, type StateSnapshot } from '@/services/at';
 import { useSharedStateTopic } from '@/services/stateCache';
 import {
   ACT_TYPES,
-  parseC5greg,
-  parseCgpaddr,
-  parseLendc,
-  parseNrTxPower,
-  parseTxPower,
   REG_STATES,
   type EndcStatus,
   type NrTxPower,
@@ -116,45 +111,43 @@ export const Diagnostics: React.FC = () => {
     if (Object.keys(sharedSnapshot).length) applySnapshot(sharedSnapshot);
   }, [sharedSnapshot]);
 
-  // 手动刷新：立即发命令拿最新值（事件流之外的即时路径）。
+  // 手动刷新：调用后端统一 API 路由拿最新值（事件流之外的即时路径）。
+  //
+  // 这里以前自己发 AT^LENDC?/AT+C5GREG?/AT^TXPOWER?/AT^NTXPOWER?/AT+CGPADDR
+  // 并在前端解析应答 —— 那是第二套解析实现，慢命令还会占住串口。现在每条
+  // 只是 api.<route>，解码在后端模块里（modules/{modem,network}），返回值
+  // 与事件推送同形状，直接喂给上面同一组 apply 函数，两路数据必然一致。
   const refresh = async () => {
     setLoading(true);
     let hadFailure = false;
+    const at_ = at();
     try {
       // 这几条都可能因为“当前不是那个组网”而失败，属于正常情况，静默保留旧值。
       // 手册 11.7.2：仅 LTE 主模且单板支持 NR 时查询才有效。
-      const lendc = await at().readCommand('AT^LENDC?');
-      if (lendc.success && typeof lendc.data === 'string') {
-        const parsed = parseLendc(lendc.data);
-        if (parsed) setEndc(parsed);
-        else hadFailure = true;
-      } else hadFailure = true;
+      const endcRes = await at_.apiCommand<Record<string, unknown>>('modem.endc');
+      if (endcRes.success && endcRes.data) applyEndcEvent(endcRes.data);
+      else hadFailure = true;
 
       // 手册 5.27.2：仅当终端注册在 5G 核心网时上报。
-      const c5g = await at().readCommand('AT+C5GREG?');
-      if (c5g.success && typeof c5g.data === 'string') {
-        const parsed = parseC5greg(c5g.data);
-        if (parsed) setReg(parsed);
-        else hadFailure = true;
-      } else hadFailure = true;
+      const regRes = await at_.apiCommand<Record<string, unknown>>('registration.get');
+      if (regRes.success && regRes.data) applyRegEvent(regRes.data);
+      else hadFailure = true;
 
       // 手册 13.23.2：仅 GUL 下有效，ENDC 场景查的是 LTE 侧。
-      const txp = await at().readCommand('AT^TXPOWER?');
-      if (txp.success && typeof txp.data === 'string') {
-        const parsed = parseTxPower(txp.data);
-        if (parsed) setTx(parsed);
-        else hadFailure = true;
-      } else hadFailure = true;
+      const txRes = await at_.apiCommand<Record<string, unknown>>('modem.txpower');
+      if (txRes.success && txRes.data) applyTxEvent(txRes.data);
+      else hadFailure = true;
 
       // 手册 13.24.2：仅 NR/L 下有效，ENDC 场景查的是 NR 侧。
-      const ntxp = await at().readCommand('AT^NTXPOWER?');
-      if (ntxp.success && typeof ntxp.data === 'string') setNrTx(parseNrTxPower(ntxp.data));
+      const nrTxRes = await at_.apiCommand<Record<string, unknown>>('modem.nr_txpower');
+      if (nrTxRes.success && nrTxRes.data) applyNrTxEvent(nrTxRes.data);
       else hadFailure = true;
 
       // 不带 cid 就返回所有已激活 PDP 上下文的地址（手册 7.8.2）。
-      const pdp = await at().readCommand('AT+CGPADDR');
-      if (pdp.success && typeof pdp.data === 'string') setAddrs(parseCgpaddr(pdp.data));
+      const pdpRes = await at_.apiCommand<{ addresses?: PdpAddress[] }>('network.pdp');
+      if (pdpRes.success && pdpRes.data?.addresses) setAddrs(pdpRes.data.addresses);
       else hadFailure = true;
+
       if (hadFailure) Toast.warning('部分诊断数据未更新，已保留上次成功结果');
     } catch {
       Toast.error('诊断数据暂不可用，已保留上次成功结果');

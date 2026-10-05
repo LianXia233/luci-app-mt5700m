@@ -81,7 +81,13 @@ pub fn route_names() -> Vec<&'static str> {
 }
 
 /// Dispatch one API call. Unknown methods are a client error, never a panic.
+///
+/// The WebSocket/LuCI command path spells a route as `api.<name>` (see
+/// `api::rpc::is_api_method`), the control socket and the CLI pass `<name>`.
+/// Both must reach the same route, so the prefix is stripped here — one place
+/// instead of one per transport.
 pub fn dispatch(ctx: &ApiCtx, method: &str, params: &Value) -> Result<Value, BackendError> {
+    let method = method.strip_prefix("api.").unwrap_or(method);
     for route in routes() {
         if route.name == method {
             return (route.handler)(ctx, params);
@@ -132,6 +138,8 @@ mod tests {
             let out = dispatch(&ctx, name, &Value::Null);
             assert!(out.is_ok(), "route {} failed: {:?}", name, out.err());
         }
+        // The WebSocket/LuCI spelling must reach the same handler.
+        assert!(dispatch(&ctx, "api.signal.get", &Value::Null).is_ok());
         let err = dispatch(&ctx, "nope.nope", &Value::Null).unwrap_err();
         assert_eq!(err.code(), "INVALID_PARAMETER");
     }

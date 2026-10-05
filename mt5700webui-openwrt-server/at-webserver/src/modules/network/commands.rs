@@ -10,6 +10,10 @@ pub const REG_QUERIES: [&str; 3] = ["AT+C5GREG?", "AT+CEREG?", "AT+CREG?"];
 /// Operator name + access technology (`+COPS: <mode>,<format>,"<name>",<act>`).
 pub const COPS: &str = "AT+COPS?";
 
+/// Activated PDP context addresses (`+CGPADDR: <cid>,"<address>"`). On-demand
+/// only: the diagnostics panel asks for it, nothing polls it.
+pub const CGPADDR: &str = "AT+CGPADDR";
+
 /// Detailed system mode (vendor command).
 pub const SYSINFOEX: &str = "AT^SYSINFOEX";
 

@@ -78,3 +78,41 @@ pub fn control_response(
 pub fn is_api_method(command: &str) -> bool {
     command.trim().starts_with("api.")
 }
+
+/// Split `api.<route> [<json params>]` into the route name and its parameters.
+///
+/// The WebSocket/LuCI command path is a plain text line, so parameters ride
+/// along as a trailing JSON object: `api.ca.get {"refresh":true}`. Anything
+/// unparsable (or absent) means "no parameters", never an error — a route that
+/// takes no parameters must keep working when called as `api.signal.get`.
+pub fn split_api_command(command: &str) -> (String, Value) {
+    let trimmed = command.trim();
+    match trimmed.split_once(char::is_whitespace) {
+        None => (trimmed.to_string(), Value::Null),
+        Some((method, tail)) => {
+            let params = json::parse(tail.trim()).unwrap_or(Value::Null);
+            (method.to_string(), params)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_command_splits_route_and_params() {
+        let (m, p) = split_api_command("api.signal.get");
+        assert_eq!(m, "api.signal.get");
+        assert!(matches!(p, Value::Null));
+
+        let (m, p) = split_api_command("api.ca.get {\"refresh\":true}");
+        assert_eq!(m, "api.ca.get");
+        assert_eq!(p.get("refresh").and_then(|v| v.as_bool()), Some(true));
+
+        // Broken JSON must not turn into an error: the route decides.
+        let (m, p) = split_api_command("api.modem.endc {oops");
+        assert_eq!(m, "api.modem.endc");
+        assert!(matches!(p, Value::Null));
+    }
+}

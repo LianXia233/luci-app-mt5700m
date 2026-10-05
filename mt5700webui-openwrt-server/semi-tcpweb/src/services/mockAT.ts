@@ -2,7 +2,8 @@ export const MOCK_SMS_CACHE_KEY = 'sms_sent_messages_cache_mock';
 
 export interface MockCommandResponse {
   success: boolean;
-  data?: string;
+  /** Raw AT text for command answers, decoded object for `api.<route>` answers. */
+  data?: unknown;
   error?: string;
 }
 
@@ -447,12 +448,53 @@ export const createMockPDCPData = (sequence: number): MockPDCPData => {
   };
 };
 
+/**
+ * 统一 API 路由的演示应答（`api.<route>`）：真机由后端注册表解码，
+ * 演示模式在这里给出同形状的对象，页面代码两条路径共用一套渲染。
+ */
+const MOCK_API_ROUTES: Record<string, unknown> = {
+  'api.modem.endc': { available: 1, plmnAvailable: 1, restricted: 1, established: 1 },
+  'api.registration.get': {
+    state: 1,
+    tac: '0000C3',
+    ci: '000000010000001A',
+    act: 11,
+    nssai: '01.010203',
+  },
+  'api.modem.txpower': { pusch: 21, pucch: 18, srs: 20, prach: 23 },
+  'api.modem.nr_txpower': {
+    carriers: [
+      { pusch: 23, pucch: 3, srs: 23, prach: 22, freq: 3549720 },
+      { pusch: 21, pucch: 2, srs: 20, prach: 21, freq: 2593330 },
+    ],
+  },
+  'api.network.pdp': {
+    addresses: [
+      { cid: 8, address: '10.101.2.15', family: 'IPv4' },
+      { cid: 9, address: '2008:2:2:1:ffff:ffff:ffff:ffff', family: 'IPv6' },
+    ],
+  },
+};
+
+const mockApiResponse = (commandLine: string): MockCommandResponse | null => {
+  const key = commandLine.split(/\s+/)[0];
+  if (!key.startsWith('api.')) return null;
+  const data = MOCK_API_ROUTES[key];
+  if (data === undefined) return null;
+  return { success: true, data };
+};
+
 export const resolveMockATCommand = (
   command: string,
   state: MockModemState,
 ): MockCommandResponse => {
   const normalized = command.replace(/\x1A/g, '').trim();
   const commandLine = normalized.split(/[\r\n]/)[0].trim();
+
+  // 统一 API 路由优先：`api.signal.get` 这类命令由后端注册表处理，
+  // 演示模式也必须给出解码后的对象而不是 AT 文本。
+  const api = mockApiResponse(commandLine);
+  if (api) return api;
 
   if (commandLine === 'AT' || commandLine === 'ATE0') return ok();
   if (commandLine === 'ATI') {
