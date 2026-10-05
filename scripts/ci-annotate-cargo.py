@@ -4,8 +4,13 @@
 CI logs live behind a signed blob-storage URL that some networks (and some
 maintainers' tooling) cannot fetch. GitHub annotations, in contrast, are served
 by the API as small JSON objects, so a failing Rust build stays debuggable:
-every `error[E…]` / `error:` line is echoed as `::error::` with its source
-context, which also shows up in the run summary.
+every `error[E…]` / `error:` / failing-test header is echoed as an `::error::`
+with its **whole** diagnostic block (rustc's `expected/found` detail lives on
+the caret line, several lines down — a 4-line window silently drops the one
+line that says what is wrong).
+
+`warning: unused …` blocks are emitted as `::warning::` with their location, so
+dead imports from a mechanical refactor are visible without a second run.
 
 Usage: ci-annotate-cargo.py <cargo-log-file> [max-annotations]
 """
@@ -13,11 +18,24 @@ import re
 import sys
 from pathlib import Path
 
-DIAGNOSTIC = re.compile(
-    r"^(error(\[[A-Z0-9]+\]|:)|warning: unused|test .* FAILED|---- .* stdout ----|"
-    r"thread '.*' panicked)"
+ERROR = re.compile(
+    r"^(error(\[[A-Z0-9]+\]|:)|test .* FAILED|---- .* stdout ----|thread '.*' panicked)"
 )
-CONTEXT_LINES = 4
+WARNING = re.compile(r"^warning: unused")
+
+# rustc separates diagnostics with a blank line; the caret line that carries
+# `expected X, found Y` is up to ~8 lines into the block.
+MAX_BLOCK_LINES = 12
+
+
+def block(lines, start):
+    """Diagnostic block starting at `lines[start]`, up to the first blank line."""
+    out = []
+    for line in lines[start:start + MAX_BLOCK_LINES]:
+        if out and not line.strip():
+            break
+        out.append(line.strip())
+    return " | ".join(l for l in out if l)
 
 
 def main() -> int:
@@ -27,11 +45,15 @@ def main() -> int:
 
     shown = 0
     for i, line in enumerate(lines):
-        if not DIAGNOSTIC.match(line.strip()):
+        stripped = line.strip()
+        if ERROR.match(stripped):
+            message = block(lines, i).replace("%", "%25").replace("\r", "")[:900]
+            print(f"::error::{message}")
+        elif WARNING.match(stripped):
+            message = block(lines, i).replace("%", "%25").replace("\r", "")[:600]
+            print(f"::warning::{message}")
+        else:
             continue
-        context = " | ".join(l.strip() for l in lines[i:i + CONTEXT_LINES] if l.strip())
-        message = context.replace("%", "%25").replace("\r", "")[:900]
-        print(f"::error::{message}")
         shown += 1
         if shown >= limit:
             break

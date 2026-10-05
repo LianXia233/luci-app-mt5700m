@@ -11,6 +11,8 @@
 use crate::transport::client::{self, AtError, AtOutcome, Mode, Settings};
 // One implementation each: the CLI renders what the modules parsed. Keep the
 // historical local names so call sites and their tests stay readable.
+use crate::modules::system::parser::parse_chiptemp;
+use crate::modules::system::state::TemperatureState;
 use crate::modules::network::parser::{
     parse_cops_operator as extract_cops_operator,
     parse_cops_rat as extract_cops_rat, parse_sysinfo_mode as extract_sysinfo_mode,
@@ -96,11 +98,6 @@ fn clean_value(s: &str) -> String {
         .unwrap_or(t)
         .to_string()
 }
-
-fn clean_line_value(s: &str) -> String {
-    clean_value(s)
-}
-
 
 
 
@@ -498,76 +495,24 @@ pub fn print_temperature(settings: &Settings) -> String {
     // StateCache。外部高频调用方（如 mt5700m-manager 每 15 s 刷新温度缓存）
     // 命中缓存时零 AT 流量，避免把独占串口占死。缓存缺失或过期才回退实时
     // AT^CHIPTEMP?（该命令在 modem 上往返约 4 s，属慢命令，应尽量少发）。
+    //
+    // 两条路径都交给 `TemperatureState::to_text()` 渲染：解析器和文本格式
+    // 都只有一份（modules/system/{parser,state}.rs），CLI 只负责取数。
     if let Ok(snap) = crate::transport::control::daemon_cached() {
         if let Some(entry) = snap.get("temperature") {
             let fresh = entry.get("fresh").and_then(|f| f.as_bool()).unwrap_or(false);
             let age_ms = entry.get("age_ms").and_then(|a| a.as_u64()).unwrap_or(u64::MAX);
             if fresh && age_ms < 600_000 {
-                if let crate::core::json::Value::Obj(fields) = entry.get("value").cloned().unwrap_or(crate::core::json::Value::Null) {
-                    let mut out = String::new();
-                    let mut peak: f64 = f64::MIN;
-                    let mut peak_name = String::new();
-                    let mut found = false;
-                    for (k, v) in &fields {
-                        let Some(n) = v.as_f64() else { continue };
-                        if n <= 0.0 || n > 150.0 {
-                            continue;
-                        }
-                        let _ = write!(out, "temp_{}={:.1}\n", k.to_ascii_lowercase(), n);
-                        if n > peak {
-                            peak = n;
-                            peak_name = k.to_ascii_lowercase();
-                            found = true;
-                        }
-                    }
-                    if found {
-                        let _ = write!(out, "temperature={:.1}\n", peak);
-                        let _ = writeln!(out, "temperature_sensor={}", peak_name);
-                    }
-                    return out;
+                if let crate::core::json::Value::Obj(fields) =
+                    entry.get("value").cloned().unwrap_or(crate::core::json::Value::Null)
+                {
+                    return TemperatureState::from_json(&fields).to_text();
                 }
             }
         }
     }
     let raw = client::at_cmd(settings, "AT^CHIPTEMP?");
-    let mut out = String::new();
-    let Some(line) = first_match(&raw.text, "^CHIPTEMP:") else {
-        return out;
-    };
-    const NAMES: [&str; 12] = [
-        "sub3g_pa", "sub6g_pa", "mimo_pa", "tcxo", "peri1", "peri2", "ap1", "ap2", "modem1",
-        "modem2", "bbp1", "bbp2",
-    ];
-    let fields: Vec<String> = line
-        .split(',')
-        .map(|f| f.trim().trim_end_matches('\r').to_string())
-        .collect();
-    let mut peak: i64 = 0;
-    let mut peak_name = "";
-    let mut found = false;
-    for (i, value) in fields.iter().enumerate() {
-        if i >= 12 {
-            break;
-        }
-        let v = value.trim();
-        let Ok(numeric) = v.parse::<i64>() else {
-            continue;
-        };
-        if !(-400..=1200).contains(&numeric) {
-            continue;
-        }
-        let _ = write!(out, "temp_{}={:.1}\n", NAMES[i], numeric as f64 / 10.0);
-        if !found || numeric > peak {
-            peak = numeric;
-            peak_name = NAMES[i];
-            found = true;
-        }
-    }
-    if found {
-        let _ = write!(out, "temperature={:.1}\n", peak as f64 / 10.0);
-        let _ = writeln!(out, "temperature_sensor={}", peak_name);
-    }
-    out
+    parse_chiptemp(&raw.text).to_text()
 }
 
 pub fn print_subscription_rate(settings: &Settings) -> String {

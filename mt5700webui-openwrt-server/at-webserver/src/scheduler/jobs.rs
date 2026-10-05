@@ -109,13 +109,6 @@ impl TaskCtx {
     pub fn action(&self, command: &str) -> AtResult {
         self.at_request(AtRequestSpec::interactive(command))
     }
-
-    fn remaining(&self) -> Duration {
-        match self.deadline {
-            None => Duration::from_secs(24 * 3600),
-            Some(d) => d.saturating_duration_since(Instant::now()),
-        }
-    }
 }
 
 struct Inner {

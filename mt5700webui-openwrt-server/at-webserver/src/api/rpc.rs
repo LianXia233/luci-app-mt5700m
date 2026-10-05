@@ -27,10 +27,6 @@ pub fn call(
     registry::dispatch(&ctx, method, params)
 }
 
-fn error_object(err: &BackendError) -> Value {
-    crate::core::error::error_json(err)
-}
-
 /// WebSocket envelope: `{success, data}` / `{success:false, error}`.
 pub fn ws_response(
     arbiter: &Arc<AtArbiter>,

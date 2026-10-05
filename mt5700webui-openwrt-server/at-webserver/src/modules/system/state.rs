@@ -8,6 +8,15 @@ pub const SENSOR_NAMES: [&str; 12] = [
     "bbp1", "bbp2",
 ];
 
+/// Legacy `mt5700m-at temperature` key for each sensor, in [`SENSOR_NAMES`]
+/// order. Frozen: `mt5700m-manager` greps these keys out of the CLI text and
+/// `scripts/tests` assert them, so they are not derived from the JSON names
+/// (`sub3GPA` -> `sub3g_pa`, not `sub3_gpa`).
+pub const SENSOR_TEXT_KEYS: [&str; 12] = [
+    "sub3g_pa", "sub6g_pa", "mimo_pa", "tcxo", "peri1", "peri2", "ap1", "ap2", "modem1",
+    "modem2", "bbp1", "bbp2",
+];
+
 /// One `^CHIPTEMP?` reading: every sensor plus the average of the non-zero
 /// ones. Unreadable sensors are reported as 0.0 (legacy contract — the UI hides
 /// them), and the JSON always carries all 12 fields.
@@ -45,6 +54,37 @@ impl TemperatureState {
         Value::Obj(m)
     }
 
+    /// The `mt5700m-at temperature` text contract: one `temp_<sensor>=<celsius>`
+    /// line per reported sensor, then the hottest one as `temperature=` plus
+    /// `temperature_sensor=`. Sensors at 0.0 are "not reported" and omitted.
+    ///
+    /// This is the ONE renderer of a reading; the CLI's cached path and its live
+    /// `AT^CHIPTEMP?` path both end here, so both can never disagree.
+    pub fn to_text(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        let mut peak = 0.0f64;
+        let mut peak_key = "";
+        let mut found = false;
+        for (i, key) in SENSOR_TEXT_KEYS.iter().copied().enumerate() {
+            let v = self.sensors.get(i).copied().unwrap_or(0.0);
+            if v <= 0.0 || v > 150.0 {
+                continue;
+            }
+            let _ = writeln!(out, "temp_{}={:.1}", key, v);
+            if !found || v > peak {
+                peak = v;
+                peak_key = key;
+                found = true;
+            }
+        }
+        if found {
+            let _ = writeln!(out, "temperature={:.1}", peak);
+            let _ = writeln!(out, "temperature_sensor={}", peak_key);
+        }
+        out
+    }
+
     /// Rebuild from cache JSON.
     pub fn from_json(m: &std::collections::BTreeMap<String, Value>) -> Self {
         let sensors = SENSOR_NAMES
@@ -61,6 +101,21 @@ impl TemperatureState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_matches_the_cli_contract() {
+        let mut st = TemperatureState {
+            sensors: vec![0.0; 12],
+            average: Some(43.6),
+        };
+        st.sensors[8] = 42.1; // modem1
+        st.sensors[9] = 43.6; // modem2
+        assert_eq!(
+            st.to_text(),
+            "temp_modem1=42.1\ntemp_modem2=43.6\ntemperature=43.6\ntemperature_sensor=modem2\n"
+        );
+        assert_eq!(TemperatureState::default().to_text(), "");
+    }
 
     #[test]
     fn json_has_all_sensors_and_average() {

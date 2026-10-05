@@ -209,7 +209,7 @@ pub fn at_cmd(settings: &Settings, command: &str) -> AtOutcome {
     // "fallback" — would either deadlock on the daemon's lock or, worse, race
     // a second writer onto the modem. If the daemon is not running there is no
     // AT access, and the caller surfaces that as a normal unavailability.
-    fail_daemon(command, settings.timeout_s)
+    fail_daemon(&command, settings.timeout_s)
 }
 
 /// Forward one command to the daemon over the control socket.
