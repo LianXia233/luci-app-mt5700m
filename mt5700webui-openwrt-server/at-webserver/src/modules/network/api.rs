@@ -4,6 +4,7 @@
 //! `registration.get` are what the dashboard, the network page and the CLI
 //! now read; `network.cached`/`registration.cached` never touch the modem.
 
+use crate::api::params::num;
 use crate::api::registry::{ApiCtx, Route};
 use crate::core::error::BackendError;
 use crate::core::json::{self, Value};
@@ -161,10 +162,6 @@ fn parse_kind(params: &Value) -> Option<LockKind> {
     }
 }
 
-fn num_param(params: &Value, key: &str) -> Option<i64> {
-    params.get(key).and_then(|v| v.as_i64())
-}
-
 /// Current frequency lock of one RAT (`AT^LTEFREQLOCK?` / `AT^NRFREQLOCK?`).
 ///
 /// On-demand: the Settings page reads both RATs when it opens and after every
@@ -190,24 +187,24 @@ fn parse_lock_request(row: &Value) -> Result<LockRequest, BackendError> {
     let kind = parse_kind(row).ok_or_else(|| {
         BackendError::InvalidParameter("network.lock_apply needs rat=lte|nr".to_string())
     })?;
-    let lock_type = num_param(row, "lock_type").unwrap_or(0);
+    let lock_type = num(row, "lock_type").unwrap_or(0);
     if !(0..=3).contains(&lock_type) {
         return Err(BackendError::InvalidParameter(format!(
             "lock_type out of range: {}",
             lock_type
         )));
     }
-    let mobility = num_param(row, "mobility").unwrap_or(0).clamp(0, 1) as u8;
+    let mobility = num(row, "mobility").unwrap_or(0).clamp(0, 1) as u8;
     let items: Vec<crate::modules::network::state::LockItem> = row
         .get("items")
         .and_then(|v| v.as_arr())
         .map(|list| {
             list.iter()
                 .map(|item| crate::modules::network::state::LockItem {
-                    band: num_param(item, "band"),
-                    arfcn: num_param(item, "arfcn"),
-                    pci: num_param(item, "pci"),
-                    scs: num_param(item, "scs"),
+                    band: num(item, "band"),
+                    arfcn: num(item, "arfcn"),
+                    pci: num(item, "pci"),
+                    scs: num(item, "scs"),
                 })
                 .collect()
         })
@@ -305,7 +302,7 @@ fn c5goption_set(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
         .iter()
         .enumerate()
     {
-        let v = num_param(params, key).ok_or_else(|| {
+        let v = num(params, key).ok_or_else(|| {
             BackendError::InvalidParameter(format!("network.c5goption_set needs {}", key))
         })?;
         if !(0..=15).contains(&v) {

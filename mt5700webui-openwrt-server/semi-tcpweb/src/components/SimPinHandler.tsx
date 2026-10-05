@@ -4,12 +4,13 @@ import { IconLock } from '@douyinfe/semi-icons';
 import { ATService, type ATResponse, type URCData } from '@/services/at';
 import { useATReady } from '@/hooks/useATReady';
 import {
-  buildPinCommand,
-  parseCpin,
-  parseSimsq,
-  simErrorMessage,
+  cardStateOf,
+  pinErrorMessage,
+  pinLabel,
+  slotStatusOf,
+  type SimCardState,
+  type SimPinStatusPayload,
   type SimSlotStatus,
-  type SimState,
 } from '@/modem/sim';
 
 const at = () => ATService.getInstance();
@@ -20,7 +21,7 @@ const at = () => ATService.getInstance();
  * 不用先摸到模组设置页去找。
  */
 const SimPinHandler: React.FC = () => {
-  const [sim, setSim] = useState<SimState | null>(null);
+  const [sim, setSim] = useState<SimCardState | null>(null);
   const [slot, setSlot] = useState<SimSlotStatus | null>(null);
   const [visible, setVisible] = useState(false);
   const [pin, setPin] = useState('');
@@ -38,21 +39,20 @@ const SimPinHandler: React.FC = () => {
     if (!force && now - lastRefreshRef.current < 2000) return;
     lastRefreshRef.current = now;
 
-    const res = await at().sendCommand('AT+CPIN?');
-    const state = parseCpin(String(('data' in res && res.data) || ('error' in res && res.error) || ''));
-    if (!state) return;
+    // 卡状态（+CPIN/^SIMSQ/+CLCK）由后端 sim.pin_status 解码，页面只渲染。
+    const res = await at().apiCommand<SimPinStatusPayload>('sim.pin_status');
+    if (!res.success || !res.data) return;
+    const payload = res.data;
+    if (!payload.code) return;
 
-    setSim(state);
-    if (state.blocked) {
-      if (dismissedRef.current !== state.code) setVisible(true);
+    setSim(cardStateOf(payload));
+    setSlot(payload.card ? slotStatusOf(payload.card) : null);
+    if (payload.blocked) {
+      if (dismissedRef.current !== payload.code) setVisible(true);
     } else {
       setVisible(false);
       dismissedRef.current = '';
     }
-
-    // 手册 6.6：^SIMSQ 能区分"卡不在位""卡被锁""PUK 锁死"，比 +CPIN 更细。
-    const sq = await at().sendCommand('AT^SIMSQ?');
-    if (sq.success && sq.data) setSlot(parseSimsq(String(sq.data)));
   }, []);
 
   useATReady(refresh);
@@ -83,22 +83,18 @@ const SimPinHandler: React.FC = () => {
       return;
     }
 
-    const op = sim.needsNewPin ? 'unblock' : 'verify';
-    const { command, error } = buildPinCommand(op, {
+    // 命令拼装与密码规则都在后端 modules/sim，页面只提交操作本身。
+    const res = await at().apiCommand('sim.pin_apply', {
+      operation: sim.needsNewPin ? 'unblock' : 'verify',
       pin,
-      newPin,
+      newPin: sim.needsNewPin ? newPin : undefined,
       pin2: sim.lock === 'pin2' || sim.lock === 'puk2',
     });
-    if (error) {
-      Toast.error(error);
-      return;
-    }
 
     setBusy(true);
     try {
-      const res = await at().sendCommand(command);
       if (!res.success) {
-        Toast.error(simErrorMessage(String(('error' in res && res.error) || ''), '解锁失败'));
+        Toast.error(pinErrorMessage(String(res.error || ''), '解锁失败'));
         return;
       }
       reset();
@@ -155,7 +151,7 @@ const SimPinHandler: React.FC = () => {
             ? '这张卡已经失效：PUK 输错次数用尽或卡片物理损坏，需要联系运营商补卡。'
             : sim.needsNewPin
               ? 'PIN 码输错次数过多，卡已被锁。请输入运营商提供的 8 位 PUK 码，并设置一个新的 PIN 码。PUK 输错次数用尽后卡会永久失效。'
-              : `${sim.label}。未输入 PIN 码前模组无法注册网络。PIN 连续输错会转为需要 PUK 解锁。`
+              : `${pinLabel(sim.code)}。未输入 PIN 码前模组无法注册网络。PIN 连续输错会转为需要 PUK 解锁。`
         }
       />
 

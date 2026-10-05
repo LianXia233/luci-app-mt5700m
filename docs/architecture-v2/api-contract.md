@@ -18,7 +18,8 @@ Two kinds of route, declared in the table itself (`Route::display` /
 * **on-demand** (`sim.number`, `network.pdp`, `network.dhcp`, `modem.mcs`,
   `traffic.clear`, `network.registration_urc`, `network.lock_get`,
   `network.lock_apply`, `network.c5goption`, `network.c5goption_set`,
-  `cell.neighbors`, `beam.ssb`) — an explicit user action that
+  `cell.neighbors`, `beam.ssb`, `sim.slot_set`, `sim.hotplug_set`,
+  `sim.pin_status`, `sim.pin_apply`) — an explicit user action that
   performs a live read; it may fail with a modem error, which the UI surfaces.
   It must never fail with a parameter/internal error (asserted by the registry
   test for every registered route).
@@ -40,8 +41,13 @@ Two kinds of route, declared in the table itself (`Route::display` /
 | `beam.ssb` | `{servingCell: {arfcn, cid, pci, rsrp, sinr, ta, ssbs: [{ssbId, rsrp}]}, neighborCells: [{pci, arfcn, rsrp, sinr, ssbs}]}` — on-demand `AT^NRSSBID?`; the fixed offsets and the "not measured" slots (255/32767) are handled here |
 | `ca.get` / `ca.cached` | `{carriers: [{radio, band, source, dl_arfcn, ul_arfcn, dl_frequency_mhz, ul_frequency_mhz, dl_bandwidth_mhz, ul_bandwidth_mhz}], carrier_count, ca_active, dc_active, nr_carrier_count, lte_carrier_count, lte_secondary_count, secondary_connection_count, ca_mode, ca_dl_bandwidth, ca_ul_bandwidth}` (`ca.get?refresh=1` forces a live read) |
 | `cell.get` / `cell.cached` | `{band, channel, dlBandwidth, arfcn, sysmode, mcc, mnc, cid, pci, lac, operator, raw}` |
-| `sim.get` / `sim.cached` | `{status, iccid, imsi}` (+ `number` once read) |
+| `sim.get` / `sim.cached` | `{status, iccid, imsi, slot, hotplug}` (+ `number` once read) — the periodic snapshot also carries the active slot and the hot-plug switch |
 | `sim.number` | `{…, number}` — reads `+CNUM` on demand |
+| `sim.slot` | `{slot, hotplug}` — display route over the `sim` topic (0 = external, 1 = internal) |
+| `sim.slot_set` | `{switched: true, slot}` — `{slot: 0\|1}`; the vendor sequence (`^HVSST` deactivate/activate around `^SCICHG`, radio off/on) is performed here, once |
+| `sim.hotplug_set` | `{applied: true, hotplug}` — `{hotplug: bool}` → `^TDSIMHP` |
+| `sim.pin_status` | `{code, lock, blocked, needsNewPin, card: {status, dead, present}, pinEnabled}` — `+CPIN?` with the CME-error branch (10 → `ABSENT`, 11/12/17/18 → the matching lock), `^SIMSQ?` for the dead/present refinement and `+CLCK="SC",2` when the card is ready |
+| `sim.pin_apply` | `{applied: true}` — `{operation: verify\|unblock\|enable\|disable\|change, pin, newPin?, pin2?}`; the operation picks CPIN/CLCK/CPWD, and the 4–8 digit rules are validated here |
 | `modem.get` / `modem.cached` | `{manufacturer, model, revision, imei}` |
 | `modem.txpower` | `{total, pusch, pucch, srs, prach}` |
 | `modem.nr_txpower` | `{carriers: [{pusch, pucch, srs, prach, freq}]}` |

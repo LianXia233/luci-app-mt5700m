@@ -573,9 +573,84 @@ const MOCK_API_ROUTES: Record<string, unknown> = {
   'api.traffic.clear': { cleared: true },
 };
 
-const mockApiResponse = (commandLine: string): MockCommandResponse | null => {
+/**
+ * sim 路由的演示应答：真机由 modules/sim 解码 + 执行（+CPIN / ^SIMSQ /
+ * ^SCICHG / ^TDSIMHP / ^CLCK / ^CPWD 都由后端负责），演示模式从同一份
+ * 状态派生，`?simlock=pin|puk` 仍然能模拟一张被锁的卡。
+ */
+const mockSimApiResponse = (
+  commandLine: string,
+  state: MockModemState,
+): MockCommandResponse | null => {
+  const key = commandLine.split(/\s+/)[0];
+  if (!key.startsWith('api.sim.')) return null;
+  const body = commandLine.slice(key.length).trim();
+  let params: Record<string, unknown> = {};
+  if (body) {
+    try {
+      params = JSON.parse(body) as Record<string, unknown>;
+    } catch {
+      params = {};
+    }
+  }
+  const simLock = mockParam('simlock');
+
+  switch (key) {
+    case 'api.sim.slot':
+      return { success: true, data: { slot: state.simSlot, hotplug: state.simHotPlug } };
+    case 'api.sim.slot_set': {
+      const slot = Number(params.slot) === 1 ? 1 : 0;
+      state.simSlot = slot;
+      return { success: true, data: { switched: true, slot } };
+    }
+    case 'api.sim.hotplug_set': {
+      const on = params.hotplug === true;
+      state.simHotPlug = on;
+      return { success: true, data: { applied: true, hotplug: on } };
+    }
+    case 'api.sim.pin_status': {
+      const code = simLock === 'pin' ? 'SIM PIN' : simLock === 'puk' ? 'SIM PUK' : 'READY';
+      const lock = simLock === 'pin' ? 'pin' : simLock === 'puk' ? 'puk' : 'ready';
+      return {
+        success: true,
+        data: {
+          code,
+          lock,
+          blocked: lock !== 'ready',
+          needsNewPin: lock === 'puk',
+          card: { status: simLock ? 2 : 11, dead: false, present: true },
+          pinEnabled: state.pinEnabled,
+        },
+      };
+    }
+    case 'api.sim.pin_apply': {
+      const operation = String(params.operation || '');
+      if (operation === 'verify' || operation === 'unblock') {
+        const expected = simLock === 'puk' ? '12345678' : '1234';
+        if (String(params.pin || '') !== expected) {
+          return {
+            success: false,
+            error: '模组拒绝指令: +CME ERROR: incorrect password',
+          };
+        }
+      }
+      if (operation === 'enable') state.pinEnabled = true;
+      if (operation === 'disable') state.pinEnabled = false;
+      return { success: true, data: { applied: true } };
+    }
+    default:
+      return null;
+  }
+};
+
+const mockApiResponse = (
+  commandLine: string,
+  state: MockModemState,
+): MockCommandResponse | null => {
   const key = commandLine.split(/\s+/)[0];
   if (!key.startsWith('api.')) return null;
+  const dynamic = mockSimApiResponse(commandLine, state);
+  if (dynamic) return dynamic;
   const data = MOCK_API_ROUTES[key];
   if (data === undefined) return null;
   return { success: true, data };
@@ -590,7 +665,7 @@ export const resolveMockATCommand = (
 
   // 统一 API 路由优先：`api.signal.get` 这类命令由后端注册表处理，
   // 演示模式也必须给出解码后的对象而不是 AT 文本。
-  const api = mockApiResponse(commandLine);
+  const api = mockApiResponse(commandLine, state);
   if (api) return api;
 
   if (commandLine === 'AT' || commandLine === 'ATE0') return ok();

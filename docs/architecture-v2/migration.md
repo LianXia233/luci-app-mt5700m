@@ -85,7 +85,13 @@ aliases, so the move itself changed no behaviour.
    neighbour scan (`cell.neighbors`, `AT^MONNC`) including the ARFCN→band
    table the WebUI used to keep in `modem/parse.ts`. `modules/beam` owns the NR
    SSB report (`beam.ssb`, `AT^NRSSBID?`) with its fixed offsets, so the
-   Settings page contains no AT command at all. The only raw-AT surfaces left in
+   Settings page contains no AT command at all. `modules/sim` then took over the
+   system page's whole SIM/PIN card: `sim.slot`/`sim.hotplug_set` for the slot
+   and hot-plug switches, `sim.pin_status` for `+CPIN?` (including the CME-error
+   branch, `^SIMSQ?` refinement and `+CLCK="SC",2`) and `sim.pin_apply` for the
+   PIN verbs, so `modem/sim.ts` keeps only display text (code → label) and the
+   CME-message translation, and `components/SimPinHandler.tsx` submits an
+   operation instead of building an AT command. The only raw-AT surfaces left in
    the WebUI are the cell-scan panel, the system/FOTA pages, the SMS pages and
    the deliberate `pages/at/Terminal.tsx` console.)
 2. **CLI adapter thinning**: `api/cli.rs` still holds the per-verb text

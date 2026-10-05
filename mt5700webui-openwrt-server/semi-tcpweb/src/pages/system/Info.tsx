@@ -20,13 +20,14 @@ import { useATReady } from '@/hooks/useATReady';
 import { extractATData } from '@/modem/parse';
 import { sleep } from '@/modem/atx';
 import {
-  buildPinCommand,
-  parseClck,
-  parseCpin,
-  parseSimsq,
-  simErrorMessage,
-  simStateOf,
+  READY_CARD,
+  cardStateOf,
+  pinErrorMessage,
+  pinLabel,
+  slotStatusOf,
   type PinOperation,
+  type SimCardState,
+  type SimPinStatusPayload,
   type SimSlotStatus,
 } from '@/modem/sim';
 import { Field, Kv, PageCard, Panel, RefreshBtn, SectionHeader, TwoCol } from '@/ui/widgets';
@@ -171,9 +172,8 @@ const SystemInfo: React.FC = () => {
   const [simSwitching, setSimSwitching] = useState(false);
   const [simHotPlug, setSimHotPlug] = useState(true);
   const [simHotPlugLoading, setSimHotPlugLoading] = useState(false);
-  const [pinStatus, setPinStatus] = useState('READY');
+  const [simCard, setSimCard] = useState<SimCardState>(READY_CARD);
   const [simSlotStatus, setSimSlotStatus] = useState<SimSlotStatus | null>(null);
-  const [pinEnabled, setPinEnabled] = useState(false);
   const [pinLoading, setPinLoading] = useState(false);
   const [showPinModal, setShowPinModal] = useState(false);
   const [pinOperation, setPinOperation] = useState<PinOperation>('verify');
@@ -322,17 +322,11 @@ const SystemInfo: React.FC = () => {
 
   // ---------- SIM卡配置 ----------
   const fetchSimConfig = async () => {
-    const slotRes = await at().readCommand('AT^SCICHG?');
-    if (slotRes.success && typeof slotRes.data === 'string') {
-      const m = slotRes.data.match(/\^SCICHG:\s*(\d+),\s*(\d+)/);
-      if (m) setSimSlot(parseInt(m[1], 10));
-    }
-    await sleep(100);
-    const hpRes = await at().readCommand('AT^TDSIMHP?');
-    if (hpRes.success && typeof hpRes.data === 'string') {
-      const m = hpRes.data.match(/\^TDSIMHP:\s*(\d+)/);
-      if (m) setSimHotPlug(m[1] === '1');
-    }
+    // 卡槽与热插拔开关都在后端 sim 主题里解码（modules/sim）。
+    const res = await at().apiCommand<{ slot?: number; hotplug?: boolean }>('sim.slot');
+    if (!res.success || !res.data) return;
+    if (typeof res.data.slot === 'number') setSimSlot(res.data.slot);
+    if (typeof res.data.hotplug === 'boolean') setSimHotPlug(res.data.hotplug);
   };
 
   const handleSwitchSim = (target: number) => {
@@ -344,14 +338,11 @@ const SystemInfo: React.FC = () => {
       onOk: async () => {
         setSimSwitching(true);
         try {
-          await at().sendCommand('AT^HVSST=1,0');
-          const sw = await at().sendCommand(`AT^SCICHG=${target},${1 - target}`);
-          if (!sw.success) throw new Error('切换SIM卡槽失败');
-          await at().sendCommand('AT^HVSST=1,1');
-          await at().sendCommand('AT+CFUN=0');
-          await sleep(100);
-          await at().sendCommand('AT+CFUN=1');
-          setSimSlot(target);
+          // 去激活 -> 切槽 -> 激活 -> 重启射频这套顺序在 modules/sim 里，
+          // 页面只声明"切到哪个槽"。
+          const res = await at().apiCommand<{ slot?: number }>('sim.slot_set', { slot: target });
+          if (!res.success) throw new Error(String(res.error || '切换SIM卡槽失败'));
+          setSimSlot(typeof res.data?.slot === 'number' ? res.data.slot : target);
           Toast.success(`正在切换到${target === 0 ? '外置' : '内置'}SIM卡，请等待设备重启...`);
           setTimeout(() => {
             setSimSwitching(false);
@@ -368,7 +359,9 @@ const SystemInfo: React.FC = () => {
   const handleSimHotPlug = async (checked: boolean) => {
     setSimHotPlugLoading(true);
     try {
-      const res = await at().sendCommand(`AT^TDSIMHP=${checked ? '1' : '0'}`);
+      const res = await at().apiCommand<{ hotplug?: boolean }>('sim.hotplug_set', {
+        hotplug: checked,
+      });
       if (res.success) {
         setSimHotPlug(checked);
         Toast.success(`${checked ? '开启' : '关闭'}SIM卡热插拔成功`);
@@ -381,25 +374,12 @@ const SystemInfo: React.FC = () => {
   };
 
   const fetchPinStatus = async () => {
-    // 没插卡时模组回的是 +CME ERROR: 10，不是 +CPIN，失败分支也要看。
-    const res = await at().readCommand('AT+CPIN?');
-    const state = parseCpin(String(res.data || res.error || ''));
-    if (state) {
-      setPinStatus(state.code);
-      if (state.lock === 'ready') await checkPinEnabled();
-    }
-
-    // 手册 6.6：^SIMSQ 能区分卡不在位 / 被锁 / PUK 锁死，+CPIN 看不出来。
-    const sq = await at().readCommand('AT^SIMSQ?');
-    if (sq.success && typeof sq.data === 'string') setSimSlotStatus(parseSimsq(sq.data));
-  };
-
-  const checkPinEnabled = async () => {
-    const res = await at().sendCommand('AT+CLCK="SC",2');
-    if (res.success && typeof res.data === 'string') {
-      const enabled = parseClck(res.data);
-      if (enabled !== null) setPinEnabled(enabled);
-    }
+    // +CPIN 的状态（含未插卡时的 CME 错误）、^SIMSQ 的卡状态和 +CLCK 的
+    // PIN 锁开关都由后端 sim.pin_status 一并解码，页面只负责渲染。
+    const res = await at().apiCommand<SimPinStatusPayload>('sim.pin_status');
+    if (!res.success || !res.data || !res.data.code) return;
+    setSimCard(cardStateOf(res.data));
+    setSimSlotStatus(res.data.card ? slotStatusOf(res.data.card) : null);
   };
 
   const openPinModal = (op: PinOperation) => {
@@ -422,15 +402,6 @@ const SystemInfo: React.FC = () => {
       return;
     }
 
-    const { command, error } = buildPinCommand(pinOperation, {
-      pin: pinInput,
-      newPin: pinOperation === 'enable' ? undefined : newPinInput,
-    });
-    if (error) {
-      Toast.error(error);
-      return;
-    }
-
     const successMessage: Record<PinOperation, string> = {
       verify: 'PIN码验证成功',
       enable: 'PIN码启用成功',
@@ -442,17 +413,18 @@ const SystemInfo: React.FC = () => {
 
     setPinLoading(true);
     try {
-      const res = await at().sendCommand(command);
+      // 密码规则与 AT 拼装都在后端 modules/sim；这里把后端拒绝的话原样展示。
+      const res = await at().apiCommand('sim.pin_apply', {
+        operation: pinOperation,
+        pin: pinInput,
+        newPin: pinOperation === 'enable' ? undefined : newPinInput,
+      });
       if (res.success) {
         Toast.success(successMessage[pinOperation]);
         closePinModal();
-        setTimeout(async () => {
-          await fetchPinStatus();
-          await checkPinEnabled();
-        }, 1500);
+        setTimeout(() => void fetchPinStatus(), 1500);
       } else {
-        // 开了 CMEE=2 后模组回的是错误描述而不是编号，两种都要认。
-        Toast.error(simErrorMessage(String(res.error || ''), 'PIN码操作失败'));
+        Toast.error(pinErrorMessage(String(res.error || ''), 'PIN码操作失败'));
       }
     } finally {
       setPinLoading(false);
@@ -1126,7 +1098,7 @@ const SystemInfo: React.FC = () => {
             <Field label="PIN码管理">
               <div>
                 <Typography.Text type="tertiary">
-                  状态：{simStateOf(pinStatus).label}
+                  状态：{pinLabel(simCard.code)}
                   {simSlotStatus ? ` · ${simSlotStatus.label}` : ''}
                 </Typography.Text>
                 {simSlotStatus?.dead ? (
@@ -1138,28 +1110,28 @@ const SystemInfo: React.FC = () => {
                   />
                 ) : null}
                 <Space style={{ marginTop: 8 }}>
-                  {simStateOf(pinStatus).lock === 'ready' && (
+                  {simCard.lock === 'ready' && (
                     <>
                       <Button
                         size="small"
-                        type={pinEnabled ? 'secondary' : 'primary'}
-                        onClick={() => openPinModal(pinEnabled ? 'disable' : 'enable')}
+                        type={simCard.pinEnabled ? 'secondary' : 'primary'}
+                        onClick={() => openPinModal(simCard.pinEnabled ? 'disable' : 'enable')}
                       >
-                        {pinEnabled ? '关闭PIN码' : '启用PIN码'}
+                        {simCard.pinEnabled ? '关闭PIN码' : '启用PIN码'}
                       </Button>
-                      {pinEnabled && (
+                      {simCard.pinEnabled && (
                         <Button size="small" onClick={() => openPinModal('change')}>
                           修改PIN码
                         </Button>
                       )}
                     </>
                   )}
-                  {['pin', 'pin2', 'network'].includes(simStateOf(pinStatus).lock) && (
+                  {['pin', 'pin2', 'network'].includes(simCard.lock) && (
                     <Button size="small" type="primary" onClick={() => openPinModal('verify')}>
                       验证PIN码
                     </Button>
                   )}
-                  {simStateOf(pinStatus).needsNewPin && (
+                  {simCard.needsNewPin && (
                     <Button size="small" type="danger" onClick={() => openPinModal('unblock')}>
                       解锁PUK
                     </Button>
