@@ -75,6 +75,12 @@ jobs:
           # chunk parses (same guard as build-release.sh, but on the repo tree).
           find mt5700webui-openwrt-server/at-webserver/files/www/5700 -type f -name '*.js' -print0 | xargs -0 -n1 node --check
           test -f mt5700webui-openwrt-server/at-webserver/files/www/5700/index.html
+      - name: Check Rust structure (cargo-free static checks)
+        run: |
+          # Module tree, crate:: paths, call arity, trait-impl completeness and
+          # struct-literal fields — the refactor's own safety net, and a fast
+          # signal that does not depend on a toolchain download.
+          python3 scripts/rs-static-check.py mt5700webui-openwrt-server/at-webserver/src
       - name: Check Rust backend
         run: |
           # v2.4.0: the Python backend was replaced by the std-only Rust

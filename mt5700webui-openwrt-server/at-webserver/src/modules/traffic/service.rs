@@ -20,8 +20,12 @@ const PERIOD: Duration = Duration::from_secs(30);
 const NETRATE_PERIOD: Duration = Duration::from_secs(5);
 
 /// Refresh the PDCP traffic topic.
+///
+/// A timeout is not an error here: the topic is still written (empty object) so
+/// consumers see a fresh, empty reading instead of a value that silently ages
+/// out, and the job does not report a failure for a busy port.
 pub fn refresh(ctx: &RefreshCtx) -> Result<PdcpState, BackendError> {
-    let text = ctx.query(PDCP)?;
+    let text = ctx.query(PDCP).unwrap_or_default();
     let st = text
         .lines()
         .find_map(parser::parse_pdcp)
