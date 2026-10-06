@@ -202,10 +202,10 @@ mod tests {
         assert_eq!(parse_fota_state("^FOTASTATE:10"), Some(10));
         assert_eq!(parse_fota_state("ERROR"), None);
 
-        // The page read the *last* two numbers, so a stricter earlier field
-        // must not change which pair is reported.
+        // The page read the *last* two numbers as (total, received) — a
+        // leading field must not shift which pair is reported.
         let (total, received) = parse_fota_progress("^FOTADLQ: \"1234,5678\"\r\nOK");
-        assert_eq!((total, received), (5678, 5678));
+        assert_eq!((total, received), (1234, 5678));
         let (total, received) = parse_fota_progress("^FOTADLQ: 0,0,1048576,262144");
         assert_eq!((total, received), (1048576, 262144));
         assert_eq!(parse_fota_progress("OK"), (0, 0));

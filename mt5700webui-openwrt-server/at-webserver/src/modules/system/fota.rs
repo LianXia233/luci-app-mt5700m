@@ -190,7 +190,11 @@ pub fn start(tasks: &Arc<TaskManager>, params: &Value) -> Result<Value, BackendE
         .unwrap_or("")
         .trim();
     if url.is_empty() {
-        return Err(BackendError::InvalidParameter("地址不能为空".to_string()));
+        // The page's own copy for this case: a rejected parameter reaches the
+        // UI verbatim (see `BackendError::detail`).
+        return Err(BackendError::InvalidParameter(
+            "请设置 FOTA 服务器地址".to_string(),
+        ));
     }
     let command = fota_url_set(url)
         .map_err(|e| BackendError::InvalidParameter(e.to_string()))?;
@@ -455,6 +459,7 @@ mod tests {
         assert_eq!(err.detail(), "仅支持 http 协议");
         let err = start(&tasks, &params("   ")).unwrap_err();
         assert_eq!(err.code(), "INVALID_PARAMETER");
+        assert_eq!(err.detail(), "请设置 FOTA 服务器地址");
         // Nothing was submitted for a rejected address.
         assert!(active(&tasks).is_none());
     }
