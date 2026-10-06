@@ -22,10 +22,13 @@
  *      新管线的取值由当前 network.js 渲染出来；后端解码规则另有一组
  *      Rust 单元测试样本（RUST_PINS）钉住脚本里的 mini 解码器。
  *
- * 用法：node scripts/prove-neighbors-parity.js   （退出码 0 = 通过）
+ * 用法：
+ *   node scripts/prove-neighbors-parity.js            # 基线 = HEAD（提交前跑）
+ *   node scripts/prove-neighbors-parity.js 663f989    # 基线 = 某一刀之前的提交
+ * 退出码 0 = 通过，1 = 不一致，2 = 基线选错了（基线里已经有这一刀）。
  *
- * 这是**迁移期**工具，不是 CI 检查：它拿工作区与 HEAD 对比，所以要在提交
- * 这一刀之前跑（提交后两侧相同，比较自然成立但什么也证明不了）。
+ * 这是**迁移期**工具，不是 CI 检查：它把工作区与某个提交对比。本刀的基线是
+ * `663f989`（邻区切片之前），提交后用这个参数仍可复跑整份证明。
  */
 
 const fs = require('fs');
@@ -35,8 +38,10 @@ const cp = require('child_process');
 const REPO = path.resolve(__dirname, '..');
 const RES = 'luci-app-mt5700m/htdocs/luci-static/resources';
 
+const BASELINE = process.argv[2] || 'HEAD';
+
 function oldSource(rel) {
-	return cp.execSync('git show HEAD:' + rel, { cwd: REPO, maxBuffer: 64 * 1024 * 1024 }).toString();
+	return cp.execSync('git show ' + BASELINE + ':' + rel, { cwd: REPO, maxBuffer: 64 * 1024 * 1024 }).toString();
 }
 function newSource(rel) {
 	return fs.readFileSync(path.join(REPO, rel), 'utf8');
@@ -304,6 +309,12 @@ for (const pin of RUST_PINS) {
 
 const before = loadSide(oldSource);
 const after = loadSide(newSource);
+if (typeof before.parser.parseMonnc !== 'function') {
+	console.error('基线 ' + BASELINE + ' 已经包含这一刀（parser.js 里没有 parseMonnc 了）——'
+		+ '没有可比较的旧管线。\n本刀的基线是 663f989：\n'
+		+ '  node scripts/prove-neighbors-parity.js 663f989');
+	process.exit(2);
+}
 
 /* 旧管线对同一份应答给出的取值（跑 HEAD 的 parser.js） */
 console.log('\n旧管线取值（HEAD 的 parser.js 亲自跑）');

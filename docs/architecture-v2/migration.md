@@ -275,7 +275,10 @@ aliases, so the move itself changed no behaviour.
        replies — structure, labels and row count byte-identical, and the four
        value slots that differ are exactly the listed corrections (hex PCI
        `1DC`/`40` → decimal `476`/`64`, and n78 cells that the old JS table
-       printed as bare `NR` because it only covered up to 3 GHz).
+       printed as bare `NR` because it only covered up to 3 GHz). Re-runnable
+       after the commit: `node scripts/prove-neighbors-parity.js 663f989`
+       (the pre-slice commit is the baseline; without it the script says so and
+       exits 2).
      * Still on text frames, to be migrated next: the lock panel and the two
        lock-status rows (`network.lock_get`, then `network.lock_apply` for the
        write — today both the cards and the panel submit the CLI's positional
