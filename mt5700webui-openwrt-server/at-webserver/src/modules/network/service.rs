@@ -16,7 +16,7 @@ use crate::modules::network::commands::{self, COPS, SYSCFGEX_QUERY, SYSINFOEX};
 use crate::modules::network::parser;
 use crate::modules::network::state::{
     AutodialState, C5gOptionState, ImsState, InterfaceCfgState, LockKind, LockState, NetworkState,
-    PdpContext, RegistrationState, SysCfgState, UsbModeState,
+    PdpContext, RegistrationState, RrcState, SysCfgState, UsbModeState,
 };
 use crate::scheduler::channel::run_in_task;
 use crate::scheduler::jobs::TaskManager;
@@ -350,6 +350,21 @@ pub fn read_c5goption(channel: &dyn AtChannel) -> Result<C5gOptionState, Backend
         Priority::Normal,
     )?;
     Ok(parser::parse_c5goption(&text))
+}
+
+/// Read the connection/RRC state (`^RRCSTAT?`).
+///
+/// Same shape as the other on-demand reads (`read_c5goption`): the decoder is
+/// `parser::parse_rrcstat` and the module owns the command, so neither frontend
+/// knows the reply layout.
+pub fn read_rrc(channel: &dyn AtChannel) -> Result<RrcState, BackendError> {
+    let text = channel.query_prio(
+        commands::RRCSTAT_QUERY,
+        Duration::from_secs(8),
+        Duration::from_secs(10),
+        Priority::Normal,
+    )?;
+    Ok(parser::parse_rrcstat(&text))
 }
 
 /// Outcome of a lock verification poll.

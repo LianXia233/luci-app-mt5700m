@@ -41,7 +41,10 @@ impl TemperatureState {
         self.sensors.iter().all(|v| *v == 0.0)
     }
 
-    /// Domain JSON: `<sensor>: <celsius>` for all 12 plus `average`.
+    /// Domain JSON: `<sensor>: <celsius>` for all 12, plus `average` and the
+    /// `peak`/`peak_sensor` pair ([`Self::peak`]) the LuCI page's single
+    /// temperature gauge reads — the same value the text form calls
+    /// `temperature=`.
     pub fn to_json(&self) -> Value {
         let mut m = std::collections::BTreeMap::new();
         for (i, name) in SENSOR_NAMES.iter().enumerate() {
@@ -51,7 +54,31 @@ impl TemperatureState {
         if let Some(avg) = self.average {
             m.insert("average".to_string(), json::num_val(avg));
         }
+        if let Some((peak, key)) = self.peak() {
+            m.insert("peak".to_string(), json::num_val(peak));
+            m.insert("peak_sensor".to_string(), json::str_val(key));
+        }
         Value::Obj(m)
+    }
+
+    /// Hottest plausible sensor reading, with its legacy text key.
+    ///
+    /// The rule the CLI text has always used — ignore a zero (unpopulated) or
+    /// implausible (>150 °C) sensor, then take the maximum — and the value the
+    /// LuCI page's single `temperature` gauge shows. Defined once so the text
+    /// form and the JSON cannot disagree about which sensor is the hot one.
+    pub fn peak(&self) -> Option<(f64, &'static str)> {
+        let mut peak: Option<(f64, &'static str)> = None;
+        for (i, key) in SENSOR_TEXT_KEYS.iter().copied().enumerate() {
+            let v = self.sensors.get(i).copied().unwrap_or(0.0);
+            if v <= 0.0 || v > 150.0 {
+                continue;
+            }
+            if peak.map(|(p, _)| v > p).unwrap_or(true) {
+                peak = Some((v, key));
+            }
+        }
+        peak
     }
 
     /// The `mt5700m-at temperature` text contract: one `temp_<sensor>=<celsius>`
@@ -63,24 +90,16 @@ impl TemperatureState {
     pub fn to_text(&self) -> String {
         use std::fmt::Write as _;
         let mut out = String::new();
-        let mut peak = 0.0f64;
-        let mut peak_key = "";
-        let mut found = false;
         for (i, key) in SENSOR_TEXT_KEYS.iter().copied().enumerate() {
             let v = self.sensors.get(i).copied().unwrap_or(0.0);
             if v <= 0.0 || v > 150.0 {
                 continue;
             }
             let _ = writeln!(out, "temp_{}={:.1}", key, v);
-            if !found || v > peak {
-                peak = v;
-                peak_key = key;
-                found = true;
-            }
         }
-        if found {
+        if let Some((peak, key)) = self.peak() {
             let _ = writeln!(out, "temperature={:.1}", peak);
-            let _ = writeln!(out, "temperature_sensor={}", peak_key);
+            let _ = writeln!(out, "temperature_sensor={}", key);
         }
         out
     }

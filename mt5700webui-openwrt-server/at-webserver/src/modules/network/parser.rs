@@ -8,7 +8,7 @@
 use crate::modules::network::state::{
     SysCfgState,
     AutodialState, C5gOptionState, DhcpLease, ImsState, InterfaceCfgState, LockItem, LockKind,
-    LockState, PdpAddress, PdpContext, RegistrationState,
+    LockState, PdpAddress, PdpContext, RegistrationState, RrcState,
 };
 
 /// Parse a `+CxxREG:` line: registration state + family-specific fields.
@@ -404,6 +404,38 @@ pub fn parse_c5goption(raw: &str) -> C5gOptionState {
         st.nr_dc_mode = fields[1].parse::<u8>().ok();
         st.gc_access_mode = fields[2].parse::<u8>().ok();
         break;
+    }
+    st
+}
+
+/// Decode `^RRCSTAT?`.
+///
+/// The firmware answers with two or three fields (`^RRCSTAT: 1,1,98` and
+/// `^RRCSTAT: 1,98` both occur). The page's rule — and the one kept here — is
+/// that the trailing 98/99 is the camped flag and the field before it is the
+/// state; without the flag the last field is the state. That reads both forms
+/// correctly, where the old fixed indices (`fields[1]`, `fields[2]`) showed the
+/// raw `98` as the state on the two-field form.
+pub fn parse_rrcstat(raw: &str) -> RrcState {
+    let mut st = RrcState::default();
+    let Some(body) = raw.lines().find_map(|l| l.trim().strip_prefix("^RRCSTAT:")) else {
+        return st;
+    };
+    let fields: Vec<&str> = body
+        .split(',')
+        .map(|f| f.trim().trim_matches('"'))
+        .filter(|f| !f.is_empty())
+        .collect();
+    let num = |s: &str| s.parse::<i64>().ok();
+    let mut idx = fields.len();
+    if let Some(last) = fields.last().copied() {
+        if matches!(num(last), Some(98 | 99)) {
+            st.camped = num(last);
+            idx -= 1;
+        }
+    }
+    if idx > 0 {
+        st.state = num(fields[idx - 1]);
     }
     st
 }
@@ -928,6 +960,30 @@ mod tests {
         // Two fields: nothing is decoded (the page keeps its previous value).
         assert!(parse_c5goption("^C5GOPTION: 1,1").is_empty());
         assert!(parse_c5goption("OK").is_empty());
+    }
+
+    #[test]
+    fn rrcstat_reads_both_reply_forms() {
+        // Three fields: <x>,<state>,<camped>.
+        let st = parse_rrcstat("^RRCSTAT: 1,1,98\r\nOK");
+        assert_eq!(st.state, Some(1));
+        assert_eq!(st.camped, Some(98));
+        // Two fields: <x>,<camped> — the form the page's fixed indices read as
+        // state 98. The state is the field before the flag.
+        let st = parse_rrcstat("^RRCSTAT: 1,98");
+        assert_eq!(st.state, Some(1));
+        assert_eq!(st.camped, Some(99 - 1));
+        // Without a flag the last field is the state (2 = Inactive).
+        let st = parse_rrcstat("^RRCSTAT: 1,2");
+        assert_eq!(st.state, Some(2));
+        assert_eq!(st.camped, None);
+        // Idle, not camped.
+        let st = parse_rrcstat("^RRCSTAT: 0,0,99");
+        assert_eq!(st.state, Some(0));
+        assert_eq!(st.camped, Some(99));
+        // Nothing to decode keeps the caller's value.
+        assert!(parse_rrcstat("OK").is_empty());
+        assert!(parse_rrcstat("^RRCSTAT:").is_empty());
     }
 
     #[test]

@@ -6,7 +6,7 @@
  * 两个 prove-* 脚本都要把 LuCI 的 view/component 模块装进一个「够用的 DOM」
  * 里跑起来，再比较渲染结果。这里集中一份，避免每把刀各复制一套桩：
  *
- *   - makeScope(api)      LuCI 全局（E/_/ui/dom/window/L）+ 记录调用的 api 桩
+ *   - makeScope(api)      LuCI 全局（E/_/ui/dom/window/L/String.format）+ 记录调用的 api 桩
  *   - loadModule(src, s)  用 new Function 把模块源码在桩作用域里求值
  *   - loadSide(read, api) 按 parser → components → view 的顺序装载（与 LuCI 一致）
  *   - serialize(node)     结构与文案（可选：取值槽只比「有无」）
@@ -112,15 +112,20 @@ function makeScope(api) {
 		getElementById: () => null,
 		importNode: node => node,
 	};
-	// LuCI 的 `_()` 返回可 .format() 的字符串：两边标签因此能逐字比较。
-	const t = (s) => ({
-		toString: () => s,
-		format: function () {
-			let i = 0;
-			const args = arguments;
-			return String(s).replace(/%[sd]/g, () => String(args[i++]));
-		},
-	});
+	// LuCI 给 String.prototype 挂了 format()（页面里到处是 `_('%s / %s').format(a, b)`
+	// 和 `'…'.format(x)`），桩必须同样挂上；`_()` 就返回普通字符串，与 LuCI 一致
+	// （组件会对标签调 .replace() 等字符串方法）。
+	if (typeof String.prototype.format !== 'function') {
+		Object.defineProperty(String.prototype, 'format', {
+			value: function () {
+				let i = 0;
+				const args = arguments;
+				return String(this).replace(/%[sd]/g, () => String(args[i++]));
+			},
+			writable: true, configurable: true, enumerable: false
+		});
+	}
+	const t = (s) => String(s);
 	const window = {
 		pending: [],
 		setTimeout: (fn, delay) => {

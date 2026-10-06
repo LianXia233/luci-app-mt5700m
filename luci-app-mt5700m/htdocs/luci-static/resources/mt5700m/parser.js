@@ -324,55 +324,6 @@ function parseMonsc(text) {
 		rsrp: cleanSignal(v[7]), rsrq: '', sinr: '' };
 }
 
-// 服务小区原始值数组 → 结构化对象（不同 RAT 的度量字段不同）
-function parseServingCell(values) {
-	var rat = String(values[0] || '').toUpperCase();
-	var cell = {
-		rat: values[0] || '', mcc: values[1] || '', mnc: values[2] || '',
-		arfcn: '', scs: '', cellId: '', pci: '', tac: '', metrics: []
-	};
-
-	if (rat.indexOf('NR') === 0) {
-		cell.arfcn = values[3] || '';
-		cell.scs = values[4] || '';
-		cell.cellId = values[5] || '';
-		cell.pci = values[6] || '';
-		cell.tac = values[7] || '';
-		cell.metrics = [
-			{ label: 'RSRP', value: values[8] || '', unit: 'dBm' },
-			{ label: 'RSRQ', value: values[9] || '', unit: 'dB' },
-			{ label: 'SINR', value: values[10] || '', unit: 'dB' }
-		];
-	} else if (rat.indexOf('LTE') === 0) {
-		cell.arfcn = values[3] || '';
-		cell.cellId = values[4] || '';
-		cell.pci = values[5] || '';
-		cell.tac = values[6] || '';
-		cell.metrics = [
-			{ label: 'RSRP', value: values[7] || '', unit: 'dBm' },
-			{ label: 'RSRQ', value: values[8] || '', unit: 'dB' },
-			{ label: 'RSSI', value: values[9] || '', unit: 'dBm' }
-		];
-	} else if (rat.indexOf('WCDMA') === 0) {
-		cell.arfcn = values[3] || '';
-		cell.cellId = values[5] || '';
-		cell.tac = values[6] || '';
-		cell.metrics = [
-			{ label: 'RSCP', value: values[7] || '', unit: 'dBm' },
-			{ label: 'RXLEV', value: values[8] || '', unit: 'dBm' },
-			{ label: 'ECIO', value: values[9] || '', unit: 'dB' }
-		];
-	} else {
-		cell.metrics = [
-			{ label: 'RSRP', value: '', unit: 'dBm' },
-			{ label: 'RSRQ', value: '', unit: 'dB' },
-			{ label: 'SINR', value: '', unit: 'dB' }
-		];
-	}
-
-	return cell;
-}
-
 // NR / LTE ARFCN → 频段名（MT5700M-CN Hardware Design Guide Table 5-1）
 function arfcnToBand(arfcn, rat) {
 	var n = parseInt(arfcn, 10);
@@ -612,7 +563,6 @@ return baseclass.extend({
 	trafficUpdated: trafficUpdated,
 	cleanSignal: cleanSignal,
 	parseMonsc: parseMonsc,
-	parseServingCell: parseServingCell,
 	arfcnToBand: arfcnToBand,
 	bandNameToNumber: bandNameToNumber,
 	ssbValue: ssbValue,

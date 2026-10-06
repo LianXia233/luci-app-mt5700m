@@ -94,7 +94,7 @@ aliases, so the move itself changed no behaviour.
 | `cargo test --locked` (CI) | see the run on the head commit |
 | Shell/JS/JSON/PO checks (CI `static-checks`) | see the run on the head commit |
 | UI files touched by this refactor | none (by design) |
-| LuCI migration parity (`scripts/prove-*-parity.js`) | renders the HEAD view and the worktree view in one stubbed DOM from the same modem replies and diffs the DOM: structure/labels byte-identical, only the listed value corrections differ. Migration-time tools, not CI checks — they compare the worktree against `HEAD`, so they need an uncommitted slice |
+| LuCI migration parity (`scripts/prove-neighbors-parity.js`, `prove-lock-parity.js`, `prove-network-parity.js`) | each renders the baseline view and the new one in one stubbed DOM from the same modem replies and diffs the DOM: structure/labels byte-identical, only the listed value corrections differ. Migration-time tools, not CI checks — each takes its pre-slice commit as an argument (`663f989`, `dfb4810`, `24ed5ef`) and exits 2 when handed a revision that already contains its slice |
 
 ## 3. What remains (in order)
 
@@ -307,14 +307,48 @@ aliases, so the move itself changed no behaviour.
        keeps the raw lines. ucode's timeout budget grew a named list for
        migrated write routes (`api.network.lock_apply` → 25 s, the same budget
        the `lock` verb gets) instead of the read-class 12 s default.
+     * the wireless page's status block followed (the last part of that page
+       that still sliced the `mt5700m-at network` frame): the signal gauges read
+       `signal.get`, the serving-cell rows `cell.get`, registration
+       `registration.get`, the operator `network.get`, the RRC row the new
+       `network.rrc` route (`^RRCSTAT?`, which no module decoded before) and the
+       temperature gauge `system.temperature`'s `peak`. The gauges' per-RAT
+       metric sets are unchanged (NR: RSRP/RSRQ/SINR, LTE: RSRP/RSRQ/RSSI,
+       WCDMA: RSCP/RXLEV/ECIO) but their numbers now come from the one `^HCSQ`
+       decoder in `modules::signal` instead of `^MONSC`'s fields 7..10 — the two
+       are the same measurement (MONSC reports dBm, HCSQ the index that maps
+       back to it), so the reading the user sees is the one the WebUI and the
+       `status` page already show. `parser.js`'s `parseServingCell` (the second
+       JS copy of the `^MONSC` layout) and `api.js`'s `atNetwork` (the CLI-frame
+       call nobody else made) are deleted; the page's `mt-row` set is otherwise
+       byte-identical, and the "Technical details" collapsible — which used to
+       dump the whole AT frame — now dumps the route payloads it consumed, so no
+       AT reply text reaches the frontend at all. Parity:
+       `scripts/prove-network-parity.js` renders the old view and the new one in
+       the same stubbed DOM from one consistent modem report and compares every
+       row: 12 rows, the only value differences are the intended hex→decimal
+       normalisation of `PCI`/`Cell ID`/`TAC / LAC` (the same correction the
+       neighbour cards got), every gauge reading, label, copy and card title
+       byte-identical. Re-runnable after the commit:
+       `node scripts/prove-network-parity.js 24ed5ef` (the pre-slice commit is
+       the baseline; without it the script says so and exits 2). The
+       temperature topic now carries `peak`/`peak_sensor` next to the twelve
+       sensors and `average`: the dashboard's gauge has always rendered
+       `average` (`status.js`) and the WebUI's cards the individual sensors, so
+       the three surfaces still read three different fields of the same
+       reading — collapsing them onto one is a UI decision, not a decode one,
+       and is left to the owner (the decode itself is single now: one
+       `TemperatureState`, one `peak()`).
      * Still on text frames, to be migrated next: the scan modal's serving cell
-       (`cell.get` needs the `^MONSC` measurements added to `CellState`) — which
-       is the last caller of `parser.arfcnToBand` — and
-       `parser.section`/`matchValues` for the settings-page rows — plus the
-       `status`/`sms`/`system` pages, which still call the CLI verbs.
-       `parser.js` (`arfcnToBand`, `matchValues`, `section`) is deleted when the
-       last of them moves. The dashboard already reads the daemon cache via
-       `api.cachedSnapshot()`.
+       (`cell.get` needs `band` from `core::radio::arfcn_to_band`, and its
+       measurement bars become `signal.get`) — which is the last caller of
+       `parser.arfcnToBand` — the page's radio-preference block
+       (`^SYSCFGEX`/`^C5GOPTION`/`^NRRCCAPQRY` rows still slice the `radio`
+       frame, now the page's only CLI call), `parser.section`/`matchValues` for
+       the settings-page rows, and the `status`/`sms`/`system` pages, which
+       still call the CLI verbs. `parser.js` (`arfcnToBand`, `matchValues`,
+       `section`) is deleted when the last of them moves. The dashboard already
+       reads the daemon cache via `api.cachedSnapshot()`.
      * Defect found while proving the above, **not** changed (it is a UI
        change, so it needs a decision): the scan modal's "Frequency scan" card
        never renders, on HEAD or now. `parser.section()` matches a prefix
@@ -323,7 +357,9 @@ aliases, so the move itself changed no behaviour.
        match, so the card (and its "+CME ERROR: 3" note) is dead. The two
        other labels that include the AT command survive only because their
        callers pass `|| raw`. The modal migration to `cell.scan_result` would
-       fix it deliberately, with the card coming back.
+       fix it deliberately, with the card coming back. The same pass removes the
+       modal's `mt5700m-at cellscan` call itself, which the control socket's
+       timeout cannot carry for a full-band scan.
 10. **Fold `mt5700m-traffic` into `modules/traffic`** (last non-Rust business
    process) and the dialing glue of `mt5700m-manager` into `modules/network`
    actions.

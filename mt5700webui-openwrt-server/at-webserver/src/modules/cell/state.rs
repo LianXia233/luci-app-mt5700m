@@ -25,6 +25,9 @@ pub struct CellState {
     pub cid: Option<String>,
     pub pci: Option<i64>,
     pub lac: Option<String>,
+    /// NR subcarrier spacing code (`^MONSC` field 4, 0 = 15 kHz). The page maps
+    /// the code to kHz; NR-only, absent on LTE.
+    pub scs: Option<i64>,
     /// Operator name, taken from the network module's state (one COPS query
     /// for the whole backend).
     pub operator: Option<String>,
@@ -121,6 +124,9 @@ impl CellState {
         if let Some(pci) = self.pci {
             m.insert("pci".to_string(), json::num_val(pci));
         }
+        if let Some(scs) = self.scs {
+            m.insert("scs".to_string(), json::num_val(scs));
+        }
         Value::Obj(m)
     }
 
@@ -137,6 +143,7 @@ impl CellState {
             mnc: s("mnc"),
             cid: s("cid"),
             pci: m.get("pci").and_then(|v| v.as_i64()),
+            scs: m.get("scs").and_then(|v| v.as_i64()),
             lac: s("lac"),
             operator: s("operator"),
             raw: s("raw"),

@@ -63,6 +63,9 @@ pub const LTEFREQLOCK_QUERY: &str = "AT^LTEFREQLOCK?";
 /// Current NR frequency lock.
 pub const NRFREQLOCK_QUERY: &str = "AT^NRFREQLOCK?";
 
+/// Connection/RRC state (`^RRCSTAT?`), the "Radio status" card's first row.
+pub const RRCSTAT_QUERY: &str = "AT^RRCSTAT?";
+
 /// Current radio function level (`+CFUN: <0|1>`), read before a lock change.
 pub const CFUN_QUERY: &str = "AT+CFUN?";
 

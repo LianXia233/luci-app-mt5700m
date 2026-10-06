@@ -34,7 +34,8 @@ Two kinds of route, declared in the table itself (`Route::display` /
 | `signal.get` / `signal.cached` | `{sysmode, rssi, rsrp, rsrq, sinr, rscp, ecio}` |
 | `network.get` / `network.cached` | `{operator, sysmode, sysmode_detail}` |
 | `network.ims` | `{enabled?, registered?}` — on-demand `AT+CIREG?`; the wireless page's "IMS registration" row reads `registered` (1 = registered). A modem that rejects the query answers an empty object, which the page renders as no value |
-| `registration.get` | `{state, tac, ci, act, nssai, mcc, mnc, lac}` |
+| `registration.get` | `{state, tac, ci, act, nssai, mcc, mnc, lac}` — `state` 1/5 = registered/roaming, the two values the wireless page renders as "Home network"/"Roaming" |
+| `network.rrc` | `{state?, camped?}` — on-demand `AT^RRCSTAT?`; `state` 0..3 (the page labels them Idle/Connected/Inactive/Invalid) and `camped` 98/99. Both firmware reply forms are accepted: `^RRCSTAT: 1,1,98` (state then flag) and `^RRCSTAT: 1,98` (no state field — the flag is not read as the state) |
 | `qos.get` / `qos.cached` | `{active_cid, ambr_down_kbps, ambr_up_kbps, ambr_apn, qci}` |
 | `network.pdp` | `{addresses: [{cid, address, family}]}` — on-demand `AT+CGPADDR` for the diagnostics panel |
 | `network.dhcp` | `{ipv4: {address, netmask, gateway, dhcp_server, primary_dns, secondary_dns}, ipv6: {…}, ipv6_capability}` — on-demand `AT^DHCP?`/`AT^DHCPV6?`/`AT^IPV6CAP?` (the hex little-endian decode happens here, not in the page); partial answers keep the fields that were read |
@@ -61,7 +62,7 @@ Two kinds of route, declared in the table itself (`Route::display` /
 | push `cellscan` | `{state: "done"\|"aborted"\|"error", cells: [{rat, ratName, plmn, freq, pci, band, lac, cid, rxlev, bsic, psc, scs, rsrp, rsrq, sinr, raw}], count, error?}` — published once per scan on the `scan` topic; the line layout (`^CELLSCAN:`, hex band/lac/cid, 1/2-dB RSRQ/SINR, 1/8-dB LTE SINR, the 15-vs-14 field quirk) is decoded in `modules/cell/scan.rs`, so no frontend parses it |
 | `beam.ssb` | `{servingCell: {arfcn, cid, pci, band?, rsrp, sinr, ta, ssbs: [{ssbId, rsrp}]}, neighborCells: [{pci, arfcn, band?, rsrp, sinr, ssbs}]}` — on-demand `AT^NRSSBID?`; the fixed offsets (8 serving slots, 4 per neighbour, stride 12), the "not measured" slots (255/32767) and the `band` numbers (`core::radio`) are handled here, so no frontend needs an ARFCN table |
 | `ca.get` / `ca.cached` | `{carriers: [{radio, band, source, dl_arfcn, ul_arfcn, dl_frequency_mhz, ul_frequency_mhz, dl_bandwidth_mhz, ul_bandwidth_mhz}], secondary: [{radio: "NR", arfcn, pci, rsrp?, rsrq?, sinr?, measType} \| {radio: "LTE", index, pci, band, rssi?, rsrp?, rsrq?, ulArfcn?, dlArfcn?, ulFreq?, dlFreq?, ulBandwidth?, dlBandwidth?}], carrier_count, ca_active, dc_active, nr_carrier_count, lte_carrier_count, lte_secondary_count, secondary_connection_count, ca_mode, ca_dl_bandwidth, ca_ul_bandwidth}` (`ca.get?refresh=1` forces a live read) — `secondary` is `^CASCELLINFO?` + `^MONSSC`: the per-carrier signal the `^HFREQINFO?` list does not carry (hex PCI, the manual's invalid values -1256/-348/-188, the ±8 descale heuristic and `<MEASTYPE>` all decoded here), so the info page merges the two by downlink ARFCN instead of parsing `^MONSSC` itself |
-| `cell.get` / `cell.cached` | `{band, channel, dlBandwidth, arfcn, sysmode, mcc, mnc, cid, pci, lac, operator, raw}` |
+| `cell.get` / `cell.cached` | `{band, channel, dlBandwidth, arfcn, sysmode, mcc, mnc, cid, pci, lac, scs, operator, raw}` — `scs` is the NR subcarrier-spacing code `^MONSC` reports (0 = 15 kHz); LTE has no such field, so it is absent and the wireless page omits its "SCS type" row |
 | `sim.get` / `sim.cached` | `{status, iccid, imsi, slot, hotplug}` (+ `number` once read) — the periodic snapshot also carries the active slot and the hot-plug switch |
 | `sim.number` | `{…, number}` — reads `+CNUM` on demand |
 | `sim.slot` | `{slot, hotplug}` — display route over the `sim` topic (0 = external, 1 = internal) |
@@ -81,7 +82,7 @@ Two kinds of route, declared in the table itself (`Route::display` /
 | `traffic.get` / `traffic.cached` | PDCP field map (`id`, `pduSessionId`, …, `dlDiscardCnt`) |
 | `traffic.netrate` | `{available, device, rx_bytes, tx_bytes, timestamp, source, traffic}` |
 | `traffic.clear` | `{cleared: true}` — on-demand write `AT^DSFLOWCLR`; the scheduler's action-invalidation drops the stale counters |
-| `system.temperature` / `system.temperature.cached` | 12 sensor fields + `average` |
+| `system.temperature` / `system.temperature.cached` | 12 sensor fields + `average` + `peak`/`peak_sensor` — the hottest plausible sensor (>0 °C, ≤150 °C, `TemperatureState::peak()`), i.e. exactly the value the CLI text form prints as `temperature=`/`temperature_sensor=` and what the wireless page's single temperature gauge shows |
 | `system.device_control` | `{nic_rate: 1\|2, power_control: bool}` — `^TDPCIELANCFG?` and `^TDPMCFG?`; a switch that did not answer is omitted, and the page keeps the value it shows |
 | `system.nic_rate_set` | `{applied: true, nic_rate}` — `{rate: 1\|2}` → `^TDPCIELANCFG=<rate>` (takes effect after a reboot) |
 | `system.power_control_set` | `{applied: true, power_control}` — `{enabled: bool}` → `^TDPMCFG=<0\|1>` |

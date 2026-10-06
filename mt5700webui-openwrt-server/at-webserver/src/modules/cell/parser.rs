@@ -4,6 +4,7 @@
 //! the CLI's cell printing already relied on; keeping them in one place is what
 //! lets both surfaces (and the cache) agree.
 
+use crate::core::json::Value;
 use crate::core::radio::arfcn_to_band;
 use crate::modules::cell::state::{CellState, NeighborCell};
 
@@ -102,6 +103,11 @@ pub fn parse_monsc(raw: &str, st: &mut CellState) -> bool {
             }
         }
         "NR" => {
+            // Field 4 is the subcarrier-spacing code (0 = 15 kHz); the page maps
+            // it to kHz, so the code travels and the label stays display.
+            if let Some(v) = fields.get(4).and_then(|s| s.trim().parse::<i64>().ok()) {
+                st.scs = Some(v);
+            }
             if let Some(v) = fields.get(5).and_then(|s| hex_dec(s)) {
                 st.cid = Some(v.to_string());
             }
@@ -256,6 +262,21 @@ mod tests {
         assert_eq!(st.band.as_deref(), Some("41"));
         assert_eq!(st.channel.as_deref(), Some("513000"));
         assert_eq!(st.dl_bandwidth_mhz, Some(100));
+    }
+
+    #[test]
+    fn monsc_nr_carries_the_scs_code() {
+        let mut st = CellState::default();
+        parse_monsc("^MONSC: NR,460,00,636648,1,10321,1FA,2F01,-82,-9", &mut st);
+        assert_eq!(st.scs, Some(1));
+        assert_eq!(st.cid.as_deref(), Some("66337")); // 0x10321
+        assert_eq!(st.pci, Some(0x1FA));
+        let Value::Obj(m) = st.to_json() else { panic!("object") };
+        assert_eq!(m.get("scs").and_then(|v| v.as_i64()), Some(1));
+        // LTE has no SCS field.
+        let mut lte = CellState::default();
+        parse_monsc("^MONSC: LTE,460,00,1650,10321,64,2F01,-82,-9,-70", &mut lte);
+        assert_eq!(lte.scs, None);
     }
 
     #[test]

@@ -209,7 +209,6 @@ function cachedSnapshot() {
 
 function atStatus()            { return atSafe([ 'status' ]); }
 function atSession()           { return atSafe([ 'advanced', 'session' ]); }
-function atNetwork()           { return atSafe([ 'network' ]); }
 function atRadio()             { return atSafe([ 'advanced', 'radio' ]); }
 function atHardware()          { return atSafe([ 'advanced', 'hardware' ]); }
 function atSystem()            { return atSafe([ 'system' ]); }
@@ -302,7 +301,6 @@ return baseclass.extend({
 	atSession: atSession,
 	route: route,
 	routeCall: routeCall,
-	atNetwork: atNetwork,
 	atRadio: atRadio,
 	atHardware: atHardware,
 	atSystem: atSystem,

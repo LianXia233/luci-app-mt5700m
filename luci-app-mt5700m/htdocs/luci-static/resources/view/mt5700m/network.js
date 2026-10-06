@@ -45,6 +45,31 @@ function bandLabel(band, rat) {
 }
 
 /*
+ * `api.signal.get` 载荷 → 仪表卡片的三条读数。
+ *
+ * 指标集合与旧版 parseServingCell 完全一致（NR: RSRP/RSRQ/SINR，LTE:
+ * RSRP/RSRQ/RSSI，WCDMA: RSCP/RXLEV/ECIO，其他 RAT: RSRP/RSRQ/SINR），缺读数
+ * 仍留空串由 svgCircularGauge 显示 `--`；数值改由 modules::signal 解码
+ * `^HCSQ` 得到（索引 → dBm/dB 的换算只在后端一处），页面不再切 `^MONSC` 的
+ * 第 8..10 个字段——那是同一批测量值的第二份 JS 解码。
+ */
+function signalMetrics(signal, rat) {
+	var sig = signal || {};
+	var pick = function(label, value, unit) {
+		var v = (value === undefined || value === null) ? '' : String(value);
+		return { label: label, value: v, unit: unit };
+	};
+	var mode = String(rat || sig.sysmode || '').toUpperCase();
+	if (mode.indexOf('NR') === 0)
+		return [ pick('RSRP', sig.rsrp, 'dBm'), pick('RSRQ', sig.rsrq, 'dB'), pick('SINR', sig.sinr, 'dB') ];
+	if (mode.indexOf('LTE') === 0)
+		return [ pick('RSRP', sig.rsrp, 'dBm'), pick('RSRQ', sig.rsrq, 'dB'), pick('RSSI', sig.rssi, 'dBm') ];
+	if (mode.indexOf('WCDMA') === 0)
+		return [ pick('RSCP', sig.rscp, 'dBm'), pick('RXLEV', sig.rssi, 'dBm'), pick('ECIO', sig.ecio, 'dB') ];
+	return [ pick('RSRP', sig.rsrp, 'dBm'), pick('RSRQ', sig.rsrq, 'dB'), pick('SINR', sig.sinr, 'dB') ];
+}
+
+/*
  * `api.cell.neighbors` 的一行 → cellLockCard 的既有形状。
  *
  * 后端给的是领域值：PCI 十进制（十六进制解码在 modules/cell）、频段号、
@@ -179,11 +204,20 @@ function renderCellScan(raw, payloads) {
 return view.extend({
 	load: function() {
 		// 请求发起即返回，不阻塞首屏；render() 等 pending 填充。
-		// 两种锁模型走路由（`network.lock_get`）：锁频面板与两行锁状态都由
-		// 后端解码的领域值驱动，页面不再切 ^LTEFREQLOCK/^NRFREQLOCK 文本。
+		//
+		// 状态区块（信号/服务小区/注册/运营商/RRC/温度）与两种锁模型全部走统一
+		// 路由：后端 modules/* 解码 AT 应答，页面只做展示映射。旧版这里切
+		// `fs.exec network` 的文本帧（^HCSQ/^MONSC/+CEREG/+COPS/^RRCSTAT/
+		// temperature=），那是同一批 AT 应答的第二份 JS 解码。
+		// `atRadio` 仍是文本帧：无线偏好/5G 能力几行还没迁完（见 migration）。
 		this.pending = Promise.all([
-			api.atNetwork(),
 			api.atRadio(),
+			api.route('signal.get'),
+			api.route('cell.get'),
+			api.route('registration.get'),
+			api.route('network.get'),
+			api.route('network.rrc'),
+			api.route('system.temperature'),
 			api.route('network.lock_get', { rat: 'lte' }),
 			api.route('network.lock_get', { rat: 'nr' })
 		]);
@@ -193,6 +227,20 @@ return view.extend({
 	/* ---------- C) 频段勾选 / 锁频面板（组件已封装，页面仅做布局） ---------- */
 
 	lockPanel: c.lockPanel,
+
+	/* `network.rrc` 载荷 -> 既有文案（0..3 的名称 + 98/99 的驻留后缀）。 */
+	rrcText: function(rrc) {
+		if (!rrc)
+			return '';
+		var labels = [ _('Idle'), _('Connected'), _('Inactive'), _('Invalid') ];
+		var text = (rrc.state === undefined || rrc.state === null)
+			? '' : (labels[Number(rrc.state)] !== undefined ? labels[Number(rrc.state)] : String(rrc.state));
+		if (rrc.camped === 98)
+			text += ' · ' + _('Camped');
+		else if (rrc.camped === 99)
+			text += ' · ' + _('Not camped');
+		return text;
+	},
 
 	/* `network.lock_get` 载荷 -> 锁状态文案（0 = 未锁；取不到保持旧的 '--'）。 */
 	lockStateText: function(lock) {
@@ -365,25 +413,33 @@ return view.extend({
 	},
 
 	renderPage: function(results) {
-		var res = results[0] || {}, radioSettings = results[1] || {};
-		var raw = res.stdout || '', radioRaw = radioSettings.stdout || '';
-		var lteLock = results[2], nrLock = results[3];
-		var signal = parser.matchValues(parser.section(raw, 'Signal'), '^HCSQ');
-		var cell = parser.parseServingCell(parser.matchValues(parser.section(raw, 'Serving cell'), '^MONSC'));
-		var registration = parser.matchValues(parser.section(raw, 'Network registration'), '+CEREG');
-		var operator = parser.matchValues(parser.section(raw, 'Operator'), '+COPS');
-		var rrc = parser.matchValues(parser.section(raw, 'RRC state'), '^RRCSTAT');
-		var rrcLabels = [ _('Idle'), _('Connected'), _('Inactive'), _('Invalid') ];
-		var rrcState = rrc.length > 1 ? (rrcLabels[Number(rrc[1])] || rrc[1]) : '';
-		if (rrc.length > 2)
-			rrcState += rrc[2] === '98' ? ' · ' + _('Camped') : rrc[2] === '99' ? ' · ' + _('Not camped') : '';
-		var registered = registration[1] === '1' || registration[1] === '5';
-		var opInfo = parser.operatorInfo(operator[2]);
+		var radioSettings = results[0] || {};
+		var radioRaw = radioSettings.stdout || '';
+		var signal = results[1] || {}, cell = results[2] || {}, registration = results[3] || {};
+		var network = results[4] || {}, rrc = results[5] || {}, temperaturePayload = results[6] || {};
+		var lteLock = results[7], nrLock = results[8];
+		var rrcState = this.rrcText(rrc);
+		var registered = registration.state === 1 || registration.state === 5;
+		var opInfo = parser.operatorInfo(network.operator);
 		var operatorName = opInfo.name;
-		var tempMatch = raw.match(/^temperature=([\d.]+)/m);
-		var temperature = tempMatch ? tempMatch[1] : '';
-		// 仪表量程表：按 label 查表，而不是按下标硬编码。parser.js 的
-		// cell.metrics 随 RAT 变化（NR: RSRP/RSRQ/SINR，LTE: RSRP/RSRQ/RSSI，
+		var temperature = (temperaturePayload.peak === undefined || temperaturePayload.peak === null)
+			? '' : String(temperaturePayload.peak);
+		// 「Technical details」折叠块：这里以前直接倾倒整段 `mt5700m-at network`
+		// 文本帧（^HCSQ/^MONSC/^RRCSTAT/+CEREG/+COPS 加温度行）。文本帧已不再
+		// 经过前端，改为倾倒本页消费的路由载荷——同一批读数，领域模型形态。
+		var technical = [
+			[ 'signal.get', signal ], [ 'cell.get', cell ], [ 'registration.get', registration ],
+			[ 'network.get', network ], [ 'network.rrc', rrc ], [ 'system.temperature', temperaturePayload ],
+			[ 'network.lock_get (lte)', lteLock ], [ 'network.lock_get (nr)', nrLock ]
+		].map(function(pair) {
+			return '===== api.' + pair[0] + ' =====' + '\n' +
+				JSON.stringify(pair[1] === undefined ? null : pair[1], null, 2);
+		}).join('\n' + '\n');
+		// 仪表量程按 label 取（见下）。RAT 以服务小区为准（旧版 cell.rat），
+		// 读数来自 signal 载荷。
+		cell.metrics = signalMetrics(signal, cell.sysmode);
+		// 仪表量程表：按 label 查表，而不是按下标硬编码。上面 signalMetrics
+		// 给出的读数随 RAT 变化（NR: RSRP/RSRQ/SINR，LTE: RSRP/RSRQ/RSSI，
 		// WCDMA: RSCP/RXLEV/ECIO），下标固定会在 LTE/WCDMA 下量程错配、
 		// 指针顶到刻度外。量程取自 MT5700M 手册的典型取值区间。
 		var gaugeScale = [
@@ -518,15 +574,18 @@ return view.extend({
 
 		return E('div', { 'class': 'mt-page' }, [
 			c.cssLink(),
-			res.stderr ? E('div', { 'class': 'alert-message warning' }, res.stderr) : null,
+			// 页面顶部这条告警以前报的是 `network` 文本帧的 stderr。状态区块
+			// 改走路由后没有 stderr（某个路由取不到就是那一行留空，与其它
+			// 路由消费方一致），本页只剩 `radio` 这一次 CLI 调用，因此由它报错。
+			radioSettings.stderr ? E('div', { 'class': 'alert-message warning' }, radioSettings.stderr) : null,
 			c.hero(_('NETWORK AND CELL'), operatorName, _('Serving-cell and registration information reported by the modem.'), [
 				E('div', { 'class': 'mt-conn-state' }, [
 					c.svgStatusPulse(registered ? 'ok' : 'bad', 18),
 					c.badge(registered ? _('Registered') : _('Not registered'), registered ? 'ok' : 'warn')
 				])
 			], null, c.svgTower({ active: registered, status: registered ? 'ok' : 'bad' })),
-			// 仪表量程按 label 取，而不是按下标硬编码：parser.js 的 cell.metrics
-			// 会随 RAT 变化（NR 是 RSRP/RSRQ/SINR，LTE 是 RSRP/RSRQ/RSSI，
+			// 仪表量程按 label 取，而不是按下标硬编码：cell.metrics
+			// 随 RAT 变化（NR 是 RSRP/RSRQ/SINR，LTE 是 RSRP/RSRQ/RSSI，
 			// WCDMA 是 RSCP/RXLEV/ECIO），下标固定会在 LTE/WCDMA 下把量程配错，
 			// 指针会顶到刻度外。unit 同样由 parser 提供，不在此硬编码。
 			// 原实现调用的是 c.circularGaugeCard()，该函数在组件库中根本不存在
@@ -553,14 +612,14 @@ return view.extend({
 			E('div', { 'class': 'mt-grid' }, [
 				E('section', { 'class': 'mt-card' }, [
 					E('h3', { 'class': 'mt-card-title' }, _('Serving cell')),
-					this.row(_('Radio access'), cell.rat || signal[0]),
+					this.row(_('Radio access'), cell.sysmode || signal.sysmode),
 					this.row('MCC / MNC', cell.mcc && cell.mnc ? '%s / %s'.format(cell.mcc, cell.mnc) : ''),
-					this.row('ARFCN', cell.arfcn),
+					this.row('ARFCN', cell.channel),
 					this.row('PCI', cell.pci),
-					this.row(_('Cell ID'), cell.cellId),
-					this.row('TAC / LAC', cell.tac),
-					cell.scs ? this.row(_('SCS type'), cell.scs + ' · ' + ([ '15', '30', '60', '120', '240' ][Number(cell.scs)] || '?') + ' kHz') : null,
-					this.row(_('Registration'), registered ? (registration[1] === '5' ? _('Roaming') : _('Home network')) : _('Not registered'))
+					this.row(_('Cell ID'), cell.cid),
+					this.row('TAC / LAC', cell.lac),
+					cell.scs !== undefined ? this.row(_('SCS type'), cell.scs + ' · ' + ([ '15', '30', '60', '120', '240' ][Number(cell.scs)] || '?') + ' kHz') : null,
+					this.row(_('Registration'), registered ? (registration.state === 5 ? _('Roaming') : _('Home network')) : _('Not registered'))
 				]),
 				E('section', { 'class': 'mt-card' }, [
 					E('h3', { 'class': 'mt-card-title' }, _('Radio status')),
@@ -612,7 +671,7 @@ return view.extend({
 					]);
 				} }, _('Cell Scan'))
 			]),
-			c.details(_('Technical details'), null, E('pre', { 'class': 'mt-raw' }, raw || _('No response.'))),
+			c.details(_('Technical details'), null, E('pre', { 'class': 'mt-raw' }, technical || _('No response.'))),
 			radioControls,
 			E('section', { 'class': 'mt-card', 'style': 'margin-top:20px' }, [
 				E('div', { 'class': 'mt-card-head' }, [

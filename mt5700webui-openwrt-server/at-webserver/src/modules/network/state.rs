@@ -389,6 +389,35 @@ impl AutodialState {
     }
 }
 
+/// Connection/RRC state (`^RRCSTAT?`).
+///
+/// `state` is the code the manual numbers 0..3 (the page labels them
+/// Idle/Connected/Inactive/Invalid) and `camped` is the 98/99 flag some
+/// firmware versions append. Both are optional: a reply that only carries the
+/// state (or only the flag) publishes exactly what it carried.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RrcState {
+    pub state: Option<i64>,
+    pub camped: Option<i64>,
+}
+
+impl RrcState {
+    pub fn is_empty(&self) -> bool {
+        self.state.is_none() && self.camped.is_none()
+    }
+
+    pub fn to_json(&self) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        if let Some(v) = self.state {
+            m.insert("state".to_string(), json::num_val(v));
+        }
+        if let Some(v) = self.camped {
+            m.insert("camped".to_string(), json::num_val(v));
+        }
+        Value::Obj(m)
+    }
+}
+
 /// USB port mode (`^SETMODE?`), the dial page's "USB 端口模式" card.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct UsbModeState {

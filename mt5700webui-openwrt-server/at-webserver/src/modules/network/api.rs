@@ -30,6 +30,7 @@ pub fn routes() -> Vec<Route> {
         Route::on_demand("network.pdp", pdp),
         Route::on_demand("network.dhcp", dhcp),
         Route::on_demand("network.registration_urc", registration_urc),
+        Route::on_demand("network.rrc", rrc),
         Route::on_demand("network.lock_get", lock_get),
         Route::on_demand("network.lock_apply", lock_apply),
         Route::on_demand("network.c5goption", c5goption),
@@ -65,6 +66,17 @@ fn schedule_set(_ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
     let mut m = std::collections::BTreeMap::new();
     m.insert("applied".to_string(), Value::Bool(true));
     Ok(Value::Obj(m))
+}
+
+/// `{state?, camped?}` — connection/RRC state (`^RRCSTAT?`), the wireless
+/// page's "Radio status" card.
+///
+/// On-demand: it is a live read with no cache of its own, and an unreachable
+/// modem is reported as an error (the page shows `--` on that row, like every
+/// other failed row).
+fn rrc(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    let st = crate::modules::network::service::read_rrc(ctx.channel)?;
+    Ok(st.to_json())
 }
 
 /// Access-technology configuration (`^SYSCFGEX?`): the "网络系统配置" card.
