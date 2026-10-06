@@ -41,6 +41,8 @@ const EVENT_TOPIC: Record<string, string> = {
   'nr_txpower.updated': 'nr_txpower',
   'sim.updated': 'sim',
   'modem.info': 'modem',
+  'ca.updated': 'ca',
+  'qos.updated': 'qos',
 };
 
 let feed: SharedStateFeed = EMPTY_FEED;

@@ -48,10 +48,143 @@ pub struct CaCarrier {
     pub source: CaSource,
 }
 
+/// One `^MONSSC` NR secondary cell (manual 13.27).
+///
+/// The `^HFREQINFO` carrier list only carries frequency and bandwidth; the
+/// per-carrier signal quality lives here, and the info page merges the two by
+/// downlink ARFCN.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SecondaryNr {
+    pub arfcn: i64,
+    /// 手册 13.27.3: `<PCI>` is hexadecimal.
+    pub pci: i64,
+    pub rsrp: Option<f64>,
+    pub rsrq: Option<f64>,
+    pub sinr: Option<f64>,
+    /// 手册 13.27.3 `<MEASTYPE>`: `SSB` / `CSI-RS`, the manual's `—` otherwise.
+    pub meas_type: String,
+}
+
+/// One `^CASCELLINFO` LTE secondary cell (manual 13.18).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SecondaryLte {
+    pub index: i64,
+    pub pci: i64,
+    pub band: i64,
+    pub rssi: Option<f64>,
+    pub rsrp: Option<f64>,
+    pub rsrq: Option<f64>,
+    pub ul_arfcn: Option<i64>,
+    pub dl_arfcn: Option<i64>,
+    pub ul_frequency_mhz: Option<f64>,
+    pub dl_frequency_mhz: Option<f64>,
+    pub ul_bandwidth_mhz: Option<f64>,
+    pub dl_bandwidth_mhz: Option<f64>,
+}
+
+/// A secondary cell of either radio, tagged so the JSON is self-describing.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SecondaryCell {
+    Nr(SecondaryNr),
+    Lte(SecondaryLte),
+}
+
+impl SecondaryCell {
+    /// Domain JSON: the `radio` tag plus the fields the info page renders.
+    /// Absent fields are omitted (the WebUI treats them as “no reading”).
+    pub fn to_json(&self) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        match self {
+            SecondaryCell::Nr(nr) => {
+                m.insert("radio".to_string(), json::str_val("NR"));
+                m.insert("arfcn".to_string(), json::num_val(nr.arfcn));
+                m.insert("pci".to_string(), json::num_val(nr.pci));
+                for (key, v) in [
+                    ("rsrp", &nr.rsrp),
+                    ("rsrq", &nr.rsrq),
+                    ("sinr", &nr.sinr),
+                ] {
+                    if let Some(v) = v {
+                        m.insert(key.to_string(), json::num_val(*v));
+                    }
+                }
+                m.insert("measType".to_string(), json::str_val(&nr.meas_type));
+            }
+            SecondaryCell::Lte(lte) => {
+                m.insert("radio".to_string(), json::str_val("LTE"));
+                m.insert("index".to_string(), json::num_val(lte.index));
+                m.insert("pci".to_string(), json::num_val(lte.pci));
+                m.insert("band".to_string(), json::num_val(lte.band));
+                for (key, v) in [
+                    ("rssi", &lte.rssi),
+                    ("rsrp", &lte.rsrp),
+                    ("rsrq", &lte.rsrq),
+                ] {
+                    if let Some(v) = v {
+                        m.insert(key.to_string(), json::num_val(*v));
+                    }
+                }
+                if let Some(v) = lte.ul_arfcn {
+                    m.insert("ulArfcn".to_string(), json::num_val(v));
+                }
+                if let Some(v) = lte.dl_arfcn {
+                    m.insert("dlArfcn".to_string(), json::num_val(v));
+                }
+                for (key, v) in [
+                    ("ulFreq", &lte.ul_frequency_mhz),
+                    ("dlFreq", &lte.dl_frequency_mhz),
+                    ("ulBandwidth", &lte.ul_bandwidth_mhz),
+                    ("dlBandwidth", &lte.dl_bandwidth_mhz),
+                ] {
+                    if let Some(v) = v {
+                        m.insert(key.to_string(), json::num_val(*v));
+                    }
+                }
+            }
+        }
+        Value::Obj(m)
+    }
+
+    /// Inverse of [`Self::to_json`] for the cache round trip.
+    pub fn from_json(v: &Value) -> Option<Self> {
+        let Value::Obj(m) = v else { return None };
+        let s = |k: &str| m.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let n = |k: &str| m.get(k).and_then(|v| v.as_i64());
+        let f = |k: &str| m.get(k).and_then(|v| v.as_f64());
+        match s("radio").as_str() {
+            "NR" => Some(SecondaryCell::Nr(SecondaryNr {
+                arfcn: n("arfcn")?,
+                pci: n("pci")?,
+                rsrp: f("rsrp"),
+                rsrq: f("rsrq"),
+                sinr: f("sinr"),
+                meas_type: s("measType"),
+            })),
+            "LTE" => Some(SecondaryCell::Lte(SecondaryLte {
+                index: n("index")?,
+                pci: n("pci")?,
+                band: n("band")?,
+                rssi: f("rssi"),
+                rsrp: f("rsrp"),
+                rsrq: f("rsrq"),
+                ul_arfcn: n("ulArfcn"),
+                dl_arfcn: n("dlArfcn"),
+                ul_frequency_mhz: f("ulFreq"),
+                dl_frequency_mhz: f("dlFreq"),
+                ul_bandwidth_mhz: f("ulBandwidth"),
+                dl_bandwidth_mhz: f("dlBandwidth"),
+            })),
+            _ => None,
+        }
+    }
+}
+
 /// Everything known about the current carrier aggregation.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CaState {
     pub carriers: Vec<CaCarrier>,
+    /// `^MONSSC`/`^CASCELLINFO` reported secondary cells, signal quality and all.
+    pub secondary: Vec<SecondaryCell>,
     /// `^MONSSC` reported NSA secondary cells (count of `NR,` lines).
     pub secondary_connection_count: usize,
 }
@@ -208,8 +341,10 @@ impl CaState {
                 Value::Obj(m)
             })
             .collect();
+        let secondary = self.secondary.iter().map(|c| c.to_json()).collect();
         let mut m = std::collections::BTreeMap::new();
         m.insert("carriers".to_string(), Value::Arr(carriers));
+        m.insert("secondary".to_string(), Value::Arr(secondary));
         m.insert(
             "carrier_count".to_string(),
             json::num_val(self.carriers.len() as u64),
@@ -275,8 +410,13 @@ impl CaState {
                 .collect(),
             _ => Vec::new(),
         };
+        let secondary = match m.get("secondary") {
+            Some(Value::Arr(items)) => items.iter().filter_map(SecondaryCell::from_json).collect(),
+            _ => Vec::new(),
+        };
         CaState {
             carriers,
+            secondary,
             secondary_connection_count: m
                 .get("secondary_connection_count")
                 .and_then(|v| v.as_u64())

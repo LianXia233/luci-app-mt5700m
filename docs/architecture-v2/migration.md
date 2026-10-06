@@ -213,31 +213,25 @@ aliases, so the move itself changed no behaviour.
    text, TTL 30 min); `cellscan-result` is the poll the modal uses, and the
    modal's markup, copy and flow are unchanged — it just refreshes itself when
    the scan finishes.
-8. **Carrier-aggregation card data feed (REGRESSION, next up)**: the WebUI's
-   `pages/network/Info.tsx` renders its carrier list and per-carrier signal from
-   `cell.carrierInfo`, `secondaryNR`/`secondaryLTE` — and nothing assigns any of
-   them. The page kept the presentation and the merge helpers
-   (`modem/carrier.ts`: `carrierSignalFor`, `unmatchedSecondaries`) from the AT
-   era, but the feed is gone, so the card renders empty. `modules/ca` already
-   parses `^HFREQINFO?`/`^CASCELLINFO?` (carriers + bandwidth) and counts
-   `^MONSSC` leg lines, but drops every signal field, so the fix is:
-   * backend: `parse_secondaries(cascellinfo, monssc) -> Vec<SecondaryCell>`
-     with the two handbook layouts (NR: hex PCI, invalid values -1256/-348/-188,
-     the ±8 descale heuristic, `<MEASTYPE>`; LTE: index/pci/band/arfcn/freq/bw +
-     rssi/rsrp/rsrq), exposed as `ca.get`'s `secondary` array — one decoder for
-     both radios, in the module that already owns those commands;
-   * frontend: subscribe the `ca` topic, map `carriers` → `CarrierInfo` and
-     `secondary` → the two shapes `carrierSignalFor`/`unmatchedSecondaries`
-     expect (presentation-only mapping), and delete the now-dead
-     `modem/carrier.ts` parsers;
-   * tests: the handbook's own `^MONSSC`/`^CASCELLINFO` examples, the invalid
-     sentinels and the unmatched-secondary list.
+8. **Carrier-aggregation card data feed**: the WebUI's `pages/network/Info.tsx`
+   renders its carrier list and per-carrier signal from `cell.carrierInfo`,
+   `secondaryNR`/`secondaryLTE` — and when the AT-era feed was removed nothing
+   assigned any of them, so the card rendered empty even though the page kept
+   the merge helpers. Fixed by moving the missing decode into the module that
+   already owns those commands: `modules/ca` parses `^CASCELLINFO?` **once**
+   (the carrier list and the secondary list now share one field map) and
+   `^MONSSC` per-cell (hex PCI, the manual's invalid values, the ±8 descale
+   heuristic, `<MEASTYPE>`), and `ca.get` answers a `secondary` array next to
+   `carriers`. The page fetches `ca.get` (cache-first, `refresh` on demand),
+   subscribes the `ca` topic and maps the domain model with `modem/ca.ts`
+   (presentation only; `modem/carrier.ts` and its two parsers are gone).
 9. **Frontend AT removal**:
-   * WebUI — display already flows through the daemon's topic cache
-     (`services/stateCache.ts` + `useSharedStateTopic`); the remaining AT usage
-     is action/refresh paths in `services/at.ts` + `modem/*.ts`, which convert
-     to the corresponding routes as they land. `pages/at/Terminal.tsx` stays a
-     deliberate raw-AT console (user-facing diagnostic tool, admin-only).
+   * WebUI — display flows through the daemon's topic cache
+     (`services/stateCache.ts` + `useSharedStateTopic`) and every action goes
+     through a route; the only remaining AT builder is
+     `pages/at/Terminal.tsx`, the deliberate raw-AT console (user-facing
+     diagnostic tool, admin-only). `modem/*.ts` holds types, display tables and
+     merge helpers only.
    * LuCI — `parser.js` decodes CLI text for the pages that still call
      `mt5700m-at status/advanced …`; those pages move to the routes above and
      the duplicated decoders are deleted. The dashboard already reads the

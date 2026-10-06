@@ -142,6 +142,9 @@ const STATE_EVENT_TYPES = [
   'nr_txpower.updated',
   'sim.updated',
   'modem.info',
+  // 载波聚合与 QoS 主题：ca.get / qos.get 刷新后由后端推更新。
+  'ca.updated',
+  'qos.updated',
 ] as const;
 
 const isStateEventType = (type: string): boolean =>

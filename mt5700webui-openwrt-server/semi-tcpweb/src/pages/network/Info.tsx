@@ -29,10 +29,13 @@ import { QualityBar, RingGauge, Sparkline } from '@/ui/charts';
 import { Diagnostics } from './Diagnostics';
 import {
   carrierSignalFor,
+  carriersFromCa,
+  secondariesFromCa,
   unmatchedSecondaries,
   type SecondaryLTE,
   type SecondaryNR,
-} from '@/modem/carrier';
+} from '@/modem/ca';
+import { fetchCa, type CaPayload } from '@/services/ca';
 
 const at = () => ATService.getInstance();
 
@@ -244,6 +247,20 @@ const NetworkInfo: React.FC = () => {
     });
   };
 
+  // 载波聚合（^HFREQINFO? + ^CASCELLINFO? + ^MONSSC）：解码全在后端
+  // modules/ca，ca.get 给领域模型，这里只映射成卡片并按下行频点合并信号。
+  const applyCaPayload = (payload: CaPayload) => {
+    const carriers = carriersFromCa(payload);
+    setCell((prev) => ({
+      ...prev,
+      carrierInfo: carriers,
+      carrierCount: carriers.length,
+    }));
+    const { nr, lte } = secondariesFromCa(payload.secondary);
+    setSecondaryNR(nr);
+    setSecondaryLTE(lte);
+  };
+
   const applyTrafficEvent = (data: Partial<PDCPData>) => {
     const up = Number(data.ulPdcpRate || 0);
     const down = Number(data.dlPdcpRate || 0);
@@ -288,6 +305,7 @@ const NetworkInfo: React.FC = () => {
     applyTopic('traffic', (traffic) => applyTrafficEvent(traffic as Partial<PDCPData>));
     // 累计流量与网卡计数：与 LuCI 同源的那一份，首屏就从快照渲染。
     applyTopic('netrate', applyNetrate);
+    applyTopic('ca', (ca) => applyCaPayload(ca as unknown as CaPayload));
   };
 
   // APN / QCI / AMBR 来自统一 API：后端 modules/qos 解析 +CGACT?、^DSAMBR、
@@ -399,6 +417,13 @@ const NetworkInfo: React.FC = () => {
     if (ul) setUplinkMCS(ul);
   };
 
+  // 载波面板没有周期采集（三条命令加起来 ~22 s，轮询会吃掉空闲预算），
+  // 所以进页面时读一次 ca.get（缓存优先），刷新按钮再强制重查。
+  const getCA = async (refresh = false) => {
+    const payload = await fetchCa(refresh).catch(() => null);
+    if (payload) applyCaPayload(payload);
+  };
+
   const loadAll = () => {
     // 首屏状态由共享 StateCache/EventBus 驱动。这里只补 LuCI 概览同样读取的
     // APN/QCI/AMBR 等未纳入主题缓存的只读字段，以及页面特有的 MCS 诊断值；
@@ -410,6 +435,7 @@ const NetworkInfo: React.FC = () => {
       await getQos();
       await getDHCP();
       await getMCS();
+      await getCA();
       // 保留页面特有的 PDCP 实时速率开关；累计流量仍使用与 LuCI 相同的 netrate。
       void at().setPDCPDataReport(true, pdcpInterval).catch(() => {});
     });
