@@ -179,9 +179,13 @@ function renderCellScan(raw, payloads) {
 return view.extend({
 	load: function() {
 		// 请求发起即返回，不阻塞首屏；render() 等 pending 填充。
+		// 两种锁模型走路由（`network.lock_get`）：锁频面板与两行锁状态都由
+		// 后端解码的领域值驱动，页面不再切 ^LTEFREQLOCK/^NRFREQLOCK 文本。
 		this.pending = Promise.all([
 			api.atNetwork(),
-			api.atRadio()
+			api.atRadio(),
+			api.route('network.lock_get', { rat: 'lte' }),
+			api.route('network.lock_get', { rat: 'nr' })
 		]);
 		return Promise.resolve();
 	},
@@ -189,6 +193,13 @@ return view.extend({
 	/* ---------- C) 频段勾选 / 锁频面板（组件已封装，页面仅做布局） ---------- */
 
 	lockPanel: c.lockPanel,
+
+	/* `network.lock_get` 载荷 -> 锁状态文案（0 = 未锁；取不到保持旧的 '--'）。 */
+	lockStateText: function(lock) {
+		if (!lock)
+			return '--';
+		return lock.lock_type === 0 ? _('Not locked') : _('Locked');
+	},
 
 	/* ---------- B) 无线诊断 ---------- */
 
@@ -356,12 +367,11 @@ return view.extend({
 	renderPage: function(results) {
 		var res = results[0] || {}, radioSettings = results[1] || {};
 		var raw = res.stdout || '', radioRaw = radioSettings.stdout || '';
+		var lteLock = results[2], nrLock = results[3];
 		var signal = parser.matchValues(parser.section(raw, 'Signal'), '^HCSQ');
 		var cell = parser.parseServingCell(parser.matchValues(parser.section(raw, 'Serving cell'), '^MONSC'));
 		var registration = parser.matchValues(parser.section(raw, 'Network registration'), '+CEREG');
 		var operator = parser.matchValues(parser.section(raw, 'Operator'), '+COPS');
-		var lteLock = parser.collectFreqLock(parser.section(raw, 'LTE lock'), '^LTEFREQLOCK');
-		var nrLock = parser.collectFreqLock(parser.section(raw, 'NR lock'), '^NRFREQLOCK');
 		var rrc = parser.matchValues(parser.section(raw, 'RRC state'), '^RRCSTAT');
 		var rrcLabels = [ _('Idle'), _('Connected'), _('Inactive'), _('Invalid') ];
 		var rrcState = rrc.length > 1 ? (rrcLabels[Number(rrc[1])] || rrc[1]) : '';
@@ -385,8 +395,8 @@ return view.extend({
 			{ label: 'RXLEV', unit: 'dBm', min: -120, max: -60, cls: 'accent' },
 			{ label: 'ECIO', unit: 'dB',  min: -25,  max: 10,  cls: 'accent' }
 		];
-		var lteLockState = !lteLock[0] ? '--' : lteLock[0] === '0' ? _('Not locked') : _('Locked');
-		var nrLockState = !nrLock[0] ? '--' : nrLock[0] === '0' ? _('Not locked') : _('Locked');
+		var lteLockState = this.lockStateText(lteLock);
+		var nrLockState = this.lockStateText(nrLock);
 		var systemValues = parser.matchValues(parser.section(radioRaw, 'Radio mode'), '^SYSCFGEX');
 		var radioCode = systemValues[0] || '';
 		var wcdmaMask = systemValues[1] || '3FFFFFFF';

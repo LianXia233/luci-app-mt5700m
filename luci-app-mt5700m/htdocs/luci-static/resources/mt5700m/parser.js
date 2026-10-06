@@ -45,14 +45,6 @@ function matchValues(text, prefix) {
 	return line.substring(prefix.length).replace(/^[ :=]+/, '').replace(/"/g, '').split(',').map(function(value) { return value.trim(); });
 }
 
-// 收集所有以 prefix 开头的行并展平为一个数组（锁频查询会返回多行）
-function collectFreqLock(text, prefix) {
-	return (text || '').split(/\n/).filter(function(item) { return item.indexOf(prefix) === 0; }).reduce(function(out, line) {
-		var fields = line.substring(prefix.length).replace(/^[ :=]+/, '').replace(/"/g, '').split(',').map(function(v) { return v.trim(); });
-		return out.concat(fields);
-	}, []);
-}
-
 // 以 prefix 开头首行的取值（去前导冒号/空格）
 function lineValue(text, prefix) {
 	var line = (text || '').split(/\n/).filter(function(item) { return item.indexOf(prefix) === 0; })[0] || '';
@@ -484,40 +476,6 @@ function mcsModulation(mcs, table, rat) {
 }
 
 // 完整 MCS 段 → [{ rat, carriers:[{table, code0, code1}] }]（多载波 / EN-DC 每 RAT 多组）
-// ^LTEFREQLOCK? / ^NRFREQLOCK? 原始数组 → 结构化锁频信息
-function parseLockData(rawArr, rat) {
-	if (!rawArr || !rawArr.length || rawArr[0] === '' || rawArr[0] === undefined)
-		return { type:'0', bands:'', arfcns:'', scs:'', pcis:'' };
-	var type = String(rawArr[0] || '0');
-	if (type === '0') return { type:'0', bands:'', arfcns:'', scs:'', pcis:'' };
-	var num = Math.min(parseInt(rawArr[2] || '0', 10) || 0, 20);
-	if (num < 1) return { type:type, bands:'', arfcns:'', scs:'', pcis:'' };
-	var bands=[], arfcns=[], scs=[], pcis=[];
-	if (rat === 'nr') {
-		for (var i = 0; i < num; i++) {
-			var base = 3 + i * 4;
-			bands.push(rawArr[base] || '');
-			arfcns.push(rawArr[base + 1] || '');
-			scs.push(rawArr[base + 2] || '');
-			pcis.push(rawArr[base + 3] || '');
-		}
-	} else {
-		for (var j = 0; j < num; j++) {
-			var b2 = 3 + j * 3;
-			bands.push(rawArr[b2] || '');
-			arfcns.push(rawArr[b2 + 1] || '');
-			pcis.push(rawArr[b2 + 2] || '');
-		}
-	}
-	return {
-		type: type,
-		bands: bands.filter(Boolean).join(','),
-		arfcns: arfcns.filter(Boolean).join(','),
-		scs: scs.filter(Boolean).join(','),
-		pcis: pcis.filter(Boolean).join(',')
-	};
-}
-
 /* ---------- 短信 PDU 解码 ---------- */
 
 function swapDigits(value) {
@@ -633,7 +591,6 @@ return baseclass.extend({
 	pick: pick,
 	csvValues: csvValues,
 	matchValues: matchValues,
-	collectFreqLock: collectFreqLock,
 	lineValue: lineValue,
 	countLines: countLines,
 	hexIPv4: hexIPv4,
@@ -663,7 +620,6 @@ return baseclass.extend({
 	validCsv: validCsv,
 	csvInRange: csvInRange,
 	mcsModulation: mcsModulation,
-	parseLockData: parseLockData,
 	swapDigits: swapDigits,
 	decodeUcs2: decodeUcs2,
 	decodeGsm7: decodeGsm7,

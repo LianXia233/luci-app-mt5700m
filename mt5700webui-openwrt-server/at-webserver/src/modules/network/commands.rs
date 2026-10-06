@@ -408,6 +408,84 @@ pub fn ndis_is_active(text: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn item(band: Option<i64>, arfcn: Option<i64>, pci: Option<i64>, scs: Option<i64>) -> LockItem {
+        LockItem {
+            band,
+            arfcn,
+            pci,
+            scs,
+        }
+    }
+
+    /// The route and the CLI must produce the same AT string.
+    ///
+    /// `network.lock_apply` takes typed items (`[{band, arfcn, pci, scs}]`) while
+    /// the CLI takes the page's four CSV fields positionally; both funnel through
+    /// [`lock_command_for`] / [`lte_lock_command`] / [`nr_lock_command`], and this
+    /// test pins that they stay equal for exactly the inputs LuCI's lock panel
+    /// sends (the shapes below are the panel's: band lock, ARFCN lock, cell lock,
+    /// an NR item without an SCS code, and an unlock with no items).
+    #[test]
+    fn lock_items_build_the_cli_write() {
+        // Band lock: only the bands are used by either form.
+        let items = [item(Some(3), None, None, None), item(Some(7), None, None, None)];
+        assert_eq!(
+            lock_command_for(LockKind::Lte, 3, 0, &items).unwrap(),
+            lte_lock_command("3", "3,7", "", "").unwrap()
+        );
+        assert_eq!(
+            lock_command_for(LockKind::Nr, 3, 0, &items).unwrap(),
+            nr_lock_command("3", "3,7", "", "", "").unwrap()
+        );
+
+        // ARFCN lock.
+        let items = [item(Some(3), Some(1850), None, None)];
+        assert_eq!(
+            lock_command_for(LockKind::Lte, 1, 0, &items).unwrap(),
+            lte_lock_command("1", "3", "1850", "").unwrap()
+        );
+        let items = [item(Some(78), Some(636648), None, Some(1))];
+        assert_eq!(
+            lock_command_for(LockKind::Nr, 1, 0, &items).unwrap(),
+            nr_lock_command("1", "78", "636648", "1", "").unwrap()
+        );
+
+        // Cell lock: PCI (decimal, as the page holds it) in both forms.
+        let items = [item(Some(3), Some(1850), Some(64), None)];
+        assert_eq!(
+            lock_command_for(LockKind::Lte, 2, 0, &items).unwrap(),
+            lte_lock_command("2", "3", "1850", "64").unwrap()
+        );
+        let items = [item(Some(78), Some(636648), Some(10), Some(0))];
+        assert_eq!(
+            lock_command_for(LockKind::Nr, 2, 0, &items).unwrap(),
+            nr_lock_command("2", "78", "636648", "0", "10").unwrap()
+        );
+
+        // An NR item without an SCS code takes the module's band default (the
+        // CLI form cannot express that: an empty SCS is rejected there).
+        let items = [item(Some(78), Some(636648), None, None)];
+        assert_eq!(
+            lock_command_for(LockKind::Nr, 1, 0, &items).unwrap(),
+            nr_lock_command("1", "78", "636648", "1", "").unwrap()
+        );
+
+        // Unlock carries no items at all, and mobility is the caller's.
+        assert_eq!(
+            lock_command_for(LockKind::Lte, 0, 0, &[]).unwrap(),
+            "AT^LTEFREQLOCK=0"
+        );
+        assert_eq!(
+            lock_command_for(LockKind::Nr, 0, 1, &[]).unwrap(),
+            "AT^NRFREQLOCK=0"
+        );
+
+        // Out-of-range input is refused by both paths.
+        let items = [item(Some(3), Some(1850), Some(900), None)];
+        assert!(lock_command_for(LockKind::Lte, 2, 0, &items).is_none());
+        assert!(lte_lock_command("2", "3", "1850", "900").is_none());
+    }
+
     #[test]
     fn syscfgex_write_and_validators() {
         assert_eq!(

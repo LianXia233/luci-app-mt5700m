@@ -438,6 +438,14 @@ fn dump_section(out: &mut String, label: &str, command: &str, settings: &Setting
     let _ = writeln!(out, "{}\n", raw.text);
 }
 
+/// The `network` verb — the wireless page's frame.
+///
+/// The two lock sections (`^LTEFREQLOCK?` / `^NRFREQLOCK?`) used to be printed
+/// here for the page's lock panel. The panel now reads `network.lock_get`, so
+/// printing them again would ask the modem the same two questions a second time
+/// and hand out a second rendering of the same reply. The `status` verb still
+/// reports `lte_lock=` / `nr_lock=` for scripts (`print_lock_status`), and
+/// `mt5700m-at lock` still writes.
 pub fn print_network_info(settings: &Settings) -> String {
     let mut out = String::new();
     for (label, command) in [
@@ -446,8 +454,6 @@ pub fn print_network_info(settings: &Settings) -> String {
         ("RRC state", "AT^RRCSTAT?"),
         ("Network registration", "AT+CEREG?"),
         ("Operator", "AT+COPS?"),
-        ("LTE lock", "AT^LTEFREQLOCK?"),
-        ("NR lock", "AT^NRFREQLOCK?"),
     ] {
         dump_section(&mut out, label, command, settings);
     }

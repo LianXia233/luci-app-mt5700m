@@ -146,6 +146,28 @@ function route(name, params) {
 }
 
 /*
+ * routeCall —— route() 的**写操作**版本：同一条 `api.<route>` 命令，但失败
+ * 必须 reject，调用方才能显示错误并停在那里。
+ *
+ * route() 的「永不 reject」是为只读行设计的（拿不到就留空，不打断渲染）；
+ * 写操作不能这样：后端没起来、路由报错、应答不成形，都绝不能当成「成功」。
+ * 后端返回 success:false 时 at() 已经 reject（携带后端 message），这里只补
+ * 上「应答不是对象」这一种。
+ */
+function routeCall(name, params) {
+	var cmd = params ? 'api.' + name + ' ' + JSON.stringify(params) : 'api.' + name;
+	return at([ cmd ]).then(function(res) {
+		var data = res.stdout;
+		if (typeof data === 'string') {
+			try { data = JSON.parse(data); } catch (e) { data = null; }
+		}
+		if (!data || typeof data !== 'object')
+			throw new Error(_('Invalid response from the backend.'));
+		return data;
+	});
+}
+
+/*
  * cachedSnapshot —— Async Architecture 缓存优先（SWR）快照。
  * 走 ucode mt5700.cached（nc → daemon StateCache）：零 AT 流量、毫秒级返回，
  * 即使模组离线 / AT 卡住也能立即拿到最近一次后台采集器写入的状态。
@@ -279,6 +301,7 @@ return baseclass.extend({
 	atStatus: atStatus,
 	atSession: atSession,
 	route: route,
+	routeCall: routeCall,
 	atNetwork: atNetwork,
 	atRadio: atRadio,
 	atHardware: atHardware,

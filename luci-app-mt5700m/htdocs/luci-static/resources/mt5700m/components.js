@@ -636,6 +636,87 @@ function bandPanel(title, description, checklist) {
 // 锁频面板字段注册表 —— cellLockCard 的 "Fill" 按钮据此回填表单
 var lockPanelFields = { lte: null, nr: null };
 
+/*
+ * `api.network.lock_get` 载荷 → 面板字段（bands/arfcns/scs/pcis 逗号串）。
+ *
+ * 后端给的是领域值：`{lock_type, mobility, items:[{band?,arfcn?,pci?,scs?}]}`，
+ * PCI 已从十六进制还原成十进制（写操作要的就是十进制）。空字段按旧版
+ * parseLockData 的规则剔除（filter(Boolean)），所以没有读数的列仍是空串。
+ */
+function lockPanelValues(lock) {
+	if (!lock || typeof lock !== 'object' || !lock.lock_type)
+		return { type: '0', bands: '', arfcns: '', scs: '', pcis: '' };
+	var items = (lock.items || []).slice(0, 20);
+	function list(field) {
+		var out = [];
+		items.forEach(function(item) {
+			var value = item[field];
+			if (value !== undefined && value !== null && value !== '')
+				out.push(String(value));
+		});
+		return out.join(',');
+	}
+	return {
+		type: String(lock.lock_type),
+		bands: list('band'),
+		arfcns: list('arfcn'),
+		scs: list('scs'),
+		pcis: list('pci')
+	};
+}
+
+/*
+ * 锁频面板的四个输入串 → `network.lock_apply` 的 items。
+ *
+ * 面板按类型只填必要的列（Band Lock 只有 bands，ARFCN Lock 是 bands+arfcns，
+ * Cell Lock 再加 scs/pcis），这里逐列按下标配对；缺的列不放进 item，好让
+ * 后端用它的 SCS 默认值（NR 的 n41/77/78/79 是 30kHz）。
+ */
+function lockItems(rat, type, values) {
+	function column(index) {
+		return (values[index] || '').split(',').filter(function(v) { return v !== ''; });
+	}
+	function num(list, index) {
+		var value = list[index];
+		if (value === undefined || value === null || value === '')
+			return undefined;
+		return Number(value);
+	}
+	var bands = column(0), arfcns = column(1), scs = column(2), pcis = column(3);
+	if (type === '3')
+		return bands.map(function(band) { return { band: Number(band) }; });
+	return bands.map(function(band, i) {
+		var item = { band: Number(band) };
+		var arfcn = num(arfcns, i), scsValue = rat === 'nr' ? num(scs, i) : undefined, pci = num(pcis, i);
+		if (arfcn !== undefined) item.arfcn = arfcn;
+		if (scsValue !== undefined) item.scs = scsValue;
+		if (pci !== undefined) item.pci = pci;
+		return item;
+	});
+}
+
+/*
+ * 提交一次锁频写（面板与邻区卡片的 Lock 按钮共用）。
+ *
+ * 走 `network.lock_apply`：AT 串由 modules/network 组装，写前/写后各做一次
+ * 无线循环，`verify: true` 让模块像 CLI 的 lock 那样轮询校验（校验属于模组
+ * 知识，放在后端）；这里只把结果翻成调用方的成败 —— reject 走进既有的错误
+ * 提示，成功才提示并刷新页面，与旧版 await CLI 退出码的行为一致。
+ */
+function applyLock(rat, lockType, items) {
+	var params = { rat: rat, lock_type: Number(lockType), verify: true };
+	if (items.length)
+		params.items = items;
+	return api.routeCall('network.lock_apply', params).then(function(res) {
+		var row = res && res.results && res.results[0];
+		if (row && row.applied === false)
+			throw new Error(row.error || '');
+		if (row && row.verified === false)
+			throw new Error(row.verify_error || '');
+		return res;
+	});
+}
+
 // 邻区卡片 + 一键锁定 / 回填锁频面板
 function cellLockCard(nb, index, rat, bandName, hideRsqr) {
 	var ratLabel = nb.rat === '101' || nb.rat === 'NR' ? 'NR'
@@ -662,10 +743,16 @@ function cellLockCard(nb, index, rat, bandName, hideRsqr) {
 	lockBtn.addEventListener('click', function() {
 		var isNr = (ratLabel === 'NR');
 		var lockType = nb.pci && nb.pci !== '?' ? '2' : '1';
-		var args = isNr
-			? ['lock', 'nr', lockType, bandNum || '41', nb.arfcn || '',
-			   isNr && lockType === '2' ? '0' : '', nb.pci || '']
-			: ['lock', 'lte', lockType, bandNum || '3', nb.arfcn || '', '', nb.pci || ''];
+		// 卡片只有这一个小区：Band/ARFCN/PCI 直接进 item，SCS 留给后端的
+		// 频段默认值（旧版把 SCS 位置填 '0' 或空串，NR 的 ARFCN Lock 会因此
+		// 被 CLI 判成参数不全，LTE 的 PCI 也会错位到 SCS 槽）。
+		var item = { band: Number(bandNum || (isNr ? '41' : '3')) };
+		if (nb.arfcn)
+			item.arfcn = Number(nb.arfcn);
+		if (isNr && lockType === '2')
+			item.scs = 0;
+		if (nb.pci && nb.pci !== '?')
+			item.pci = Number(nb.pci);
 		ui.showModal(_('Confirm lock'), [
 			E('p', {}, _('Lock to %s cell? %s · ARFCN %s · PCI %s. Mobile service will reconnect.')
 				.format(ratLabel, bandDisplay, nb.arfcn || '?', nb.pci || '?')),
@@ -674,7 +761,7 @@ function cellLockCard(nb, index, rat, bandName, hideRsqr) {
 				E('button', { 'type': 'button', 'class': 'btn cbi-button-negative', 'click': function() {
 					ui.hideModal();
 					applyFill();
-					api.at(args).then(function() {
+					applyLock(isNr ? 'nr' : 'lte', lockType, [ item ]).then(function() {
 						ui.addNotification(null, E('p', {}, _('Frequency lock applied.')));
 						window.setTimeout(function() { window.location.reload(); }, 2500);
 					}, function(err) {
@@ -719,7 +806,7 @@ function cellLockCard(nb, index, rat, bandName, hideRsqr) {
 
 // 锁频面板（LTE / NR 通用）：类型 + 频段 / ARFCN / SCS / PCI + 校验 + 确认应用
 function lockPanel(title, rat, lockData) {
-	var parsed = parser.parseLockData(Array.isArray(lockData) ? lockData : [], rat);
+	var parsed = lockPanelValues(lockData);
 	var type = E('select', { 'class': 'cbi-input-select' }, [
 		E('option', { 'value': '3' }, _('Band Lock')),
 		E('option', { 'value': '1' }, _('ARFCN Lock')),
@@ -763,7 +850,7 @@ function lockPanel(title, rat, lockData) {
 			return ui.addNotification(null, E('p', {}, _('NR SCS type must be between 0 and 4.')), 'warning');
 		if (t === '2' && !parser.csvInRange(values[3], 0, rat === 'nr' ? 1007 : 503))
 			return ui.addNotification(null, E('p', {}, _('PCI is outside the valid range for the selected radio technology.')), 'warning');
-		var args = rat === 'nr' ? [ 'lock', rat, t, values[0], values[1], values[2], values[3] ] : [ 'lock', rat, t, values[0], values[1], values[3] ];
+		var items = lockItems(rat, t, values);
 		ui.showModal(_('Confirm frequency change'), [
 			E('p', {}, [
 				t === '0' ? _('Remove the current %s frequency lock?').format(rat.toUpperCase()) : _('Apply this %s frequency lock? Mobile connectivity may reconnect.').format(rat.toUpperCase()),
@@ -774,7 +861,7 @@ function lockPanel(title, rat, lockData) {
 				' ',
 				E('button', { 'type': 'button', 'class': 'btn cbi-button-negative', 'click': function() {
 					ui.hideModal();
-					api.at(args).then(function() {
+					applyLock(rat, t, items).then(function() {
 						ui.addNotification(null, E('p', {}, _('Frequency lock updated.')));
 						window.setTimeout(function() { window.location.reload(); }, 2500);
 					}, function(err) {

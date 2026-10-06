@@ -1,0 +1,301 @@
+'use strict';
+
+/*
+ * 迁移期一致性证明的公共桩（scripts/lib/luci-stub.js）
+ *
+ * 两个 prove-* 脚本都要把 LuCI 的 view/component 模块装进一个「够用的 DOM」
+ * 里跑起来，再比较渲染结果。这里集中一份，避免每把刀各复制一套桩：
+ *
+ *   - makeScope(api)      LuCI 全局（E/_/ui/dom/window/L）+ 记录调用的 api 桩
+ *   - loadModule(src, s)  用 new Function 把模块源码在桩作用域里求值
+ *   - loadSide(read, api) 按 parser → components → view 的顺序装载（与 LuCI 一致）
+ *   - serialize(node)     结构与文案（可选：取值槽只比「有无」）
+ *   - slotValues/slotsOf  取值槽文本（按 DOM 顺序 / 按 class）
+ *   - textOf/lines/countTag 取值工具
+ *   - collect/pressButton/findButtons  事件驱动（`click` 属性即监听器，同 LuCI）
+ *   - tick()              跑完微任务（驱动 routeCall/at 的 Promise 链）
+ *
+ * 桩的行为刻意贴近 LuCI：`E('button', { click: fn })` 的属性会被当成事件
+ * 监听器；`ui.showModal` 会把标题与子节点记下来，便于脚本点确认按钮；
+ * `window.setTimeout(fn, 0)` 立即执行，其它延时记进 `window.pending`。
+ */
+
+class El {
+	constructor(tag, attrs, children) {
+		this.nodeType = 1;
+		this.tagName = String(tag).toUpperCase();
+		this.attrs = attrs || {};
+		this.children = [];
+		this.style = {};
+		this.value = undefined;
+		this._listeners = {};
+		const list = children === undefined || children === null ? []
+			: Array.isArray(children) ? children : [ children ];
+		for (const child of list)
+			if (child !== null && child !== undefined && child !== false) this.children.push(child);
+		// LuCI 的 E() 把 attrs 里的 click 等属性接成监听器（btn() 就是这么发的）
+		for (const key of Object.keys(this.attrs))
+			if (typeof this.attrs[key] === 'function' && key.indexOf('on') !== 0)
+				this.addEventListener(key, this.attrs[key]);
+	}
+	appendChild(child) { this.children.push(child); return child; }
+	replaceChildren(...kids) { this.children = kids.filter(k => k !== null && k !== undefined); }
+	addEventListener(type, fn) { (this._listeners[type] = this._listeners[type] || []).push(fn); }
+	dispatchEvent(event) { return this.fire(event && event.type ? event.type : 'change', event); }
+	click() { return this.fire('click', {}); }
+	fire(type, event) {
+		(this._listeners[type] || []).forEach(fn => fn(event));
+		return true;
+	}
+	setAttribute(k, v) { this.attrs[k] = v; }
+	getAttribute(k) { return this.attrs[k]; }
+	closest() { return null; }
+	scrollIntoView() {}
+	contains(node) {
+		if (node === this) return true;
+		return this.children.some(ch => ch && ch.contains && ch.contains(node));
+	}
+}
+
+class StubEvent {
+	constructor(type) { this.type = type; }
+}
+
+/* --------------------------------------------------------------- api 桩 */
+
+/*
+ * 记录 LuCI 侧的数据调用，并按名字给出应答。
+ *   api.at(args)           -> 记录 { kind:'at', args }，应答由 `answers` 决定
+ *   api.route(name, p)     -> 记录 { kind:'route', name, params }，永不 reject
+ *   api.routeCall(name, p) -> 记录后按 `answers` 里的 { ok:false } / { error } 决定成败
+ * `answers` 键：'route:<name>'、'call:<name>'、'at:<首词>'。
+ */
+function makeApi(answers) {
+	const calls = [];
+	const answer = (key) => (answers && answers[key] !== undefined) ? answers[key] : null;
+	const api = {
+		calls: calls,
+		route(name, params) {
+			calls.push({ kind: 'route', name: name, params: params });
+			const a = answer('route:' + name);
+			return Promise.resolve(a === null ? null : a);
+		},
+		routeCall(name, params) {
+			calls.push({ kind: 'routeCall', name: name, params: params });
+			const a = answer('call:' + name);
+			if (a && a.ok === false)
+				return Promise.reject(new Error(a.error || 'call failed'));
+			return Promise.resolve(a === null ? { results: [ { rat: params && params.rat, applied: true, verified: true } ] } : a);
+		},
+		at(args) {
+			calls.push({ kind: 'at', args: args });
+			const a = answer('at:' + (args && args[0]));
+			if (a && a.ok === false)
+				return Promise.reject(new Error(a.error || 'at failed'));
+			return Promise.resolve(a === null ? { stdout: '', stderr: '' } : a);
+		},
+		atSafe(args) { return api.at(args).catch(err => ({ stdout: '', stderr: String(err.message || err) })); },
+		cachedSnapshot() { return Promise.resolve(null); }
+	};
+	return api;
+}
+
+/* ------------------------------------------------------------ 作用域 */
+
+function makeScope(api) {
+	const E = (tag, attrs, children) => new El(tag, attrs, children);
+	const document = {
+		body: new El('body', {}, []),
+		head: new El('head', {}, []),
+		createElement: tag => new El(tag, {}, []),
+		createElementNS: (ns, tag) => new El(tag, {}, []),
+		getElementById: () => null,
+		importNode: node => node,
+	};
+	// LuCI 的 `_()` 返回可 .format() 的字符串：两边标签因此能逐字比较。
+	const t = (s) => ({
+		toString: () => s,
+		format: function () {
+			let i = 0;
+			const args = arguments;
+			return String(s).replace(/%[sd]/g, () => String(args[i++]));
+		},
+	});
+	const window = {
+		pending: [],
+		setTimeout: (fn, delay) => {
+			if (!delay)
+				fn();
+			else
+				window.pending.push({ fn: fn, delay: delay });
+			return window.pending.length;
+		},
+		clearTimeout: () => {},
+		setInterval: () => 0,
+		clearInterval: () => {},
+		location: { reload() { window.reloaded = true; } },
+		reloaded: false
+	};
+	const modals = [];
+	const notifications = [];
+	const ui = {
+		modals: modals,
+		notifications: notifications,
+		showModal: (title, children) => { modals.push({ title: String(title), children: children }); return { title: title }; },
+		hideModal: () => {},
+		addNotification: (node, message, level) => { notifications.push({ level: level || '', text: textOf(message) }); }
+	};
+	const dom = { content: (host, child) => host.replaceChildren(child), append: () => {}, parse: () => null };
+	// components.js 在模块求值时注入 <style>，需要 L.resource
+	const L = { resource: p => p };
+	return {
+		E, document, window, ui, dom, L, modals, notifications,
+		// components.js / view 里的 `api` 就是要装在作用域里的数据层
+		api: api || makeApi({}),
+		HTMLElement: El, Event: StubEvent, _: t,
+		baseclass: { extend: o => o }, view: { extend: o => o },
+		Promise, console, Math, JSON, Number, String, Object, Array, Date, RegExp, Boolean,
+		parseFloat, parseInt, isNaN, isFinite, setTimeout: window.setTimeout, clearTimeout: window.clearTimeout
+	};
+}
+
+function loadModule(source, scope) {
+	const names = Object.keys(scope);
+	return new Function(...names, source)(...names.map(k => scope[k]));
+}
+
+/*
+ * 与 LuCI 一样的装载顺序：parser → components（拿到 parser）→ view
+ * （拿到 api/parser/components/dom/ui）。`read(rel)` 读一份源码。
+ */
+function loadSide(read, api) {
+	const RES = 'luci-app-mt5700m/htdocs/luci-static/resources';
+	const scope = makeScope(api);
+	const parser = loadModule(read(RES + '/mt5700m/parser.js'), scope);
+	scope.parser = parser;
+	scope.c = loadModule(read(RES + '/mt5700m/components.js'), scope);
+	const view = loadModule(read(RES + '/view/mt5700m/network.js'), scope);
+	return { parser, c: scope.c, view, scope, api: scope.api };
+}
+
+/* ------------------------------------------------------------ 序列化 */
+
+function textOf(node) {
+	if (node === null || node === undefined || node === false) return '';
+	if (typeof node === 'string' || typeof node === 'number') return String(node);
+	if (Array.isArray(node)) return node.map(textOf).join('');
+	if (typeof node !== 'object' || !node.tagName) return String(node);
+	return node.children.map(textOf).join('');
+}
+
+function attrText(node, skip) {
+	const keys = Object.keys(node.attrs || {}).filter(k => typeof node.attrs[k] !== 'function' && (skip || []).indexOf(k) === -1);
+	if (!keys.length) return '';
+	return '[' + keys.sort().map(k => k + '=' + String(node.attrs[k]).replace(/\d+/g, '#')).join(',') + ']';
+}
+
+function walk(node, out, path, opts) {
+	if (node === null || node === undefined || node === false) return out;
+	if (typeof node === 'string' || typeof node === 'number') {
+		out.push(path + ' text=' + String(node).replace(/\d+/g, '#'));
+		return out;
+	}
+	if (Array.isArray(node)) { node.forEach(n => walk(n, out, path, opts)); return out; }
+	if (typeof node !== 'object' || !node.tagName) {
+		out.push(path + ' text=' + String(node).replace(/\d+/g, '#'));
+		return out;
+	}
+	const cls = node.attrs && node.attrs['class'] ? String(node.attrs['class']) : '';
+	const here = path + '/' + node.tagName.toLowerCase()
+		+ (cls ? '.' + cls.split(' ').join('.') : '')
+		+ (opts.attrs ? attrText(node, opts.skipAttrs) : '');
+	if (!opts.keepValues && opts.valueClass && opts.valueClass.test(cls)) {
+		out.push(here + ' value=' + (textOf(node) === '' ? 'empty' : 'set'));
+		return out;
+	}
+	out.push(here);
+	node.children.forEach(ch => walk(ch, out, here, opts));
+	return out;
+}
+
+/*
+ * 结构 + 文案（数字归一化）。
+ *   keepValues  true = 取值槽也逐字比较
+ *   valueClass  取值槽的正则（结构比较时只比「有无」）
+ *   attrs       true = 把属性也写进比较（skipAttrs 里的除外，如 input 的 value）
+ */
+function serialize(node, opts) {
+	opts = opts || {};
+	return walk(node, [], '', {
+		keepValues: !!opts.keepValues,
+		valueClass: opts.valueClass || null,
+		attrs: !!opts.attrs,
+		skipAttrs: opts.skipAttrs || []
+	}).join('\n');
+}
+function lines(node) { return walk(node, [], '', { keepValues: true }).join('\n'); }
+function countTag(shape, tagClass) {
+	return shape.split('\n').filter(l => l === tagClass || l.endsWith(tagClass)).length;
+}
+
+function slotEntries(node, valueClass, out) {
+	out = out || [];
+	if (node === null || node === undefined || node === false) return out;
+	if (Array.isArray(node)) { node.forEach(n => slotEntries(n, valueClass, out)); return out; }
+	if (typeof node !== 'object' || !node.tagName) return out;
+	const cls = String((node.attrs && node.attrs['class']) || '');
+	if (valueClass.test(cls)) out.push({ cls: cls, text: textOf(node) });
+	node.children.forEach(ch => slotEntries(ch, valueClass, out));
+	return out;
+}
+function slotValues(node, valueClass) { return slotEntries(node, valueClass).map(e => e.text); }
+function slotsOf(node, valueClass, cls) {
+	return slotEntries(node, valueClass).filter(e => e.cls.split(' ').indexOf(cls) !== -1).map(e => e.text);
+}
+
+/* ------------------------------------------------------------ 事件 */
+
+function collect(node, pred, out) {
+	out = out || [];
+	if (node === null || node === undefined || node === false) return out;
+	if (Array.isArray(node)) { node.forEach(n => collect(n, pred, out)); return out; }
+	if (typeof node !== 'object' || !node.tagName) return out;
+	if (pred(node)) out.push(node);
+	node.children.forEach(ch => collect(ch, pred, out));
+	return out;
+}
+function buttons(node) { return collect(node, n => n.tagName === 'BUTTON'); }
+/* 按可见文字找按钮（LuCI 里按钮文字就是 E(...) 的子文本） */
+function findButton(node, text) {
+	return buttons(node).filter(b => textOf(b) === String(text))[0] || null;
+}
+function pressButton(node, text) {
+	const button = findButton(node, text);
+	if (!button)
+		throw new Error('button not found: ' + text);
+	button.click();
+	return button;
+}
+/* 最近一次 showModal 里的按钮 */
+function modalButton(scope, text) {
+	const modal = scope.ui.modals[scope.ui.modals.length - 1];
+	if (!modal) throw new Error('no modal open');
+	return pressButton(modal.children, text);
+}
+function modalTitle(scope) {
+	const modal = scope.ui.modals[scope.ui.modals.length - 1];
+	return modal ? modal.title : '';
+}
+
+/* 跑完微任务，让 routeCall/at 的 Promise 链落地 */
+function tick() {
+	return new Promise(resolve => setImmediate(resolve));
+}
+
+module.exports = {
+	El, StubEvent, makeApi, makeScope, loadModule, loadSide,
+	serialize, lines, countTag, textOf,
+	slotEntries, slotValues, slotsOf,
+	collect, buttons, findButton, pressButton, modalButton, modalTitle,
+	tick
+};

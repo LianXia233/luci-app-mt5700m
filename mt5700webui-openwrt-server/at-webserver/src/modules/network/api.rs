@@ -376,6 +376,13 @@ fn parse_lock_request(row: &Value) -> Result<LockRequest, BackendError> {
 /// cycle once and write twice, and the CLI/scheduler use the same sequence.
 /// The answer reports per-RAT success so the page keeps its "applied anyway"
 /// wording for the RAT that failed.
+///
+/// `"verify": true` additionally polls the lock query the way the CLI's `lock`
+/// verb does (8 attempts when the radio was cycled, one probe when it was
+/// already off — the firmware publishes the new lock asynchronously) and adds
+/// `verified` plus, on failure, `verify_error` to each result. That is what
+/// lets LuCI's lock panel keep the old flow's outcome reporting without doing
+/// the polling itself: verification is modem knowledge, so it stays here.
 fn lock_apply(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
     let requests: Vec<LockRequest> = match params.get("locks").and_then(|v| v.as_arr()) {
         Some(list) => {
@@ -407,20 +414,50 @@ fn lock_apply(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
         });
     }
     let report = crate::modules::network::service::apply_lock(ctx.channel, &applies, true)?;
-    let results: Vec<Value> = report
-        .outcomes
-        .iter()
-        .map(|o| {
-            let mut m = std::collections::BTreeMap::new();
-            m.insert("rat".to_string(), json::str_val(o.kind.as_str()));
-            m.insert("applied".to_string(), Value::Bool(o.ok()));
-            if let Some(e) = &o.error {
-                m.insert("error".to_string(), json::str_val(&e.message()));
-                m.insert("code".to_string(), json::str_val(e.code()));
+    let verify = params
+        .get("verify")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    // The CLI's attempts rule, from `api/cli.rs`'s `apply_frequency_lock`.
+    let attempts = if report.cycled_radio { 8 } else { 1 };
+    let mut results: Vec<Value> = Vec::new();
+    for (i, o) in report.outcomes.iter().enumerate() {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert("rat".to_string(), json::str_val(o.kind.as_str()));
+        m.insert("applied".to_string(), Value::Bool(o.ok()));
+        if let Some(e) = &o.error {
+            m.insert("error".to_string(), json::str_val(&e.message()));
+            m.insert("code".to_string(), json::str_val(e.code()));
+        }
+        if verify && o.ok() {
+            let expected = requests
+                .get(i)
+                .map(|r| r.lock_type.to_string())
+                .unwrap_or_default();
+            let checked = crate::modules::network::service::verify_lock(
+                ctx.channel,
+                o.kind,
+                &expected,
+                attempts,
+            );
+            m.insert("verified".to_string(), Value::Bool(checked.ok));
+            if !checked.ok {
+                let observed = if checked.observed.is_empty() {
+                    "no response".to_string()
+                } else {
+                    checked.observed
+                };
+                m.insert(
+                    "verify_error".to_string(),
+                    json::str_val(&format!(
+                        "frequency lock verification failed: expected {}, got {}",
+                        expected, observed
+                    )),
+                );
             }
-            Value::Obj(m)
-        })
-        .collect();
+        }
+        results.push(Value::Obj(m));
+    }
     let mut m = std::collections::BTreeMap::new();
     m.insert("cycled_radio".to_string(), Value::Bool(report.cycled_radio));
     m.insert("results".to_string(), Value::Arr(results));

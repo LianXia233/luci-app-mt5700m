@@ -279,12 +279,37 @@ aliases, so the move itself changed no behaviour.
        after the commit: `node scripts/prove-neighbors-parity.js 663f989`
        (the pre-slice commit is the baseline; without it the script says so and
        exits 2).
-     * Still on text frames, to be migrated next: the lock panel and the two
-       lock-status rows (`network.lock_get`, then `network.lock_apply` for the
-       write — today both the cards and the panel submit the CLI's positional
-       `lock` arguments, which is what the routes replace), the scan modal's
-       serving cell (`cell.get` needs the `^MONSC` measurements added to
-       `CellState`) — which is the last caller of `parser.arfcnToBand`, and
+     * the frequency lock followed, both directions: the two lock-status rows
+       and the lock panel's prefill read `network.lock_get`, and every write
+       (the panel's Review-and-apply and the neighbour cards' Lock button) goes
+       through `network.lock_apply` with typed `items` — the CLI's positional
+       `['lock', rat, type, bands, arfcns, scs, pcis]` arguments are gone from
+       the frontend, and with them two defects the harness pinned: the NR ARFCN
+       card passed an empty SCS slot (the CLI's builder rejects it) and the LTE
+       card passed the PCI in the ignored 7th slot, so `pcis` was empty. The
+       panel's prefill was also empty on real hardware, because
+       `collectFreqLock` required every reply row to repeat the `^…FREQLOCK:`
+       prefix while the firmware prints it once — the route hands over the
+       decoded items instead (PCI back to decimal, which is what a write needs).
+       `verify: true` keeps the CLI flow's outcome reporting (the module polls
+       the query, the page shows the message). `parser.js`'s `collectFreqLock`
+       and `parseLockData` — the second and third JS copies of the lock layout —
+       are deleted, and `parser.arfcnToBand`'s last caller is now only the scan
+       modal's serving cell. `scripts/prove-lock-parity.js dfb4810` proves it:
+       panel structure/copy byte-identical, prefill equal to the domain values,
+       items one-to-one with the form, and the four outcome paths (success,
+       modem rejection, verification failure, transport failure) producing the
+       same notifications with success waiting 2.5 s before the reload.
+       * The CLI's `network` verb no longer prints the `LTE lock` / `NR lock`
+       sections (the panel was their only consumer, and printing them asked the
+       modem the same two questions again); `mt5700m-at lock` still writes,
+       `status` still reports `lte_lock=`/`nr_lock=`, and `radio-diagnostics`
+       keeps the raw lines. ucode's timeout budget grew a named list for
+       migrated write routes (`api.network.lock_apply` → 25 s, the same budget
+       the `lock` verb gets) instead of the read-class 12 s default.
+     * Still on text frames, to be migrated next: the scan modal's serving cell
+       (`cell.get` needs the `^MONSC` measurements added to `CellState`) — which
+       is the last caller of `parser.arfcnToBand` — and
        `parser.section`/`matchValues` for the settings-page rows — plus the
        `status`/`sms`/`system` pages, which still call the CLI verbs.
        `parser.js` (`arfcnToBand`, `matchValues`, `section`) is deleted when the

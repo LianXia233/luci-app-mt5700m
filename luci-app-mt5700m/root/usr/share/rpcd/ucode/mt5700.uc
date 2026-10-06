@@ -610,6 +610,16 @@ return {
 							break;
 						}
 					}
+					// 已迁到统一 API 的写操作：锁频要走「关机-写-开机-轮询校验」，
+					// 与上面 CLI 的 lock 同一套序列，所以同样给 25s。
+					// 列表按迁移进度增长（写路由 = api.<module>.<name>）。
+					const slowRouteWrites = ['api.network.lock_apply'];
+					for (let i = 0; i < length(slowRouteWrites); i++) {
+						if (substr(cmd, 0, length(slowRouteWrites[i])) == slowRouteWrites[i]) {
+							tmo = 25;
+							break;
+						}
+					}
 				}
 				return rpcCall('at', params, tmo);
 			}

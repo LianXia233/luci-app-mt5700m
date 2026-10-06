@@ -47,128 +47,24 @@ function newSource(rel) {
 	return fs.readFileSync(path.join(REPO, rel), 'utf8');
 }
 
-/* ---------------------------------------------------------------- 桩 DOM */
+/* ------------------------------------------------------------------ 公共桩 */
+// DOM 桩、序列化与装载逻辑在 scripts/lib/luci-stub.js（三个证明脚本共用一份）
+const lib = require('./lib/luci-stub');
 
-class El {
-	constructor(tag, attrs, children) {
-		this.nodeType = 1;
-		this.tagName = String(tag).toUpperCase();
-		this.attrs = attrs || {};
-		this.children = [];
-		const list = children === undefined || children === null ? []
-			: Array.isArray(children) ? children : [ children ];
-		for (const child of list)
-			if (child !== null && child !== undefined && child !== false) this.children.push(child);
-	}
-	appendChild(child) { this.children.push(child); return child; }
-	replaceChildren(...kids) { this.children = kids.filter(k => k !== null && k !== undefined); }
-	addEventListener() {}
-	dispatchEvent() {}
-	setAttribute(k, v) { this.attrs[k] = v; }
-	getAttribute(k) { return this.attrs[k]; }
-	closest() { return null; }
-	scrollIntoView() {}
-	contains(node) {
-		if (node === this) return true;
-		return this.children.some(ch => ch && ch.contains && ch.contains(node));
-	}
-}
-
-function makeScope() {
-	const E = (tag, attrs, children) => new El(tag, attrs, children);
-	const document = {
-		body: new El('body', {}, []),
-		head: new El('head', {}, []),
-		createElement: tag => new El(tag, {}, []),
-		createElementNS: (ns, tag) => new El(tag, {}, []),
-		getElementById: () => null,
-		importNode: node => node,
-	};
-	// LuCI 的 `_()` 返回可 .format() 的字符串；两边标签因此能逐字比较。
-	const t = (s) => ({
-		toString: () => s,
-		format: function () {
-			let i = 0;
-			const args = arguments;
-			return String(s).replace(/%[sd]/g, () => String(args[i++]));
-		},
-	});
-	const window = { setTimeout: () => 0, clearTimeout: () => {}, setInterval: () => 0, clearInterval: () => {}, location: { reload() {} } };
-	const ui = { addNotification: () => {}, showModal: () => {}, hideModal: () => {} };
-	const dom = { content: (host, child) => host.replaceChildren(child), append: () => {}, parse: () => null };
-	// components.js 在模块求值时注入 <style>，需要 L.resource
-	const L = { resource: p => p };
-	return { E, document, window, ui, dom, L, HTMLElement: El, _: t, baseclass: { extend: o => o }, view: { extend: o => o },
-		Promise, console, Math, JSON, Number, String, Object, Array, Date, RegExp, parseFloat, parseInt, isNaN,
-		setTimeout: window.setTimeout, clearTimeout: window.clearTimeout };
-}
-
-/* 取值槽：卡片上会随数据变的四个 class；结构比较时只看有没有、不看内容 */
 const VALUE_CLASS = /mt-lock-cell-name|mt-lock-cell-desc|mt-signal-value|mt-ssb-serving-title/;
 
-function walk(node, out, path, keepValues) {
-	if (node === null || node === undefined || node === false) return out;
-	if (typeof node === 'string' || typeof node === 'number') {
-		out.push(path + ' text=' + String(node).replace(/\d+/g, '#'));
-		return out;
-	}
-	if (Array.isArray(node)) { node.forEach(n => walk(n, out, path, keepValues)); return out; }
-	if (typeof node !== 'object' || !node.tagName) {
-		// `_('…')` 这类可 format 的字符串对象，按文本比较
-		out.push(path + ' text=' + String(node).replace(/\d+/g, '#'));
-		return out;
-	}
-	const cls = node.attrs && node.attrs['class'] ? '.' + String(node.attrs['class']).split(' ').join('.') : '';
-	const here = path + '/' + node.tagName.toLowerCase() + cls;
-	if (!keepValues && VALUE_CLASS.test(cls)) {
-		// 取值槽按「有无」比较，槽内文本不再逐字比较
-		out.push(here + ' value=' + (textOf(node) === '' ? 'empty' : 'set'));
-		return out;
-	}
-	out.push(here);
-	node.children.forEach(ch => walk(ch, out, here, keepValues));
-	return out;
-}
-function serialize(node, keepValues) { return walk(node, [], '', keepValues).join('\n'); }
-
-/* 取值槽文本，按 DOM 顺序 */
-function slotEntries(node, out) {
-	out = out || [];
-	if (node === null || node === undefined || node === false) return out;
-	if (Array.isArray(node)) { node.forEach(n => slotEntries(n, out)); return out; }
-	if (typeof node !== 'object' || !node.tagName) return out;
-	const cls = String((node.attrs && node.attrs['class']) || '');
-	if (VALUE_CLASS.test(cls)) out.push({ cls: cls, text: textOf(node) });
-	node.children.forEach(ch => slotEntries(ch, out));
-	return out;
-}
-function slotValues(node) { return slotEntries(node).map(e => e.text); }
-function slotsOf(node, cls) { return slotEntries(node).filter(e => e.cls.split(' ').indexOf(cls) !== -1).map(e => e.text); }
-function textOf(node) {
-	if (node === null || node === undefined || node === false) return '';
-	if (typeof node === 'string' || typeof node === 'number') return String(node);
-	if (Array.isArray(node)) return node.map(textOf).join('');
-	if (typeof node !== 'object' || !node.tagName) return String(node);
-	return node.children.map(textOf).join('');
-}
-function lines(node) { return walk(node, [], '', true); }
-function countTag(shape, tagClass) { return shape.split('\n').filter(l => l.endsWith(tagClass)).length; }
+// 兼容本脚本原有的调用签名（第二个参数是 keepValues 布尔）
+function serialize(node, keepValues) { return lib.serialize(node, { keepValues: keepValues, valueClass: VALUE_CLASS }); }
+function slotValues(node) { return lib.slotValues(node, VALUE_CLASS); }
+function slotsOf(node, cls) { return lib.slotsOf(node, VALUE_CLASS, cls); }
+const textOf = lib.textOf;
+const lines = lib.lines;
+const countTag = lib.countTag;
 
 /* ------------------------------------------------------------ 模块装载 */
 
-function load(source, scope) {
-	const names = Object.keys(scope);
-	return new Function(...names, source)(...names.map(k => scope[k]));
-}
-
 function loadSide(read) {
-	const scope = makeScope();
-	const parser = load(read(RES + '/mt5700m/parser.js'), scope);
-	scope.parser = parser;
-	scope.c = load(read(RES + '/mt5700m/components.js'), scope);
-	scope.api = { route: () => Promise.resolve(null), at: () => Promise.resolve({ stdout: '', stderr: '' }), atSafe: () => Promise.resolve({ stdout: '', stderr: '' }), cachedSnapshot: () => Promise.resolve(null) };
-	const view = load(read(RES + '/view/mt5700m/network.js'), scope);
-	return { parser, c: scope.c, view };
+	return lib.loadSide(read, lib.makeApi({}));
 }
 
 /* ------------------------------------------ 后端解码契约（mini 解码器）
@@ -366,7 +262,7 @@ check('NR 邻区优先成节：NR neighbour cells (#)', scanShape.indexOf('text=
 check('其余 LTE 邻区成节：LTE neighbour cells (#)', scanShape.indexOf('text=LTE neighbour cells (#)') !== -1);
 check('两张邻区卡片', countTag(scanShape, 'div.mt-lock-cell-card') === 2);
 const scanCards = [];
-slotEntries(scan).filter(e => e.cls.split(' ').indexOf('mt-lock-cell-name') !== -1).forEach(e => scanCards.push(e.text));
+lib.slotEntries(scan, VALUE_CLASS).filter(e => e.cls.split(' ').indexOf('mt-lock-cell-name') !== -1).forEach(e => scanCards.push(e.text));
 const scanPcis = slotsOf(scan, 'mt-lock-cell-desc');
 check('弹窗邻区卡片取值 = 领域值（PCI 十进制 / 频段标签）',
 	sameJson(scanCards, [ 'n78 · 636648', 'B3 · 1650' ]) && sameJson(scanPcis, [ 'PCI 64', 'PCI 476' ]),
