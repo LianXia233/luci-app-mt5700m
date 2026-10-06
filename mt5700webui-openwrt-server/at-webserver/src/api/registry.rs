@@ -270,6 +270,7 @@ mod tests {
             "sms.center_set" => pairs(&[("number", json::str_val("+8613800138000"))]),
             "sms.ims_set" => pairs(&[("enabled", Value::Bool(true))]),
             "sms.analyze" => pairs(&[("text", json::str_val("hello"))]),
+            "system.fota_start" => pairs(&[("url", json::str_val("http://fota.example.com/"))]),
             "cell.scan_start" => pairs(&[
                 ("rat", json::str_val("2")),
                 ("plmn", json::str_val("46000")),

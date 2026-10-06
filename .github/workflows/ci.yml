@@ -81,6 +81,10 @@ jobs:
           # struct-literal fields — the refactor's own safety net, and a fast
           # signal that does not depend on a toolchain download.
           python3 scripts/rs-static-check.py mt5700webui-openwrt-server/at-webserver/src
+          # Delimiter-level structure: a scripted edit that leaves a stray brace
+          # (or an unbalanced literal) is reported here with its line number
+          # instead of surfacing as unrelated cargo type errors.
+          python3 scripts/rs-syntax-check.py mt5700webui-openwrt-server/at-webserver/src
       - name: Check Rust backend
         run: |
           # v2.4.0: the Python backend was replaced by the std-only Rust

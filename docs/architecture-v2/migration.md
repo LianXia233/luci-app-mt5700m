@@ -146,7 +146,7 @@ aliases, so the move itself changed no behaviour.
    included), and `modules/network` took the airplane switch
    (`network.radio`/`network.radio_set`). The system page's identity card and NR
    transmit-power card now read `modem.get`/`modem.nr_txpower`. The only raw-AT
-   surfaces left in the WebUI are the FOTA page and the deliberate
+   surfaces left in the WebUI are the dial page and the deliberate
    `pages/at/Terminal.tsx` console. The cell-scan panel moved next:
    `modules/cell/scan.rs` owns the command builder (manual 5.35's constraints
    and the band bitmap), the `^CELLSCAN:` line parser and the exclusive task
@@ -170,10 +170,20 @@ aliases, so the move itself changed no behaviour.
    `system.thermal`/`system.thermal_set` (the four `^THERMLD*` reports and the
    master switch). `pages/system/Info.tsx` therefore contains **no AT command at
    all** — 35 raw call sites at the start of the session, 0 now.)
-2. **CLI adapter thinning**: `api/cli.rs` still holds the per-verb text
+2. **FOTA**: the system page drove the whole upgrade — `ATE0`,
+   `^FOTAMODE=0,1,0,1`, `^FOTAOEMDL="…"` (address validated in the page), then a
+   1 s poller whose state machine read `^FOTASTATE?` / `^FOTADLQ`, resumed on
+   31 and flashed on 40 — so closing the page orphaned the flow, and a reload
+   could neither see nor rejoin it. `modules/system/fota.rs` is the flow now:
+   one named task, `system.fota_start` / `system.fota` / `system.fota_abort`,
+   the state machine and the page's own step numbers, published as
+   `fota.progress`. The page renders the snapshot and keeps its markup, copy
+   and flow; it no longer sends a single AT command (its version card reads
+   `modem.get`, the same source as the `modem` topic it already used).
+3. **CLI adapter thinning**: `api/cli.rs` still holds the per-verb text
    formatters for those capabilities; they move into the modules' `api.rs`
    `render_text` as the modules land.
-3. **Frontend AT removal**:
+4. **Frontend AT removal**:
    * WebUI — display already flows through the daemon's topic cache
      (`services/stateCache.ts` + `useSharedStateTopic`); the remaining AT usage
      is action/refresh paths in `services/at.ts` + `modem/*.ts`, which convert
@@ -183,10 +193,10 @@ aliases, so the move itself changed no behaviour.
      `mt5700m-at status/advanced …`; those pages move to the routes above and
      the duplicated decoders are deleted. The dashboard already reads the
      daemon cache via `api.cachedSnapshot()`.
-4. **Fold `mt5700m-traffic` into `modules/traffic`** (last non-Rust business
+5. **Fold `mt5700m-traffic` into `modules/traffic`** (last non-Rust business
    process) and the dialing glue of `mt5700m-manager` into `modules/network`
    actions.
-5. **Split the two god files** (`daemon.rs` ~1.9k lines, `api/cli.rs` ~2.4k):
+6. **Split the two god files** (`daemon.rs` ~1.9k lines, `api/cli.rs` ~2.4k):
    `daemon.rs` → `transport/{ws_server,rpc_server,control_server}` +
    `api/rpc.rs`; `api/cli.rs` → one `render_text` per module + a small verb
    table. Both are now pure wiring/adapters, so the split is mechanical.

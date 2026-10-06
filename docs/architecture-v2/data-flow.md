@@ -35,6 +35,7 @@ cannot reach the AT layer: it can only call a route or read a topic.
 | `traffic` | `traffic::service::refresh` | 30 s | empty object |
 | `netrate` | `traffic::service::refresh_netrate` | 5 s | `available:false` + reason |
 | `scan` | `cell::scan::start` (exclusive task) | **on demand** (`cell.scan_start`) | one `{state, cells, count}` push per scan; `cell.scan_state`/`cell.scan_abort` are task introspection |
+| `fota` | `system::fota::start` (long-running task) | **on demand** (`system.fota_start`) | one `fota.progress` push per state change; `system.fota` answers from the snapshot, `system.fota_abort` cancels the task |
 | `sms`, `task`, `usb`, `beam`, `raw:*` | daemon/URC/dispatch paths | event-driven | topic-specific |
 
 TTLs live in `state/cache.rs`; publishing goes through

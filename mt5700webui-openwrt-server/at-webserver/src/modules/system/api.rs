@@ -24,6 +24,11 @@ pub fn routes() -> Vec<Route> {
         Route::display("system.service_mode", service_mode),
         Route::display("system.thermal", thermal),
         Route::on_demand("system.thermal_set", thermal_set),
+        // FOTA: a stateful flow that outlives a page, so the module owns the
+        // task and the page only starts/observes/cancels it (fota.rs).
+        Route::display("system.fota", fota_state),
+        Route::on_demand("system.fota_start", fota_start),
+        Route::on_demand("system.fota_abort", fota_abort),
     ]
 }
 
@@ -52,6 +57,28 @@ fn thermal_set(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
     let mut m = std::collections::BTreeMap::new();
     m.insert("applied".to_string(), Value::Bool(true));
     Ok(Value::Obj(m))
+}
+
+/// FOTA flow state — task registry + snapshot, never an AT access.
+///
+/// Params: none. Answers `{running, phase, step, progress, state, stateName,
+/// total, received, error?}`; a page load and its 1 s poll both come here, so
+/// the route must not queue behind the download it is reporting on.
+fn fota_state(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    let tasks = ctx.require_tasks()?;
+    Ok(crate::modules::system::fota::state(tasks, ctx.cache))
+}
+
+/// Start the upgrade flow. Params: `{url: "http://…"}`.
+fn fota_start(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+    let tasks = ctx.require_tasks()?;
+    crate::modules::system::fota::start(tasks, params)
+}
+
+/// Cancel the upgrade flow (`{aborted: bool}`, idempotent).
+fn fota_abort(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    let tasks = ctx.require_tasks()?;
+    Ok(crate::modules::system::fota::abort(tasks))
 }
 
 /// Cache-first temperature read.

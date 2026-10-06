@@ -106,7 +106,8 @@ export type PushEventType =
   | `task.${string}`
   | `scan.${string}`
   | `beam.${string}`
-  | `sms.${string}`;
+  | `sms.${string}`
+  | `fota.${string}`;
 
 interface PushATResponse extends BaseATResponse {
   type: PushEventType;
@@ -148,7 +149,7 @@ const STATE_EVENT_TYPES = [
 
 const isStateEventType = (type: string): boolean =>
   (STATE_EVENT_TYPES as readonly string[]).includes(type) ||
-  /^(usb|modem|task|scan|beam|sms)\./.test(type);
+  /^(usb|modem|task|scan|beam|sms|fota)\./.test(type);
 
 // 服务端拒绝未认证连接时的固定应答，命令应答不会长这样。
 const AUTH_REJECTIONS = ['Authentication failed', 'Authentication timeout', 'Invalid authentication'];

@@ -31,6 +31,66 @@ pub fn tdpmcfg(on: bool) -> String {
 /// Set the AT configuration back to factory defaults (`AT&F`).
 pub const FACTORY_RESET: &str = "AT&F";
 
+// --------------------------------------------------------------- FOTA
+//
+// The firmware-upgrade flow the WebUI's system page drives. Every command the
+// page used to spell out itself lives here now and `fota.rs` runs them as one
+// module-owned task; the page only calls `system.fota*`.
+
+/// Download-state query (`^FOTASTATE: <code>` — 10 idle, 11 checking, 12
+/// update available, 13 check failed, 14 no update, 20 download failed,
+/// 30 downloading, 31 paused, 40 complete, 50 installing).
+pub const FOTA_STATE_QUERY: &str = "AT^FOTASTATE?";
+/// Downloaded/total byte counts (`^FOTADLQ: …`).
+pub const FOTA_PROGRESS_QUERY: &str = "AT^FOTADLQ";
+/// Stops the modem echoing every command, so the download poller does not
+/// collect echoes as noise while it reads the state every second.
+pub const FOTA_ECHO_OFF: &str = "ATE0";
+/// HTTP update mode, exactly the argument list the page has always sent.
+pub const FOTA_MODE_INIT: &str = "AT^FOTAMODE=0,1,0,1";
+/// Resume a paused download.
+pub const FOTA_DOWNLOAD_RESUME: &str = "AT^FOTADL=1";
+/// Flash the downloaded image; the modem reboots.
+pub const FOTA_UPGRADE: &str = "AT^FWUP";
+
+/// FOTA server address (`AT^FOTAOEMDL="<url>"`).
+///
+/// The page's validation (http:// only, trailing slash) ran before the command
+/// was built, so a rejected address never reached the modem; the same two rules
+/// apply here now, plus a quote guard for the AT string argument.
+pub fn fota_url_set(url: &str) -> Result<String, &'static str> {
+    if !url.starts_with("http://") {
+        return Err("仅支持 http 协议");
+    }
+    if url.contains('"') || url.contains('\r') || url.contains('\n') {
+        return Err("地址不合法");
+    }
+    let normalized = if url.ends_with('/') {
+        url.to_string()
+    } else {
+        format!("{}/", url)
+    };
+    Ok(format!("AT^FOTAOEMDL=\"{}\"", normalized))
+}
+
+/// State code -> the name both frontends show, identical to the strings the
+/// WebUI's switch and LuCI's `parser.FOTA_STATE_NAMES` already use.
+pub fn fota_state_name(code: i64) -> &'static str {
+    match code {
+        10 => "等待下载",
+        11 => "正在查询新版本",
+        12 => "发现新版本",
+        13 => "查询新版本失败",
+        14 => "服务器无新版本",
+        20 => "固件下载失败",
+        30 => "下载中",
+        31 => "下载已挂起",
+        40 => "固件下载完成",
+        50 => "正在升级",
+        _ => "未知状态",
+    }
+}
+
 // ---------------------------------------------------- thermal protection
 //
 // `^THERMAUTOFUN` is the master switch (enabled, CA/MIMO switch, interval) and

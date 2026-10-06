@@ -83,6 +83,9 @@ pub fn default_ttl(topic: &str) -> Duration {
         "endc" => Duration::from_secs(320),
         "txpower" => Duration::from_secs(320),
         "nr_txpower" => Duration::from_secs(200),
+        // FOTA 流程的进度快照：升级全程可能十几分钟，页面刷新后仍要能读到
+        // 上一次状态（是否在跑由任务表决定，不靠 TTL）。
+        "fota" => Duration::from_secs(1800),
         "sim" => Duration::from_secs(70),
         "modem_info" => Duration::from_secs(75),
         "usb" => Duration::from_secs(8),

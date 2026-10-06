@@ -1,4 +1,4 @@
-//! `^CHIPTEMP?` / `^TDPCIELANCFG?` / `^TDPMCFG?` decoders.
+//! `^CHIPTEMP?` / `^TDPCIELANCFG?` / `^TDPMCFG?` / FOTA decoders.
 
 use crate::modules::system::state::{TemperatureState, SENSOR_NAMES};
 use crate::state::refresh::round1;
@@ -123,6 +123,37 @@ pub fn parse_thermlevel(raw: &str) -> Option<i64> {
         .copied()
 }
 
+/// `^FOTASTATE: <code>` -> the code. `None` when the modem answered without a
+/// state line (rejection or empty reply), which the caller reports as a failed
+/// update rather than as code 0.
+pub fn parse_fota_state(raw: &str) -> Option<i64> {
+    let line = raw.lines().map(str::trim).find(|l| l.starts_with("^FOTASTATE:"))?;
+    let body = line.strip_prefix("^FOTASTATE:")?.trim();
+    body.split(|c: char| c == ',' || c.is_whitespace())
+        .find_map(|f| f.parse::<i64>().ok())
+}
+
+/// `^FOTADLQ: …` -> `(total, received)` bytes.
+///
+/// The page took the *last two* numbers of the reply, whatever the firmware put
+/// before them; that is the contract this keeps, so an extra leading field
+/// cannot silently become the reported total.
+pub fn parse_fota_progress(raw: &str) -> (i64, i64) {
+    let digits: String = raw
+        .chars()
+        .map(|c| if c.is_ascii_digit() { c } else { ' ' })
+        .collect();
+    let nums: Vec<i64> = digits
+        .split_whitespace()
+        .filter_map(|t| t.parse::<i64>().ok())
+        .collect();
+    if nums.len() >= 2 {
+        (nums[nums.len() - 2], nums[nums.len() - 1])
+    } else {
+        (0, 0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +194,21 @@ mod tests {
         assert_eq!(parse_power_control("^TDPMCFG: 1\nOK"), Some(true));
         assert_eq!(parse_power_control("^TDPMCFG: 0\nOK"), Some(false));
         assert_eq!(parse_power_control("OK"), None);
+    }
+
+    #[test]
+    fn fota_state_and_progress_keep_the_page_semantics() {
+        assert_eq!(parse_fota_state("^FOTASTATE: 30\r\nOK"), Some(30));
+        assert_eq!(parse_fota_state("^FOTASTATE:10"), Some(10));
+        assert_eq!(parse_fota_state("ERROR"), None);
+
+        // The page read the *last* two numbers, so a stricter earlier field
+        // must not change which pair is reported.
+        let (total, received) = parse_fota_progress("^FOTADLQ: \"1234,5678\"\r\nOK");
+        assert_eq!((total, received), (5678, 5678));
+        let (total, received) = parse_fota_progress("^FOTADLQ: 0,0,1048576,262144");
+        assert_eq!((total, received), (1048576, 262144));
+        assert_eq!(parse_fota_progress("OK"), (0, 0));
     }
 
     #[test]

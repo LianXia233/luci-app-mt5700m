@@ -60,6 +60,9 @@ pub const TOPIC_MODEM: &str = "modem";
 pub const TOPIC_TASK: &str = "task";
 pub const TOPIC_SMS: &str = "sms";
 pub const TOPIC_SCAN: &str = "scan";
+/// The FOTA flow's state (`system.fota`): a long-running upgrade the pages
+/// only observe, published once per state transition.
+pub const TOPIC_FOTA: &str = "fota";
 pub const TOPIC_BEAM: &str = "beam";
 pub const TOPIC_ENDC: &str = "endc";
 pub const TOPIC_TXPOWER: &str = "txpower";
@@ -97,7 +100,7 @@ pub const EVENT_USB_CHANGED: &str = "usb.changed";
 pub const EVENT_SMS_RECEIVED: &str = "sms.received";
 
 
-pub const DEFAULT_TOPICS: [&str; 19] = [
+pub const DEFAULT_TOPICS: [&str; 20] = [
     TOPIC_SIGNAL,
     TOPIC_NETWORK,
     TOPIC_CELL,
@@ -117,10 +120,18 @@ pub const DEFAULT_TOPICS: [&str; 19] = [
     TOPIC_SMS,
     TOPIC_SCAN,
     TOPIC_BEAM,
+    TOPIC_FOTA,
 ];
 
 /// Topics that must be delivered immediately (no coalescing delay).
-pub const IMMEDIATE_TOPICS: [&str; 5] = [TOPIC_TASK, TOPIC_USB, TOPIC_MODEM, TOPIC_SMS, TOPIC_SCAN];
+pub const IMMEDIATE_TOPICS: [&str; 6] = [
+    TOPIC_TASK,
+    TOPIC_USB,
+    TOPIC_MODEM,
+    TOPIC_SMS,
+    TOPIC_SCAN,
+    TOPIC_FOTA,
+];
 
 struct Subscriber {
     id: u64,

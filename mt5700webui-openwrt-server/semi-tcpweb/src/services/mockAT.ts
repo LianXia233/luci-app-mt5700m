@@ -293,6 +293,60 @@ const formatPDPActivation = (state: MockModemState): string =>
     'OK',
   ].join('\n');
 
+// 演示模式里的下载推进：每次读进度往前走一格，和真机"边下边报"一致。
+// 后端 modules/system/fota.rs 是真实现，这里只是演示数据。
+const advanceMockDownload = (state: MockModemState): void => {
+  if (state.fota.phase !== 'downloading') return;
+  const increments = [17, 22, 26, 19, 16];
+  const increment = increments[Math.min(state.fota.queryCount, increments.length - 1)] || 18;
+  state.fota.queryCount += 1;
+  state.fota.progress = Math.min(100, state.fota.progress + increment);
+};
+
+/// 把演示状态码映射成后端 `system.fota` 的应答形状
+/// （{running, phase, step, progress, state, stateName, total, received}）。
+const mockFotaSnapshot = (
+  state: MockModemState,
+  code: number,
+  running: boolean,
+): Record<string, unknown> => {
+  const names: Record<number, string> = {
+    10: '等待下载',
+    11: '正在查询新版本',
+    12: '发现新版本',
+    13: '查询新版本失败',
+    14: '服务器无新版本',
+    20: '固件下载失败',
+    30: '下载中',
+    31: '下载已挂起',
+    40: '固件下载完成',
+    50: '正在升级',
+  };
+  let step = 1;
+  let phase = running ? 'running' : 'idle';
+  if (code === 30) {
+    advanceMockDownload(state);
+    step = 2;
+  } else if (code === 40) {
+    // 真机在这里刷写并重启；演示模式直接给完成态，页面照旧显示"正在升级"。
+    step = 4;
+    phase = 'done';
+    state.fota.phase = 'downloaded';
+  } else if (code === 50) {
+    step = 4;
+  }
+  return {
+    running: phase === 'running',
+    phase,
+    step,
+    progress: code === 40 ? 100 : state.fota.progress,
+    state: code,
+    stateName: names[code] || '未知状态',
+    total: 100,
+    received: code === 40 ? 100 : state.fota.progress,
+  };
+};
+
 const getFotaState = (state: MockModemState): number => {
   if (state.fota.phase === 'idle') return 10;
   if (state.fota.phase === 'checking') {
@@ -813,12 +867,39 @@ const mockDeviceApiResponse = (
     }
     case 'api.system.factory_reset':
       return { success: true, data: { restored: true } };
+    // FOTA：真实现是后端 modules/system/fota.rs 的任务（初始化 → 轮询状态机
+    // → 续传 → 刷写）。演示模式照着它的应答与校验文案来，页面看到的形状
+    // 与真机完全一致。
+    case 'api.system.fota': {
+      const state_ = getFotaState(state);
+      const running = state.fota.phase !== 'idle' && state.fota.phase !== 'downloaded';
+      return { success: true, data: mockFotaSnapshot(state, state_, running) };
+    }
+    case 'api.system.fota_start': {
+      const url = String(params.url || '').trim();
+      if (!url) return { success: false, error: '请设置 FOTA 服务器地址' };
+      if (!url.startsWith('http://')) return { success: false, error: '仅支持 http 协议' };
+      state.fota = {
+        phase: 'checking',
+        queryCount: 0,
+        progress: 0,
+        url: url.endsWith('/') ? url : `${url}/`,
+      };
+      return { success: true, data: { started: true } };
+    }
+    case 'api.system.fota_abort': {
+      const aborted = state.fota.phase !== 'idle';
+      if (aborted) state.fota.phase = 'idle';
+      return { success: true, data: { aborted } };
+    }
     case 'api.modem.reset':
       return { success: true, data: { rebooting: true } };
     case 'api.modem.imei_set': {
       const imei = String(params.imei || '');
       if (!/^\d{15}$/.test(imei)) {
-        return { success: false, error: '参数无效: IMEI必须是15位数字' };
+        // 与后端一致：参数类错误在应答里就是那句校验文案（detail()），
+        // 不带 "参数无效: " 日志前缀。
+        return { success: false, error: 'IMEI必须是15位数字' };
       }
       state.imei = imei;
       return { success: true, data: { applied: true, imei } };
@@ -1322,12 +1403,7 @@ export const resolveMockATCommand = (
     return ok();
   }
   if (commandLine === 'AT^FOTADLQ') {
-    if (state.fota.phase === 'downloading') {
-      const increments = [17, 22, 26, 19, 16];
-      const increment = increments[Math.min(state.fota.queryCount, increments.length - 1)] || 18;
-      state.fota.queryCount += 1;
-      state.fota.progress = Math.min(100, state.fota.progress + increment);
-    }
+    advanceMockDownload(state);
     return ok(`^FOTADLQ: 100,${state.fota.progress}\nOK`);
   }
   if (commandLine === 'AT^FOTADL=1') {
