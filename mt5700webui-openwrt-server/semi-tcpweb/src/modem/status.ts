@@ -86,7 +86,7 @@ export interface PdpAddress {
  * 字段名与页面一直渲染的一致；IPv4 那六个字段的十六进制小端解码在后端完成，
  * 页面只做展示（含未知能力值的文案映射）。
  */
-export interface DhcpLease {
+interface DhcpLease {
   address?: string;
   netmask?: string;
   gateway?: string;
@@ -135,7 +135,7 @@ export interface NeighborsPayload {
  * `api.beam.ssb` —— NR SSB 波束报告（modules/beam 解析 `AT^NRSSBID?`）。
  * 未测到的波束槽位（255/32767）已在后端剔除。
  */
-export interface SsbBeam {
+interface SsbBeam {
   ssbId: number;
   rsrp: number;
 }

@@ -3,7 +3,7 @@ import { getDefaultScsType } from './parse';
 // 锁频参数的取值范围来自 AT 手册 13.12.3 / 13.13.3：
 // 锁的个数 1~20，band 0~65535，频点 0~4294967295，LTE PCI 0~503，NR PCI 0~1007。
 export const MAX_LOCK_ITEMS = 20;
-export const MAX_ARFCN = 4294967295;
+const MAX_ARFCN = 4294967295;
 export const MAX_PCI = { lte: 503, nr: 1007 } as const;
 
 export type LockKind = 'lte' | 'nr';
@@ -108,7 +108,7 @@ export interface LockStatePayload {
 }
 
 /** 一个方向（LTE/NR）的应用结果。 */
-export interface LockApplyResult {
+interface LockApplyResult {
   rat: LockKind;
   applied: boolean;
   error?: string;

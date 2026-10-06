@@ -5,7 +5,7 @@ import { isMockModeEnabled, MOCK_SMS_CACHE_KEY } from '@/services/mockAT';
 export const SMS_CACHE_KEY = isMockModeEnabled()
   ? MOCK_SMS_CACHE_KEY
   : 'sms_sent_messages_cache';
-export const MAX_SMS_CACHE = 1000;
+const MAX_SMS_CACHE = 1000;
 
 export interface SMS {
   index: number;
@@ -35,23 +35,6 @@ export function isValidPhoneNumber(number: string): boolean {
   return /^\d{5,19}$/.test(normalizePhoneNumber(number));
 }
 
-export function formatPDUTime(timestamp: Date): string {
-  const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
-  if (Number.isNaN(date.getTime())) return new Date().toLocaleString('zh-CN');
-  const formatted = date.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  });
-  const [datePart, timePart] = formatted.split(' ');
-  const [year, month, day] = datePart.split('/');
-  return `${year.slice(-2)}/${month}/${day},${timePart}`;
-}
-
 export function parseMessageTime(timeStr: string): Date {
   if (!timeStr) return new Date();
   const raw = String(timeStr).trim();
@@ -70,7 +53,7 @@ export function parseMessageTime(timeStr: string): Date {
 // 字段名在这里声明一次，两个页面共用。
 
 /** `sms.storage` 的一个存储面（+CPMS? 的 name,used,total）。 */
-export interface SmsStoragePlane {
+interface SmsStoragePlane {
   name: string;
   used: number;
   total: number;

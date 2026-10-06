@@ -38,7 +38,7 @@ const int = (v: string): number | null => {
 };
 
 /** 解析一行 ^MONSSC。NONE（非 ENDC）或解析失败返回 null。 */
-export const parseMonssc = (line: string): SecondaryNR | null => {
+const parseMonssc = (line: string): SecondaryNR | null => {
   const match = line.match(/\^MONSSC:\s*(.+)/);
   if (!match) return null;
 
@@ -65,12 +65,6 @@ export const parseMonssc = (line: string): SecondaryNR | null => {
   };
 };
 
-export const parseMonsscAll = (text: string): SecondaryNR[] =>
-  text
-    .split(/\r?\n/)
-    .map(parseMonssc)
-    .filter((c): c is SecondaryNR => c !== null);
-
 export interface SecondaryLTE {
   index: number;
   pci: number;
@@ -90,7 +84,7 @@ export interface SecondaryLTE {
 const LTE_BANDWIDTHS: Record<number, number> = { 0: 1.4, 1: 3, 2: 5, 3: 10, 4: 15, 5: 20 };
 
 /** 解析一行 ^CASCELLINFO。CA 未配置时模组直接回 ERROR，这里自然解析不到。 */
-export const parseCascell = (line: string): SecondaryLTE | null => {
+const parseCascell = (line: string): SecondaryLTE | null => {
   const match = line.match(/\^CASCELLINFO:\s*(.+)/);
   if (!match) return null;
 
@@ -127,13 +121,7 @@ export const parseCascell = (line: string): SecondaryLTE | null => {
   };
 };
 
-export const parseCascellAll = (text: string): SecondaryLTE[] =>
-  text
-    .split(/\r?\n/)
-    .map(parseCascell)
-    .filter((c): c is SecondaryLTE => c !== null);
-
-export interface CarrierSignal {
+interface CarrierSignal {
   pci: number;
   rsrp: number | null;
   rsrq: number | null;

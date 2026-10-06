@@ -12,7 +12,7 @@
 import { getMCSModulation, getMCSPerformance } from '@/modem/parse';
 
 /** 渲染用的单载波 MCS 行（调制方式/等级/颜色都是显示映射）。 */
-export interface MCSCarrier {
+interface MCSCarrier {
   index: number;
   mcsTableIndex: number;
   code0: number;
@@ -30,7 +30,7 @@ export interface MCSInfo {
 }
 
 /** 后端一个载波行。 */
-export interface McsCarrierPayload {
+interface McsCarrierPayload {
   index: number;
   mcs_table_index: number;
   code0: number;
@@ -38,7 +38,7 @@ export interface McsCarrierPayload {
 }
 
 /** 后端一个方向（下行/上行）的读数。 */
-export interface McsBlockPayload {
+interface McsBlockPayload {
   rat?: 'LTE' | 'NR' | 'UNKNOWN' | string;
   carriers?: McsCarrierPayload[];
   avg_mcs?: number;

@@ -6,7 +6,7 @@
 
 import { backendMessage, isParameterError } from '@/services/backendError';
 
-export type SimLock = 'ready' | 'pin' | 'puk' | 'pin2' | 'puk2' | 'network' | 'absent' | 'unknown';
+type SimLock = 'ready' | 'pin' | 'puk' | 'pin2' | 'puk2' | 'network' | 'absent' | 'unknown';
 
 /** 后端 `sim.pin_status` 解码出的卡状态（语义由后端给出，文案由这里补）。 */
 export interface SimCardState {
@@ -144,7 +144,7 @@ const CME_TEXTS: Record<string, number> = {
 };
 
 /** 从应答里取出 CME 错误码；模组回的是描述字符串时反查成编号。 */
-export const cmeErrorCode = (raw: string): number | null => {
+const cmeErrorCode = (raw: string): number | null => {
   const match = String(raw || '').match(/\+CME ERROR:\s*(.+)/i);
   if (!match) return null;
   const body = match[1].trim().replace(/[\r\n].*$/s, '');
@@ -153,7 +153,7 @@ export const cmeErrorCode = (raw: string): number | null => {
 };
 
 /** 把失败应答翻译成给用户看的话。 */
-export const simErrorMessage = (raw: string, fallback: string): string => {
+const simErrorMessage = (raw: string, fallback: string): string => {
   const code = cmeErrorCode(raw);
   if (code !== null && CME_MESSAGES[code]) return CME_MESSAGES[code];
   const match = String(raw || '').match(/\+CME ERROR:\s*(.+)/i);
