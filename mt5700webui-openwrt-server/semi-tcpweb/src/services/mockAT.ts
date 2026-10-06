@@ -1,3 +1,5 @@
+import type { ScanCell } from '@/services/scan';
+
 export const MOCK_SMS_CACHE_KEY = 'sms_sent_messages_cache_mock';
 
 export interface MockCommandResponse {
@@ -340,13 +342,15 @@ export const createMockSchedule = () => ({
   },
 });
 
-// 手册 5.35 的扫频结果样例，字段数按手册示例给（末尾空字段省略）。
-export const MOCK_SCAN_CELLS = [
-  '^CELLSCAN: 3,"46000",504990,334,29,5A01,1F23,,,,1,-85,-11,20,',
-  '^CELLSCAN: 3,"46000",633888,100,4E,5A01,1F24,,,,1,-95,-13,12,',
-  '^CELLSCAN: 3,"46001",627264,201,4E,5A03,3F02,,,,1,-102,-15,4,',
-  '^CELLSCAN: 2,"46001",41332,177,29,5A02,2F10,-98,,,,,,,60',
-  '^CELLSCAN: 2,"46000",1850,55,3,5A04,2F55,-105,,,,,,,32',
+// 演示用的扫频结果，取手册 5.35 的样例（频段已按后端的换算规则转成十进制：
+// band 41 = 0x29，band 78 = 0x4E）。结构与后端 cell.scan_* 的 cells[] 完全一致
+// —— 解析 ^CELLSCAN 行是后端的事，演示模式直接给解码后的对象。
+export const MOCK_SCAN_RESULTS: ScanCell[] = [
+  { rat: 3, ratName: 'NR', plmn: '46000', freq: 504990, pci: 334, band: 41, lac: '5A01', cid: '1F23', rxlev: null, bsic: null, psc: null, scs: 1, rsrp: -85, rsrq: -5.5, sinr: 10, raw: '^CELLSCAN: 3,"46000",504990,334,29,5A01,1F23,,,,1,-85,-11,20,' },
+  { rat: 3, ratName: 'NR', plmn: '46000', freq: 633888, pci: 100, band: 78, lac: '5A01', cid: '1F24', rxlev: null, bsic: null, psc: null, scs: 1, rsrp: -95, rsrq: -6.5, sinr: 6, raw: '^CELLSCAN: 3,"46000",633888,100,4E,5A01,1F24,,,,1,-95,-13,12,' },
+  { rat: 3, ratName: 'NR', plmn: '46001', freq: 627264, pci: 201, band: 78, lac: '5A03', cid: '3F02', rxlev: null, bsic: null, psc: null, scs: 1, rsrp: -102, rsrq: -7.5, sinr: 2, raw: '^CELLSCAN: 3,"46001",627264,201,4E,5A03,3F02,,,,1,-102,-15,4,' },
+  { rat: 2, ratName: 'LTE', plmn: '46001', freq: 41332, pci: 177, band: 41, lac: '5A02', cid: '2F10', rxlev: -98, bsic: null, psc: null, scs: null, rsrp: null, rsrq: null, sinr: 7.5, raw: '^CELLSCAN: 2,"46001",41332,177,29,5A02,2F10,-98,,,,,,,60' },
+  { rat: 2, ratName: 'LTE', plmn: '46000', freq: 1850, pci: 55, band: 3, lac: '5A04', cid: '2F55', rxlev: -105, bsic: null, psc: null, scs: null, rsrp: null, rsrq: null, sinr: 4, raw: '^CELLSCAN: 2,"46000",1850,55,3,5A04,2F55,-105,,,,,,,32' },
 ];
 
 /** 读取演示模式的附加参数，支持写在 ?a=b 或 #/path?a=b 两处。 */

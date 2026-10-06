@@ -6,12 +6,13 @@ import {
   type PDCPData,
   type URCData,
 } from '@/modem/urc';
-import type { ScanPush } from '@/modem/cellscan';
+import type { ScanCell, ScanPush } from '@/services/scan';
+import type { MockCommandResponse } from './mockAT';
 import {
   createMockModemState,
   createMockPDCPData,
   isMockModeEnabled,
-  MOCK_SCAN_CELLS,
+  MOCK_SCAN_RESULTS,
   resolveMockATCommand,
   seedMockSentMessages,
   type MockModemState,
@@ -1051,7 +1052,7 @@ class MockWebSocketATAdapter extends WebSocketATAdapter {
   private mockScanTimer: ReturnType<typeof setInterval> | null = null;
   private mockSignalTimer: ReturnType<typeof setInterval> | null = null;
   private mockSignalRsrp = -82;
-  private mockScanFound: string[] = [];
+  private mockScanFound: ScanCell[] = [];
   private mockCommandQueue: Promise<void> = Promise.resolve();
 
   constructor() {
@@ -1142,28 +1143,30 @@ class MockWebSocketATAdapter extends WebSocketATAdapter {
     this.mockPDCPTimer = null;
   }
 
-  // handleMockScan 模拟 ^CELLSCAN：立刻受理，然后按节奏推送扫到的小区，
-  // 命中扫频相关命令时返回应答，否则返回 null 交回普通命令表。
-  private handleMockScan(commandLine: string): ATResponse | null {
-    const upper = commandLine.toUpperCase();
-    if (!upper.startsWith('AT^CELLSCAN')) return null;
+  // 演示模式下的扫频：走与真实后端相同的 cell.scan_* 路由，立刻受理，再按
+  // 节奏推送解码后的小区（cellscan 推送的 cells[]）。面板因此只有一种数据
+  // 来源——真实后端和演示模式的推送形状完全一致。
+  private handleMockScanApi(commandLine: string): MockCommandResponse | null {
+    const space = commandLine.indexOf(' ');
+    const route = space < 0 ? commandLine : commandLine.slice(0, space);
+    if (!route.startsWith('api.cell.scan_')) return null;
 
-    if (upper === 'AT^CELLSCAN=STATE') {
-      const state = this.mockScanTimer ? `RUNNING,${this.mockScanFound.length}` : 'IDLE';
-      return { success: true, data: `^CELLSCAN: ${state}\r\nOK` };
+    if (route === 'api.cell.scan_state') {
+      return { success: true, data: { running: this.mockScanTimer !== null } };
     }
-
-    if (upper === 'AT^CELLSCAN=ABORT') {
-      if (!this.mockScanTimer) return { success: false, error: '当前没有正在进行的扫频' };
+    if (route === 'api.cell.scan_abort') {
+      if (!this.mockScanTimer) return { success: true, data: { aborted: false } };
       this.finishMockScan('aborted');
-      return { success: true, data: 'OK' };
+      return { success: true, data: { aborted: true } };
     }
+    if (route !== 'api.cell.scan_start') return null;
+    if (this.mockScanTimer) return { success: false, error: '扫描已经进行中' };
 
-    if (this.mockScanTimer) return { success: false, error: '扫频正在进行中，请先取消' };
-
+    // 筛选参数只用于演示：手册 5.35 的那几条约束由后端 modules/cell/scan.rs
+    // 校验，演示模式不复制一份。
     this.mockScanFound = [];
     this.mockScanTimer = setInterval(() => {
-      const next = MOCK_SCAN_CELLS[this.mockScanFound.length];
+      const next = MOCK_SCAN_RESULTS[this.mockScanFound.length];
       if (!next) {
         this.finishMockScan('done');
         return;
@@ -1172,11 +1175,11 @@ class MockWebSocketATAdapter extends WebSocketATAdapter {
       this.emitMockResponse({
         success: true,
         type: 'cellscan',
-        data: { state: 'running', cell: next, count: this.mockScanFound.length },
+        data: { state: 'running', cells: [...this.mockScanFound], count: this.mockScanFound.length },
       });
     }, 900);
 
-    return { success: true, data: '^CELLSCAN: STARTED\r\nOK' };
+    return { success: true, data: { started: true } };
   }
 
   private finishMockScan(state: 'done' | 'aborted'): void {
@@ -1187,7 +1190,7 @@ class MockWebSocketATAdapter extends WebSocketATAdapter {
     this.emitMockResponse({
       success: true,
       type: 'cellscan',
-      data: { state, lines: [...this.mockScanFound], count: this.mockScanFound.length },
+      data: { state, cells: [...this.mockScanFound], count: this.mockScanFound.length },
     });
   }
 
@@ -1273,16 +1276,16 @@ class MockWebSocketATAdapter extends WebSocketATAdapter {
   public async sendCommand(command: string, _timeoutMs?: number): Promise<ATResponse> {
     const execution = this.mockCommandQueue.then(async () => {
       if (!this.mockConnected) {
-        return { success: false, error: 'Mock 调制解调器未连接' } as ATResponse;
+        return { success: false, error: 'Mock 调制解调器未连接' };
       }
 
       await new Promise((resolve) => setTimeout(resolve, 35));
       const commandLine = command.trim().split(/[\r\n]/)[0];
 
       // 扫频在真实环境里由服务端异步执行、结果分批推送，演示模式照同样的
-      // 节奏模拟，否则面板会一直停在"扫描中"。
-      const scan = this.handleMockScan(commandLine);
-      if (scan) return scan;
+      // 节奏模拟（同一条 cell.scan_* 路由），否则面板会一直停在"扫描中"。
+      const scan = this.handleMockScanApi(commandLine);
+      if (scan) return scan as ATResponse;
 
       const response = resolveMockATCommand(command, this.mockState) as ATResponse;
 

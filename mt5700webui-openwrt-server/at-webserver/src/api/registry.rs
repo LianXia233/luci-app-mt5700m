@@ -18,6 +18,7 @@
 use crate::core::channel::AtChannel;
 use crate::core::error::BackendError;
 use crate::core::json::Value;
+use crate::scheduler::jobs::TaskManager;
 use crate::state::bus::EventBus;
 use crate::state::cache::StateCache;
 use crate::state::refresh::RefreshCtx;
@@ -25,10 +26,17 @@ use std::sync::Arc;
 
 /// Everything a route handler may use. Handlers never touch the serial port,
 /// the arbiter or a frontend-specific format.
+///
+/// `tasks` is the daemon's task manager, handed to routes whose work is a
+/// *task* rather than a read (`cell.scan_*`): long-running, cancellable and
+/// observable, instead of a request that blocks its transport for minutes. It
+/// is optional because transports without a task manager (unit tests, a future
+/// reader-only client) still serve every other route.
 pub struct ApiCtx<'a> {
     pub channel: &'a dyn AtChannel,
     pub cache: &'a Arc<StateCache>,
     pub bus: &'a Arc<EventBus>,
+    pub tasks: Option<&'a Arc<TaskManager>>,
 }
 
 impl<'a> ApiCtx<'a> {
@@ -41,7 +49,22 @@ impl<'a> ApiCtx<'a> {
             channel,
             cache,
             bus,
+            tasks: None,
         }
+    }
+
+    /// Same context, with the daemon's task manager available to task routes.
+    pub fn with_tasks(mut self, tasks: &'a Arc<TaskManager>) -> Self {
+        self.tasks = Some(tasks);
+        self
+    }
+
+    /// The task manager, or a clear error for a route that cannot work without
+    /// one (the caller is a transport that never registered tasks).
+    pub fn require_tasks(&self) -> Result<&'a Arc<TaskManager>, BackendError> {
+        self.tasks.ok_or_else(|| {
+            BackendError::Internal("this transport has no task manager".to_string())
+        })
     }
 
     /// A refresh context for the module service backing this route.
@@ -137,6 +160,28 @@ mod tests {
     use crate::core::channel::AtChannel;
     use crate::core::json;
 
+    /// A transport that never answers: enough to build a real arbiter and task
+    /// manager, which the task routes (`cell.scan_start`) require.
+    struct NoTransport;
+
+    impl crate::scheduler::arbiter::AtTransport for NoTransport {
+        fn send(&self, _c: &str, _t: std::time::Duration) -> Result<String, BackendError> {
+            Err(BackendError::ModemUnavailable)
+        }
+        fn send_interruptible(
+            &self,
+            _c: &str,
+            _t: std::time::Duration,
+            _cancel: &std::sync::atomic::AtomicBool,
+            _abort: Option<&[u8]>,
+        ) -> Result<String, BackendError> {
+            Err(BackendError::ModemUnavailable)
+        }
+        fn connected(&self) -> bool {
+            false
+        }
+    }
+
     struct NoModem;
     impl AtChannel for NoModem {
         fn query(&self, _c: &str) -> Result<String, BackendError> {
@@ -225,6 +270,10 @@ mod tests {
             "sms.center_set" => pairs(&[("number", json::str_val("+8613800138000"))]),
             "sms.ims_set" => pairs(&[("enabled", Value::Bool(true))]),
             "sms.analyze" => pairs(&[("text", json::str_val("hello"))]),
+            "cell.scan_start" => pairs(&[
+                ("rat", json::str_val("2")),
+                ("plmn", json::str_val("46000")),
+            ]),
             _ => Value::Null,
         }
     }
@@ -233,8 +282,10 @@ mod tests {
     fn every_route_is_reachable_and_unknown_methods_fail_cleanly() {
         let cache = Arc::new(StateCache::new());
         let bus = EventBus::new();
+        let arbiter = crate::scheduler::arbiter::AtArbiter::new(Arc::new(NoTransport));
+        let tasks = crate::scheduler::jobs::TaskManager::new(arbiter, cache.clone(), bus.clone());
         let ch = NoModem;
-        let ctx = ApiCtx::new(&ch, &cache, &bus);
+        let ctx = ApiCtx::new(&ch, &cache, &bus).with_tasks(&tasks);
         let mut broken: Vec<String> = Vec::new();
         for route in routes() {
             let out = dispatch(&ctx, route.name, &sample_params(route.name));

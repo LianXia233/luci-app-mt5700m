@@ -19,7 +19,6 @@ use crate::core::json::{self, Value};
 use crate::scheduler::plan;
 use crate::serial::manager;
 use crate::state::cache::StateCache;
-use crate::core::task::{Priority, TaskKind};
 use crate::scheduler::jobs::{TaskCtx, TaskManager};
 use crate::transport::ws::{self, WsError};
 use std::collections::VecDeque;
@@ -503,70 +502,6 @@ fn has_result(t: &str) -> bool {
     })
 }
 
-// ---------------------------------------------------------------- Cellscan (async path)
-//
-// Scans are exclusive long-running tasks: they own the AT channel, report
-// progress via `task.*` events and publish the protocol-compatible
-// `cellscan` broadcast when done. The WebSocket/HTTP caller only ever gets
-// an immediate `{success:true}` — the actual result arrives asynchronously.
-
-fn handle_cellscan(tasks: &Arc<TaskManager>, command: &str) -> Option<Value> {
-    let cmd = command.trim();
-    if cmd == "AT^CELLSCAN=ABORT" || cmd == "AT^CELLSCAN=ABORTED" {
-        // Cancelling the exclusive task also injects the abort token on the
-        // wire (the request's abort_wire), freeing the AT channel.
-        let cancelled = tasks.cancel_active(&[TaskKind::Exclusive]);
-        if cancelled == 0 {
-            return Some(err_response("no scan in progress"));
-        }
-        return Some(ok_response(""));
-    }
-    if cmd == "AT^CELLSCAN=STATE" {
-        let state = if tasks.has_active(&[TaskKind::Exclusive]) {
-            "scanning"
-        } else {
-            "idle"
-        };
-        return Some(ok_response(&format!("+CELLSCAN: {}", state)));
-    }
-    if cmd == "AT^CELLSCAN" {
-        if tasks.has_active(&[TaskKind::Exclusive]) {
-            return Some(err_response("scan already in progress"));
-        }
-        let spec = AtRequestSpec::long_exclusive(
-            "AT^CELLSCAN",
-            Duration::from_secs(180),
-            b"abcd",
-        );
-        tasks.submit(
-            "scan.cell",
-            TaskKind::Exclusive,
-            Priority::Critical,
-            Some(Duration::from_secs(190)),
-            Box::new(move |ctx: &TaskCtx| {
-                let result = ctx.at_request(spec);
-                let mut obj = std::collections::BTreeMap::new();
-                match &result {
-                    Ok(text) => {
-                        obj.insert("state".to_string(), json::str_val("done"));
-                        obj.insert("result".to_string(), json::str_val(text.trim()));
-                    }
-                    Err(e) => {
-                        obj.insert("state".to_string(), json::str_val("error"));
-                        obj.insert("error".to_string(), json::str_val(&e.message()));
-                    }
-                }
-                // Protocol-compatible `cellscan` broadcast (WebUI parity).
-                ctx.bus
-                    .publish_now(crate::state::bus::TOPIC_SCAN, "cellscan", Value::Obj(obj.clone()));
-                result.map(|_| Value::Obj(obj))
-            }),
-        );
-        return Some(ok_response(""));
-    }
-    None
-}
-
 // ---------------------------------------------------------------- Pseudo commands
 
 fn ok_response(data: &str) -> Value {
@@ -728,7 +663,14 @@ fn handle_control_request(
                 .and_then(|v| v.get("params"))
                 .cloned()
                 .unwrap_or(Value::Null);
-            let resp = crate::api::rpc::control_response(arbiter, cache, tasks.bus(), path, &params);
+            let resp = crate::api::rpc::control_response(
+                arbiter,
+                cache,
+                tasks.bus(),
+                Some(tasks),
+                path,
+                &params,
+            );
             return resp.dump();
         }
         "send" => {
@@ -975,7 +917,7 @@ fn handle_rpc_request(
             if path.is_empty() {
                 err_response("缺少参数 path")
             } else {
-                crate::api::rpc::control_response(arbiter, cache, bus, path, &params)
+                crate::api::rpc::control_response(arbiter, cache, bus, Some(tasks), path, &params)
             }
         }
         // 缓存快照：零 AT 流量，LuCI 首屏立即拿到后台采集器状态。
@@ -1510,7 +1452,7 @@ fn run_command(
         // `api::rpc::split_api_command`; the registry strips nothing here, it
         // just never sees an AT string.
         let (method, params) = crate::api::rpc::split_api_command(command);
-        return crate::api::rpc::ws_response(arbiter, cache, bus, &method, &params);
+        return crate::api::rpc::ws_response(arbiter, cache, bus, Some(tasks), &method, &params);
     }
     if command.trim() == "AT+CONNECT?" {
         let kind = if client.describe() == "SERIAL" { "1" } else { "0" };
@@ -1519,7 +1461,10 @@ fn run_command(
     if let Some(resp) = handle_schedule_command(command) {
         return resp;
     }
-    if let Some(resp) = handle_cellscan(tasks, command) {
+    // `AT^CELLSCAN*` is the cell module's: it has the command builder, the
+    // line parser and the exclusive task, so the raw-AT form funnels into the
+    // same scan instead of a second implementation living in the daemon.
+    if let Some(resp) = crate::modules::cell::scan::pseudo_command(tasks, command) {
         return resp;
     }
     let command = normalize_syscfgex(command);

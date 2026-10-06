@@ -18,7 +18,8 @@ Two kinds of route, declared in the table itself (`Route::display` /
 * **on-demand** (`sim.number`, `network.pdp`, `network.dhcp`, `modem.mcs`,
   `traffic.clear`, `network.registration_urc`, `network.lock_get`,
   `network.lock_apply`, `network.c5goption`, `network.c5goption_set`,
-  `cell.neighbors`, `beam.ssb`, `sim.slot_set`, `sim.hotplug_set`,
+  `cell.neighbors`, `cell.scan_start`, `cell.scan_abort`, `beam.ssb`,
+  `sim.slot_set`, `sim.hotplug_set`,
   `sim.pin_status`, `sim.pin_apply`, `system.nic_rate_set`,
   `system.power_control_set`, `system.factory_reset`, `modem.reset`,
   `modem.imei_set`, `network.radio_set`, `network.syscfg_set`,
@@ -45,6 +46,10 @@ Two kinds of route, declared in the table itself (`Route::display` /
 | `network.syscfg` | `{acqorder, band, roam, srvdomain, lteband}` — display route over `^SYSCFGEX?`; the reply's quoted-or-bare order field and the two trailing reserves are handled here, an unanswered read is an empty object |
 | `network.syscfg_set` | `{applied: true}` — `{acqorder, band, roam, srvdomain, lteband}` → the seven-argument `AT^SYSCFGEX` write; the known acqorder list, the hex band masks and the roam/service-domain ranges are validated here (the CLI's `set-radio-policy` rules) |
 | `cell.neighbors` | `{cells: [{type, arfcn, pci, rsrp, rsrq, sinr, rxlev, band}]}` — on-demand `AT^MONNC`; hex PCI, the 1/8-unit NR scaling and the ARFCN→band table live here |
+| `cell.scan_start` | `{started: true}` — `{rat?, plmn?, freq?, pci?, band?, scs?}`; validates the manual's constraints (band↔freq exclusivity, PCI only for LTE/NR, SCS required with an NR freq/PCI, band 1–512), builds `AT^CELLSCAN[=…]` including the band **bitmap** (`1 << (band-1)` in hex, nibble-built because n78 needs bit 77) and submits the exclusive task; rejects with `BUSY` while a scan runs |
+| `cell.scan_state` | `{running}` — task introspection only, never touches the modem, so a page reload finds a scan that outlived its mount |
+| `cell.scan_abort` | `{aborted}` — cancels the scan task (the arbiter injects the firmware's abort token on the wire); `{aborted: false}` when none ran, so a cancel racing the scan's own completion is not an error |
+| push `cellscan` | `{state: "done"\|"aborted"\|"error", cells: [{rat, ratName, plmn, freq, pci, band, lac, cid, rxlev, bsic, psc, scs, rsrp, rsrq, sinr, raw}], count, error?}` — published once per scan on the `scan` topic; the line layout (`^CELLSCAN:`, hex band/lac/cid, 1/2-dB RSRQ/SINR, 1/8-dB LTE SINR, the 15-vs-14 field quirk) is decoded in `modules/cell/scan.rs`, so no frontend parses it |
 | `beam.ssb` | `{servingCell: {arfcn, cid, pci, rsrp, sinr, ta, ssbs: [{ssbId, rsrp}]}, neighborCells: [{pci, arfcn, rsrp, sinr, ssbs}]}` — on-demand `AT^NRSSBID?`; the fixed offsets and the "not measured" slots (255/32767) are handled here |
 | `ca.get` / `ca.cached` | `{carriers: [{radio, band, source, dl_arfcn, ul_arfcn, dl_frequency_mhz, ul_frequency_mhz, dl_bandwidth_mhz, ul_bandwidth_mhz}], carrier_count, ca_active, dc_active, nr_carrier_count, lte_carrier_count, lte_secondary_count, secondary_connection_count, ca_mode, ca_dl_bandwidth, ca_ul_bandwidth}` (`ca.get?refresh=1` forces a live read) |
 | `cell.get` / `cell.cached` | `{band, channel, dlBandwidth, arfcn, sysmode, mcc, mnc, cid, pci, lac, operator, raw}` |

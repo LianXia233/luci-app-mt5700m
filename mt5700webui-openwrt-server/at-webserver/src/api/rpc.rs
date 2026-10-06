@@ -10,20 +10,29 @@ use crate::core::error::BackendError;
 use crate::core::json::{self, Value};
 use crate::scheduler::arbiter::AtArbiter;
 use crate::scheduler::channel::DirectChannel;
+use crate::scheduler::jobs::TaskManager;
 use crate::state::bus::EventBus;
 use crate::state::cache::StateCache;
 use std::sync::Arc;
 
 /// Run one API route against the live daemon state.
+///
+/// `tasks` is the daemon's task manager, optional because only task routes
+/// (`cell.scan_*`) need it and every transport must still be able to serve the
+/// rest. Callers that have it pass it in; there is no global to look it up in.
 pub fn call(
     arbiter: &Arc<AtArbiter>,
     cache: &Arc<StateCache>,
     bus: &Arc<EventBus>,
+    tasks: Option<&Arc<TaskManager>>,
     method: &str,
     params: &Value,
 ) -> Result<Value, BackendError> {
     let channel = DirectChannel::new(arbiter);
-    let ctx = ApiCtx::new(&channel, cache, bus);
+    let mut ctx = ApiCtx::new(&channel, cache, bus);
+    if let Some(tasks) = tasks {
+        ctx = ctx.with_tasks(tasks);
+    }
     registry::dispatch(&ctx, method, params)
 }
 
@@ -32,11 +41,12 @@ pub fn ws_response(
     arbiter: &Arc<AtArbiter>,
     cache: &Arc<StateCache>,
     bus: &Arc<EventBus>,
+    tasks: Option<&Arc<TaskManager>>,
     method: &str,
     params: &Value,
 ) -> Value {
     let mut m = std::collections::BTreeMap::new();
-    match call(arbiter, cache, bus, method, params) {
+    match call(arbiter, cache, bus, tasks, method, params) {
         Ok(data) => {
             m.insert("success".to_string(), Value::Bool(true));
             m.insert("data".to_string(), data);
@@ -56,11 +66,12 @@ pub fn control_response(
     arbiter: &Arc<AtArbiter>,
     cache: &Arc<StateCache>,
     bus: &Arc<EventBus>,
+    tasks: Option<&Arc<TaskManager>>,
     method: &str,
     params: &Value,
 ) -> Value {
     let mut m = std::collections::BTreeMap::new();
-    match call(arbiter, cache, bus, method, params) {
+    match call(arbiter, cache, bus, tasks, method, params) {
         Ok(data) => {
             m.insert("ok".to_string(), Value::Bool(true));
             m.insert("result".to_string(), data);

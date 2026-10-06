@@ -34,7 +34,8 @@ cannot reach the AT layer: it can only call a route or read a topic.
 | `temperature` | `system::service::refresh` | 60 s | stale fallback |
 | `traffic` | `traffic::service::refresh` | 30 s | empty object |
 | `netrate` | `traffic::service::refresh_netrate` | 5 s | `available:false` + reason |
-| `sms`, `task`, `usb`, `beam`, `scan`, `raw:*` | daemon/URC/dispatch paths | event-driven | topic-specific |
+| `scan` | `cell::scan::start` (exclusive task) | **on demand** (`cell.scan_start`) | one `{state, cells, count}` push per scan; `cell.scan_state`/`cell.scan_abort` are task introspection |
+| `sms`, `task`, `usb`, `beam`, `raw:*` | daemon/URC/dispatch paths | event-driven | topic-specific |
 
 TTLs live in `state/cache.rs`; publishing goes through
 `RefreshCtx::store`/`stale`, which is the only place that sets a topic *and*

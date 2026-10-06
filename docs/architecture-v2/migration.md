@@ -146,8 +146,19 @@ aliases, so the move itself changed no behaviour.
    included), and `modules/network` took the airplane switch
    (`network.radio`/`network.radio_set`). The system page's identity card and NR
    transmit-power card now read `modem.get`/`modem.nr_txpower`. The only raw-AT
-   surfaces left in the WebUI are the cell-scan panel, the FOTA page and the
-   deliberate `pages/at/Terminal.tsx` console. The last three
+   surfaces left in the WebUI are the FOTA page and the deliberate
+   `pages/at/Terminal.tsx` console. The cell-scan panel moved next:
+   `modules/cell/scan.rs` owns the command builder (manual 5.35's constraints
+   and the band bitmap), the `^CELLSCAN:` line parser and the exclusive task
+   behind `cell.scan_start`/`cell.scan_state`/`cell.scan_abort`, pushing
+   decoded cells on `cells[]`; `modem/cellscan.ts` (the WebUI's own parser and
+   command builder) is deleted. LuCI's scan modal keeps reading
+   `mt5700m-at cellscan`'s text — that verb now funnels into the same task via
+   `scan::pseudo_command`, so the raw-AT surface is a compatibility shim, not
+   a second implementation. *Open item, LuCI side:* its scan modal still reads
+   that CLI text, which the asynchronous task cannot fill (the CLI is capped at
+   ~25 s while a full-band scan takes minutes) — it should call
+   `cell.scan_start` and render the `cellscan` push, with the same modal markup. The last three
    system-page cards followed: `modules/modem` owns the NR capability reads and
    writes (`modem.nr_capability`/`_set`, `^NRRCCAPQRY`/`^NRRCCAPCFG` for CA, VoNR
    and DSS with the reply-kind matching and the range rules), `modules/network`
