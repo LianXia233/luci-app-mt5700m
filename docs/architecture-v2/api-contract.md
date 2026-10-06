@@ -123,6 +123,7 @@ matching the previous writers.
 | WS legacy | `{"method":"at","params":{"cmd":"AT+CSQ"}}` | `{success: true, data: "<text>"}` | as above |
 | Control socket (CLI) | `{"cmd":"api","method":"signal.get","params":{}}\n` | `{ok: true, result: {…}}` | `{ok: false, error, code}` |
 | TCP RPC (ucode/LuCI) | `{"id":1,"method":"api","params":{"path":"signal.get"}}` | `{success: true, data: {…}}` | as above |
+| TCP RPC `at` (LuCI `mt5700.at`) | `{"cmd":"api.beam.ssb"}` (optional trailing JSON = params) | `{success: true, data: {…}}` | as above |
 | `mt5700m-at` CLI | `mt5700m-at <verb>` | legacy text on stdout | exit code + stderr (`124` on timeout) |
 
 `error` in the envelopes is `BackendError::detail()`: for a rejected parameter
@@ -136,6 +137,12 @@ line, `split_api_command` carries the optional trailing JSON as `params`) and
 `signal.get` (control socket, JSON-RPC, CLI) hit the same handler. Frontends
 call routes; only the deliberate raw-AT consoles (`WebUI /at` terminal, LuCI
 `terminal.js`) still send AT.
+
+LuCI reaches the registry through `api.js`'s `route(name, params)` helper —
+`mt5700.at` with `cmd = api.<route> [json]` — so a page asks for a domain model
+(`api.getSsb()` → `beam.ssb`) instead of a labelled text frame it would have to
+slice. The render-only helpers stay on the CLI verbs; the pages migrate one
+section at a time (see `migration.md` item 9).
 
 Legacy verbs are preserved byte for byte: control socket `send|cached|scan`
 (+ `api`; the old `sms` verb is gone — `sms.send` is the one send path),

@@ -445,45 +445,6 @@ function ssbValue(value, invalid) {
 	return value;
 }
 
-// 完整 AT^NRSSBID? 应答（manual 13.28）→ 结构化对象（8 服务波束 + 至多 4 邻区）
-function parseNrsSbid(text) {
-	var raw = matchValues(text, '^NRSSBID');
-	if (!raw.length)
-		return null;
-	var info = {
-		arfcn: raw[0], cid: raw[1], pci: raw[2], rsrp: raw[3], sinr: raw[4], ta: raw[5],
-		beams: [], neighbours: []
-	};
-	for (var i = 0; i < 8; i++) {
-		var id = raw[6 + i * 2];
-		var rsrp = raw[7 + i * 2];
-		var idNum = parseInt(id, 10);
-		if (!(idNum >= 0 && idNum <= 7))
-			continue;
-		info.beams.push({ id: id, rsrp: rsrp === '32767' ? '' : rsrp });
-	}
-	// N_NB_CELL 文档位于 index 22，部分固件插入杂散字段使其落在 23，两处探测
-	var nbIdx = 22;
-	var n = parseInt(raw[nbIdx], 10);
-	if (!(n >= 0 && n <= 4)) {
-		nbIdx = 23;
-		n = parseInt(raw[nbIdx], 10);
-		if (!(n >= 0 && n <= 4))
-			n = 0;
-	}
-	if (n > 4)
-		n = 4;
-	var base = nbIdx + 1;
-	for (var j = 0; j < n; j++) {
-		var o = base + j * 12;
-		info.neighbours.push({
-			pci: raw[o], arfcn: raw[o + 1],
-			rsrp: cleanSignal(raw[o + 2]), sinr: cleanSignal(raw[o + 3])
-		});
-	}
-	return info;
-}
-
 // CSV 清洗：去空白、去首尾与重复逗号
 function cleanCsv(value) {
 	return (value || '').replace(/\s+/g, '').replace(/^,+|,+$/g, '').replace(/,+/g, ',');
@@ -728,7 +689,6 @@ return baseclass.extend({
 	arfcnToBand: arfcnToBand,
 	bandNameToNumber: bandNameToNumber,
 	ssbValue: ssbValue,
-	parseNrsSbid: parseNrsSbid,
 	cleanCsv: cleanCsv,
 	validCsv: validCsv,
 	csvInRange: csvInRange,

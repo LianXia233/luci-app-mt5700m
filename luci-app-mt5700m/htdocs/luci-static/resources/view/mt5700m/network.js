@@ -31,6 +31,33 @@ function beamCard(beam) {
 	]);
 }
 
+/*
+ * `api.beam.ssb`（modules/beam 的 Rust 解码）→ ssbPanel 的既有形状。
+ *
+ * 前端只做改名与展示清洗：`^NRSSBID` 的字段偏移、255/32767 空槽过滤、
+ * 邻区计数探测都只在后端一处实现。signalBar/beamCard 拿到的仍是旧版
+ * 同名字段（同名同型），所以面板 DOM 与迁移前逐字节一致。
+ */
+function ssbStateFromPayload(payload) {
+	if (!payload || typeof payload !== 'object' || !payload.servingCell)
+		return null;
+	var cell = payload.servingCell;
+	function str(value) { return (value === undefined || value === null) ? '' : String(value); }
+	return {
+		arfcn: str(cell.arfcn), cid: str(cell.cid), pci: str(cell.pci),
+		rsrp: str(cell.rsrp), sinr: str(cell.sinr), ta: str(cell.ta),
+		beams: (cell.ssbs || []).map(function(b) {
+			return { id: str(b.ssbId), rsrp: str(b.rsrp) };
+		}),
+		neighbours: (payload.neighborCells || []).map(function(nb) {
+			return {
+				pci: str(nb.pci), arfcn: str(nb.arfcn),
+				rsrp: parser.cleanSignal(nb.rsrp), sinr: parser.cleanSignal(nb.sinr)
+			};
+		})
+	};
+}
+
 // 小区扫描结果（模态）——服务小区 / 邻区 / 频段扫描
 function renderCellScan(raw) {
 	var sections = [];
@@ -130,19 +157,18 @@ return view.extend({
 
 	/* ---------- B) 无线诊断 ---------- */
 
-	radioDiagnostics: function(raw) {
+	/* `ssbPayload` 来自 api.getSsb()（路由），其余仍取自 radio-diagnostics 帧。 */
+	radioDiagnostics: function(raw, ssbPayload) {
 		var uplinkMcsText = parser.section(raw, 'Uplink MCS');
 		var downlinkMcsText = parser.section(raw, 'Downlink MCS');
 		var txPower = parser.matchValues(parser.section(raw, 'NR transmit power'), '^NTXPOWER');
-		var ssbRaw = parser.section(raw, 'NR SSB beam');
-		var ssb = parser.matchValues(ssbRaw, '^NRSSBID');
 		var qos = parser.matchValues(parser.section(raw, 'QoS'), '+CGEQOSRDP');
 		var dataRegistration = parser.matchValues(parser.section(raw, 'Data registration'), '+C5GREG');
 		var ims = parser.matchValues(parser.section(raw, 'IMS registration'), '+CIREG');
 		var endc = parser.matchValues(parser.section(raw, 'Dual connectivity'), '^LENDC');
 		var lteSecondary = parser.countLines(parser.section(raw, 'LTE secondary cells'), '^CASCELLINFO');
 		var nsaSecondary = parser.countLines(parser.section(raw, 'NSA secondary cells'), '^MONSSC: NR');
-		var ssbInfo = parser.parseNrsSbid(ssbRaw);
+		var ssbInfo = ssbStateFromPayload(ssbPayload);
 		var monnc = parser.parseMonnc(parser.section(raw, 'Neighbour cells') || '');
 		var nrMonnc = monnc.filter(function(nb) { return nb.rat === 'NR'; });
 		var lteMonnc = monnc.filter(function(nb) { return nb.rat === 'LTE'; });
@@ -162,7 +188,7 @@ return view.extend({
 				]),
 				E('section', { 'class': 'mt-card' }, [
 					E('h3', { 'class': 'mt-card-title' }, _('5G beam and service')), this.row(_('LTE secondary carriers'), String(lteSecondary)), this.row(_('NSA secondary connections'), String(nsaSecondary)),
-					this.row(_('NR neighbour cells'), ssbInfo ? String(ssbInfo.neighbours.length) : (ssb.length > 6 ? '0' : '')),
+					this.row(_('NR neighbour cells'), ssbInfo ? String(ssbInfo.neighbours.length) : ''),
 					this.row(_('Data registration'), dataRegistration[1] === '1' || dataRegistration[1] === '5' ? _('Registered') : dataRegistration.length ? _('Not registered') : ''),
 					this.row(_('IMS registration'), ims[1] === '1' ? _('Registered') : ims.length ? _('Not registered') : ''), this.row(_('LTE-NR dual connectivity'), endc[0] === '1' ? _('Enabled') : endc.length ? _('Disabled') : '')
 				])
@@ -325,9 +351,10 @@ return view.extend({
 		var self = this;
 		window.setTimeout(function() {
 			if (!document.body.contains(diagnosticHost)) return;
-			api.atRadioDiagnostics().then(function(result) {
+			Promise.all([ api.atRadioDiagnostics(), api.getSsb() ]).then(function(results) {
+				var result = results[0] || {};
 				if (document.body.contains(diagnosticHost))
-					dom.content(diagnosticHost, self.radioDiagnostics(result.stdout || ''));
+					dom.content(diagnosticHost, self.radioDiagnostics(result.stdout || '', results[1]));
 			}, function(err) {
 				if (document.body.contains(diagnosticHost))
 					dom.content(diagnosticHost, E('div', { 'class': 'alert-message warning' }, err.message || String(err)));

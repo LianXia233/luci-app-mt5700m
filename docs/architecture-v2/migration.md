@@ -232,10 +232,21 @@ aliases, so the move itself changed no behaviour.
      `pages/at/Terminal.tsx`, the deliberate raw-AT console (user-facing
      diagnostic tool, admin-only). `modem/*.ts` holds types, display tables and
      merge helpers only.
-   * LuCI — `parser.js` decodes CLI text for the pages that still call
-     `mt5700m-at status/advanced …`; those pages move to the routes above and
-     the duplicated decoders are deleted. The dashboard already reads the
-     daemon cache via `api.cachedSnapshot()`.
+   * LuCI — `api.js` gained `route(name, params)` (the `api.<route>` command
+     path over `mt5700.at`, documented in `api-contract.md`), and the first
+     section moved over: the SSB panel and the "NR neighbour cells" row now
+     read `beam.ssb`, and `parser.js`'s `parseNrsSbid` — the second, JS copy of
+     the `^NRSSBID` offsets — is deleted. Parity was checked against the old
+     decoder with a node harness (same intermediate shape for every well-formed
+     reply; the only difference is the error path, where the panel now shows its
+     own "Not available" card, and a shifted reply, where the Rust rule drops
+     id-255 / rsrp-32767 slots).  Still on text frames, to be migrated with the
+     same helper: `radioDiagnostics`'s MCS (`modem.mcs`), NR transmit power
+     (`modem.nr_txpower`), QoS (`qos.get`), data/IMS registration and EN-DC,
+     the secondary-carrier counts (`ca.get`) and the neighbour cards
+     (`cell.neighbors`); `parser.js` (`parseMcsSection`, `parseMonnc`,
+     `matchValues`) is deleted when the last of them moves. The dashboard
+     already reads the daemon cache via `api.cachedSnapshot()`.
 10. **Fold `mt5700m-traffic` into `modules/traffic`** (last non-Rust business
    process) and the dialing glue of `mt5700m-manager` into `modules/network`
    actions.

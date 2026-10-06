@@ -123,6 +123,29 @@ function atSafe(args) {
 }
 
 /*
+ * route —— 统一 API 路由（LuCI 侧的唯一结构化入口）。
+ *
+ * 单后端（2026-10-05）：命令形如 `api.beam.ssb`（可选尾随 JSON 参数），
+ * daemon 把它派发到模块注册表 —— 与 WebUI 的 at().apiCommand 是同一个
+ * 注册表、同一份解码代码。前端拿到的是领域数据，不再拿到 AT 原文，
+ * 也就不再需要「按标签切段 + 正则取值」的文本解析。
+ *
+ * 应答形状 { success:true, data }；这里只把 data 交回页面。
+ * 永不 reject：后端未运行、路由报错或载荷不是对象都返回 null，
+ * 页面按「该卡片暂无数据」处理，与旧版拿不到文本帧时一致。
+ */
+function route(name, params) {
+	var cmd = params ? 'api.' + name + ' ' + JSON.stringify(params) : 'api.' + name;
+	return atSafe([ cmd ]).then(function(res) {
+		var data = res.stdout;
+		if (typeof data === 'string') {
+			try { data = JSON.parse(data); } catch (e) { data = null; }
+		}
+		return (data && typeof data === 'object') ? data : null;
+	});
+}
+
+/*
  * cachedSnapshot —— Async Architecture 缓存优先（SWR）快照。
  * 走 ucode mt5700.cached（nc → daemon StateCache）：零 AT 流量、毫秒级返回，
  * 即使模组离线 / AT 卡住也能立即拿到最近一次后台采集器写入的状态。
@@ -174,6 +197,7 @@ function atCommand(cmd)        { return at([ 'command', cmd ]); }
 function atSmsList()           { return at([ 'sms-list' ]); }
 function atSmsInfo()           { return at([ 'sms-info' ]); }
 function atCellscan()          { return at([ 'cellscan' ]); }
+function getSsb()              { return route('beam.ssb'); }
 function atCellscanResult()    { return at([ 'cellscan-result' ]); }
 
 /* ---------- 累计流量 / 实时速率（单后端） ---------- */
@@ -256,6 +280,8 @@ return baseclass.extend({
 	cachedSnapshot: cachedSnapshot,
 	atStatus: atStatus,
 	atSession: atSession,
+	route: route,
+	getSsb: getSsb,
 	atNetwork: atNetwork,
 	atRadio: atRadio,
 	atRadioDiagnostics: atRadioDiagnostics,
