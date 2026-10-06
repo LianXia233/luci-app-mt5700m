@@ -146,7 +146,7 @@ aliases, so the move itself changed no behaviour.
    included), and `modules/network` took the airplane switch
    (`network.radio`/`network.radio_set`). The system page's identity card and NR
    transmit-power card now read `modem.get`/`modem.nr_txpower`. The only raw-AT
-   surfaces left in the WebUI are the dial page and the deliberate
+   surfaces left in the WebUI are only the deliberate
    `pages/at/Terminal.tsx` console. The cell-scan panel moved next:
    `modules/cell/scan.rs` owns the command builder (manual 5.35's constraints
    and the band bitmap), the `^CELLSCAN:` line parser and the exclusive task
@@ -183,7 +183,14 @@ aliases, so the move itself changed no behaviour.
 3. **CLI adapter thinning**: `api/cli.rs` still holds the per-verb text
    formatters for those capabilities; they move into the modules' `api.rs`
    `render_text` as the modules land.
-4. **Frontend AT removal**:
+4. **Dial page**: the last raw-AT page. It is read-only (LuCI owns every
+   write) but built six queries itself and decoded them locally — including
+   issuing `^TDCFG?` twice for two cards and re-implementing the "autodial off,
+   use the NDIS session" fallback. `modules/network` now owns them
+   (`network.autodial`, `network.usb_mode`, `network.interface_cfg`,
+   `network.pdp_contexts`) and the page renders the objects, so the WebUI has no
+   AT command outside the deliberate `/at` terminal.
+5. **Frontend AT removal**:
    * WebUI — display already flows through the daemon's topic cache
      (`services/stateCache.ts` + `useSharedStateTopic`); the remaining AT usage
      is action/refresh paths in `services/at.ts` + `modem/*.ts`, which convert
@@ -193,10 +200,10 @@ aliases, so the move itself changed no behaviour.
      `mt5700m-at status/advanced …`; those pages move to the routes above and
      the duplicated decoders are deleted. The dashboard already reads the
      daemon cache via `api.cachedSnapshot()`.
-5. **Fold `mt5700m-traffic` into `modules/traffic`** (last non-Rust business
+6. **Fold `mt5700m-traffic` into `modules/traffic`** (last non-Rust business
    process) and the dialing glue of `mt5700m-manager` into `modules/network`
    actions.
-6. **Split the two god files** (`daemon.rs` ~1.9k lines, `api/cli.rs` ~2.4k):
+7. **Split the two god files** (`daemon.rs` ~1.9k lines, `api/cli.rs` ~2.4k):
    `daemon.rs` → `transport/{ws_server,rpc_server,control_server}` +
    `api/rpc.rs`; `api/cli.rs` → one `render_text` per module + a small verb
    table. Both are now pure wiring/adapters, so the split is mechanical.

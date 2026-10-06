@@ -327,6 +327,132 @@ impl SysCfgState {
     }
 }
 
+
+/// Built-in autodial configuration (`^SETAUTODIAL?`) as the dial page shows it.
+///
+/// The page renders every field, so they stay string-typed exactly like the AT
+/// text: a password or APN that is not a number must not be coerced.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AutodialState {
+    pub enable: Option<i64>,
+    pub dial_mode: Option<i64>,
+    pub protocol: String,
+    pub apn: String,
+    pub username: String,
+    pub password: String,
+    pub auth_type: Option<i64>,
+    /// `^NDISSTATQRY?` said the modem's own data session is up. The page used
+    /// this to fill in a missing dial mode; that decision is the module's now.
+    pub ndis_active: bool,
+}
+
+impl AutodialState {
+    pub fn is_empty(&self) -> bool {
+        self.enable.is_none()
+            && self.dial_mode.is_none()
+            && self.protocol.is_empty()
+            && self.apn.is_empty()
+            && self.username.is_empty()
+            && self.password.is_empty()
+            && self.auth_type.is_none()
+    }
+
+    /// `{enable, dialMode, protocol, apn, username, password, authType}` —
+    /// `dialMode` includes the NDIS fallback, which is what the page displayed.
+    ///
+    /// An unread state answers `{}` rather than empty strings: the page merges
+    /// the object it gets, so absent fields mean "keep the value you show".
+    pub fn to_json(&self) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        if self.is_empty() {
+            return Value::Obj(m);
+        }
+        if let Some(v) = self.enable {
+            m.insert("enable".to_string(), json::num_val(v));
+        }
+        let dial_mode = match self.dial_mode {
+            Some(mode) => Some(mode),
+            None if self.ndis_active => Some(1),
+            None => None,
+        };
+        if let Some(v) = dial_mode {
+            m.insert("dialMode".to_string(), json::num_val(v));
+        }
+        m.insert("protocol".to_string(), json::str_val(&self.protocol));
+        m.insert("apn".to_string(), json::str_val(&self.apn));
+        m.insert("username".to_string(), json::str_val(&self.username));
+        m.insert("password".to_string(), json::str_val(&self.password));
+        if let Some(v) = self.auth_type {
+            m.insert("authType".to_string(), json::num_val(v));
+        }
+        Value::Obj(m)
+    }
+}
+
+/// USB port mode (`^SETMODE?`), the dial page's "USB 端口模式" card.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UsbModeState {
+    pub mode: Option<i64>,
+}
+
+impl UsbModeState {
+    pub fn to_json(&self) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        if let Some(v) = self.mode {
+            m.insert("mode".to_string(), json::num_val(v));
+        }
+        Value::Obj(m)
+    }
+}
+
+/// Interface configuration (`^TDCFG?`): the NIC mode, the mutually exclusive
+/// post-route flag and the DMZ host. One read answers both cards on the page.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InterfaceCfgState {
+    pub mode: Option<i64>,
+    pub post_route: Option<i64>,
+    pub dmz_enabled: bool,
+    pub dmz_host: String,
+}
+
+impl InterfaceCfgState {
+    pub fn to_json(&self) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        if let Some(v) = self.mode {
+            m.insert("mode".to_string(), json::num_val(v));
+        }
+        if let Some(v) = self.post_route {
+            m.insert("postRoute".to_string(), json::num_val(v));
+        }
+        let mut dmz = std::collections::BTreeMap::new();
+        dmz.insert("enabled".to_string(), Value::Bool(self.dmz_enabled));
+        dmz.insert("host".to_string(), json::str_val(&self.dmz_host));
+        m.insert("dmz".to_string(), Value::Obj(dmz));
+        Value::Obj(m)
+    }
+}
+
+/// One PDP context definition + its activation state (`+CGDCONT?`/`+CGACT?`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PdpContext {
+    pub cid: u32,
+    pub apn_type: String,
+    pub apn: String,
+    pub pdp_addr: String,
+    pub active: bool,
+}
+
+impl PdpContext {
+    pub fn to_json(&self) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert("cid".to_string(), json::num_val(self.cid as u64));
+        m.insert("type".to_string(), json::str_val(&self.apn_type));
+        m.insert("apn".to_string(), json::str_val(&self.apn));
+        m.insert("pdp_addr".to_string(), json::str_val(&self.pdp_addr));
+        m.insert("active".to_string(), Value::Bool(self.active));
+        Value::Obj(m)
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -317,6 +317,9 @@ pub fn ndisdup(up: bool) -> String {
     format!("AT^NDISDUP=1,{}", if up { 1 } else { 0 })
 }
 
+/// USB port / network preference mode query (`^SETMODE: <n>`).
+pub const SETMODE_QUERY: &str = "AT^SETMODE?";
+
 /// AT command that sets the network preference mode.
 pub fn set_mode(value: u8) -> String {
     format!("AT^SETMODE={}", value)
@@ -351,6 +354,48 @@ pub fn valid_acq_order(acqorder: &str) -> bool {
 /// True when the string is a non-empty hex bitmask.
 pub fn is_hex_mask(v: &str) -> bool {
     !v.is_empty() && v.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+
+// ------------------------------------------------------------ dial page reads
+//
+// The WebUI's dial page is read-only (LuCI owns the writes) and used to build
+// these six queries and parse their replies itself. The module owns them now.
+
+/// Built-in autodial configuration (`^SETAUTODIAL: <on>,<mode>,"<proto>",
+/// "<apn>","<user>","<pass>",<auth>` — the trailing fields are absent when
+/// autodial is off).
+pub const SETAUTODIAL_QUERY: &str = "AT^SETAUTODIAL?";
+/// USB data-session state (`^NDISSTATQRY: <up>,…`), used to tell "modem dials
+/// itself" from "the host dials" when the autodial reply omits the mode.
+pub const NDISSTATQRY: &str = "AT^NDISSTATQRY?";
+/// Interface configuration (`Mode:` / `PostRoute:` / `Dmz:` lines).
+pub const TDCFG_QUERY: &str = "AT^TDCFG?";
+/// PDP context definitions (`+CGDCONT: <cid>,"<type>","<apn>",…`).
+pub const CGDCONT_QUERY: &str = "AT+CGDCONT?";
+/// PDP context activation states (`+CGACT: <cid>,<active>`).
+pub const CGACT_QUERY: &str = "AT+CGACT?";
+/// The PDP context id range the dial page renders (0 is the modem's own
+/// always-on context, 21+ is firmware-internal).
+pub const PDP_CID_RANGE: std::ops::Range<u32> = 1..21;
+
+/// True when the modem's own NDIS data session is up (`^NDISSTATQRY: 1,…`) —
+/// the page's fallback for telling "the modem dials itself" from "the host
+/// dials", used when the autodial reply omits the mode.
+pub fn ndis_is_active(text: &str) -> bool {
+    text.replace('\r', "").lines().any(|l| {
+        let l = l.trim();
+        match l.strip_prefix("^NDISSTATQRY:") {
+            Some(body) => body
+                .trim_start()
+                .split(',')
+                .next()
+                .map(str::trim)
+                .map(|first| first == "1")
+                .unwrap_or(false),
+            None => false,
+        }
+    })
 }
 
 #[cfg(test)]

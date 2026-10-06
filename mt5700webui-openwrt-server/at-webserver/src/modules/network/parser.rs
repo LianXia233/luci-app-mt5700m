@@ -7,7 +7,8 @@
 
 use crate::modules::network::state::{
     SysCfgState,
-    C5gOptionState, DhcpLease, LockItem, LockKind, LockState, PdpAddress, RegistrationState,
+    AutodialState, C5gOptionState, DhcpLease, InterfaceCfgState, LockItem, LockKind, LockState,
+    PdpAddress, PdpContext, RegistrationState,
 };
 
 /// Parse a `+CxxREG:` line: registration state + family-specific fields.
@@ -524,6 +525,243 @@ pub fn parse_syscfgex(raw: &str) -> Option<SysCfgState> {
     })
 }
 
+
+// ------------------------------------------------------------ dial page reads
+
+/// Split an AT argument list on commas that are not inside a quoted string.
+fn split_at_args(payload: &str) -> Vec<String> {
+    let mut fields: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut quoted = false;
+    for c in payload.chars() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                cur.push(c);
+            }
+            ',' if !quoted => {
+                fields.push(cur.trim().to_string());
+                cur.clear();
+            }
+            _ => cur.push(c),
+        }
+    }
+    fields.push(cur.trim().to_string());
+    fields
+        .into_iter()
+        .map(|f| f.trim_matches('"').to_string())
+        .collect()
+}
+
+/// `^SETAUTODIAL: <on>,<mode>,"<proto>","<apn>","<user>","<pass>",<auth>`.
+///
+/// The trailing fields are absent when autodial is off (the firmware then sends
+/// only the switch), so every field after `enable` is optional — that is what
+/// the page's own parser did, and what the NDIS fallback exists for.
+pub fn parse_autodial(raw: &str) -> AutodialState {
+    let mut st = AutodialState::default();
+    let Some(line) = raw
+        .replace('\r', "")
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("^SETAUTODIAL:"))
+    else {
+        return st;
+    };
+    let body = line.trim_start_matches("^SETAUTODIAL:").trim();
+    let fields = split_at_args(body);
+    if fields.is_empty() || !fields[0].chars().all(|c| c.is_ascii_digit()) || fields[0].is_empty() {
+        return st;
+    }
+    st.enable = fields[0].parse::<i64>().ok();
+    let digits = |i: usize| -> Option<i64> {
+        fields
+            .get(i)
+            .filter(|f| !f.is_empty() && f.chars().all(|c| c.is_ascii_digit()))
+            .and_then(|f| f.parse::<i64>().ok())
+    };
+    st.dial_mode = digits(1);
+    let text = |i: usize| fields.get(i).cloned().unwrap_or_default();
+    st.protocol = text(2);
+    st.apn = text(3);
+    st.username = text(4);
+    st.password = text(5);
+    st.auth_type = digits(6);
+    st
+}
+
+/// `^SETMODE?` -> the mode number. The device answers a bare number; a
+/// `^SETMODE: <n>` line is accepted too so a firmware variant cannot blank the
+/// card.
+pub fn parse_usb_mode(raw: &str) -> Option<i64> {
+    for line in raw.replace('\r', "").lines().map(str::trim) {
+        if line.is_empty() || line == "OK" {
+            continue;
+        }
+        let body = line.trim_start_matches("^SETMODE:").trim();
+        if body.chars().all(|c| c.is_ascii_digit()) && !body.is_empty() {
+            return body.parse::<i64>().ok();
+        }
+    }
+    None
+}
+
+/// `^TDCFG?` -> NIC mode, post-route flag and the DMZ host.
+///
+/// The reply is a small text table (`Mode : 1`, `PostRoute : 0`, `Dmz: 1.2.3.4`)
+/// and `Dmz: not cfg` means the feature is off — the page's rule.
+pub fn parse_interface_cfg(raw: &str) -> InterfaceCfgState {
+    let mut st = InterfaceCfgState::default();
+    for line in raw.replace('\r', "").lines() {
+        let line = line.trim();
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let key = key.trim().to_ascii_lowercase();
+        let value = value.trim();
+        match key.as_str() {
+            "mode" => st.mode = value.parse::<i64>().ok(),
+            "postroute" => st.post_route = value.parse::<i64>().ok(),
+            "dmz" => {
+                st.dmz_enabled = value != "not cfg" && !value.is_empty();
+                if st.dmz_enabled {
+                    st.dmz_host = value.to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+    st
+}
+
+/// `+CGDCONT?` + `+CGACT?` -> the PDP context table.
+///
+/// The definition line carries cid/type/apn/address; activation comes from the
+/// second query, joined by cid. The dial page renders cids 1..20 (0 is the
+/// modem's own always-on context) — `commands::PDP_CID_RANGE`.
+pub fn parse_pdp_contexts(cgdcont: &str, cgact: &str) -> Vec<PdpContext> {
+    let mut contexts: Vec<PdpContext> = Vec::new();
+    let mut actives: Vec<(u32, bool)> = Vec::new();
+    for line in cgdcont.replace('\r', "").lines() {
+        let line = line.trim();
+        let Some(body) = line.strip_prefix("+CGDCONT:") else {
+            continue;
+        };
+        let fields = split_at_args(body.trim());
+        let Some(cid) = fields.first().and_then(|f| f.parse::<u32>().ok()) else {
+            continue;
+        };
+        let get = |i: usize| fields.get(i).cloned().unwrap_or_default();
+        contexts.push(PdpContext {
+            cid,
+            apn_type: get(1),
+            apn: get(2),
+            pdp_addr: get(3),
+            active: false,
+        });
+    }
+    for line in cgact.replace('\r', "").lines() {
+        let line = line.trim();
+        let Some(body) = line.strip_prefix("+CGACT:") else {
+            continue;
+        };
+        let mut parts = body.trim().split(',');
+        let cid = parts.next().and_then(|p| p.trim().parse::<u32>().ok());
+        let active = parts.next().map(|p| p.trim() == "1").unwrap_or(false);
+        if let Some(cid) = cid {
+            actives.push((cid, active));
+        }
+    }
+    for ctx in contexts.iter_mut() {
+        if let Some((_, active)) = actives.iter().find(|(cid, _)| *cid == ctx.cid) {
+            ctx.active = *active;
+        }
+    }
+    contexts.retain(|c| crate::modules::network::commands::PDP_CID_RANGE.contains(&c.cid));
+    contexts
+}
+    #[test]
+    fn autodial_reads_the_pages_field_rules() {
+        // The firmware sends the full tuple while autodial is on; a quoted APN
+        // with a comma must survive the split.
+        let st = parse_autodial(
+            "^SETAUTODIAL: 1,2,\"IPV4V6\",\"cmnet, backup\",\"user\",\"pw\",0\r\nOK",
+        );
+        assert_eq!(st.enable, Some(1));
+        assert_eq!(st.dial_mode, Some(2));
+        assert_eq!(st.protocol, "IPV4V6");
+        assert_eq!(st.apn, "cmnet, backup");
+        assert_eq!(st.username, "user");
+        assert_eq!(st.password, "pw");
+        assert_eq!(st.auth_type, Some(0));
+
+        // Autodial off: only the switch comes back, which is what the NDIS
+        // fallback exists for.
+        let st = parse_autodial("^SETAUTODIAL: 0\r\nOK");
+        assert_eq!(st.enable, Some(0));
+        assert_eq!(st.dial_mode, None);
+        assert!(!st.is_empty());
+        assert!(parse_autodial("OK").is_empty());
+        // No space after the colon (the demo/mock form) is accepted too.
+        assert_eq!(parse_autodial("^SETAUTODIAL:1,2,\"IP\"").enable, Some(1));
+    }
+
+    #[test]
+    fn ndis_fallback_matches_the_pages_regex() {
+        use crate::modules::network::commands::ndis_is_active;
+        assert!(ndis_is_active("^NDISSTATQRY: 1,0\r\nOK"));
+        assert!(ndis_is_active("^NDISSTATQRY:1,1"));
+        assert!(!ndis_is_active("^NDISSTATQRY: 0,0\r\nOK"));
+        assert!(!ndis_is_active("OK"));
+        // A mode-less autodial reply + an active NDIS session == "the modem
+        // dials itself" (dialMode 1), the value the page displayed.
+        let mut st = parse_autodial("^SETAUTODIAL: 0");
+        st.ndis_active = crate::modules::network::commands::ndis_is_active("^NDISSTATQRY: 1,0");
+        assert!(st.to_json().dump().contains("\"dialMode\":1"));
+    }
+
+    #[test]
+    fn usb_mode_accepts_the_bare_and_prefixed_forms() {
+        assert_eq!(parse_usb_mode("2\r\nOK"), Some(2));
+        assert_eq!(parse_usb_mode("^SETMODE: 1\r\nOK"), Some(1));
+        assert_eq!(parse_usb_mode("OK"), None);
+        assert_eq!(parse_usb_mode("ERROR"), None);
+    }
+
+    #[test]
+    fn interface_cfg_keeps_the_dmz_semantics() {
+        let st = parse_interface_cfg("Mode : 1\r\nPostRoute : 0\r\nDmz: 192.168.8.100\r\nOK");
+        assert_eq!(st.mode, Some(1));
+        assert_eq!(st.post_route, Some(0));
+        assert!(st.dmz_enabled);
+        assert_eq!(st.dmz_host, "192.168.8.100");
+
+        let st = parse_interface_cfg("Mode: 2\nPostRoute: 1\nDmz: not cfg\nOK");
+        assert_eq!(st.mode, Some(2));
+        assert_eq!(st.post_route, Some(1));
+        assert!(!st.dmz_enabled);
+        assert_eq!(st.dmz_host, "");
+    }
+
+    #[test]
+    fn pdp_contexts_join_definitions_with_activation() {
+        let defs = "+CGDCONT: 1,\"IP\",\"cmnet\",\"10.0.0.1\",0,0\r\n\
+                    +CGDCONT: 2,\"IPV6\",\"cmnet6\",\"\",0,0\r\n\
+                    +CGDCONT: 0,\"IP\",\"\",\"\",0,0\r\nOK";
+        let act = "+CGACT: 1,1\r\n+CGACT: 2,0\r\n+CGACT: 0,1\r\nOK";
+        let list = parse_pdp_contexts(defs, act);
+        // cid 0 is the modem's own context and is not shown.
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].cid, 1);
+        assert_eq!(list[0].apn_type, "IP");
+        assert_eq!(list[0].apn, "cmnet");
+        assert_eq!(list[0].pdp_addr, "10.0.0.1");
+        assert!(list[0].active);
+        assert_eq!(list[1].cid, 2);
+        assert!(!list[1].active);
+        // Activation may be missing entirely: nobody is active then.
+        assert!(!parse_pdp_contexts(defs, "OK")[0].active);
+    }
 #[cfg(test)]
 mod tests {
     use super::*;

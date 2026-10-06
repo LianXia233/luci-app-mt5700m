@@ -4,15 +4,15 @@ import { ATService } from '@/services/at';
 import { useATReady } from '@/hooks/useATReady';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { QUERY_MOBILE } from '@/styles/breakpoints';
-import { sleep } from '@/modem/atx';
 import { Field, Kv, PageCard, RefreshBtn, SectionHeader, TwoCol } from '@/ui/widgets';
 
 /*
  * MT5700M WebUI — 拨号状态（只读）
  * ---------------------------------------------
  * 拨号使用 LuCI（luci-app-mt5700m · 移动数据页），WebUI 不拨号：
- *   - 本页只做只读查询，展示与 LuCI 共享的后端状态（同一 StateCache /
- *     EventBus / AtArbiter，相同只读 AT 命令命中缓存后不再重复下发）；
+ *   - 本页只做只读展示，数据来自后端的 network.autodial / network.usb_mode /
+ *     network.interface_cfg / network.pdp_contexts 四条路由（命令、解析都在
+ *     modules/network）；
  *   - 不发起任何拨号 / 挂断 / PDP 激活 / APN 写入等操作，避免与 LuCI
  *     拨号流程互相影响和干扰；
  *   - 如需修改拨号配置，请前往 LuCI：网络 → MT5700M → 移动数据。
@@ -94,44 +94,10 @@ const getPdpTypeText = (type: string) => {
   }
 };
 
-const parseAutoDialResponse = (raw: string): Partial<DialSettings> | null => {
-  const line = raw
-    .replace(/\r/g, '')
-    .split('\n')
-    .map((item) => item.trim())
-    .find((item) => item.startsWith('^SETAUTODIAL:'));
-  if (!line) return null;
-
-  const payload = line.slice(line.indexOf(':') + 1).trim();
-  const fields = payload.match(/(?:[^,"]+|"[^"]*")+/g)?.map((field) =>
-    field.trim().replace(/^"|"$/g, ''),
-  );
-  if (!fields?.length || !/^\d+$/.test(fields[0])) return null;
-
-  const parsed: Partial<DialSettings> = { enable: Number(fields[0]) };
-  if (fields.length >= 2 && /^\d+$/.test(fields[1])) parsed.dialMode = Number(fields[1]);
-  if (fields.length >= 3) parsed.protocol = fields[2] || '';
-  if (fields.length >= 4) parsed.apn = fields[3] || '';
-  if (fields.length >= 5) parsed.username = fields[4] || '';
-  if (fields.length >= 6) parsed.password = fields[5] || '';
-  if (fields.length >= 7 && /^\d+$/.test(fields[6])) parsed.authType = Number(fields[6]);
-  return parsed;
-};
-
-const ndisIsActive = (raw: string) =>
-  /\^NDISSTATQRY:\s*1\s*,/i.test(raw.replace(/\r/g, ''));
-
-const parseTDCFG = (raw: string) => {
-  const modeMatch = raw.match(/Mode\s*:\s*(\d+)/);
-  const postRouteMatch = raw.match(/PostRoute\s*:\s*(\d+)/);
-  const dmzLine = raw.split('\n').find((line) => line.trim().startsWith('Dmz:'));
-  const dmzValue = dmzLine ? dmzLine.split(':')[1].trim() : 'not cfg';
-  return {
-    mode: modeMatch ? parseInt(modeMatch[1], 10) : undefined,
-    postRoute: postRouteMatch ? parseInt(postRouteMatch[1], 10) : undefined,
-    dmz: { enabled: dmzValue !== 'not cfg', host: dmzValue !== 'not cfg' ? dmzValue : '' },
-  };
-};
+const adaptDmz = (dmz: { enabled?: boolean; host?: string }) => ({
+  enabled: dmz.enabled === true,
+  host: dmz.host || '',
+});
 
 const NetworkDial: React.FC = () => {
   const isNarrow = useMediaQuery(QUERY_MOBILE);
@@ -154,28 +120,14 @@ const NetworkDial: React.FC = () => {
   const [dmzConfig, setDmzConfig] = useState({ enabled: false, host: '' });
   const [pdpList, setPdpList] = useState<PDPContext[]>([]);
 
-  const sendCmd = async (command: string) => {
-    await sleep(100);
-    return at().readCommand(command);
-  };
-
-  // ---------- 只读查询（共享后端，命中缓存后不重复下发） ----------
+  // 四条只读路由：命令拼装、应答解析都在后端 modules/network，页面只读字段。
+  // 应答里没有的字段表示"这次没读到"，保留上一次显示的值（与旧的失败保留一致）。
   const fetchDialSettings = async () => {
     setLoading((l) => ({ ...l, dial: true }));
     try {
-      const res = await sendCmd('AT^SETAUTODIAL?');
-      if (res.success && res.data) {
-        const parsed = parseAutoDialResponse(String(res.data));
-        if (!parsed) throw new Error('无法解析自动拨号状态');
-
-        // MT5700 在关闭模组内置自动拨号时只返回 ^SETAUTODIAL:0，
-        // 不包含数据接口字段。此时用正在工作的 NDIS 会话判断 USB 数据口，
-        // 避免把 OpenWrt/QModem 的 USB 拨号错误显示成“转网口模式”。
-        if (parsed.dialMode == null) {
-          const ndis = await sendCmd('AT^NDISSTATQRY?');
-          if (ndis.success && ndis.data && ndisIsActive(String(ndis.data))) parsed.dialMode = 1;
-        }
-        setSettings((prev) => ({ ...prev, ...parsed }));
+      const res = await at().apiCommand<Partial<DialSettings>>('network.autodial');
+      if (res.success && res.data && typeof res.data.enable === 'number') {
+        setSettings((prev) => ({ ...prev, ...res.data }));
       }
     } catch {
       // 只读查询失败不打断页面，保留上次值
@@ -187,10 +139,9 @@ const NetworkDial: React.FC = () => {
   const fetchUSBMode = async () => {
     setLoading((l) => ({ ...l, usb: true }));
     try {
-      const res = await sendCmd('AT^SETMODE?');
-      if (res.success && res.data) {
-        const mode = parseInt(String(res.data).trim(), 10);
-        if (!Number.isNaN(mode)) setSettings((prev) => ({ ...prev, usbMode: mode }));
+      const res = await at().apiCommand<{ mode?: number }>('network.usb_mode');
+      if (res.success && typeof res.data?.mode === 'number') {
+        setSettings((prev) => ({ ...prev, usbMode: res.data!.mode }));
       }
     } catch {
       // 只读查询失败不打断页面
@@ -202,12 +153,19 @@ const NetworkDial: React.FC = () => {
   const fetchInfcfg = async () => {
     setLoading((l) => ({ ...l, infcfg: true }));
     try {
-      const res = await sendCmd('AT^TDCFG?');
+      const res = await at().apiCommand<{
+        mode?: number;
+        postRoute?: number;
+        dmz?: { enabled?: boolean; host?: string };
+      }>('network.interface_cfg');
       if (res.success && res.data) {
-        const parsed = parseTDCFG(String(res.data));
-        if (parsed.mode !== undefined) setSettings((prev) => ({ ...prev, infcfgMode: parsed.mode }));
-        if (parsed.postRoute !== undefined) setSettings((prev) => ({ ...prev, postRoute: parsed.postRoute }));
-        setDmzConfig(parsed.dmz);
+        if (typeof res.data.mode === 'number') {
+          setSettings((prev) => ({ ...prev, infcfgMode: res.data!.mode }));
+        }
+        if (typeof res.data.postRoute === 'number') {
+          setSettings((prev) => ({ ...prev, postRoute: res.data!.postRoute }));
+        }
+        if (res.data.dmz) setDmzConfig(adaptDmz(res.data.dmz));
       }
     } catch {
       // 只读查询失败不打断页面
@@ -219,8 +177,10 @@ const NetworkDial: React.FC = () => {
   const fetchDMZ = async () => {
     setLoading((l) => ({ ...l, dmz: true }));
     try {
-      const res = await sendCmd('AT^TDCFG?');
-      if (res.success && res.data) setDmzConfig(parseTDCFG(String(res.data)).dmz);
+      const res = await at().apiCommand<{ dmz?: { enabled?: boolean; host?: string } }>(
+        'network.interface_cfg',
+      );
+      if (res.success && res.data?.dmz) setDmzConfig(adaptDmz(res.data.dmz));
     } catch {
       // 只读查询失败不打断页面
     } finally {
@@ -231,33 +191,8 @@ const NetworkDial: React.FC = () => {
   const fetchPDPContexts = async () => {
     setLoading((l) => ({ ...l, pdp: true }));
     try {
-      const resp1 = await sendCmd('AT+CGDCONT?');
-      const resp2 = await sendCmd('AT+CGACT?');
-      const list: PDPContext[] = [];
-      if (resp1.data) {
-        String(resp1.data)
-          .split('\n')
-          .forEach((line) => {
-            if (!line.startsWith('+CGDCONT:')) return;
-            const match = line.match(/\+CGDCONT: (\d+),"([^"]*)","([^"]*)",([^,]*),?(\d*),?(\d*)/);
-            if (match) {
-              list.push({ cid: Number(match[1]), type: match[2], apn: match[3], pdp_addr: match[4] || '' });
-            }
-          });
-      }
-      const actives = new Map<number, boolean>();
-      if (resp2.data) {
-        String(resp2.data)
-          .split('\n')
-          .forEach((line) => {
-            const match = line.match(/\+CGACT: (\d+),(\d+)/);
-            if (match) actives.set(Number(match[1]), match[2] === '1');
-          });
-      }
-      list.forEach((ctx) => {
-        ctx.active = actives.get(ctx.cid) || false;
-      });
-      setPdpList(list.filter((ctx) => ctx.cid !== 0 && ctx.cid < 21));
+      const res = await at().apiCommand<{ contexts?: PDPContext[] }>('network.pdp_contexts');
+      if (res.success) setPdpList(res.data?.contexts ?? []);
     } catch {
       // 只读查询失败不打断页面
     } finally {

@@ -15,7 +15,8 @@ use crate::core::task::Priority;
 use crate::modules::network::commands::{self, COPS, SYSCFGEX_QUERY, SYSINFOEX};
 use crate::modules::network::parser;
 use crate::modules::network::state::{
-    C5gOptionState, LockKind, LockState, NetworkState, RegistrationState, SysCfgState,
+    AutodialState, C5gOptionState, InterfaceCfgState, LockKind, LockState, NetworkState, PdpContext,
+    RegistrationState, SysCfgState, UsbModeState,
 };
 use crate::scheduler::channel::run_in_task;
 use crate::scheduler::jobs::TaskManager;
@@ -406,4 +407,93 @@ pub fn spawn(tasks: &TaskManager) {
         Some(PERIOD),
         Box::new(|ctx| run_in_task(ctx, |r| refresh(r).map(|st| st.to_json()))),
     );
+}
+
+// ------------------------------------------------------------ dial page reads
+//
+// All four are live reads on a page-load path, so they use the same budget as
+// the other configuration queries (8 s AT / 6 s queue, Normal priority); the
+// display routes turn a failure into an empty object, and the page keeps the
+// value it is showing.
+
+/// Built-in autodial configuration, plus the NDIS fallback the page used when
+/// the reply omits the dial mode.
+pub fn read_autodial(ctx: &RefreshCtx) -> Result<AutodialState, BackendError> {
+    let text = ctx.read(
+        commands::SETAUTODIAL_QUERY,
+        Duration::from_secs(8),
+        Duration::from_secs(6),
+        Priority::Normal,
+    )?;
+    let mut st = parser::parse_autodial(&text);
+    if st.is_empty() {
+        return Err(BackendError::AtRejected(format!(
+            "^SETAUTODIAL? answered an unknown shape: {}",
+            text.trim()
+        )));
+    }
+    // MT5700 关闭内置自动拨号时只回 ^SETAUTODIAL:0，没有数据接口字段；此时用
+    // 正在工作的 NDIS 会话判断 USB 数据口，避免把主机的 USB 拨号显示成"转网口"。
+    if st.dial_mode.is_none() {
+        if let Ok(ndis) = ctx.read(
+            commands::NDISSTATQRY,
+            Duration::from_secs(6),
+            Duration::from_secs(5),
+            Priority::Normal,
+        ) {
+            st.ndis_active = commands::ndis_is_active(&ndis);
+        }
+    }
+    Ok(st)
+}
+
+/// USB port mode (`^SETMODE?`).
+pub fn read_usb_mode(ctx: &RefreshCtx) -> Result<UsbModeState, BackendError> {
+    let text = ctx.read(
+        commands::SETMODE_QUERY,
+        Duration::from_secs(8),
+        Duration::from_secs(6),
+        Priority::Normal,
+    )?;
+    let mode = parser::parse_usb_mode(&text).ok_or_else(|| {
+        BackendError::AtRejected(format!("^SETMODE? answered an unknown shape: {}", text.trim()))
+    })?;
+    Ok(UsbModeState { mode: Some(mode) })
+}
+
+/// Interface configuration (`^TDCFG?`) — one read for the page's two cards.
+pub fn read_interface_cfg(ctx: &RefreshCtx) -> Result<InterfaceCfgState, BackendError> {
+    let text = ctx.read(
+        commands::TDCFG_QUERY,
+        Duration::from_secs(8),
+        Duration::from_secs(6),
+        Priority::Normal,
+    )?;
+    let st = parser::parse_interface_cfg(&text);
+    if st.mode.is_none() && st.post_route.is_none() && !st.dmz_enabled {
+        return Err(BackendError::AtRejected(format!(
+            "^TDCFG? answered an unknown shape: {}",
+            text.trim()
+        )));
+    }
+    Ok(st)
+}
+
+/// PDP context table (`+CGDCONT?` + `+CGACT?`).
+pub fn read_pdp_contexts(ctx: &RefreshCtx) -> Result<Vec<PdpContext>, BackendError> {
+    let defs = ctx.read(
+        commands::CGDCONT_QUERY,
+        Duration::from_secs(8),
+        Duration::from_secs(6),
+        Priority::Normal,
+    )?;
+    let actives = ctx
+        .read(
+            commands::CGACT_QUERY,
+            Duration::from_secs(8),
+            Duration::from_secs(6),
+            Priority::Normal,
+        )
+        .unwrap_or_default();
+    Ok(parser::parse_pdp_contexts(&defs, &actives))
 }

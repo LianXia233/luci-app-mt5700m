@@ -46,6 +46,14 @@ Two kinds of route, declared in the table itself (`Route::display` /
 | `network.radio_set` | `{applied: true, airplane}` — `{airplane: bool}` → `AT+CFUN=0\|1`; the network/registration snapshots are invalidated |
 | `network.syscfg` | `{acqorder, band, roam, srvdomain, lteband}` — display route over `^SYSCFGEX?`; the reply's quoted-or-bare order field and the two trailing reserves are handled here, an unanswered read is an empty object |
 | `network.syscfg_set` | `{applied: true}` — `{acqorder, band, roam, srvdomain, lteband}` → the seven-argument `AT^SYSCFGEX` write; the known acqorder list, the hex band masks and the roam/service-domain ranges are validated here (the CLI's `set-radio-policy` rules) |
+| `network.autodial` | `{enable, dialMode, protocol, apn, username, password, authType}` — `^SETAUTODIAL?`; when autodial is off the firmware omits the mode and the module fills it from `^NDISSTATQRY?` (`dialMode: 1` = the modem dials itself), and an unread state answers `{}` so the read-only dial page keeps what it shows |
+| `network.usb_mode` | `{mode}` — `^SETMODE?` |
+| `network.interface_cfg` | `{mode, postRoute, dmz: {enabled, host}}` — one `^TDCFG?` read answers both of the dial page's cards (it used to issue the command twice); `Dmz: not cfg` is `enabled: false` |
+| `network.pdp_contexts` | `{contexts: [{cid, type, apn, pdp_addr, active}]}` — `+CGDCONT?` joined with `+CGACT?` by cid, cids 1–20 only (0 is the modem's own context) |
+| `network.autodial` | `{enable, dialMode, protocol, apn, username, password, authType}` — `^SETAUTODIAL?`; when autodial is off the firmware omits the mode and the module fills it from `^NDISSTATQRY?` (`dialMode: 1` = the modem dials itself), and an unread state answers `{}` so the read-only dial page keeps what it shows |
+| `network.usb_mode` | `{mode}` — `^SETMODE?` |
+| `network.interface_cfg` | `{mode, postRoute, dmz: {enabled, host}}` — one `^TDCFG?` read answers both of the dial page's cards (the page used to issue the command twice); `Dmz: not cfg` is `enabled: false` |
+| `network.pdp_contexts` | `{contexts: [{cid, type, apn, pdp_addr, active}]}` — `+CGDCONT?` joined with `+CGACT?` by cid, cids 1–20 only (0 is the modem's own context) |
 | `cell.neighbors` | `{cells: [{type, arfcn, pci, rsrp, rsrq, sinr, rxlev, band}]}` — on-demand `AT^MONNC`; hex PCI, the 1/8-unit NR scaling and the ARFCN→band table live here |
 | `cell.scan_start` | `{started: true}` — `{rat?, plmn?, freq?, pci?, band?, scs?}`; validates the manual's constraints (band↔freq exclusivity, PCI only for LTE/NR, SCS required with an NR freq/PCI, band 1–512), builds `AT^CELLSCAN[=…]` including the band **bitmap** (`1 << (band-1)` in hex, nibble-built because n78 needs bit 77) and submits the exclusive task; rejects with `BUSY` while a scan runs |
 | `cell.scan_state` | `{running}` — task introspection only, never touches the modem, so a page reload finds a scan that outlived its mount |

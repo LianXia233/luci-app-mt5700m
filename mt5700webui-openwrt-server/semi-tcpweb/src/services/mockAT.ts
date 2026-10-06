@@ -843,7 +843,11 @@ const mockDeviceApiResponse = (
     key === 'api.modem.reset' ||
     key === 'api.modem.imei_set' ||
     key.startsWith('api.network.radio') ||
-    key.startsWith('api.network.syscfg');
+    key.startsWith('api.network.syscfg') ||
+    key.startsWith('api.network.autodial') ||
+    key.startsWith('api.network.usb_mode') ||
+    key.startsWith('api.network.interface_cfg') ||
+    key.startsWith('api.network.pdp_contexts');
   if (!handled) return null;
   const params = mockApiParams(commandLine, key);
 
@@ -942,6 +946,44 @@ const mockDeviceApiResponse = (
       if (typeof params.lteband === 'string') state.sysCfg.lteband = params.lteband;
       return { success: true, data: { applied: true } };
     }
+    // 拨号页的四条只读路由：形状与后端 modules/network 的 to_json 一致。
+    case 'api.network.autodial':
+      return {
+        success: true,
+        data: {
+          enable: state.dial.enabled,
+          dialMode: state.dial.mode,
+          protocol: state.dial.protocol,
+          apn: state.dial.apn,
+          username: state.dial.username,
+          password: state.dial.password,
+          authType: state.dial.authType,
+        },
+      };
+    case 'api.network.usb_mode':
+      return { success: true, data: { mode: state.usbMode } };
+    case 'api.network.interface_cfg':
+      return {
+        success: true,
+        data: {
+          mode: state.interfaceMode,
+          postRoute: state.postRoute,
+          dmz: { enabled: Boolean(state.dmzHost), host: state.dmzHost || '' },
+        },
+      };
+    case 'api.network.pdp_contexts':
+      return {
+        success: true,
+        data: {
+          contexts: state.pdpContexts.map((ctx) => ({
+            cid: ctx.cid,
+            type: ctx.type,
+            apn: ctx.apn,
+            pdp_addr: ctx.address,
+            active: ctx.active,
+          })),
+        },
+      };
     case 'api.system.thermal':
       return {
         success: true,

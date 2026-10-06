@@ -37,6 +37,13 @@ pub fn routes() -> Vec<Route> {
         Route::on_demand("network.radio_set", radio_set),
         Route::display("network.syscfg", syscfg),
         Route::on_demand("network.syscfg_set", syscfg_set),
+        // The dial page is read-only (LuCI owns the writes); these four answer
+        // what it renders. `network.interface_cfg` covers the page's two
+        // separate ^TDCFG? reads with one.
+        Route::display("network.autodial", autodial),
+        Route::display("network.usb_mode", usb_mode),
+        Route::display("network.interface_cfg", interface_cfg),
+        Route::display("network.pdp_contexts", pdp_contexts),
     ]
 }
 
@@ -66,6 +73,48 @@ fn syscfg_set(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
     service::apply_syscfg(&refresh, acqorder, band, roam, srvdomain, lteband)?;
     let mut m = std::collections::BTreeMap::new();
     m.insert("applied".to_string(), Value::Bool(true));
+    Ok(Value::Obj(m))
+}
+
+/// Built-in autodial configuration (`^SETAUTODIAL?`, with the NDIS fallback).
+///
+/// Display route: unread fields stay absent, so the dial page keeps the values
+/// it is showing instead of blanking its cards.
+fn autodial(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    let refresh = ctx.refresh();
+    match service::read_autodial(&refresh) {
+        Ok(st) => Ok(st.to_json()),
+        Err(_) => Ok(crate::modules::network::state::AutodialState::default().to_json()),
+    }
+}
+
+/// USB port mode (`^SETMODE?`).
+fn usb_mode(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    let refresh = ctx.refresh();
+    match service::read_usb_mode(&refresh) {
+        Ok(st) => Ok(st.to_json()),
+        Err(_) => Ok(crate::modules::network::state::UsbModeState::default().to_json()),
+    }
+}
+
+/// Interface configuration + DMZ host (`^TDCFG?`).
+fn interface_cfg(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    let refresh = ctx.refresh();
+    match service::read_interface_cfg(&refresh) {
+        Ok(st) => Ok(st.to_json()),
+        Err(_) => Ok(crate::modules::network::state::InterfaceCfgState::default().to_json()),
+    }
+}
+
+/// PDP context table (`+CGDCONT?` + `+CGACT?`) — `{contexts: [...]}`.
+fn pdp_contexts(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    let refresh = ctx.refresh();
+    let contexts: Vec<Value> = match service::read_pdp_contexts(&refresh) {
+        Ok(list) => list.iter().map(|c| c.to_json()).collect(),
+        Err(_) => Vec::new(),
+    };
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("contexts".to_string(), Value::Arr(contexts));
     Ok(Value::Obj(m))
 }
 
