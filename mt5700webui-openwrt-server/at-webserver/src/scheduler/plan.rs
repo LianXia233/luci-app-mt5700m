@@ -9,11 +9,12 @@
 //! snapshot collectors for the serial channel, and a slow modem only delays
 //! the next check — never a UI path.
 
-use crate::core::json::Value;
+use crate::core::json::{self, Value};
 use crate::core::task::Priority;
 use crate::modules::network::commands;
 use crate::scheduler::jobs::{TaskCtx, TaskManager};
-use std::sync::{Arc, Mutex};
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -257,6 +258,53 @@ struct SchedulerState {
     switch_count: u64,
 }
 
+/// The running scheduler's state, for `network.schedule_get` (`status`).
+///
+/// Set by [`register`]; a process that never registered (or a unit test) reads
+/// the `Default` state, which is exactly what the pages should show before the
+/// first tick: no mode applied yet.
+static STATUS: OnceLock<Arc<Mutex<SchedulerState>>> = OnceLock::new();
+
+/// `{current_mode, next_switch, switch_count, applied}` — the panel's status
+/// block. `next_switch` is the nearest night-window boundary in `HH:MM`.
+pub fn status(cfg: &SchedCfg) -> Value {
+    let (mode, applied, count) = match STATUS.get().and_then(|st| st.lock().ok()) {
+        Some(guard) => (
+            guard.current_mode.clone(),
+            guard.applied,
+            guard.switch_count,
+        ),
+        None => (String::new(), false, 0),
+    };
+    let next = if cfg.enabled {
+        next_boundary(cfg)
+    } else {
+        String::new()
+    };
+    let mut m = BTreeMap::new();
+    m.insert("current_mode".to_string(), json::str_val(&mode));
+    m.insert("next_switch".to_string(), json::str_val(&next));
+    m.insert("switch_count".to_string(), json::num_val(count as i64));
+    m.insert("applied".to_string(), Value::Bool(applied));
+    Value::Obj(m)
+}
+
+/// The closest of `night_start` / `night_end` after the current local time.
+fn next_boundary(cfg: &SchedCfg) -> String {
+    let (Some(start), Some(end)) = (parse_hhmm(&cfg.night_start), parse_hhmm(&cfg.night_end))
+    else {
+        return String::new();
+    };
+    let cur = now_minutes();
+    let until = |t: u32| (t + 24 * 60 - cur) % (24 * 60);
+    let target = if until(end) == 0 || (until(start) != 0 && until(start) < until(end)) {
+        start
+    } else {
+        end
+    };
+    format!("{:02}:{:02}", target / 60, target % 60)
+}
+
 /// Register the day/night band-lock scheduler as a background periodic task.
 /// All AT traffic flows through the shared arbiter — no direct serial access —
 /// so the scheduler can never contend with the WebSocket / control socket /
@@ -277,6 +325,7 @@ pub fn register(tasks: &TaskManager) {
                 last_service_at: std::time::Instant::now(),
                 switch_count: 0,
             }));
+            let _ = STATUS.set(st.clone());
             move |ctx: &TaskCtx| {
                 let cfg = SchedCfg::load();
                 if !cfg.enabled {

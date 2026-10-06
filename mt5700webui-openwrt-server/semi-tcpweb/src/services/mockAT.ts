@@ -101,6 +101,8 @@ export interface MockModemState {
   postRoute: number;
   dmzHost: string;
   pdpContexts: MockPDPContext[];
+  /** 定时锁频 DTO（与后端 modules/network/schedule.rs 同形状）。 */
+  schedule: ReturnType<typeof createMockSchedule>;
   lteLock: MockLockConfig;
   nrLock: MockLockConfig;
   option5g: {
@@ -435,6 +437,7 @@ export const seedMockSentMessages = (): void => {
 };
 
 export const createMockModemState = (): MockModemState => ({
+  schedule: createMockSchedule(),
   cfun: 1,
   imei: '861234567890123',
   simSlot: 0,
@@ -870,7 +873,8 @@ const mockDeviceApiResponse = (
     key.startsWith('api.network.autodial') ||
     key.startsWith('api.network.usb_mode') ||
     key.startsWith('api.network.interface_cfg') ||
-    key.startsWith('api.network.pdp_contexts');
+    key.startsWith('api.network.pdp_contexts') ||
+    key.startsWith('api.network.schedule_');
   if (!handled) return null;
   const params = mockApiParams(commandLine, key);
 
@@ -957,6 +961,17 @@ const mockDeviceApiResponse = (
           additionalDMRS: Number(dss.additionalDMRS) === 1 ? 1 : 0,
         };
       }
+      return { success: true, data: { applied: true } };
+    }
+    // 定时锁频：真实现是后端 modules/network/schedule.rs（UCI 映射 + 校验），
+    // 演示模式返回同一份 DTO，保存也只改演示状态。
+    case 'api.network.schedule_get':
+      return { success: true, data: state.schedule };
+    case 'api.network.schedule_set': {
+      const { enabled, status, ...rest } = params as Record<string, unknown>;
+      void enabled;
+      void status;
+      state.schedule = { ...state.schedule, ...rest } as typeof state.schedule;
       return { success: true, data: { applied: true } };
     }
     case 'api.network.syscfg':

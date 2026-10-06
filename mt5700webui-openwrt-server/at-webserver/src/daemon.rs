@@ -542,84 +542,36 @@ pub fn normalize_syscfgex(command: &str) -> String {
     cleaned
 }
 
+/// The LuCI/CLI pseudo-commands `AT+SCHED?` / `AT+SCHED={json}`: aliases for
+/// the schedule routes, so the one config mapping stays in
+/// `modules::network::schedule` (the previous port answered the flat UCI map,
+/// which no frontend could read, and wrote back top-level keys that UCI never
+/// had).
 fn handle_schedule_command(command: &str) -> Option<Value> {
+    use crate::modules::network::schedule;
     let trimmed = command.trim();
     if trimmed == "AT+SCHED?" {
-        return Some(ok_response(&sched_json()));
+        return Some(ok_response(&schedule::read().dump()));
     }
     if let Some(rest) = trimmed.strip_prefix("AT+SCHED=") {
         let payload = rest.trim();
         if payload.is_empty() {
             return Some(err_response("empty schedule payload"));
         }
-        let parsed = match json::parse(payload) {
-            Some(v) => v,
-            None => return Some(err_response("invalid schedule json")),
-        };
-        let Value::Obj(map) = parsed else {
+        let Some(parsed) = json::parse(payload) else {
             return Some(err_response("invalid schedule json"));
         };
-        for (key, value) in &map {
-            let uci_key = format!("at-webserver.config.{}", key);
-            let text = match value {
-                Value::Str(s) => s.clone(),
-                Value::Bool(b) => b.to_string(),
-                Value::Num(n) => n.clone(),
-                _ => continue,
-            };
-            let _ = std::process::Command::new("uci")
-                .args(["set", &uci_key, &text])
-                .status();
+        if !matches!(parsed, Value::Obj(_)) {
+            return Some(err_response("invalid schedule json"));
         }
-        let _ = std::process::Command::new("uci")
-            .args(["commit", "at-webserver"])
-            .status();
-        return Some(ok_response(""));
+        return Some(match schedule::write(&parsed) {
+            Ok(()) => ok_response(""),
+            Err(e) => err_response(&e.detail()),
+        });
     }
     None
 }
 
-fn sched_json() -> String {
-    // Mirror the Go schedconfig field set.
-    let keys = [
-        "schedule_enabled",
-        "schedule_check_interval",
-        "schedule_timeout",
-        "schedule_unlock_lte",
-        "schedule_unlock_nr",
-        "schedule_toggle_airplane",
-        "schedule_night_enabled",
-        "schedule_night_start",
-        "schedule_night_end",
-        "schedule_night_lte_type",
-        "schedule_night_lte_bands",
-        "schedule_night_lte_arfcns",
-        "schedule_night_lte_scs_types",
-        "schedule_night_lte_pcis",
-        "schedule_night_nr_type",
-        "schedule_night_nr_bands",
-        "schedule_night_nr_arfcns",
-        "schedule_night_nr_scs_types",
-        "schedule_night_nr_pcis",
-        "schedule_day_enabled",
-        "schedule_day_lte_type",
-        "schedule_day_lte_bands",
-        "schedule_day_lte_arfcns",
-        "schedule_day_lte_scs_types",
-        "schedule_day_lte_pcis",
-        "schedule_day_nr_type",
-        "schedule_day_nr_bands",
-        "schedule_day_nr_arfcns",
-        "schedule_day_nr_scs_types",
-        "schedule_day_nr_pcis",
-    ];
-    let mut map = std::collections::BTreeMap::new();
-    for key in keys {
-        let value = uci_get(&format!("at-webserver.config.{}", key)).unwrap_or_default();
-        map.insert(key.to_string(), json::str_val(&value));
-    }
-    Value::Obj(map).dump()
-}
 
 // ---------------------------------------------------------------- Control socket
 //

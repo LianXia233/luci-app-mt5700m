@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import { Banner, Button, Collapse, Input, InputNumber, Space, Switch, Tag, Toast, Typography } from '@douyinfe/semi-ui';
 import { useATReady } from '@/hooks/useATReady';
-import { fetchSchedule, modeText, saveSchedule, type ScheduleConfig, type SchedulePeriod } from '@/modem/schedule';
+import { fetchSchedule, modeText, saveSchedule, type ScheduleConfig, type SchedulePeriod } from '@/services/schedule';
 import { fromLockLists, toLockLists, type LockItem } from '@/modem/lock';
 import { Field, PageCard, TwoCol } from '@/ui/widgets';
 import { LockEditor } from '@/ui/LockEditor';

@@ -197,7 +197,14 @@ aliases, so the move itself changed no behaviour.
    decoding and the copy; `sms.ussd_send`/`sms.ussd_cancel` are the routes and
    the decoded answer also goes out as the `sms.ussd` event, so no page parses
    a `+CUSD` line.
-6. **Frontend AT removal**:
+6. **Schedule (定时锁频)**: the panel read and wrote its config through a JSON
+   blob smuggled inside a pseudo-AT command (`AT+SCHED=`), and the daemon port
+   answered with the flat UCI map — every value a string, no `night`/`day`
+   nesting — so no frontend could render it, while a save wrote top-level UCI
+   keys that do not exist. `modules/network/schedule.rs` owns the DTO and its
+   UCI mapping, `network.schedule_get`/`schedule_set` are the routes, and
+   `AT+SCHED?`/`AT+SCHED=` remain as aliases to them for the CLI and LuCI.
+7. **Frontend AT removal**:
    * WebUI — display already flows through the daemon's topic cache
      (`services/stateCache.ts` + `useSharedStateTopic`); the remaining AT usage
      is action/refresh paths in `services/at.ts` + `modem/*.ts`, which convert
@@ -207,10 +214,10 @@ aliases, so the move itself changed no behaviour.
      `mt5700m-at status/advanced …`; those pages move to the routes above and
      the duplicated decoders are deleted. The dashboard already reads the
      daemon cache via `api.cachedSnapshot()`.
-7. **Fold `mt5700m-traffic` into `modules/traffic`** (last non-Rust business
+8. **Fold `mt5700m-traffic` into `modules/traffic`** (last non-Rust business
    process) and the dialing glue of `mt5700m-manager` into `modules/network`
    actions.
-8. **Split the two god files** (`daemon.rs` ~1.9k lines, `api/cli.rs` ~2.4k):
+9. **Split the two god files** (`daemon.rs` ~1.9k lines, `api/cli.rs` ~2.4k):
    `daemon.rs` → `transport/{ws_server,rpc_server,control_server}` +
    `api/rpc.rs`; `api/cli.rs` → one `render_text` per module + a small verb
    table. Both are now pure wiring/adapters, so the split is mechanical.

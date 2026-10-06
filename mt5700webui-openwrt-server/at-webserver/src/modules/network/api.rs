@@ -44,7 +44,26 @@ pub fn routes() -> Vec<Route> {
         Route::display("network.usb_mode", usb_mode),
         Route::display("network.interface_cfg", interface_cfg),
         Route::display("network.pdp_contexts", pdp_contexts),
+        // 定时锁频：配置在 UCI 里（`scheduler::plan` 每 15 s 读一次生效），
+        // 读路由给页面快照，写路由只落盘不碰模组 —— LuCI 的 `AT+SCHED*`
+        // 伪命令现在也只是这两条的别名。
+        Route::display("network.schedule_get", schedule_get),
+        Route::on_demand("network.schedule_set", schedule_set),
     ]
+}
+
+/// `{enabled, check_interval, …, night, day, status}` — the schedule panel's
+/// snapshot (`modules::network::schedule`).
+fn schedule_get(_ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    Ok(crate::modules::network::schedule::read())
+}
+
+/// `{applied: true}` — validate and persist a schedule save.
+fn schedule_set(_ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+    crate::modules::network::schedule::write(params)?;
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("applied".to_string(), Value::Bool(true));
+    Ok(Value::Obj(m))
 }
 
 /// Access-technology configuration (`^SYSCFGEX?`): the "网络系统配置" card.

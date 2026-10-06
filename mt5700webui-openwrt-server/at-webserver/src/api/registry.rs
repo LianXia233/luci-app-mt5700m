@@ -245,6 +245,7 @@ mod tests {
             "system.power_control_set" => pairs(&[("enabled", Value::Bool(true))]),
             "modem.imei_set" => pairs(&[("imei", json::str_val("861234567890123"))]),
             "sms.ussd_send" => pairs(&[("code", json::str_val("*133#"))]),
+            "network.schedule_set" => pairs(&[("check_interval", json::num_val(60))]),
             "network.radio_set" => pairs(&[("airplane", Value::Bool(true))]),
             "network.syscfg_set" => pairs(&[
                 ("acqorder", json::str_val("080302")),

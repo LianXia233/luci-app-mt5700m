@@ -36,6 +36,7 @@ cannot reach the AT layer: it can only call a route or read a topic.
 | `netrate` | `traffic::service::refresh_netrate` | 5 s | `available:false` + reason |
 | `scan` | `cell::scan::start` (exclusive task) | **on demand** (`cell.scan_start`) | one `{state, cells, count}` push per scan; `cell.scan_state`/`cell.scan_abort` are task introspection |
 | `fota` | `system::fota::start` (long-running task) | **on demand** (`system.fota_start`) | one `fota.progress` push per state change; `system.fota` answers from the snapshot, `system.fota_abort` cancels the task |
+| `schedule` | `network::schedule::write` (UCI) | on save | not a modem topic: `scheduler::plan` re-reads UCI every 15 s, `network.schedule_get` reads it on page load |
 | `sms`, `task`, `usb`, `beam`, `raw:*` | daemon/URC/dispatch paths | event-driven | topic-specific — the `+CUSD` line is decoded with `modules::sms::ussd::parse_reply` in the URC path and pushed as `sms.ussd` (+ the raw `raw_data` line) |
 
 TTLs live in `state/cache.rs`; publishing goes through
