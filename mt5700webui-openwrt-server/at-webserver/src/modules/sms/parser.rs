@@ -210,7 +210,7 @@ mod tests {
     fn cmgl_keeps_concatenation_metadata_and_skips_bad_lines() {
         let raw = "AT+CMGL=4\r\n\
             +CMGL: 7,1,,23\r\n\
-            00440D91683108108300F00000628062418263230905C060250800D069\r\n\
+            00440D91683108108300F000006280624182632309050003AB0201D069\r\n\
             +CMGL: 8,1,,20\r\n\
             not-a-pdu\r\n\
             OK";
@@ -230,9 +230,9 @@ mod tests {
         // part listed first, which is what the modem sometimes answers.
         let raw = "AT+CMGL=4\r\n\
             +CMGL: 5,1,,23\r\n\
-            00440D91683108108300F00000628062418263230905C060251000F26F\r\n\
+            00440D91683108108300F000006280624182632309050003AB0202F26F\r\n\
             +CMGL: 4,1,,23\r\n\
-            00440D91683108108300F00000628062418263230905C060250800D069\r\n\
+            00440D91683108108300F000006280624182632309050003AB0201D069\r\n\
             OK";
         let list = parse_cmgl(raw);
         assert_eq!(list.len(), 1);
@@ -246,9 +246,9 @@ mod tests {
         // second part below comes from +8613900139000.
         let twice = parse_cmgl(
             "+CMGL: 1,1,,23\r\n\
-             00440D91683108108300F00000628062418263230905C060250800D069\r\n\
+             00440D91683108108300F000006280624182632309050003AB0201D069\r\n\
              +CMGL: 2,1,,23\r\n\
-             00440D91683109109300F00000628062418263230905C060251000F26F\r\n\
+             00440D91683109109300F000006280624182632309050003AB0202F26F\r\n\
              OK",
         );
         assert_eq!(twice.len(), 2);

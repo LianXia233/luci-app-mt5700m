@@ -148,18 +148,6 @@ pub fn sanitize_command(cmd: &str) -> String {
 
 // ---------------------------------------------------------------- Serial
 
-/// Port of `at_serial_cmd()`. Opens the device exclusively, sends the command
-/// and reads until a final result line appears or the timeout elapses.
-
-/// Send an already-encoded SMS-SUBMIT PDU over an exclusive direct serial
-/// port: two-phase `AT+CMGS` (command, wait `>`, payload + 0x1A, wait result).
-/// Used by the CLI when the daemon is unavailable.
-
-/// Poll `buffer` until `pred` holds, an anchored terminator appears, or the
-/// timeout elapses. `writer` is unused except to keep the TTY write held open.
-#[allow(clippy::type_complexity)]
-
-
 /// `EAGAIN`'s raw errno on Linux. Kept as a helper so the constant lives in
 /// one place and the loop above stays readable.
 #[cfg(target_os = "linux")]

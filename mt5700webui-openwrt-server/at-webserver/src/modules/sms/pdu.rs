@@ -13,25 +13,35 @@
 //! The SMS-SUBMIT TPDU includes the destination address (TOA 0x91 for
 //! international numbers) and, when multiple parts are needed, a 6-byte
 //! concatenation Information Element (IEI 0x00) in the user-data header.
-//! The service-centre prefix is left empty (`00`) so the modem uses its
-//! stored SMSC (configurable via `mt5700m-at sms-set smsc <number>`).
+//!
+//! A PDU handed to `AT+CMGS` is the service-centre field followed by the TPDU,
+//! and `AT+CMGS=<len>` counts the TPDU only (3GPP 27.005). The centre comes
+//! from `+CSCA?` (the value the settings page writes); when the modem reports
+//! none, the field is the single octet `00`, which means "use the centre stored
+//! in the SIM" — the same fallback the send page used to take.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
 /// A fully encoded SMS-SUBMIT PDU ready to be passed to `AT+CMGS=<len>`.
 #[derive(Debug, Clone)]
 pub struct SmsPdu {
-    /// User-data length for `AT+CMGS=<len>`: number of septets for GSM-7
-    /// (including the 6-septet concat header when multipart), number of
-    /// octets for UCS-2.
+    /// `AT+CMGS=<len>`: the TPDU length in **octets**. 3GPP 27.005 counts the
+    /// TPDU alone, so the service-centre prefix in `hex` is not included.
     pub length: u32,
-    /// Hex encoding of the TPDU (without any SMSC prefix).
+    /// The complete PDU in hex — service-centre field followed by the TPDU,
+    /// exactly what follows `AT+CMGS=<len>` (before the trailing Ctrl-Z).
     pub hex: String,
 }
 
 impl SmsPdu {
-    fn new(length: u32, tpdu: Vec<u8>) -> Self {
-        let hex = tpdu.iter().map(|b| format!("{:02X}", b)).collect();
+    /// Wrap one TPDU with the service-centre field that must precede it.
+    fn new(sca: &[u8], tpdu: Vec<u8>) -> Self {
+        let length = tpdu.len() as u32;
+        let hex: String = sca
+            .iter()
+            .chain(tpdu.iter())
+            .map(|b| format!("{:02X}", b))
+            .collect();
         SmsPdu { length, hex }
     }
 }
@@ -102,6 +112,41 @@ fn pack_septets(septets: &[u8]) -> Vec<u8> {
     out
 }
 
+/// The concatenation UDH (8-bit reference, 3GPP 23.040 9.2.3.24):
+/// `UDHL=5, IEI=0x00, IE length 3, reference, total, sequence`.
+fn concat_udh(reference: u8, total: usize, seq: usize) -> [u8; 6] {
+    [0x05, 0x00, 0x03, reference, total as u8, seq as u8 + 1]
+}
+
+/// Septets a header occupies: `ceil(octets * 8 / 7)` — 6 octets are 7 septets
+/// (48 bits plus one padding bit). 3GPP 23.040: after a UDH, a 7-bit payload
+/// starts on the next septet boundary.
+fn header_septets(header: &[u8]) -> usize {
+    (header.len() * 8 + 6) / 7
+}
+
+/// Pack a header's octets followed by a 7-bit payload into one user-data
+/// buffer: the header sits at bits 0.., the payload resumes on the next septet
+/// boundary. Unused bits (the padding bit and the final partial octet) stay 0.
+fn pack_udh_and_septets(header: &[u8], septets: &[u8]) -> Vec<u8> {
+    let start = header_septets(header);
+    let total_bits = start * 7 + septets.len() * 7;
+    let mut out = vec![0u8; (total_bits + 7) / 8];
+    for (i, &b) in header.iter().enumerate() {
+        out[i] |= b; // the UDH itself is byte-aligned at the start
+    }
+    for (i, &s) in septets.iter().enumerate() {
+        let bit = start * 7 + i * 7;
+        let (byte, shift) = (bit / 8, bit % 8);
+        let value = ((s & 0x7F) as u16) << shift;
+        out[byte] |= (value & 0xFF) as u8;
+        if let Some(next) = out.get_mut(byte + 1) {
+            *next |= (value >> 8) as u8;
+        }
+    }
+    out
+}
+
 /// Encode `text` as GSM-7 septets, or `None` if it contains chars outside the
 /// default alphabet.
 fn gsm7_septets(text: &str) -> Option<Vec<u8>> {
@@ -127,6 +172,25 @@ fn ucs2_be(text: &str) -> Vec<u8> {
 
 // ---------------------------------------------------------------- Address
 
+/// Pack digits into swapped semi-octets (low nibble first), padding an odd
+/// trailing digit with `F` — the Address-Value layout both the service-centre
+/// field and the destination use.
+fn pack_digits(digits: &str) -> Vec<u8> {
+    let chars: Vec<char> = digits.chars().filter(|c| c.is_ascii_digit()).collect();
+    let mut out = Vec::with_capacity((chars.len() + 1) / 2);
+    let mut i = 0;
+    while i < chars.len() {
+        let hi = chars[i].to_digit(16).unwrap_or(0) as u8;
+        let lo = chars
+            .get(i + 1)
+            .and_then(|c| c.to_digit(16))
+            .unwrap_or(15) as u8;
+        out.push((lo << 4) | hi); // nibbles swapped, low nibble first
+        i += 2;
+    }
+    out
+}
+
 /// Build the TP-DA segment: address-length (nibbles), TOA, swapped digits.
 fn encode_destination(number: &str) -> Vec<u8> {
     let intl = number.starts_with('+');
@@ -140,21 +204,30 @@ fn encode_destination(number: &str) -> Vec<u8> {
         (digits.len() + 1) as u8
     };
     let toa: u8 = if intl { 0x91 } else { 0x81 };
-    let max_pairs = (usize::from(nibbles)) / 2;
-    let chars: Vec<char> = digits.chars().collect();
-    let mut body = Vec::with_capacity(max_pairs + 1);
-    for i in 0..max_pairs {
-        let hi = chars[i * 2].to_digit(16).unwrap_or(0) as u8;
-        let lo = chars
-            .get(i * 2 + 1)
-            .and_then(|c| c.to_digit(16))
-            .unwrap_or(15) as u8;
-        body.push((lo << 4) | hi); // nibbles swapped, low nibble first
-    }
-    let mut out = Vec::with_capacity(2 + body.len());
+    let mut out = Vec::with_capacity(2 + usize::from(nibbles) / 2);
     out.push(nibbles);
     out.push(toa);
-    out.extend_from_slice(&body);
+    out.extend_from_slice(&pack_digits(&digits));
+    out
+}
+
+/// The service-centre field every PDU starts with: length octet (which counts
+/// the TOA octet too), TOA 0x91 and the swapped digits. `None`/no digits yields
+/// the single octet `00`, i.e. "whatever centre the SIM holds".
+fn service_center(center: Option<&str>) -> Vec<u8> {
+    let digits: String = center
+        .unwrap_or("")
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .collect();
+    if digits.is_empty() {
+        return vec![0x00];
+    }
+    let octets = (digits.len() + 1) / 2;
+    let mut out = Vec::with_capacity(2 + octets);
+    out.push((octets + 1) as u8); // the length octet includes the TOA octet
+    out.push(0x91); // the page always sent the centre as an international number
+    out.extend_from_slice(&pack_digits(&digits));
     out
 }
 
@@ -234,28 +307,32 @@ pub fn message_stats(text: &str) -> MessageStats {
     }
 }
 
-/// Build the final list of PDUs for `number`/`text`. Returns at least one PDU;
-/// long text is split into concatenated parts carrying a UDHI header.
-pub fn encode(number: &str, text: &str) -> Vec<SmsPdu> {
+/// Build the final list of PDUs for `number`/`text`, each prefixed with the
+/// service-centre field (`center`, as reported by `+CSCA?`; `None` means `00`).
+/// Returns at least one PDU; long text is split into concatenated parts
+/// carrying a UDHI header.
+pub fn encode(number: &str, text: &str, center: Option<&str>) -> Vec<SmsPdu> {
     let refnum = next_ref();
+    let sca = service_center(center);
 
     if let Some(septets) = gsm7_septets(text) {
         if septets.len() <= GSM7_SINGLE_MAX {
             let packed = pack_septets(&septets);
             let tpdu = assemble_tpdu(number, 0x00, septets.len() as u32, false, &packed);
-            return vec![SmsPdu::new(septets.len() as u32, tpdu)];
+            return vec![SmsPdu::new(&sca, tpdu)];
         }
         let total_parts = part_count(septets.len(), GSM7_SINGLE_MAX, GSM7_PART_MAX);
         let mut pdus = Vec::with_capacity(total_parts);
         for seq in 0..total_parts {
             let start = seq * GSM7_PART_MAX;
             let end = (start + GSM7_PART_MAX).min(septets.len());
-            // Concatenation header as septets: IEI, IEL, ref, total, seq.
-            let mut part: Vec<u8> = vec![0x00, 0x03, refnum, total_parts as u8, seq as u8 + 1];
-            part.extend_from_slice(&septets[start..end]);
-            let packed = pack_septets(&part);
-            let tpdu = assemble_tpdu(number, 0x00, part.len() as u32, true, &packed);
-            pdus.push(SmsPdu::new(part.len() as u32, tpdu));
+            let payload = &septets[start..end];
+            let udh = concat_udh(refnum, total_parts, seq);
+            let ud = pack_udh_and_septets(&udh, payload);
+            // TP-UDL counts septets, header included.
+            let udl = (header_septets(&udh) + payload.len()) as u32;
+            let tpdu = assemble_tpdu(number, 0x00, udl, true, &ud);
+            pdus.push(SmsPdu::new(&sca, tpdu));
         }
         return pdus;
     }
@@ -264,17 +341,18 @@ pub fn encode(number: &str, text: &str) -> Vec<SmsPdu> {
     let octets = ucs2_be(text);
     if octets.len() <= UCS2_SINGLE_MAX {
         let tpdu = assemble_tpdu(number, 0x08, octets.len() as u32, false, &octets);
-        return vec![SmsPdu::new(octets.len() as u32, tpdu)];
+        return vec![SmsPdu::new(&sca, tpdu)];
     }
     let total_parts = part_count(octets.len(), UCS2_SINGLE_MAX, UCS2_PART_MAX);
     let mut pdus = Vec::with_capacity(total_parts);
     for seq in 0..total_parts {
         let start = seq * UCS2_PART_MAX;
         let end = (start + UCS2_PART_MAX).min(octets.len());
-        let mut data: Vec<u8> = vec![0x00, 0x03, refnum, total_parts as u8, seq as u8 + 1];
-        data.extend_from_slice(&octets[start..end]);
-        let tpdu = assemble_tpdu(number, 0x08, data.len() as u32, true, &data);
-        pdus.push(SmsPdu::new(data.len() as u32, tpdu));
+        let mut ud = concat_udh(refnum, total_parts, seq).to_vec();
+        ud.extend_from_slice(&octets[start..end]);
+        // UCS-2 is octet-aligned, so TP-UDL counts octets, header included.
+        let tpdu = assemble_tpdu(number, 0x08, ud.len() as u32, true, &ud);
+        pdus.push(SmsPdu::new(&sca, tpdu));
     }
     pdus
 }
@@ -341,10 +419,12 @@ fn decode_septets(septets: &[u8], escape_state: &mut bool) -> String {
     out
 }
 
-/// Unpack `count` septets from GSM 7-bit packed octets.
-fn unpack_septets(octets: &[u8], count: usize) -> Vec<u8> {
+/// Unpack `count` septets from GSM 7-bit packed octets, starting at septet
+/// `start` (0 for a payload with no header, `ceil(header_octets * 8 / 7)` when
+/// a UDH shifted the payload off the byte boundary).
+fn unpack_septets_at(octets: &[u8], start: usize, count: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(count);
-    let mut bit = 0usize;
+    let mut bit = start * 7;
     for _ in 0..count {
         let byte = bit / 8;
         let shift = bit % 8;
@@ -356,6 +436,11 @@ fn unpack_septets(octets: &[u8], count: usize) -> Vec<u8> {
         bit += 7;
     }
     out
+}
+
+/// Unpack septets from the start of the octets.
+fn unpack_septets(octets: &[u8], count: usize) -> Vec<u8> {
+    unpack_septets_at(octets, 0, count)
 }
 
 // ------------------------------------------------------------ SMS-DELIVER
@@ -401,15 +486,6 @@ fn decode_address(hex: &[u8], start: usize, digits: usize) -> String {
     out
 }
 
-fn decode_digits(hex: &[u8], start: usize, count: usize) -> Option<u8> {
-    let mut value = 0u32;
-    for i in 0..count {
-        let d = (*hex.get(start + i)? as char).to_digit(16)?;
-        value = value * 16 + d;
-    }
-    Some(value as u8)
-}
-
 /// Decode one SMS-DELIVER PDU (the hex `AT+CMGL` returns, without the leading
 /// SMSC field, or with it — both are handled).
 pub fn decode_deliver(hex_str: &str) -> Option<DeliverSms> {
@@ -423,9 +499,9 @@ pub fn decode_deliver(hex_str: &str) -> Option<DeliverSms> {
     }
 
     // SMSC prefix: a length octet followed by that many bytes (often `00`).
-    let smsc_len = decode_digits(&hex, 0, 2)? as usize;
+    let smsc_len = hex_byte(&hex, 0)? as usize;
     let mut i = 1 + smsc_len;
-    let first_octet = decode_digits(&hex, i, 2)?;
+    let first_octet = hex_byte(&hex, i)?;
     i += 1;
     // TP-MTI must be 00 (SMS-DELIVER); 01 is a SUBMIT we cannot render.
     if first_octet & 0x03 != 0 {
@@ -434,8 +510,8 @@ pub fn decode_deliver(hex_str: &str) -> Option<DeliverSms> {
     let udhi = first_octet & 0x40 != 0;
 
     // TP-OA: length (digits), type-of-address, then the packed digits.
-    let oa_digits = decode_digits(&hex, i, 2)? as usize;
-    let oa_toa = decode_digits(&hex, i + 1, 2)?;
+    let oa_digits = hex_byte(&hex, i)? as usize;
+    let oa_toa = hex_byte(&hex, i + 1)?;
     let oa_start = i + 2;
     let oa_octets = (oa_digits + 1) / 2;
     i = oa_start + oa_octets;
@@ -452,8 +528,8 @@ pub fn decode_deliver(hex_str: &str) -> Option<DeliverSms> {
         decode_address(&hex, oa_start, oa_digits)
     };
 
-    let _pid = decode_digits(&hex, i, 2)?;
-    let dcs = decode_digits(&hex, i + 1, 2)?;
+    let _pid = hex_byte(&hex, i)?;
+    let dcs = hex_byte(&hex, i + 1)?;
     i += 2;
 
     // TP-SCTS: YY MM DD HH MM SS TZ, two digits per octet, first digit in the
@@ -461,7 +537,7 @@ pub fn decode_deliver(hex_str: &str) -> Option<DeliverSms> {
     // octet is quarters of an hour, which the UI's `+32` display also shows.
     let mut scts = [0u8; 7];
     for (k, slot) in scts.iter_mut().enumerate() {
-        let byte = decode_digits(&hex, i + k, 2)?;
+        let byte = hex_byte(&hex, i + k)?;
         let (tens, units) = (byte & 0x0F, byte >> 4);
         if tens > 9 || units > 9 {
             return None;
@@ -478,7 +554,7 @@ pub fn decode_deliver(hex_str: &str) -> Option<DeliverSms> {
     // The MT5700M's voice/SMS profile answers 0x08 for UCS-2, which is why the
     // predicate must test both bits, not just the 0x04 one.
     let ucs2 = (dcs >> 2) & 0x03 == 0x02;
-    let udl = decode_digits(&hex, i, 2)? as usize;
+    let udl = hex_byte(&hex, i)? as usize;
     i += 1;
     let ud_octets = if ucs2 { udl } else { (udl * 7 + 7) / 8 };
     let ud = decoded_octets(&hex, i, ud_octets)?;
@@ -507,7 +583,7 @@ pub fn decode_deliver(hex_str: &str) -> Option<DeliverSms> {
     }
 
     let text = if ucs2 {
-        // UCS-2: big-endian pairs.
+        // UCS-2 is octet-aligned, so the header is simply skipped.
         let mut s = String::new();
         let mut k = 0usize;
         while k + 1 < body.len() {
@@ -519,7 +595,16 @@ pub fn decode_deliver(hex_str: &str) -> Option<DeliverSms> {
         }
         s
     } else {
-        let septets = unpack_septets(&body, udl.saturating_sub((header_octets * 8 + 6) / 7));
+        // 7-bit: the UDH is a whole number of octets but the payload continues
+        // on a *septet* boundary, so 6 header octets consume ceil(48 / 7) = 7
+        // septets (padding included). Slicing bytes instead would shift every
+        // character by one bit.
+        let start = if udhi {
+            (header_octets * 8 + 6) / 7
+        } else {
+            0
+        };
+        let septets = unpack_septets_at(&ud, start, udl.saturating_sub(start));
         let mut escape = false;
         decode_septets(&septets, &mut escape)
     };
@@ -565,43 +650,144 @@ mod tests {
         assert_eq!(hd, "E8329BFD06");
     }
 
+    /// Read a hex TPDU back into octets (test helper).
+    fn hex_to_bytes(hex: &str) -> Vec<u8> {
+        hex.as_bytes()
+            .chunks(2)
+            .map(|c| u8::from_str_radix(std::str::from_utf8(c).unwrap(), 16).unwrap())
+            .collect()
+    }
+
+    /// The TPDU inside a PDU: skip the service-centre field (a length octet
+    /// plus that many octets) so the caller sees `[FO][MR][DA-len][TOA]…`.
+    fn tpdu_of(pdu_hex: &str) -> Vec<u8> {
+        let pdu = hex_to_bytes(pdu_hex);
+        let sca_octets = pdu[0] as usize;
+        pdu[1 + sca_octets..].to_vec()
+    }
+
+    /// Re-wrap an SMS-SUBMIT's user data as an SMS-DELIVER — the way the same
+    /// message comes back from the network. The submit's destination becomes
+    /// the sender, the timestamp is fixed.
+    fn deliver_from_submit(submit_hex: &str) -> String {
+        let t = tpdu_of(submit_hex);
+        let oa_octets = (t[2] as usize + 1) / 2; // FO, MR, DA-len, TOA, DA…
+        let dcs = t[5 + oa_octets];
+        let udl = t[6 + oa_octets];
+        let ud = &t[7 + oa_octets..];
+        // SMS-DELIVER first octet: MTI 00, TP-UDHI copied from the submit (the
+        // only bit that has to survive the direction change here).
+        let mut out: Vec<u8> = vec![0x00, 0x04 | (t[0] & 0x40), t[2], t[3]];
+        out.extend_from_slice(&t[4..4 + oa_octets]);
+        out.push(0x00); // TP-PID
+        out.push(dcs);
+        out.extend_from_slice(&[0x62, 0x80, 0x62, 0x41, 0x82, 0x63, 0x23]); // SCTS
+        out.push(udl);
+        out.extend_from_slice(ud);
+        out.iter().map(|b| format!("{:02X}", b)).collect()
+    }
+
     #[test]
     fn single_ascii_pdu_shapes() {
-        let pdus = encode("+8613800138000", "hello");
+        let pdus = encode("+8613800138000", "hello", None);
         assert_eq!(pdus.len(), 1);
-        assert!(pdus[0].hex.starts_with("01")); // SMS-SUBMIT, no UDHI
+        // `00` service centre (the SIM's own) + SMS-SUBMIT, no UDHI.
+        assert!(pdus[0].hex.starts_with("0001"));
         // 14 digits -> address-length nibble 0x0E, TOA 0x91 (intl).
         assert!(pdus[0].hex.contains("0E91"));
-        assert_eq!(pdus[0].length, 5); // 5 septets
+        // `AT+CMGS=<len>` takes the TPDU octet count: the whole PDU minus the
+        // single-octet `00` service-centre field.
+        assert_eq!(pdus[0].length as usize, pdus[0].hex.len() / 2 - 1);
+    }
+
+    #[test]
+    fn service_centre_field_is_built_from_the_configuration() {
+        let without = encode("+8613800138000", "hello", None);
+        assert!(without[0].hex.starts_with("00"));
+
+        let with = encode("+8613800138000", "hello", Some("+8613800138000"));
+        // 13 digits -> 14 nibbles -> 7 octets, so the length octet counts the
+        // TOA too: 8. Field = 08 91 68 31 08 10 83 00 F0 (9 octets).
+        assert!(with[0].hex.starts_with("0891683108108300F0"), "{}", with[0].hex);
+        assert_eq!(with[0].length as usize, with[0].hex.len() / 2 - 9);
+        // Same TPDU in both cases; only the service-centre field differs.
+        assert_eq!(with[0].length, without[0].length);
+        assert!(with[0].hex.ends_with(&without[0].hex[2..]));
     }
 
     #[test]
     fn ucs2_pdu_for_chinese() {
-        let pdus = encode("+8613800138000", "你好");
+        let pdus = encode("+8613800138000", "你好", None);
         assert_eq!(pdus.len(), 1);
         assert!(pdus[0].hex.contains("08")); // DCS UCS-2
-        assert_eq!(pdus[0].length, 4); // 4 octets
+        assert_eq!(pdus[0].length as usize, pdus[0].hex.len() / 2 - 1);
         // UDL byte 0x04 followed by the 4 UTF-16BE data octets.
         assert!(pdus[0].hex.ends_with("044F60597D"));
         assert!(pdus[0].hex.contains("4F60597D"));
     }
 
     #[test]
-    fn multipart_split_adds_udhi() {
+    fn multipart_split_adds_udhi_and_a_standard_header() {
         let text = "x".repeat(200);
-        let pdus = encode("13800138000", &text);
+        let pdus = encode("13800138000", &text, None);
         assert!(pdus.len() > 1, "expected >1 part, got {}", pdus.len());
-        for p in &pdus {
-            assert!(p.hex.starts_with("41")); // SMS-SUBMIT + UDHI
+        for (i, p) in pdus.iter().enumerate() {
+            assert!(p.hex.starts_with("0041")); // 00 SC + SMS-SUBMIT + UDHI
+            // The PDU is the TPDU plus the single-octet `00` service centre.
+            assert_eq!(p.length as usize, p.hex.len() / 2 - 1);
+            // UDHL=5, IEI=0x00, IE length 3, then total and this sequence.
+            let t = tpdu_of(&p.hex);
+            let oa_octets = (t[2] as usize + 1) / 2;
+            let udl = t[6 + oa_octets] as usize;
+            let ud = &t[7 + oa_octets..];
+            assert_eq!(&ud[..4], &[0x05, 0x00, 0x03, ud[3]], "part {}", i + 1);
+            assert_eq!(ud[4], pdus.len() as u8); // total parts
+            assert_eq!(ud[5], i as u8 + 1); // this part
+            // TP-UDL counts septets, header included: 7 for the 6-octet UDH
+            // plus this part's payload (153 septets per full part).
+            let payload = (text.len() - i * GSM7_PART_MAX).min(GSM7_PART_MAX);
+            assert_eq!(udl, 7 + payload, "part {}", i + 1);
+            // One reference for every part of this message.
+            assert_eq!(ud[3], {
+                let first = tpdu_of(&pdus[0].hex);
+                let first_oa = (first[2] as usize + 1) / 2;
+                first[7 + first_oa + 3]
+            });
         }
+    }
+
+    #[test]
+    fn multipart_round_trip_through_the_list_parser() {
+        // The same implementation writes the header and reads it back: encode a
+        // long message, present each part as an SMS-DELIVER would arrive, and
+        // let the list parser merge them into one message again.
+        let text = "The quick brown fox jumps over the lazy dog. ".repeat(6);
+        let parts = encode("+8613800138000", &text, None);
+        assert!(parts.len() > 1, "expected a split message");
+        let mut cmgl = String::from("AT+CMGL=4\r\n");
+        for (i, part) in parts.iter().enumerate() {
+            let deliver = deliver_from_submit(&part.hex);
+            cmgl.push_str(&format!(
+                "+CMGL: {},1,,{}\r\n{}\r\n",
+                i + 1,
+                deliver.len() / 2,
+                deliver
+            ));
+        }
+        cmgl.push_str("OK");
+        let list = crate::modules::sms::parser::parse_cmgl(&cmgl);
+        assert_eq!(list.len(), 1, "the parts must merge into one message");
+        assert_eq!(list[0].content, text);
+        assert!(list[0].is_concatenated);
+        assert_eq!(list[0].concatenated_total, Some(parts.len() as u8));
     }
 
     #[test]
     fn multipart_ucs2_split() {
         let text = "中".repeat(90); // 180 octets -> split UCS-2
-        let pdus = encode("13800138000", &text);
+        let pdus = encode("13800138000", &text, None);
         assert!(pdus.len() > 1);
-        assert!(pdus[0].hex.starts_with("41"));
+        assert!(pdus[0].hex.starts_with("0041"));
         assert!(pdus[0].hex.contains("08"));
     }
 
@@ -642,7 +828,7 @@ mod tests {
         ];
         for text in cases.drain(..) {
             let stats = message_stats(&text);
-            let sent = encode("+8613800138000", &text);
+            let sent = encode("+8613800138000", &text, None);
             let expected_parts = if text.is_empty() { 0 } else { sent.len() };
             assert_eq!(stats.parts, expected_parts, "parts for {} chars", text.chars().count());
             assert_eq!(stats.chars, text.chars().count());
@@ -667,8 +853,9 @@ mod deliver_tests {
     const HELLO: &str = "00040D91683108108300F000006280624182632305E8329BFD06";
     /// Same envelope, UCS-2 payload: "你好".
     const UCS2: &str = "00040D91683108108300F0000862806241826323044F60597D";
-    /// Same envelope with the concatenation header (ref 0xAB, part 1 of 2).
-    const CONCAT: &str = "00440D91683108108300F00000628062418263230905C060250800D069";
+    /// Same envelope with a standard concatenation UDH (ref 0xAB, part 1 of 2)
+    /// and the 7-bit payload "hi" resuming after the header's septet boundary.
+    const CONCAT: &str = "00440D91683108108300F000006280624182632309050003AB0201D069";
 
     #[test]
     fn decodes_a_seven_bit_deliver() {

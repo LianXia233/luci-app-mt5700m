@@ -26,9 +26,11 @@ use std::time::Duration;
 /// the parts cannot interleave with another module's AT traffic.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SmsPart {
-    /// Octet count of `hex` — the argument of `AT+CMGS=<length>`.
+    /// Octet count of the TPDU — the argument of `AT+CMGS=<length>`. The
+    /// service-centre field in `hex` is not counted (3GPP 27.005).
     pub length: usize,
-    /// Hex-encoded PDU, without the trailing `Ctrl-Z`.
+    /// The complete PDU in hex — service-centre field then TPDU — without the
+    /// trailing `Ctrl-Z`.
     pub hex: String,
 }
 

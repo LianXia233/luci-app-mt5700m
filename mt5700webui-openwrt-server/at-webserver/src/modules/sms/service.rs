@@ -121,7 +121,11 @@ pub fn send(ctx: &RefreshCtx, number: &str, text: &str) -> Result<usize, Backend
     if text.trim().is_empty() {
         return Err(BackendError::InvalidParameter("短信内容不能为空".into()));
     }
-    let pdus = pdu::encode(&destination, text);
+    // The centre the network expects in front of every TPDU: the same
+    // `+CSCA?` value the send page used to read, best effort — a modem that
+    // does not answer leaves the field `00`, i.e. "the SIM's own centre".
+    let center = ctx.query(CSCA_QUERY).ok().and_then(|text| parse_csca(&text));
+    let pdus = pdu::encode(&destination, text, center.as_deref());
     let parts: Vec<SmsPart> = pdus
         .iter()
         .map(|p| SmsPart {
