@@ -2,23 +2,30 @@
 //!
 //! A scan takes minutes and owns the modem while it runs, so it cannot be a
 //! blocking route. The module builds the command, submits an exclusive task and
-//! publishes the decoded result on the `cellscan` push topic; the routes only
-//! start it (`cell.scan_start`), report whether it runs (`cell.scan_start`'s
-//! sibling `cell.scan_state`) and abort it (`cell.scan_abort`).
+//! publishes the decoded result on the `cellscan` push topic; `cell.scan_start`
+//! starts it, `cell.scan_state` reports whether it runs and `cell.scan_abort`
+//! cancels it.
 //!
 //! Both frontends used to drive the scan themselves — each built the AT
 //! command (with the firmware's band-bitmap quirk), polled the modem for the
 //! run state and parsed the `^CELLSCAN:` lines field by field. That work lives
-//! here now: the frontends render `{state, cells, count}` and never see an AT
-//! command or a firmware field layout. LuCI's `mt5700m-at cellscan` verb keeps
-//! its raw-text contract by going through `pseudo_command`, which is the same
-//! task, not a second scan path.
+//! here now: the WebUI renders `{state, cells, count}` and never sees an AT
+//! command or a firmware field layout, and the raw `AT^CELLSCAN*` form that
+//! still reaches the WS/`api` command path (`pseudo_command`, i.e. the
+//! terminal console and legacy WS clients) funnels into the same task instead
+//! of being a second scan.
+//!
+//! Still on the old path: `mt5700m-at cellscan` — the LuCI modal's data source
+//! — goes through the daemon's *control socket*, whose `send` verb is a raw
+//! passthrough with a 30 s window that cannot carry a minutes-long scan. Its
+//! text contract is unchanged until the LuCI page moves to `cell.scan_start`
+//! plus the push (see docs/architecture-v2/migration.md).
 
 use crate::core::error::BackendError;
 use crate::core::json::{self, Value};
-use crate::core::task::{Priority, TaskCtx, TaskKind};
+use crate::core::task::{Priority, TaskKind};
 use crate::scheduler::arbiter::AtRequestSpec;
-use crate::scheduler::jobs::TaskManager;
+use crate::scheduler::jobs::{TaskCtx, TaskManager};
 use crate::state::bus::TOPIC_SCAN;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -446,9 +453,9 @@ fn submit(tasks: &Arc<TaskManager>, command: String) {
 // ------------------------------------------------------------- Raw-AT compat
 
 /// The legacy raw-AT surface (`AT^CELLSCAN`, `AT^CELLSCAN=STATE`,
-/// `AT^CELLSCAN=ABORT`), still what `mt5700m-at cellscan` — and therefore the
-/// LuCI scan modal, which parses its text — asks for. It funnels into the same
-/// task and the same parser: no second scan implementation.
+/// `AT^CELLSCAN=ABORT`) on the WS/`api` command path: the `/at` terminal and
+/// any legacy WS client. It funnels into the same task and the same parser —
+/// no second scan implementation.
 ///
 /// Returns `None` for commands this module does not own.
 pub fn pseudo_command(tasks: &Arc<TaskManager>, command: &str) -> Option<Value> {

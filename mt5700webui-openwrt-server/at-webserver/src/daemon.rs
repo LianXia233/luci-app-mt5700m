@@ -19,7 +19,7 @@ use crate::core::json::{self, Value};
 use crate::scheduler::plan;
 use crate::serial::manager;
 use crate::state::cache::StateCache;
-use crate::scheduler::jobs::{TaskCtx, TaskManager};
+use crate::scheduler::jobs::TaskManager;
 use crate::transport::ws::{self, WsError};
 use std::collections::VecDeque;
 use std::io::{Read, Write};

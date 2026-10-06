@@ -374,6 +374,76 @@ def resolve_path(root, from_mod, segs):
     return ('module', cur, None, ())
 
 
+def split_top_commas(text):
+    """Split `a::{b, c::{d, e}}`'s inner text on the top-level commas."""
+    parts, buf, depth = [], '', 0
+    for ch in text:
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+        if ch == ',' and depth == 0:
+            parts.append(buf)
+            buf = ''
+        else:
+            buf += ch
+    if buf.strip():
+        parts.append(buf)
+    return parts
+
+
+def expand_use_tree(prefix, text):
+    """Expand a `use` tree into full paths: `a::{b, c::{d, e}}` -> four paths.
+
+    `crate::` is kept in the returned strings so the caller can resolve them
+    with the same resolver as every other path.
+    """
+    text = re.sub(r'\s+as\s+[A-Za-z_]\w*\s*$', '', text.strip()).strip()
+    if not text:
+        return []
+    if '{' in text:
+        head, rest = text.split('{', 1)
+        inner, tail = rest.rsplit('}', 1)
+        head = head.rstrip(':').strip()
+        base = '::'.join(p for p in (prefix, head) if p)
+        out = []
+        for part in split_top_commas(inner):
+            out.extend(expand_use_tree(base, part + tail))
+        return out
+    full = '::'.join(p for p in (prefix, text) if p)
+    if not full:
+        return []
+    if full.endswith('::*'):
+        full = full[:-3]
+    if full.endswith('::self'):
+        full = full[:-6]
+    return [full] if full else []
+
+
+USE_CRATE = re.compile(
+    r'(?m)^[ \t]*(?:pub(?:\([^)]*\))?\s+)?use\s+(crate(?:::[^;]*)?)\s*;')
+
+
+def check_use_paths(root, mod, code, path, errors):
+    """Every `use crate::…` path must resolve — braces and `as` included.
+
+    `crate::core::task::TaskCtx` after the scheduler split is the exact mistake
+    this catches: `crate::core::task` alone resolves, so a plain path scan sees
+    nothing wrong while rustc stops at the leaf.
+    """
+    for m in USE_CRATE.finditer(code):
+        tree = m.group(1)
+        if not tree.startswith('crate'):
+            continue
+        for full in expand_use_tree('', tree):
+            segs = tuple(full.split('::')[1:])
+            if not segs:
+                continue
+            if resolve_path(root, mod, segs) is None:
+                line = code[:m.start()].count('\n') + 1
+                errors.append(f'{path}:{line}: unresolved `use {full}`')
+
+
 MISSING = []
 
 CRATE_PATH = re.compile(r'\bcrate((?:::[A-Za-z_]\w*)+)')
@@ -392,6 +462,7 @@ def check(root, src_dir):
             path = os.path.join(dirpath, f)
             mod = find_mod_for_file(root, path)
             code = strip_code(open(path, encoding='utf-8').read())
+            check_use_paths(root, mod, code, path, errors)
             for m in CRATE_PATH.finditer(code):
                 segs = tuple(m.group(1).split('::')[1:])
                 res = resolve_path(root, mod, segs)
