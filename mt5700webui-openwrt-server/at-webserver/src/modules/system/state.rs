@@ -236,10 +236,22 @@ mod tests {
         let Value::Obj(m) = st.to_json() else {
             panic!("object")
         };
-        assert_eq!(m.len(), 13);
+        // 12 sensors + `average` + the `peak`/`peak_sensor` pair the wireless
+        // page's single gauge reads.
+        assert_eq!(m.len(), 15);
         assert_eq!(m.get("tcxo").and_then(|v| v.as_f64()), Some(45.0));
         assert_eq!(m.get("average").and_then(|v| v.as_f64()), Some(42.5));
+        assert_eq!(m.get("peak").and_then(|v| v.as_f64()), Some(45.0));
+        assert_eq!(m.get("peak_sensor").and_then(|v| v.as_str()), Some("tcxo"));
         assert_eq!(TemperatureState::from_json(&m), st);
+
+        // Nothing plausible reported: the twelve sensor keys only — no average,
+        // and no peak for a consumer to render as a reading.
+        let Value::Obj(empty) = TemperatureState::default().to_json() else {
+            panic!("object")
+        };
+        assert_eq!(empty.len(), 12);
+        assert!(empty.get("average").is_none() && empty.get("peak").is_none());
     }
 
     #[test]
