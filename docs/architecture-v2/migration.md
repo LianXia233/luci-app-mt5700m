@@ -204,7 +204,16 @@ aliases, so the move itself changed no behaviour.
    keys that do not exist. `modules/network/schedule.rs` owns the DTO and its
    UCI mapping, `network.schedule_get`/`schedule_set` are the routes, and
    `AT+SCHED?`/`AT+SCHED=` remain as aliases to them for the CLI and LuCI.
-7. **Frontend AT removal**:
+7. **LuCI scan modal**: the modal showed the scan result from one blocking
+   `mt5700m-at cellscan`; once the scan became a minutes-long exclusive task the
+   control socket's timeout made that call answer with the immediate
+   acknowledgement, so the frequency-scan card came back empty. The CLI verb now
+   prints the two fast sections, starts the scan when none runs and prints the
+   `^CELLSCAN` lines from `cell.scan_result` (the scan task caches its reply
+   text, TTL 30 min); `cellscan-result` is the poll the modal uses, and the
+   modal's markup, copy and flow are unchanged — it just refreshes itself when
+   the scan finishes.
+8. **Frontend AT removal**:
    * WebUI — display already flows through the daemon's topic cache
      (`services/stateCache.ts` + `useSharedStateTopic`); the remaining AT usage
      is action/refresh paths in `services/at.ts` + `modem/*.ts`, which convert
@@ -214,10 +223,10 @@ aliases, so the move itself changed no behaviour.
      `mt5700m-at status/advanced …`; those pages move to the routes above and
      the duplicated decoders are deleted. The dashboard already reads the
      daemon cache via `api.cachedSnapshot()`.
-8. **Fold `mt5700m-traffic` into `modules/traffic`** (last non-Rust business
+9. **Fold `mt5700m-traffic` into `modules/traffic`** (last non-Rust business
    process) and the dialing glue of `mt5700m-manager` into `modules/network`
    actions.
-9. **Split the two god files** (`daemon.rs` ~1.9k lines, `api/cli.rs` ~2.4k):
+10. **Split the two god files** (`daemon.rs` ~1.9k lines, `api/cli.rs` ~2.4k):
    `daemon.rs` → `transport/{ws_server,rpc_server,control_server}` +
    `api/rpc.rs`; `api/cli.rs` → one `render_text` per module + a small verb
    table. Both are now pure wiring/adapters, so the split is mechanical.

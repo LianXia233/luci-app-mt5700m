@@ -23,6 +23,9 @@ pub fn routes() -> Vec<Route> {
         // (`cell.scan_abort`). Results arrive on the `cellscan` push topic.
         Route::on_demand("cell.scan_start", scan_start),
         Route::display("cell.scan_state", scan_state),
+        // 上一次扫频的结果（含手册原文行），供 LuCI 弹窗与 CLI 读取：
+        // 只读任务表 + 缓存，不碰模组，所以刷新页面不用重新扫。
+        Route::display("cell.scan_result", scan_result),
         Route::on_demand("cell.scan_abort", scan_abort),
     ]
 }
@@ -45,6 +48,17 @@ fn scan_state(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
             m.insert("running".to_string(), Value::Bool(false));
             Ok(Value::Obj(m))
         }
+    }
+}
+
+/// `{running, state, cells, count, raw?, error?}` — the last scan's result plus
+/// whether one is in flight, from the task registry and the cache. Never
+/// touches the modem: this is what a page reload (or the LuCI modal and the
+/// CLI) reads after the scan it is not connected to has finished.
+fn scan_result(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    match ctx.tasks {
+        Some(tasks) => Ok(scan::result(tasks, ctx.cache)),
+        None => Ok(scan::result_without_tasks()),
     }
 }
 

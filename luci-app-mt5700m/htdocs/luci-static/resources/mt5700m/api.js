@@ -174,6 +174,7 @@ function atCommand(cmd)        { return at([ 'command', cmd ]); }
 function atSmsList()           { return at([ 'sms-list' ]); }
 function atSmsInfo()           { return at([ 'sms-info' ]); }
 function atCellscan()          { return at([ 'cellscan' ]); }
+function atCellscanResult()    { return at([ 'cellscan-result' ]); }
 
 /* ---------- 累计流量 / 实时速率（单后端） ---------- */
 
@@ -264,5 +265,6 @@ return baseclass.extend({
 	atCommand: atCommand,
 	atSmsList: atSmsList,
 	atSmsInfo: atSmsInfo,
-	atCellscan: atCellscan
+	atCellscan: atCellscan,
+	atCellscanResult: atCellscanResult
 });

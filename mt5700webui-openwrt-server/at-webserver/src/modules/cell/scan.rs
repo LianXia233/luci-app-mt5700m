@@ -38,6 +38,9 @@ const TASK_TIMEOUT: Duration = Duration::from_secs(190);
 /// Abort token injected on the wire: the firmware ends an in-flight scan on any
 /// byte, and `abcd` is what the manual's own example uses.
 const ABORT_WIRE: &[u8] = b"abcd";
+/// How long the finished scan stays readable (the LuCI modal and the CLI may
+/// only look minutes after they asked for it).
+const RESULT_TTL: u64 = 1800;
 /// Task name, so state/abort address *this* scan and never another exclusive
 /// task (reboot, flash) that happens to be running.
 const TASK_NAME: &str = "scan.cell";
@@ -398,8 +401,15 @@ pub fn abort(tasks: &Arc<TaskManager>) -> Value {
     Value::Obj(m)
 }
 
-/// Publish `{state, cells, count[, error]}` — the one scan push shape.
-fn publish(ctx: &TaskCtx, state: &str, cells: &[ScannedCell], error: Option<&str>) {
+/// Publish `{state, cells, count, raw[, error]}` — the one scan push shape.
+///
+/// `raw` is the modem's reply text verbatim: the WebUI renders the decoded
+/// `cells`, while the LuCI modal (and `mt5700m-at cellscan`) print the
+/// handbook's `^CELLSCAN:` lines, exactly as the old blocking command did.
+/// The terminal payload is also cached on the `scan` topic so a client that
+/// was not connected while the scan ran can still fetch the result — the
+/// modem is never re-asked for it.
+fn publish(ctx: &TaskCtx, state: &str, cells: &[ScannedCell], raw: &str, error: Option<&str>) {
     let mut m: BTreeMap<String, Value> = BTreeMap::new();
     m.insert("state".to_string(), json::str_val(state));
     m.insert(
@@ -407,10 +417,55 @@ fn publish(ctx: &TaskCtx, state: &str, cells: &[ScannedCell], error: Option<&str
         Value::Arr(cells.iter().map(|c| c.to_json()).collect()),
     );
     m.insert("count".to_string(), json::num_val(cells.len() as i64));
+    if !raw.trim().is_empty() {
+        m.insert("raw".to_string(), json::str_val(raw.trim()));
+    }
     if let Some(e) = error {
         m.insert("error".to_string(), json::str_val(e));
     }
-    ctx.bus.publish_now(TOPIC_SCAN, "cellscan", Value::Obj(m));
+    let payload = Value::Obj(m);
+    if state != "running" {
+        ctx.cache.set_ttl(
+            TOPIC_SCAN,
+            payload.clone(),
+            "scan",
+            std::time::Duration::from_secs(RESULT_TTL),
+        );
+    }
+    ctx.bus.publish_now(TOPIC_SCAN, "cellscan", payload);
+}
+
+/// The same shape as [`result`] for callers without a task manager (a
+/// transport built in a unit test): nothing is running, and whatever the cache
+/// holds is still reported.
+pub fn result_without_tasks() -> Value {
+    let mut m: BTreeMap<String, Value> = BTreeMap::new();
+    m.insert("running".to_string(), Value::Bool(false));
+    m.insert("state".to_string(), json::str_val("idle"));
+    m.insert("count".to_string(), json::num_val(0));
+    Value::Obj(m)
+}
+
+/// `{running, state, cells, count, raw?, error?}` — the last scan and whether
+/// one is in flight. Registry + cache only: a page reload (or the CLI) never
+/// queues behind a scan to read its result.
+pub fn result(tasks: &Arc<TaskManager>, cache: &Arc<crate::state::cache::StateCache>) -> Value {
+    let running = is_active(tasks);
+    let mut m: BTreeMap<String, Value> = BTreeMap::new();
+    m.insert("running".to_string(), Value::Bool(running));
+    match cache.get(TOPIC_SCAN) {
+        (Some(Value::Obj(prev)), _) => {
+            for (k, v) in prev {
+                m.insert(k.clone(), v.clone());
+            }
+        }
+        _ => {
+            m.insert("state".to_string(), json::str_val("idle"));
+            m.insert("count".to_string(), json::num_val(0));
+        }
+    }
+    m.insert("running".to_string(), Value::Bool(running));
+    Value::Obj(m)
 }
 
 /// Submit the exclusive scan task for an already-built command.
@@ -424,7 +479,7 @@ fn submit(tasks: &Arc<TaskManager>, command: String) {
         Box::new(move |ctx: &TaskCtx| match ctx.at_request(spec) {
             Ok(text) => {
                 let cells = parse_cellscan(&text);
-                publish(ctx, "done", &cells, None);
+                publish(ctx, "done", &cells, &text, None);
                 let mut m: BTreeMap<String, Value> = BTreeMap::new();
                 m.insert("state".to_string(), json::str_val("done"));
                 m.insert(
@@ -435,7 +490,7 @@ fn submit(tasks: &Arc<TaskManager>, command: String) {
                 Ok(Value::Obj(m))
             }
             Err(BackendError::TaskCancelled) => {
-                publish(ctx, "aborted", &[], None);
+                publish(ctx, "aborted", &[], "", None);
                 let mut m: BTreeMap<String, Value> = BTreeMap::new();
                 m.insert("state".to_string(), json::str_val("aborted"));
                 m.insert("count".to_string(), json::num_val(0));
@@ -443,7 +498,7 @@ fn submit(tasks: &Arc<TaskManager>, command: String) {
             }
             Err(e) => {
                 let message = e.message();
-                publish(ctx, "error", &[], Some(&message));
+                publish(ctx, "error", &[], "", Some(&message));
                 Err(e)
             }
         }),

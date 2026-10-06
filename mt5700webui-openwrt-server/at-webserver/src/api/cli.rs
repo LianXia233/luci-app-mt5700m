@@ -1132,11 +1132,17 @@ fn print_cached_status(settings: &Settings) -> String {
     out
 }
 
+/// `mt5700m-at cellscan` — the LuCI modal's data call.
+///
+/// The scan is a minutes-long exclusive task on the daemon now, so this verb
+/// cannot block on it (the control socket's own timeout would kill the call).
+/// It prints the two fast sections, asks the daemon to start a scan when none
+/// is running, and prints the `^CELLSCAN` section from the daemon's last
+/// result: the handbook lines when a scan has finished, or a `SCANNING` line
+/// while one runs — `cellscan-result` is the poll the caller uses to know when
+/// to call this again.
 fn cmd_cellscan(settings: &Settings) -> i32 {
-    let mut settings = settings.clone();
-    if settings.timeout_s < 30 {
-        settings.timeout_s = 30;
-    }
+    let settings = settings.clone();
     println!("===== Serving cell: AT^MONSC =====");
     let r = client::at_cmd(&settings, "AT^MONSC");
     println!("{}", r.text);
@@ -1146,9 +1152,62 @@ fn cmd_cellscan(settings: &Settings) -> i32 {
     println!("{}", r.text);
     println!();
     println!("===== Frequency scan: AT^CELLSCAN =====");
-    let r = client::at_cmd(&settings, "AT^CELLSCAN");
-    println!("{}", r.text);
+
+    // Ask the daemon for the last result first: a finished scan (started from
+    // the WebUI or by an earlier call) is rendered as-is, and then no new scan
+    // is submitted.
+    let previous = crate::transport::control::daemon_api("cell.scan_result", &crate::core::json::Value::Null, 12);
+    let (running, raw) = match &previous {
+        Ok(v) => (
+            v.get("running").and_then(|x| x.as_bool()).unwrap_or(false),
+            v.get("raw").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        ),
+        Err(_) => (false, String::new()),
+    };
+    if !raw.is_empty() && !running {
+        println!("{}", raw);
+        return 0;
+    }
+    if !running {
+        if let Err(e) = crate::transport::control::daemon_api(
+            "cell.scan_start",
+            &crate::core::json::Value::Null,
+            15,
+        ) {
+            eprintln!("{}", e.message());
+            println!("{}", e.message());
+            return 0;
+        }
+    }
+    println!("^CELLSCAN: SCANNING");
     0
+}
+
+/// `mt5700m-at cellscan-result` — `{running, state}` as JSON, the poll for
+/// [`cmd_cellscan`].
+///
+/// It asks the daemon's `AT^CELLSCAN=STATE` pseudo-command (the same task
+/// introspection the WebUI's `cell.scan_state` route uses) rather than
+/// re-asking the modem, and the caller re-runs `cellscan` once this reports
+/// `running: false` — at which point the finished scan is in the daemon cache.
+fn cmd_cellscan_result() -> i32 {
+    match crate::transport::control::daemon_send("AT^CELLSCAN=STATE", 12) {
+        Ok(text) => {
+            let running = text.to_ascii_lowercase().contains("scanning");
+            let mut m = std::collections::BTreeMap::new();
+            m.insert("running".to_string(), crate::core::json::Value::Bool(running));
+            m.insert(
+                "state".to_string(),
+                crate::core::json::str_val(if running { "running" } else { "idle" }),
+            );
+            println!("{}", crate::core::json::Value::Obj(m).dump());
+            0
+        }
+        Err(e) => {
+            eprintln!("{}", e.message());
+            1
+        }
+    }
 }
 
 fn cmd_lock(settings: &Settings, args: &[String]) -> i32 {
@@ -1623,6 +1682,7 @@ pub fn run(args: &[String]) -> i32 {
             0
         }
         "cellscan" => cmd_cellscan(&settings),
+        "cellscan-result" => cmd_cellscan_result(),
         "sms-list" => {
             print!("{}", print_sms_list(&settings));
             0

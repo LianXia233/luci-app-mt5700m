@@ -463,9 +463,30 @@ return view.extend({
 						E('p', {}, _('Cell scan may take some time and can briefly increase modem load.')),
 						E('div', { 'class': 'right' }, [ E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')), ' ', E('button', { 'class': 'btn cbi-button-apply', 'click': function() {
 							ui.hideModal();
-							api.atCellscan().then(function(scan) {
+							/*
+							 * 扫频是后端的长任务（几分钟），这条调用只负责「取回当前结果」：
+							 * 还没有结果时会顺带发起一次扫描，然后轮询 cellscan-result，
+							 * 扫完再取一次，弹窗里呈现的内容与旧版同步扫频完全一致。
+							 */
+							var showScan = function(scan) {
 								var body = scan.stdout ? renderCellScan(scan.stdout) : E('div', { 'class': 'alert-message warning' }, _('No response.'));
 								ui.showModal(_('Cell Scan'), [ body, E('div', { 'class': 'right', 'style': 'margin-top:14px' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close'))) ]);
+							};
+							api.atCellscan().then(function(scan) {
+								showScan(scan);
+								var waited = 0;
+								var poll = window.setInterval(function() {
+									waited += 3000;
+									api.atCellscanResult().then(function(res) {
+										var state = null;
+										try { state = JSON.parse((res && res.stdout) || 'null'); } catch (e) { state = null; }
+										// 没有 state 说明后端读不到结果，别再空转。
+										if (!state || !state.running || waited > 600000) {
+											window.clearInterval(poll);
+											if (state && !state.running) api.atCellscan().then(showScan, function() {});
+										}
+									}, function() { window.clearInterval(poll); });
+								}, 3000);
 							}, function(err) {
 								ui.addNotification(null, E('p', {}, err.message || _('Cell scan failed.')), 'danger');
 							});
