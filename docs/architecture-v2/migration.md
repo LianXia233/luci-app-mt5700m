@@ -94,6 +94,7 @@ aliases, so the move itself changed no behaviour.
 | `cargo test --locked` (CI) | see the run on the head commit |
 | Shell/JS/JSON/PO checks (CI `static-checks`) | see the run on the head commit |
 | UI files touched by this refactor | none (by design) |
+| LuCI migration parity (`scripts/prove-*-parity.js`) | renders the HEAD view and the worktree view in one stubbed DOM from the same modem replies and diffs the DOM: structure/labels byte-identical, only the listed value corrections differ. Migration-time tools, not CI checks — they compare the worktree against `HEAD`, so they need an uncommitted slice |
 
 ## 3. What remains (in order)
 
@@ -260,14 +261,41 @@ aliases, so the move itself changed no behaviour.
        printed "Not registered" / "Disabled" from a placeholder row the text
        matcher invented, and the page now shows the row's own `--` (the same
        placeholder every other empty row uses).
-     * Still on text frames, to be migrated with the same helper: the neighbour
-       cards (`cell.neighbors` — the module already decodes `^MONNC`, decimal
-       PCI included; the JS side renders the hex bytes it never converted, so
-       the migration fixes those PCI values and the lock write along with it),
-       and the `status`/`sms`/`system` pages, which still call the CLI verbs.
-       `parser.js` (`parseMonnc`, `matchValues`, `section`) is deleted when the
+     * the neighbour cards followed, in all three places they are drawn: the
+       diagnostics section, the SSB panel and the scan modal's two grids now
+       render `cell.neighbors` (`parser.js`'s `parseMonnc` — the JS copy of the
+       `^MONNC` layout — is deleted). The ARFCN→band table left the frontend
+       too: it is `core::radio::arfcn_to_band` (shared by `modules::cell` and
+       `modules::beam`, both of which now publish `band`), and the page only
+       maps a band number to its label (`B3`/`n78`). `mt5700m-at cellscan` no
+       longer prints a neighbour section (it was the modal's only consumer, and
+       printing it meant asking `AT^MONNC` twice); `radio-diagnostics` still has
+       it for humans. Parity: `scripts/prove-neighbors-parity.js` renders the
+       HEAD view and the new one in the same stubbed DOM from the same modem
+       replies — structure, labels and row count byte-identical, and the four
+       value slots that differ are exactly the listed corrections (hex PCI
+       `1DC`/`40` → decimal `476`/`64`, and n78 cells that the old JS table
+       printed as bare `NR` because it only covered up to 3 GHz).
+     * Still on text frames, to be migrated next: the lock panel and the two
+       lock-status rows (`network.lock_get`, then `network.lock_apply` for the
+       write — today both the cards and the panel submit the CLI's positional
+       `lock` arguments, which is what the routes replace), the scan modal's
+       serving cell (`cell.get` needs the `^MONSC` measurements added to
+       `CellState`) — which is the last caller of `parser.arfcnToBand`, and
+       `parser.section`/`matchValues` for the settings-page rows — plus the
+       `status`/`sms`/`system` pages, which still call the CLI verbs.
+       `parser.js` (`arfcnToBand`, `matchValues`, `section`) is deleted when the
        last of them moves. The dashboard already reads the daemon cache via
        `api.cachedSnapshot()`.
+     * Defect found while proving the above, **not** changed (it is a UI
+       change, so it needs a decision): the scan modal's "Frequency scan" card
+       never renders, on HEAD or now. `parser.section()` matches a prefix
+       `'===== <label>:'`, and the modal passes `'Frequency scan: AT^CELLSCAN'`
+       while `cli.rs` prints `===== Frequency scan: AT^CELLSCAN =====` — no
+       match, so the card (and its "+CME ERROR: 3" note) is dead. The two
+       other labels that include the AT command survive only because their
+       callers pass `|| raw`. The modal migration to `cell.scan_result` would
+       fix it deliberately, with the card coming back.
 10. **Fold `mt5700m-traffic` into `modules/traffic`** (last non-Rust business
    process) and the dialing glue of `mt5700m-manager` into `modules/network`
    actions.

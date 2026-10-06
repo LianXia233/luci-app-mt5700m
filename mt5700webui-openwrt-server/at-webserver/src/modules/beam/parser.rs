@@ -13,6 +13,7 @@
 //! dropped — the page showed only the beams it actually measured, and a slot
 //! that is "not measured" is not a 32767 dBm signal.
 
+use crate::core::radio::arfcn_to_band;
 use crate::modules::beam::state::{SsbBeam, SsbNeighborCell, SsbServingCell, SsbState};
 
 /// SSB id that means "not measured".
@@ -66,10 +67,17 @@ pub fn parse_ssbid(raw: &str) -> Option<SsbState> {
         out
     };
 
+    // Both the serving cell and the neighbours are NR (`^NRSSBID`), so their
+    // band comes from the one ARFCN table in `core::radio`.
+    let band_of = |raw: Option<&String>| {
+        raw.and_then(|s| s.parse::<i64>().ok())
+            .and_then(|arfcn| arfcn_to_band("NR", arfcn))
+    };
     let serving = SsbServingCell {
         arfcn: text(0),
         cid: text(1),
         pci: text(2),
+        band: band_of(text(0).as_ref()),
         rsrp: number(3),
         sinr: number(4),
         ta: number(5),
@@ -84,9 +92,11 @@ pub fn parse_ssbid(raw: &str) -> Option<SsbState> {
         if offset + 3 >= data.len() {
             break;
         }
+        let arfcn = text(offset + 1);
         neighbors.push(SsbNeighborCell {
             pci: text(offset),
-            arfcn: text(offset + 1),
+            band: band_of(arfcn.as_ref()),
+            arfcn,
             rsrp: number(offset + 2),
             sinr: number(offset + 3),
             ssbs: beams(offset + 4, NEIGHBOR_SLOTS),
@@ -132,6 +142,7 @@ mod tests {
         let nb = &st.neighbors[0];
         assert_eq!(nb.pci.as_deref(), Some("506"));
         assert_eq!(nb.arfcn.as_deref(), Some("632448"));
+        assert_eq!(nb.band, Some(78));
         assert_eq!(nb.rsrp, Some(88));
         assert_eq!(nb.sinr, Some(45));
         assert_eq!(nb.ssbs.len(), 3);

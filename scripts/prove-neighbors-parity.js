@@ -1,0 +1,383 @@
+#!/usr/bin/env node
+'use strict';
+
+/*
+ * 邻区卡片一致性证明（LuCI 无线页，item 9 的邻区切片）
+ *
+ * 这一刀把「邻区」从 LuCI 自己切 AT 文本帧，改成读后端路由：
+ *   - 诊断区块的邻区卡片：`advanced radio-diagnostics` 帧的 ^MONNC 段 → `cell.neighbors`
+ *   - SSB 面板的邻区卡片：载荷里的 arfcn 前端自己查表 → 用载荷自带的 band
+ *   - 扫频弹窗的邻区卡片：cellscan 帧的 ^MONNC 段 → `cell.neighbors`
+ * 频段表（ARFCN→频段号）同时从 parser.js 消失，移到后端 core::radio，
+ * 前端只剩「频段号 → B3/n78 标签」（bandLabel）。
+ *
+ * 验证方式：把 HEAD（迁移前）与当前工作区的 parser.js / components.js /
+ * network.js 装进同一个桩 DOM，用**同一份调制解调器应答**渲染，然后比较：
+ *   1. 结构 + 文案：除下面 4 个取值槽（VALUE_CLASS）外，整块诊断 DOM
+ *      逐字一致（数字归一化后）；
+ *   2. 取值槽：差异必须完全等于 EXPECTED_VALUE_DIFFS —— 每一条都是
+ *      「显示真值」的修正（十六进制 PCI → 十进制；n78 以前落空显示 'NR'），
+ *      没有样式/文案/布局变化；
+ *   3. 旧管线的取值由 HEAD 的 parser.js 亲自跑出来（parseMonnc / arfcnToBand），
+ *      新管线的取值由当前 network.js 渲染出来；后端解码规则另有一组
+ *      Rust 单元测试样本（RUST_PINS）钉住脚本里的 mini 解码器。
+ *
+ * 用法：node scripts/prove-neighbors-parity.js   （退出码 0 = 通过）
+ *
+ * 这是**迁移期**工具，不是 CI 检查：它拿工作区与 HEAD 对比，所以要在提交
+ * 这一刀之前跑（提交后两侧相同，比较自然成立但什么也证明不了）。
+ */
+
+const fs = require('fs');
+const path = require('path');
+const cp = require('child_process');
+
+const REPO = path.resolve(__dirname, '..');
+const RES = 'luci-app-mt5700m/htdocs/luci-static/resources';
+
+function oldSource(rel) {
+	return cp.execSync('git show HEAD:' + rel, { cwd: REPO, maxBuffer: 64 * 1024 * 1024 }).toString();
+}
+function newSource(rel) {
+	return fs.readFileSync(path.join(REPO, rel), 'utf8');
+}
+
+/* ---------------------------------------------------------------- 桩 DOM */
+
+class El {
+	constructor(tag, attrs, children) {
+		this.nodeType = 1;
+		this.tagName = String(tag).toUpperCase();
+		this.attrs = attrs || {};
+		this.children = [];
+		const list = children === undefined || children === null ? []
+			: Array.isArray(children) ? children : [ children ];
+		for (const child of list)
+			if (child !== null && child !== undefined && child !== false) this.children.push(child);
+	}
+	appendChild(child) { this.children.push(child); return child; }
+	replaceChildren(...kids) { this.children = kids.filter(k => k !== null && k !== undefined); }
+	addEventListener() {}
+	dispatchEvent() {}
+	setAttribute(k, v) { this.attrs[k] = v; }
+	getAttribute(k) { return this.attrs[k]; }
+	closest() { return null; }
+	scrollIntoView() {}
+	contains(node) {
+		if (node === this) return true;
+		return this.children.some(ch => ch && ch.contains && ch.contains(node));
+	}
+}
+
+function makeScope() {
+	const E = (tag, attrs, children) => new El(tag, attrs, children);
+	const document = {
+		body: new El('body', {}, []),
+		head: new El('head', {}, []),
+		createElement: tag => new El(tag, {}, []),
+		createElementNS: (ns, tag) => new El(tag, {}, []),
+		getElementById: () => null,
+		importNode: node => node,
+	};
+	// LuCI 的 `_()` 返回可 .format() 的字符串；两边标签因此能逐字比较。
+	const t = (s) => ({
+		toString: () => s,
+		format: function () {
+			let i = 0;
+			const args = arguments;
+			return String(s).replace(/%[sd]/g, () => String(args[i++]));
+		},
+	});
+	const window = { setTimeout: () => 0, clearTimeout: () => {}, setInterval: () => 0, clearInterval: () => {}, location: { reload() {} } };
+	const ui = { addNotification: () => {}, showModal: () => {}, hideModal: () => {} };
+	const dom = { content: (host, child) => host.replaceChildren(child), append: () => {}, parse: () => null };
+	// components.js 在模块求值时注入 <style>，需要 L.resource
+	const L = { resource: p => p };
+	return { E, document, window, ui, dom, L, HTMLElement: El, _: t, baseclass: { extend: o => o }, view: { extend: o => o },
+		Promise, console, Math, JSON, Number, String, Object, Array, Date, RegExp, parseFloat, parseInt, isNaN,
+		setTimeout: window.setTimeout, clearTimeout: window.clearTimeout };
+}
+
+/* 取值槽：卡片上会随数据变的四个 class；结构比较时只看有没有、不看内容 */
+const VALUE_CLASS = /mt-lock-cell-name|mt-lock-cell-desc|mt-signal-value|mt-ssb-serving-title/;
+
+function walk(node, out, path, keepValues) {
+	if (node === null || node === undefined || node === false) return out;
+	if (typeof node === 'string' || typeof node === 'number') {
+		out.push(path + ' text=' + String(node).replace(/\d+/g, '#'));
+		return out;
+	}
+	if (Array.isArray(node)) { node.forEach(n => walk(n, out, path, keepValues)); return out; }
+	if (typeof node !== 'object' || !node.tagName) {
+		// `_('…')` 这类可 format 的字符串对象，按文本比较
+		out.push(path + ' text=' + String(node).replace(/\d+/g, '#'));
+		return out;
+	}
+	const cls = node.attrs && node.attrs['class'] ? '.' + String(node.attrs['class']).split(' ').join('.') : '';
+	const here = path + '/' + node.tagName.toLowerCase() + cls;
+	if (!keepValues && VALUE_CLASS.test(cls)) {
+		// 取值槽按「有无」比较，槽内文本不再逐字比较
+		out.push(here + ' value=' + (textOf(node) === '' ? 'empty' : 'set'));
+		return out;
+	}
+	out.push(here);
+	node.children.forEach(ch => walk(ch, out, here, keepValues));
+	return out;
+}
+function serialize(node, keepValues) { return walk(node, [], '', keepValues).join('\n'); }
+
+/* 取值槽文本，按 DOM 顺序 */
+function slotEntries(node, out) {
+	out = out || [];
+	if (node === null || node === undefined || node === false) return out;
+	if (Array.isArray(node)) { node.forEach(n => slotEntries(n, out)); return out; }
+	if (typeof node !== 'object' || !node.tagName) return out;
+	const cls = String((node.attrs && node.attrs['class']) || '');
+	if (VALUE_CLASS.test(cls)) out.push({ cls: cls, text: textOf(node) });
+	node.children.forEach(ch => slotEntries(ch, out));
+	return out;
+}
+function slotValues(node) { return slotEntries(node).map(e => e.text); }
+function slotsOf(node, cls) { return slotEntries(node).filter(e => e.cls.split(' ').indexOf(cls) !== -1).map(e => e.text); }
+function textOf(node) {
+	if (node === null || node === undefined || node === false) return '';
+	if (typeof node === 'string' || typeof node === 'number') return String(node);
+	if (Array.isArray(node)) return node.map(textOf).join('');
+	if (typeof node !== 'object' || !node.tagName) return String(node);
+	return node.children.map(textOf).join('');
+}
+function lines(node) { return walk(node, [], '', true); }
+function countTag(shape, tagClass) { return shape.split('\n').filter(l => l.endsWith(tagClass)).length; }
+
+/* ------------------------------------------------------------ 模块装载 */
+
+function load(source, scope) {
+	const names = Object.keys(scope);
+	return new Function(...names, source)(...names.map(k => scope[k]));
+}
+
+function loadSide(read) {
+	const scope = makeScope();
+	const parser = load(read(RES + '/mt5700m/parser.js'), scope);
+	scope.parser = parser;
+	scope.c = load(read(RES + '/mt5700m/components.js'), scope);
+	scope.api = { route: () => Promise.resolve(null), at: () => Promise.resolve({ stdout: '', stderr: '' }), atSafe: () => Promise.resolve({ stdout: '', stderr: '' }), cachedSnapshot: () => Promise.resolve(null) };
+	const view = load(read(RES + '/view/mt5700m/network.js'), scope);
+	return { parser, c: scope.c, view };
+}
+
+/* ------------------------------------------ 后端解码契约（mini 解码器）
+ *
+ * 只复刻这一刀用到的路径：^MONNC → 领域值。规则逐条对应
+ * modules/cell/parser.rs（hex PCI、core::radio 频段表、NR 1/8 换算、
+ * 哨兵值置空、空字段缺省），并由 RUST_PINS 的样本钉住。
+ */
+const NO_VALUE = [-1256, -348, -188, 32767, 255];
+
+function measurement(text, limit) {
+	if (text === undefined || text === null || text === '') return undefined;
+	const n = Number(text);
+	if (!isFinite(n)) return undefined;
+	if (NO_VALUE.indexOf(n) !== -1) return undefined;
+	return (limit !== undefined && Math.abs(n) > limit) ? (n / 8).toFixed(1) : String(text);
+}
+
+function arfcnToBand(rat, arfcn) {
+	const LTE = [[0, 599, 1], [1200, 1949, 3], [2400, 2649, 5], [3450, 3799, 8], [36200, 36349, 34], [37750, 38249, 38], [38250, 38649, 39], [38650, 39649, 40], [39650, 41589, 41]];
+	const NR = [[422000, 434000, 1], [361000, 376000, 3], [173800, 178800, 5], [185000, 192000, 8], [151600, 160600, 28], [499200, 537999, 41], [620000, 653333, 78], [653334, 680000, 77], [693334, 733333, 79]];
+	const table = rat === 'LTE' ? LTE : rat === 'NR' ? NR : null;
+	if (!table) return undefined;
+	for (const [lo, hi, band] of table) if (arfcn >= lo && arfcn <= hi) return band;
+	return undefined;
+}
+
+function decodeMonnc(lines) {
+	const cells = [];
+	for (const line of lines) {
+		const i = line.indexOf('^MONNC:');
+		if (i < 0) continue;
+		const parts = line.slice(i + 7).trim().split(',').map(s => s.trim());
+		const rat = (parts[0] || '').toUpperCase();
+		if (rat !== 'LTE' && rat !== 'NR') continue;
+		const arfcn = parts[1] !== undefined && parts[1] !== '' ? Number(parts[1]) : undefined;
+		const pci = parts[2] !== undefined && parts[2] !== '' ? parseInt(parts[2], 16) : undefined;
+		const cell = { type: rat };
+		if (arfcn !== undefined) cell.arfcn = arfcn;
+		if (pci !== undefined) cell.pci = pci;
+		const set = (key, value) => { if (value !== undefined) cell[key] = value; };
+		if (rat === 'LTE') {
+			set('rsrp', measurement(parts[3]));
+			set('rsrq', measurement(parts[4]));
+			set('rxlev', measurement(parts[5]));
+		} else {
+			set('rsrp', measurement(parts[3], 157));
+			set('rsrq', measurement(parts[4], 43.5));
+			set('sinr', measurement(parts[5], 40));
+		}
+		set('band', arfcn === undefined ? undefined : arfcnToBand(rat, arfcn));
+		cells.push(cell);
+	}
+	return { cells };
+}
+
+/* 与 Rust 单元测试逐字对应的样本 */
+const RUST_PINS = [
+	// modules/cell/parser.rs::monnc_parses_both_rasters_and_skips_none
+	{ raw: ['^MONNC: NONE', '^MONNC: LTE,1850,64,-85,-12,30', '^MONNC: NR,643456,1A,-95,-11,-5'],
+	  expect: [{ type: 'LTE', arfcn: 1850, pci: 100, rsrp: '-85', rsrq: '-12', rxlev: '30', band: 3 },
+	           { type: 'NR', arfcn: 643456, pci: 26, rsrp: '-95', rsrq: '-11', sinr: '-5', band: 78 }] },
+	// modules/cell/parser.rs::monnc_scales_oversized_nr_values
+	{ raw: ['^MONNC: NR,643456,1A,-760,-96,-320'], expect: [{ type: 'NR', arfcn: 643456, pci: 26, rsrp: '-95.0', rsrq: '-12.0', sinr: '-40.0', band: 78 }] },
+	// modules/cell/parser.rs::monnc_drops_sentinel_measurements
+	{ raw: ['^MONNC: NR,643456,1A,-1256,-348,-188', '^MONNC: LTE,1850,64,255,32767,-12'],
+	  expect: [{ type: 'NR', arfcn: 643456, pci: 26, band: 78 },
+	           { type: 'LTE', arfcn: 1850, pci: 100, rxlev: '-12', band: 3 }] },
+];
+
+/* -------------------------------------------------------------- 场景数据 */
+
+// 帧里的 ^MONNC 段与同一批邻区的领域值（= mockAT.ts 的 api.cell.neighbors 契约）
+const MONNC_LINES = [
+	'^MONNC: LTE,1650,1DC,-85,-12,30',
+	'^MONNC: NR,636648,40,-70,-10,20',
+];
+const NEIGHBORS_PAYLOAD = decodeMonnc(MONNC_LINES);
+
+// beam.ssb 载荷：mockAT.ts 的 api.beam.ssb（与同一份 ^NRSSBID 应答一致）。
+// 迁移前载荷里没有 band；core::radio 现在给出 n78（两处）。
+const SSB_PAYLOAD_OLD = {
+	servingCell: { arfcn: '636648', cid: '1A2B3C', pci: '506', rsrp: 85, sinr: 50, ta: 1,
+		ssbs: [ { ssbId: 0, rsrp: 90 }, { ssbId: 1, rsrp: 80 }, { ssbId: 2, rsrp: 70 }, { ssbId: 3, rsrp: 60 } ] },
+	neighborCells: [ { pci: '506', arfcn: '632448', rsrp: 88, sinr: 45,
+		ssbs: [ { ssbId: 0, rsrp: 90 }, { ssbId: 1, rsrp: 80 }, { ssbId: 2, rsrp: 70 } ] } ],
+};
+const SSB_PAYLOAD_NEW = JSON.parse(JSON.stringify(SSB_PAYLOAD_OLD));
+SSB_PAYLOAD_NEW.servingCell.band = arfcnToBand('NR', 636648);
+SSB_PAYLOAD_NEW.neighborCells[0].band = arfcnToBand('NR', 632448);
+
+// 诊断区块其余各行：两侧收到同一份路由载荷（本刀未改它们）
+const SHARED_PAYLOADS = {
+	mcs: { uplink: { rat: 1, carriers: [ { index: 1, group: 1, rat: 'NR', mcs_table_index: 0, code0: 25, code1: 23 }, { index: 2, group: 1, rat: 'NR', mcs_table_index: 0, code0: 21, code1: 19 } ], avg_mcs: 22 },
+	       downlink: { rat: 1, carriers: [ { index: 1, group: 1, rat: 'NR', mcs_table_index: 0, code0: 18, code1: 16 } ], avg_mcs: 17 } },
+	txPower: { carriers: [ { pusch: 23, pucch: 22, srs: 21, prach: 20, freq: 3549720 } ] },
+	qos: { active_cid: 8, qci: 9 },
+	endc: { available: 1, plmnAvailable: 1, restricted: 1, established: 1 },
+	ca: { lte_secondary_count: 1, secondary_connection_count: 1 },
+	registration: { state: 1, act: 11 },
+	ims: { enabled: 1, registered: 1 },
+};
+
+// 迁移前的文本帧（诊断区块里已迁走的行就是从这些段切出来的）
+const OLD_FRAME = [
+	'===== Neighbour cells: AT^MONNC =====',
+	...MONNC_LINES,
+	'OK',
+	'',
+].join('\n');
+
+/* ------------------------------------------------------------------ 检查 */
+
+let failures = 0;
+function check(name, ok, detail) {
+	if (ok) { console.log('  ok   ' + name); return; }
+	failures++;
+	console.log('  FAIL ' + name + (detail ? '\n       ' + detail : ''));
+}
+function firstDifference(a, b) {
+	const la = a.split('\n'), lb = b.split('\n');
+	for (let i = 0; i < Math.max(la.length, lb.length); i++)
+		if (la[i] !== lb[i]) return 'line ' + (i + 1) + ':\n       old: ' + la[i] + '\n       new: ' + lb[i];
+	return '';
+}
+function sameJson(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+
+console.log('Rust 契约钉子（mini 解码器 vs modules/cell/parser.rs 的单测样本）');
+for (const pin of RUST_PINS) {
+	const got = decodeMonnc(pin.raw).cells, want = pin.expect;
+	let ok = got.length === want.length;
+	if (ok) for (let i = 0; i < want.length && ok; i++) {
+		ok = sameJson(got[i], want[i]);
+		if (!ok) console.log('       ' + pin.raw[0].slice(0, 34) + '…\n       got  ' + JSON.stringify(got[i]) + '\n       want ' + JSON.stringify(want[i]));
+	}
+	check(pin.raw.join(' | ').slice(0, 44) + '…', ok);
+}
+
+const before = loadSide(oldSource);
+const after = loadSide(newSource);
+
+/* 旧管线对同一份应答给出的取值（跑 HEAD 的 parser.js） */
+console.log('\n旧管线取值（HEAD 的 parser.js 亲自跑）');
+const oldMonnc = before.parser.parseMonnc(MONNC_LINES.join('\n'));
+check('parseMonnc 的 PCI 是帧里的十六进制原文', oldMonnc[0].pci === '1DC' && oldMonnc[1].pci === '40',
+	JSON.stringify(oldMonnc.map(n => n.pci)));
+check('arfcnToBand(636648, NR) 落空 → 显示 RAT 名', before.parser.arfcnToBand(636648, 'NR') === 'NR');
+check('arfcnToBand(632448, NR) 落空 → 显示 RAT 名', before.parser.arfcnToBand(632448, 'NR') === 'NR');
+check('arfcnToBand(1650, LTE) = B3（两侧一致）', before.parser.arfcnToBand(1650, 'LTE') === 'B3');
+check('新管线不再有 parseMonnc / arfcnToBand 之外的邻区表', after.parser.parseMonnc === undefined);
+
+/* 1) 结构与文案：四个取值槽以外必须逐字一致 */
+console.log('\n诊断区块 DOM（取值槽只比较有无，其余逐字比较）');
+const oldDiag = before.view.radioDiagnostics(OLD_FRAME, Object.assign({}, SHARED_PAYLOADS, { ssb: SSB_PAYLOAD_OLD, neighbors: NEIGHBORS_PAYLOAD }));
+const newDiag = after.view.radioDiagnostics(Object.assign({}, SHARED_PAYLOADS, { ssb: SSB_PAYLOAD_NEW, neighbors: NEIGHBORS_PAYLOAD }));
+const oldShape = serialize(oldDiag), newShape = serialize(newDiag);
+check('结构/文案逐字一致（数字归一化，取值槽只比有无）', oldShape === newShape,
+	oldShape === newShape ? '' : firstDifference(oldShape, newShape));
+
+/* 2) 取值槽差异 == 预期清单 */
+console.log('\n邻区取值（每条差异都必须是「显示真值」的修正）');
+const oldValues = slotValues(oldDiag), newValues = slotValues(newDiag);
+const diffs = [];
+for (let i = 0; i < Math.max(oldValues.length, newValues.length); i++)
+	if (oldValues[i] !== newValues[i]) diffs.push([oldValues[i], newValues[i]]);
+const EXPECTED_VALUE_DIFFS = [
+	// SSB 服务小区：旧 JS 频段表只覆盖到 3 GHz，636648（n78）落空显示 RAT 名
+	['Serving cell · NR', 'Serving cell · n78'],
+	// SSB 邻区 632448：同样由 core::radio 给出 n78
+	['NR · 632448', 'n78 · 632448'],
+	// 诊断邻区 NR 636648：n78，且 PCI 由十六进制 `40` 变成十进制 64
+	['NR · 636648', 'n78 · 636648'],
+	['PCI 40', 'PCI 64'],
+];
+check('取值差异 == 预期清单（' + EXPECTED_VALUE_DIFFS.length + ' 条）', sameJson(diffs, EXPECTED_VALUE_DIFFS),
+	sameJson(diffs, EXPECTED_VALUE_DIFFS) ? '' : 'got  ' + JSON.stringify(diffs) + '\n       want ' + JSON.stringify(EXPECTED_VALUE_DIFFS));
+check('诊断邻区节只显示 NR（NR 优先，与迁移前相同）',
+	slotValues(newDiag).indexOf('B3 · 1650') === -1 && countTag(serialize(newDiag, true), 'div.mt-lock-cell-card') === 2);
+
+/* 3) 扫频弹窗：邻区段读路由，标题分组逻辑不变 */
+console.log('\n扫频弹窗（renderCellScan）');
+const scanFrame = [
+	'===== Serving cell: AT^MONSC =====', '^MONSC: NR,460,00,636648,0,10321,1FA,2F01,-82,-9', 'OK',
+	'===== Frequency scan: AT^CELLSCAN =====', '^CELLSCAN: 636648,506,-82', 'OK', '',
+].join('\n');
+const scan = after.view.renderCellScan(scanFrame, { neighbors: NEIGHBORS_PAYLOAD });
+const scanShape = serialize(scan, true), scanLines = lines(scan);
+check('NR 邻区优先成节：NR neighbour cells (#)', scanShape.indexOf('text=NR neighbour cells (#)') !== -1);
+check('其余 LTE 邻区成节：LTE neighbour cells (#)', scanShape.indexOf('text=LTE neighbour cells (#)') !== -1);
+check('两张邻区卡片', countTag(scanShape, 'div.mt-lock-cell-card') === 2);
+const scanCards = [];
+slotEntries(scan).filter(e => e.cls.split(' ').indexOf('mt-lock-cell-name') !== -1).forEach(e => scanCards.push(e.text));
+const scanPcis = slotsOf(scan, 'mt-lock-cell-desc');
+check('弹窗邻区卡片取值 = 领域值（PCI 十进制 / 频段标签）',
+	sameJson(scanCards, [ 'n78 · 636648', 'B3 · 1650' ]) && sameJson(scanPcis, [ 'PCI 64', 'PCI 476' ]),
+	JSON.stringify({ cards: scanCards, pcis: scanPcis }));
+check('服务小区仍读帧（标题含 ARFCN:636648 与 PCI:1FA）', textOf(scan).indexOf('ARFCN:636648') !== -1 && textOf(scan).indexOf('PCI:1FA') !== -1);
+// 扫频原文卡片：迁移前后都取不到（`section()` 的前缀规则要求 '===== <label>:' 前缀，
+// cli.rs 打的是 '===== Frequency scan: AT^CELLSCAN ====='）——既有缺陷，不在本刀范围。
+check('扫频原文段迁移前后同样解析为空（既有缺陷，未改动）',
+	before.parser.section(scanFrame, 'Frequency scan: AT^CELLSCAN') === '' && after.parser.section(scanFrame, 'Frequency scan: AT^CELLSCAN') === '');
+
+/* 4) 回退与 NONE：与旧管线逐字一致 */
+console.log('\n回退与 NONE 场景');
+const nonePayload = { cells: [] };
+const noneDiag = after.view.radioDiagnostics(Object.assign({}, SHARED_PAYLOADS, { ssb: null, neighbors: nonePayload }));
+const noneOld = before.view.radioDiagnostics(OLD_FRAME.replace(MONNC_LINES.join('\n'), '^MONNC: NONE'), Object.assign({}, SHARED_PAYLOADS, { ssb: null }));
+check('^MONNC: NONE → 无邻区节，DOM 与迁移前一致（整块逐字）', serialize(noneDiag, true) === serialize(noneOld, true),
+	serialize(noneDiag, true) === serialize(noneOld, true) ? '' : firstDifference(serialize(noneOld, true), serialize(noneDiag, true)));
+const unknownOld = before.view.radioDiagnostics(OLD_FRAME.replace(MONNC_LINES.join('\n'), '^MONNC: NR,1,1,-70,-10,20'), Object.assign({}, SHARED_PAYLOADS, { ssb: null }));
+const unknownNew = after.view.radioDiagnostics(Object.assign({}, SHARED_PAYLOADS, { ssb: null, neighbors: decodeMonnc(['^MONNC: NR,1,1,-70,-10,20']) }));
+check('频段查不到 → 卡片标题仍显示 RAT 名（与旧 arfcnToBand 回退一致）',
+	sameJson(slotValues(unknownOld), slotValues(unknownNew)), JSON.stringify(slotValues(unknownNew)));
+
+console.log('\n' + (failures ? failures + ' 项不一致' : '结构/文案一致；取值差异全部为预期修正')
+	+ '（' + EXPECTED_VALUE_DIFFS.length + ' 处：十六进制 PCI → 十进制、n78 由后端频段表给出）');
+process.exit(failures ? 1 : 0);

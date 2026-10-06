@@ -10,7 +10,7 @@
  * MT5700M LuCI — 无线与小区（network）
  * ---------------------------------------------
  * 数据：fs.exec network（信号/小区/注册/锁频/MCS）+ advanced radio（频段/接入架构）
- *       + advanced radio-diagnostics（懒加载）+ cellscan（模态）
+ *       + 后端路由（诊断区块/邻区：cell.neighbors、beam.ssb 等）+ cellscan（模态）
  * 分块：A) 渲染与英雄指标  B) 无线诊断（radioDiagnostics / SSB / 邻区）
  *       C) 频段勾选与锁频面板（bandChecklist / lockPanel）
  * 全部解析在 parser.js，全部 UI 原语在 components.js；本文件仅保留页面级组装。
@@ -32,6 +32,41 @@ function beamCard(beam) {
 }
 
 /*
+ * 频段号 → 页面标签（'B3' / 'n78'）。
+ *
+ * 频段知识（ARFCN → 频段号）在后端 modules/cell 与 modules/beam 共用的
+ * core::radio 表里；前端只负责加前缀。取不到频段号时沿用旧版
+ * arfcnToBand 的回退：显示 RAT 名（'LTE' / 'NR'）。
+ */
+function bandLabel(band, rat) {
+	if (band === undefined || band === null || band === '')
+		return rat || '';
+	return (rat === 'NR' ? 'n' : 'B') + band;
+}
+
+/*
+ * `api.cell.neighbors` 的一行 → cellLockCard 的既有形状。
+ *
+ * 后端给的是领域值：PCI 十进制（十六进制解码在 modules/cell）、频段号、
+ * 越界读数的 1/8 换算、空读数直接缺字段；这里只做「缺字段 → 空串」和
+ * 「频段号 → 标签」，交给卡片的字段与旧版 parseMonnc 同名同型。
+ */
+function neighborCard(cell) {
+	var rat = (cell.type === 'NR' || cell.rat === 'NR') ? 'NR' : 'LTE';
+	function str(value) { return (value === undefined || value === null) ? '' : String(value); }
+	return {
+		rat: rat,
+		arfcn: str(cell.arfcn),
+		pci: str(cell.pci),
+		rsrp: str(cell.rsrp),
+		rsrq: str(cell.rsrq),
+		sinr: str(cell.sinr),
+		rxlev: str(cell.rxlev),
+		band: bandLabel(cell.band, rat)
+	};
+}
+
+/*
  * `api.beam.ssb`（modules/beam 的 Rust 解码）→ ssbPanel 的既有形状。
  *
  * 前端只做改名与展示清洗：`^NRSSBID` 的字段偏移、255/32767 空槽过滤、
@@ -46,20 +81,22 @@ function ssbStateFromPayload(payload) {
 	return {
 		arfcn: str(cell.arfcn), cid: str(cell.cid), pci: str(cell.pci),
 		rsrp: str(cell.rsrp), sinr: str(cell.sinr), ta: str(cell.ta),
+		band: bandLabel(cell.band, 'NR'),
 		beams: (cell.ssbs || []).map(function(b) {
 			return { id: str(b.ssbId), rsrp: str(b.rsrp) };
 		}),
 		neighbours: (payload.neighborCells || []).map(function(nb) {
 			return {
 				pci: str(nb.pci), arfcn: str(nb.arfcn),
-				rsrp: parser.cleanSignal(nb.rsrp), sinr: parser.cleanSignal(nb.sinr)
+				rsrp: parser.cleanSignal(nb.rsrp), sinr: parser.cleanSignal(nb.sinr),
+				band: bandLabel(nb.band, 'NR')
 			};
 		})
 	};
 }
 
 // 小区扫描结果（模态）——服务小区 / 邻区 / 频段扫描
-function renderCellScan(raw) {
+function renderCellScan(raw, payloads) {
 	var sections = [];
 	var monsc = parser.parseMonsc(parser.section(raw, 'Serving cell: AT^MONSC') || raw);
 	if (monsc && monsc.rat) {
@@ -81,7 +118,7 @@ function renderCellScan(raw) {
 			].concat(scBars))
 		]));
 	}
-	var monnc = parser.parseMonnc(parser.section(raw, 'Neighbour cells: AT^MONNC') || raw);
+	var monnc = (((payloads || {}).neighbors || {}).cells || []).map(neighborCard);
 	if (monnc.length) {
 		var scRat = (monsc && monsc.rat) || '';
 		var nrNbs = monnc.filter(function(nb) { return nb.rat === 'NR'; });
@@ -101,8 +138,7 @@ function renderCellScan(raw) {
 		if (activeNbs.length) {
 			var nbCards = activeNbs.map(function(nb, i) {
 				var ratType = nb.rat === 'NR' ? 'nr' : nb.rat === 'LTE' ? 'lte' : '';
-				var band = parser.arfcnToBand(nb.arfcn, nb.rat);
-				return c.cellLockCard(nb, i, ratType, band);
+				return c.cellLockCard(nb, i, ratType, nb.band);
 			});
 			sections.push(E('section', { 'class': 'mt-card' }, [
 				E('h4', { 'class': 'mt-card-title', 'style': 'margin:0 0 12px' }, activeLabel.format(activeNbs.length)),
@@ -112,8 +148,7 @@ function renderCellScan(raw) {
 		if (otherNbs.length && otherLabel) {
 			var otherCards = otherNbs.map(function(nb, i) {
 				var ratType = nb.rat === 'NR' ? 'nr' : nb.rat === 'LTE' ? 'lte' : '';
-				var band = parser.arfcnToBand(nb.arfcn, nb.rat);
-				return c.cellLockCard(nb, i, ratType, band);
+				return c.cellLockCard(nb, i, ratType, nb.band);
 			});
 			sections.push(E('section', { 'class': 'mt-card' }, [
 				E('h4', { 'class': 'mt-card-title', 'style': 'margin:0 0 12px' }, otherLabel.format(otherNbs.length)),
@@ -164,7 +199,7 @@ return view.extend({
 	 */
 	fetchDiagnostics: function() {
 		return Promise.all([
-			api.atRadioDiagnostics(),          // 邻区卡片（下一步迁到 cell.neighbors）
+			api.route('cell.neighbors'),
 			api.route('beam.ssb'),
 			api.route('modem.mcs'),
 			api.route('modem.nr_txpower'),
@@ -199,14 +234,14 @@ return view.extend({
 
 	/* ---------- 行渲染 ---------- */
 
-	radioDiagnostics: function(raw, payloads) {
+	radioDiagnostics: function(payloads) {
 		var ssbInfo = ssbStateFromPayload(payloads.ssb);
 		var mcs = payloads.mcs || {};
 		var txPowerRows = this.nrTxPowerRows(payloads.txPower);
 		var qos = payloads.qos || {};
 		var endc = payloads.endc || {};
 		var ca = payloads.ca || {};
-		var monnc = parser.parseMonnc(parser.section(raw, 'Neighbour cells') || '');
+		var monnc = ((payloads.neighbors || {}).cells || []).map(neighborCard);
 		var nrMonnc = monnc.filter(function(nb) { return nb.rat === 'NR'; });
 		var lteMonnc = monnc.filter(function(nb) { return nb.rat === 'LTE'; });
 		var diagNb = nrMonnc.length ? nrMonnc : lteMonnc;
@@ -214,7 +249,7 @@ return view.extend({
 		if (diagNb.length)
 			extra.push(this.lockNeighbourSection(
 				(nrMonnc.length ? _('NR neighbour cells (%d)') : _('LTE neighbour cells (%d)')).format(diagNb.length),
-				diagNb, nrMonnc.length ? 'nr' : 'lte'));
+				diagNb));
 		return E('div', {}, [
 			E('div', { 'class': 'mt-grid', 'style': 'margin-top:12px' }, [
 				E('section', { 'class': 'mt-card' }, [
@@ -235,10 +270,12 @@ return view.extend({
 		].concat(extra));
 	},
 
-	lockNeighbourSection: function(title, list, ratType) {
+	/* 扫频弹窗的渲染入口（导出以便测试脚本直接驱动，与 radioDiagnostics 同级） */
+	renderCellScan: renderCellScan,
+
+	lockNeighbourSection: function(title, list) {
 		var cards = list.map(function(nb, i) {
-			var band = parser.arfcnToBand(nb.arfcn, ratType === 'nr' ? 'NR' : 'LTE');
-			return c.cellLockCard(nb, i, ratType, band, ratType === 'nr');
+			return c.cellLockCard(nb, i, nb.rat === 'NR' ? 'nr' : 'lte', nb.band, nb.rat === 'NR');
 		});
 		return E('section', { 'class': 'mt-card', 'style': 'margin-top:12px' }, [
 			E('h3', { 'class': 'mt-card-title' }, title),
@@ -254,7 +291,7 @@ return view.extend({
 				E('div', { 'class': 'mt-row' }, [ E('span', { 'class': 'mt-muted' }, _('NR SSB measurement')), E('strong', {}, _('Not available')) ])
 			]);
 		}
-		var scBand = parser.arfcnToBand(info.arfcn, 'NR');
+		var scBand = info.band;
 		var serving = E('div', { 'class': 'mt-ssb-serving' }, [
 			E('div', { 'class': 'mt-ssb-serving-head' }, [
 				E('span', { 'class': 'mt-ssb-serving-title' }, _('Serving cell') + (scBand ? ' · ' + scBand : '')),
@@ -277,8 +314,7 @@ return view.extend({
 			nbSection = E('div', {}, [
 				E('h4', { 'style': 'margin:14px 0 8px;font-size:13px' }, _('NR neighbour cells (%d)').format(info.neighbours.length)),
 				E('div', { 'class': 'mt-lock-cell-grid' }, info.neighbours.map(function(nb, i) {
-					var nbBand = parser.arfcnToBand(nb.arfcn, 'NR');
-					return c.cellLockCard(nb, i, 'nr', nbBand, true);
+					return c.cellLockCard(nb, i, 'nr', nb.band, true);
 				}))
 			]);
 		} else {
@@ -391,13 +427,12 @@ return view.extend({
 		window.setTimeout(function() {
 			if (!document.body.contains(diagnosticHost)) return;
 			self.fetchDiagnostics().then(function(results) {
-				var frame = results[0] || {};
 				var payloads = {
-					ssb: results[1], mcs: results[2], txPower: results[3], qos: results[4],
+					neighbors: results[0], ssb: results[1], mcs: results[2], txPower: results[3], qos: results[4],
 					endc: results[5], ca: results[6], registration: results[7], ims: results[8]
 				};
 				if (document.body.contains(diagnosticHost))
-					dom.content(diagnosticHost, self.radioDiagnostics(frame.stdout || '', payloads));
+					dom.content(diagnosticHost, self.radioDiagnostics(payloads));
 			}, function(err) {
 				if (document.body.contains(diagnosticHost))
 					dom.content(diagnosticHost, E('div', { 'class': 'alert-message warning' }, err.message || String(err)));
@@ -538,12 +573,15 @@ return view.extend({
 							 * 还没有结果时会顺带发起一次扫描，然后轮询 cellscan-result，
 							 * 扫完再取一次，弹窗里呈现的内容与旧版同步扫频完全一致。
 							 */
-							var showScan = function(scan) {
-								var body = scan.stdout ? renderCellScan(scan.stdout) : E('div', { 'class': 'alert-message warning' }, _('No response.'));
+							var showScan = function(scan, payloads) {
+								var body = scan.stdout ? renderCellScan(scan.stdout, payloads) : E('div', { 'class': 'alert-message warning' }, _('No response.'));
 								ui.showModal(_('Cell Scan'), [ body, E('div', { 'class': 'right', 'style': 'margin-top:14px' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close'))) ]);
 							};
-							api.atCellscan().then(function(scan) {
-								showScan(scan);
+							// 邻区与扫频帧并发取：邻区走 cell.neighbors（与 WebUI 同一份解码），
+							// 帧里只剩服务小区与 ^CELLSCAN 原文。
+							Promise.all([ api.atCellscan(), api.route('cell.neighbors') ]).then(function(both) {
+								var scan = both[0], neighbors = both[1];
+								showScan(scan, { neighbors: neighbors });
 								var waited = 0;
 								var poll = window.setInterval(function() {
 									waited += 3000;
@@ -553,7 +591,7 @@ return view.extend({
 										// 没有 state 说明后端读不到结果，别再空转。
 										if (!state || !state.running || waited > 600000) {
 											window.clearInterval(poll);
-											if (state && !state.running) api.atCellscan().then(showScan, function() {});
+											if (state && !state.running) api.atCellscan().then(function(next) { showScan(next, { neighbors: neighbors }); }, function() {});
 										}
 									}, function() { window.clearInterval(poll); });
 								}, 3000);

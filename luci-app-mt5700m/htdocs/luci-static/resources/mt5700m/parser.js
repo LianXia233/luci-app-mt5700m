@@ -332,20 +332,6 @@ function parseMonsc(text) {
 		rsrp: cleanSignal(v[7]), rsrq: '', sinr: '' };
 }
 
-// AT^MONNC 邻区（每行一个小区，PCI 在信号值之前）
-function parseMonnc(text) {
-	var lines = (text || '').split(/\n/).map(function(l) { return l.trim(); }).filter(function(l) { return l.indexOf('^MONNC:') === 0; });
-	return lines.map(function(line) {
-		var v = line.replace(/^\^MONNC:/, '').replace(/^[ :=]+/, '').replace(/"/g, '').split(',').map(function(x) { return x.trim(); });
-		var rat = String(v[0] || '').toUpperCase();
-		if (rat.indexOf('NR') === 0)
-			return { rat: 'NR', arfcn: v[1], pci: v[2], rsrp: cleanSignal(v[3]), rsrq: cleanSignal(v[4]), sinr: cleanSignal(v[5]) };
-		if (rat.indexOf('LTE') === 0)
-			return { rat: 'LTE', arfcn: v[1], pci: v[2], rsrp: cleanSignal(v[3]), rsrq: cleanSignal(v[4]), rxlev: cleanSignal(v[5]), sinr: '' };
-		return null;
-	}).filter(function(item) { return item !== null; });
-}
-
 // 服务小区原始值数组 → 结构化对象（不同 RAT 的度量字段不同）
 function parseServingCell(values) {
 	var rat = String(values[0] || '').toUpperCase();
@@ -669,7 +655,6 @@ return baseclass.extend({
 	trafficUpdated: trafficUpdated,
 	cleanSignal: cleanSignal,
 	parseMonsc: parseMonsc,
-	parseMonnc: parseMonnc,
 	parseServingCell: parseServingCell,
 	arfcnToBand: arfcnToBand,
 	bandNameToNumber: bandNameToNumber,

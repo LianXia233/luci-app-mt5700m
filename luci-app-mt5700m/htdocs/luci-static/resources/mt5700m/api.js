@@ -189,7 +189,6 @@ function atStatus()            { return atSafe([ 'status' ]); }
 function atSession()           { return atSafe([ 'advanced', 'session' ]); }
 function atNetwork()           { return atSafe([ 'network' ]); }
 function atRadio()             { return atSafe([ 'advanced', 'radio' ]); }
-function atRadioDiagnostics()  { return at([ 'advanced', 'radio-diagnostics' ]); }
 function atHardware()          { return atSafe([ 'advanced', 'hardware' ]); }
 function atSystem()            { return atSafe([ 'system' ]); }
 function atConnectionSettings(){ return atSafe([ 'advanced', 'connection-settings' ]); }
@@ -282,7 +281,6 @@ return baseclass.extend({
 	route: route,
 	atNetwork: atNetwork,
 	atRadio: atRadio,
-	atRadioDiagnostics: atRadioDiagnostics,
 	atHardware: atHardware,
 	atSystem: atSystem,
 	atConnectionSettings: atConnectionSettings,

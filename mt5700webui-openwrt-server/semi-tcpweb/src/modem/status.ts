@@ -145,6 +145,8 @@ export interface SsbPayload {
     arfcn?: string;
     cid?: string;
     pci?: string;
+    /** 频段号（core::radio 的 ARFCN 表），页面不再自带频段表 */
+    band?: number;
     rsrp?: number;
     sinr?: number;
     ta?: number;
@@ -153,8 +155,19 @@ export interface SsbPayload {
   neighborCells?: Array<{
     pci?: string;
     arfcn?: string;
+    /** 频段号（core::radio 的 ARFCN 表） */
+    band?: number;
     rsrp?: number;
     sinr?: number;
     ssbs?: SsbBeam[];
   }>;
+}
+
+/**
+ * `api.network.ims` —— `AT+CIREG?` 的 IMS 注册状态（LuCI 诊断区块读它）。
+ * 两个字段都可能缺省：没应答就是空对象，页面按「暂无数据」显示。
+ */
+export interface ImsPayload {
+  enabled?: number;
+  registered?: number;
 }

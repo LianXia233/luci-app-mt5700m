@@ -32,6 +32,9 @@ pub struct SsbServingCell {
     pub arfcn: Option<String>,
     pub cid: Option<String>,
     pub pci: Option<String>,
+    /// Band number for `arfcn` (`core::radio`), so no frontend needs an ARFCN
+    /// table of its own.
+    pub band: Option<i64>,
     pub rsrp: Option<i64>,
     pub sinr: Option<i64>,
     pub ta: Option<i64>,
@@ -53,6 +56,9 @@ impl SsbServingCell {
         if let Some(v) = &self.pci {
             put("pci", json::str_val(v));
         }
+        if let Some(v) = self.band {
+            put("band", json::num_val(v));
+        }
         if let Some(v) = self.rsrp {
             put("rsrp", json::num_val(v));
         }
@@ -73,6 +79,8 @@ impl SsbServingCell {
 pub struct SsbNeighborCell {
     pub pci: Option<String>,
     pub arfcn: Option<String>,
+    /// Band number for `arfcn` (`core::radio`).
+    pub band: Option<i64>,
     pub rsrp: Option<i64>,
     pub sinr: Option<i64>,
     pub ssbs: Vec<SsbBeam>,
@@ -89,6 +97,9 @@ impl SsbNeighborCell {
         }
         if let Some(v) = &self.arfcn {
             put("arfcn", json::str_val(v));
+        }
+        if let Some(v) = self.band {
+            put("band", json::num_val(v));
         }
         if let Some(v) = self.rsrp {
             put("rsrp", json::num_val(v));
@@ -140,6 +151,7 @@ mod tests {
                 arfcn: Some("636648".into()),
                 cid: Some("1A2B3C".into()),
                 pci: Some("506".into()),
+                band: Some(78),
                 rsrp: Some(85),
                 sinr: Some(50),
                 ta: Some(1),
@@ -148,6 +160,7 @@ mod tests {
             neighbors: vec![SsbNeighborCell {
                 pci: Some("506".into()),
                 arfcn: Some("632448".into()),
+                band: Some(78),
                 rsrp: Some(88),
                 sinr: Some(45),
                 ssbs: vec![SsbBeam { ssb_id: 1, rsrp: 80 }],
@@ -162,6 +175,7 @@ mod tests {
             panic!("serving")
         };
         assert_eq!(serving.get("arfcn").and_then(|v| v.as_str()), Some("636648"));
+        assert_eq!(serving.get("band").and_then(|v| v.as_i64()), Some(78));
         let Value::Arr(beams) = serving.get("ssbs").unwrap() else {
             panic!("beams")
         };

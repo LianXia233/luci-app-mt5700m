@@ -1136,19 +1136,20 @@ fn print_cached_status(settings: &Settings) -> String {
 ///
 /// The scan is a minutes-long exclusive task on the daemon now, so this verb
 /// cannot block on it (the control socket's own timeout would kill the call).
-/// It prints the two fast sections, asks the daemon to start a scan when none
-/// is running, and prints the `^CELLSCAN` section from the daemon's last
-/// result: the handbook lines when a scan has finished, or a `SCANNING` line
-/// while one runs — `cellscan-result` is the poll the caller uses to know when
-/// to call this again.
+/// It prints the serving cell, asks the daemon to start a scan when none is
+/// running, and prints the `^CELLSCAN` section from the daemon's last result:
+/// the handbook lines when a scan has finished, or a `SCANNING` line while one
+/// runs — `cellscan-result` is the poll the caller uses to know when to call
+/// this again.
+///
+/// The neighbour section used to be printed here too; the modal now reads the
+/// `cell.neighbors` route (the same decoder the WebUI uses), so printing it
+/// would mean asking `AT^MONNC` a second time and rendering a second copy of
+/// the same reply. The neighbours are still in `radio-diagnostics` for humans.
 fn cmd_cellscan(settings: &Settings) -> i32 {
     let settings = settings.clone();
     println!("===== Serving cell: AT^MONSC =====");
     let r = client::at_cmd(&settings, "AT^MONSC");
-    println!("{}", r.text);
-    println!();
-    println!("===== Neighbour cells: AT^MONNC =====");
-    let r = client::at_cmd(&settings, "AT^MONNC");
     println!("{}", r.text);
     println!();
     println!("===== Frequency scan: AT^CELLSCAN =====");

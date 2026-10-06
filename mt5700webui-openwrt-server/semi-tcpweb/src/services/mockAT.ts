@@ -674,6 +674,7 @@ const MOCK_API_ROUTES: Record<string, unknown> = {
       arfcn: '636648',
       cid: '1A2B3C',
       pci: '506',
+      band: 78,
       rsrp: 85,
       sinr: 50,
       ta: 1,
@@ -688,6 +689,7 @@ const MOCK_API_ROUTES: Record<string, unknown> = {
       {
         pci: '506',
         arfcn: '632448',
+        band: 78,
         rsrp: 88,
         sinr: 45,
         ssbs: [
@@ -705,6 +707,8 @@ const MOCK_API_ROUTES: Record<string, unknown> = {
       { type: 'NR', arfcn: 636648, pci: 64, rsrp: '-70', rsrq: '-10', sinr: '20', band: 78 },
     ],
   },
+  // modules/network：IMS 注册状态（显示路由，未能应答就是空对象）
+  'api.network.ims': { enabled: 1, registered: 1 },
   // 幂等写：详细 PS 注册上报
   'api.network.registration_urc': { enabled: true },
   // 写：清空模组侧的流量计数器
