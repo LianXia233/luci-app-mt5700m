@@ -16,6 +16,12 @@ pub const REG_QUERIES: [&str; 3] = ["AT+C5GREG?", "AT+CEREG?", "AT+CREG?"];
 /// Operator name + access technology (`+COPS: <mode>,<format>,"<name>",<act>`).
 pub const COPS: &str = "AT+COPS?";
 
+/// IMS registration status (`+CIREG: <n>,<reg_info>`, 3GPP 27.007 §7.7).
+///
+/// On-demand only: the wireless page's diagnostics block shows it next to the
+/// PS registration row.
+pub const CIREG: &str = "AT+CIREG?";
+
 /// Activated PDP context addresses (`+CGPADDR: <cid>,"<address>"`). On-demand
 /// only: the diagnostics panel asks for it, nothing polls it.
 pub const CGPADDR: &str = "AT+CGPADDR";

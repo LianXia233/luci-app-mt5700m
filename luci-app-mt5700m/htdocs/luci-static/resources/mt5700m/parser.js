@@ -498,21 +498,6 @@ function mcsModulation(mcs, table, rat) {
 }
 
 // 完整 MCS 段 → [{ rat, carriers:[{table, code0, code1}] }]（多载波 / EN-DC 每 RAT 多组）
-function parseMcsSection(text) {
-	var lines = (text || '').split(/\n/).map(function(l) { return l.trim(); })
-		.filter(function(l) { return l.indexOf('^MCS') === 0; });
-	return lines.map(function(line) {
-		var body = line.replace(/^\^MCS/, '').replace(/^[ :=]+/, '').replace(/"/g, '');
-		var v = body.split(',').map(function(x) { return x.trim(); });
-		var rat = v[1];
-		var carriers = [];
-		for (var i = 2; i + 2 < v.length; i += 3) {
-			carriers.push({ table: v[i], code0: v[i + 1], code1: v[i + 2] });
-		}
-		return { rat: rat, carriers: carriers };
-	});
-}
-
 // ^LTEFREQLOCK? / ^NRFREQLOCK? 原始数组 → 结构化锁频信息
 function parseLockData(rawArr, rat) {
 	if (!rawArr || !rawArr.length || rawArr[0] === '' || rawArr[0] === undefined)
@@ -693,7 +678,6 @@ return baseclass.extend({
 	validCsv: validCsv,
 	csvInRange: csvInRange,
 	mcsModulation: mcsModulation,
-	parseMcsSection: parseMcsSection,
 	parseLockData: parseLockData,
 	swapDigits: swapDigits,
 	decodeUcs2: decodeUcs2,

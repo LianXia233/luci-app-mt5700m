@@ -7,8 +7,8 @@
 
 use crate::modules::network::state::{
     SysCfgState,
-    AutodialState, C5gOptionState, DhcpLease, InterfaceCfgState, LockItem, LockKind, LockState,
-    PdpAddress, PdpContext, RegistrationState,
+    AutodialState, C5gOptionState, DhcpLease, ImsState, InterfaceCfgState, LockItem, LockKind,
+    LockState, PdpAddress, PdpContext, RegistrationState,
 };
 
 /// Parse a `+CxxREG:` line: registration state + family-specific fields.
@@ -681,6 +681,26 @@ pub fn parse_pdp_contexts(cgdcont: &str, cgact: &str) -> Vec<PdpContext> {
     contexts.retain(|c| crate::modules::network::commands::PDP_CID_RANGE.contains(&c.cid));
     contexts
 }
+/// Decode `+CIREG: <n>,<reg_info>` (3GPP 27.007 §7.7).
+///
+/// The wireless page used to slice this line out of the CLI's
+/// `radio-diagnostics` frame; the offsets live here now. A reply without the
+/// line leaves both fields unset, so the page shows no value rather than
+/// "Not registered" for a modem that never answered.
+pub fn parse_cireg(raw: &str) -> ImsState {
+    let mut st = ImsState::default();
+    for line in raw.lines() {
+        let t = line.trim();
+        let Some(idx) = t.find("+CIREG:") else { continue };
+        let body = t[idx + "+CIREG:".len()..].trim();
+        let fields: Vec<&str> = body.split(',').map(|f| f.trim()).collect();
+        st.enabled = fields.first().and_then(|f| f.parse::<i64>().ok());
+        st.registered = fields.get(1).and_then(|f| f.parse::<i64>().ok());
+        break;
+    }
+    st
+}
+
     #[test]
     fn autodial_reads_the_pages_field_rules() {
         // The firmware sends the full tuple while autodial is on; a quoted APN
@@ -766,6 +786,22 @@ pub fn parse_pdp_contexts(cgdcont: &str, cgact: &str) -> Vec<PdpContext> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cireg_reports_ims_registration() {
+        let st = parse_cireg("+CIREG: 0,1\nOK");
+        assert_eq!(st.enabled, Some(0));
+        assert_eq!(st.registered, Some(1));
+        assert!(!st.is_empty());
+        // A modem that rejects the query leaves both fields unset, so the page
+        // shows nothing instead of "Not registered".
+        let none = parse_cireg("+CME ERROR: 4\nOK");
+        assert!(none.is_empty());
+        assert_eq!(none.registered, None);
+        let partial = parse_cireg("+CIREG: 1");
+        assert_eq!(partial.enabled, Some(1));
+        assert_eq!(partial.registered, None);
+    }
 
     #[test]
     fn registration_cereg_standard() {

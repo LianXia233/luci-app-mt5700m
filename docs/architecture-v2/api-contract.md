@@ -33,6 +33,7 @@ Two kinds of route, declared in the table itself (`Route::display` /
 | ----- | --------------------- |
 | `signal.get` / `signal.cached` | `{sysmode, rssi, rsrp, rsrq, sinr, rscp, ecio}` |
 | `network.get` / `network.cached` | `{operator, sysmode, sysmode_detail}` |
+| `network.ims` | `{enabled?, registered?}` — on-demand `AT+CIREG?`; the wireless page's "IMS registration" row reads `registered` (1 = registered). A modem that rejects the query answers an empty object, which the page renders as no value |
 | `registration.get` | `{state, tac, ci, act, nssai, mcc, mnc, lac}` |
 | `qos.get` / `qos.cached` | `{active_cid, ambr_down_kbps, ambr_up_kbps, ambr_apn, qci}` |
 | `network.pdp` | `{addresses: [{cid, address, family}]}` — on-demand `AT+CGPADDR` for the diagnostics panel |
@@ -72,7 +73,7 @@ Two kinds of route, declared in the table itself (`Route::display` /
 | `modem.txpower` | `{total, pusch, pucch, srs, prach}` |
 | `modem.nr_txpower` | `{carriers: [{pusch, pucch, srs, prach, freq}]}` |
 | `modem.endc` | `{available, plmnAvailable, restricted, established}` |
-| `modem.mcs` | `{downlink: {rat, carriers: [{index, mcs_table_index, code0, code1}], avg_mcs}, uplink: {…}}` — on-demand `AT^MCS=1` / `AT^MCS=0`; the page maps `code0` to modulation/level labels |
+| `modem.mcs` | `{downlink: {rat, carriers: [{index, group, rat, mcs_table_index, code0, code1}], avg_mcs}, uplink: {…}}` — on-demand `AT^MCS=1` / `AT^MCS=0`; `group`/`rat` are the reply's own per-line grouping (LuCI prints one block per `^MCS` line, the WebUI ignores them and pairs carriers with `^HFREQINFO` by position), `rat` at the direction level is the merged view (NR wins); the frontends map `code0` to modulation/level labels |
 | `modem.reset` | `{rebooting: true}` — `AT^RESET`; the snapshot is dropped so the next read is post-restart |
 | `modem.imei_set` | `{applied: true, imei}` — `{imei: "15 digits"}` → `^PHYNUM=IMEI,<imei>`; the digit rule is validated here |
 | `modem.nr_capability` | `{ca, vonr, dss: {rateMatchingLTE, additionalDMRS}}` — display route over `^NRRCCAPQRY=3/2/5`; each reply echoes its kind (the parser matches on it) and an ability that did not answer stays absent, including half a DSS pair |
@@ -140,7 +141,7 @@ call routes; only the deliberate raw-AT consoles (`WebUI /at` terminal, LuCI
 
 LuCI reaches the registry through `api.js`'s `route(name, params)` helper —
 `mt5700.at` with `cmd = api.<route> [json]` — so a page asks for a domain model
-(`api.getSsb()` → `beam.ssb`) instead of a labelled text frame it would have to
+(`api.route('beam.ssb')`) instead of a labelled text frame it would have to
 slice. The render-only helpers stay on the CLI verbs; the pages migrate one
 section at a time (see `migration.md` item 9).
 

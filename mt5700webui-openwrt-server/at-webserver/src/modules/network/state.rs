@@ -453,6 +453,34 @@ impl PdpContext {
         Value::Obj(m)
     }
 }
+/// IMS registration (`+CIREG`), the wireless page's "IMS registration" row.
+///
+/// `enabled` is the report flag the modem echoes back (`<n>`), `registered` is
+/// `<reg_info>`: 1 = the UE is IMS-registered. Both are omitted when the modem
+/// did not answer, which the page renders as no data instead of guessing.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ImsState {
+    pub enabled: Option<i64>,
+    pub registered: Option<i64>,
+}
+
+impl ImsState {
+    pub fn is_empty(&self) -> bool {
+        self.enabled.is_none() && self.registered.is_none()
+    }
+
+    pub fn to_json(&self) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        if let Some(v) = self.enabled {
+            m.insert("enabled".to_string(), json::num_val(v));
+        }
+        if let Some(v) = self.registered {
+            m.insert("registered".to_string(), json::num_val(v));
+        }
+        Value::Obj(m)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

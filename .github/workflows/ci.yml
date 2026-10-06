@@ -85,6 +85,10 @@ jobs:
           # field still compiles in no toolchain. Caught here (and in the local
           # sandbox) instead of two CI cycles later.
           python3 scripts/rs-field-lint.py mt5700webui-openwrt-server/at-webserver/src
+          # And the E0412/E0433 pair: a name written from memory whose `use` line
+          # was forgotten. Covers unit-test modules too (they inherit the file's
+          # scope through `use super::*;`).
+          python3 scripts/rs-scope-lint.py mt5700webui-openwrt-server/at-webserver/src
           # Delimiter-level structure: a scripted edit that leaves a stray brace
           # (or an unbalanced literal) is reported here with its line number
           # instead of surfacing as unrelated cargo type errors.

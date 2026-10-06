@@ -32,6 +32,10 @@ export interface MCSInfo {
 /** 后端一个载波行。 */
 interface McsCarrierPayload {
   index: number;
+  /** 应答里每条 ^MCS 行的分组号；LuCI 用它还原「NR Carrier 1」这类行标签。 */
+  group?: number;
+  /** 该行所属制式（'NR' / 'LTE' / ''），分组标签用；页面本身按 index 对齐载波。 */
+  rat?: string;
   mcs_table_index: number;
   code0: number;
   code1: number;

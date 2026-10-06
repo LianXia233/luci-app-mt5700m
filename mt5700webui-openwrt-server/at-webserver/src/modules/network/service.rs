@@ -15,8 +15,8 @@ use crate::core::task::Priority;
 use crate::modules::network::commands::{self, COPS, SYSCFGEX_QUERY, SYSINFOEX};
 use crate::modules::network::parser;
 use crate::modules::network::state::{
-    AutodialState, C5gOptionState, InterfaceCfgState, LockKind, LockState, NetworkState, PdpContext,
-    RegistrationState, SysCfgState, UsbModeState,
+    AutodialState, C5gOptionState, ImsState, InterfaceCfgState, LockKind, LockState, NetworkState,
+    PdpContext, RegistrationState, SysCfgState, UsbModeState,
 };
 use crate::scheduler::channel::run_in_task;
 use crate::scheduler::jobs::TaskManager;
@@ -95,6 +95,17 @@ pub fn refresh(ctx: &RefreshCtx) -> Result<NetworkState, BackendError> {
 
 /// Read the access-technology configuration (`^SYSCFGEX?`).
 ///
+/// `+CIREG?` — IMS registration, read on demand (nothing polls it).
+pub fn read_ims(ctx: &RefreshCtx) -> Result<ImsState, BackendError> {
+    let text = ctx.read(
+        commands::CIREG,
+        REG_AT_TIMEOUT,
+        REG_QUEUED_TIMEOUT,
+        Priority::Interactive,
+    )?;
+    Ok(parser::parse_cireg(&text))
+}
+
 /// The reply layout (quoted or bare `acqorder`, the two trailing reserves) is
 /// decoded by `parser::parse_syscfgex`; a reply without the expected line is an
 /// `AtRejected`, which the page treats as "keep what I show".

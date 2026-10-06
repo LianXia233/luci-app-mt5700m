@@ -26,6 +26,7 @@ pub fn routes() -> Vec<Route> {
         Route::display("network.get", get),
         Route::display("network.cached", cached),
         Route::display("registration.get", registration),
+        Route::display("network.ims", ims),
         Route::on_demand("network.pdp", pdp),
         Route::on_demand("network.dhcp", dhcp),
         Route::on_demand("network.registration_urc", registration_urc),
@@ -268,6 +269,19 @@ fn dhcp(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
         }
     }
     Ok(Value::Obj(m))
+}
+
+/// `{enabled?, registered?}` — IMS registration, for the diagnostics block.
+///
+/// A display route: the page renders it on load, so an unreachable modem is an
+/// empty answer (the page shows no value) rather than a failed request that
+/// would replace the whole block with an error message.
+fn ims(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    let refresh = ctx.refresh();
+    match service::read_ims(&refresh) {
+        Ok(st) => Ok(st.to_json()),
+        Err(_) => Ok(crate::modules::network::state::ImsState::default().to_json()),
+    }
 }
 
 /// Ask for detailed PS registration reports (idempotent write).

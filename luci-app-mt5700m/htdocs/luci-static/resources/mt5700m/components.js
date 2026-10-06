@@ -530,8 +530,29 @@ function metric(label, value, unit) {
 
 /* ---------- MCS 调制摘要 ---------- */
 
-function mcsDetailNode(text) {
-	var groups = parser.parseMcsSection(text);
+/*
+ * `modem.mcs` 的方向载荷 → 旧版 `parseMcsSection` 的分组形状。
+ *
+ * 后端按应答原样给出每个载波的分组号与制式（`group`/`rat`），这里只把
+ * 制式映射回旧代码的 '0'/'1' 记号；分组顺序、行标签与迁移前逐字节相同。
+ */
+function mcsGroupsFromPayload(payload) {
+	if (!payload || !Array.isArray(payload.carriers) || !payload.carriers.length)
+		return [];
+	var order = [], byGroup = {};
+	payload.carriers.forEach(function(carrier) {
+		var key = String(carrier.group);
+		if (!byGroup[key]) {
+			byGroup[key] = { rat: carrier.rat === 'NR' ? '1' : carrier.rat === 'LTE' ? '0' : '', carriers: [] };
+			order.push(key);
+		}
+		byGroup[key].carriers.push({ table: carrier.mcs_table_index, code0: carrier.code0, code1: carrier.code1 });
+	});
+	return order.map(function(key) { return byGroup[key]; });
+}
+
+function mcsDetailNode(payload) {
+	var groups = mcsGroupsFromPayload(payload);
 	if (!groups.length)
 		return E('span', {}, _('Not available'));
 	if (groups.length === 1 && groups[0].carriers.length === 1) {

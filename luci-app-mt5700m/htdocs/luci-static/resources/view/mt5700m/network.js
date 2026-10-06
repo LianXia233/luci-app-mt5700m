@@ -157,18 +157,55 @@ return view.extend({
 
 	/* ---------- B) 无线诊断 ---------- */
 
-	/* `ssbPayload` 来自 api.getSsb()（路由），其余仍取自 radio-diagnostics 帧。 */
-	radioDiagnostics: function(raw, ssbPayload) {
-		var uplinkMcsText = parser.section(raw, 'Uplink MCS');
-		var downlinkMcsText = parser.section(raw, 'Downlink MCS');
-		var txPower = parser.matchValues(parser.section(raw, 'NR transmit power'), '^NTXPOWER');
-		var qos = parser.matchValues(parser.section(raw, 'QoS'), '+CGEQOSRDP');
-		var dataRegistration = parser.matchValues(parser.section(raw, 'Data registration'), '+C5GREG');
-		var ims = parser.matchValues(parser.section(raw, 'IMS registration'), '+CIREG');
-		var endc = parser.matchValues(parser.section(raw, 'Dual connectivity'), '^LENDC');
-		var lteSecondary = parser.countLines(parser.section(raw, 'LTE secondary cells'), '^CASCELLINFO');
-		var nsaSecondary = parser.countLines(parser.section(raw, 'NSA secondary cells'), '^MONSSC: NR');
-		var ssbInfo = ssbStateFromPayload(ssbPayload);
+	/*
+	 * 诊断区块全部走统一 API 路由（modules/* 的后端解码），页面只做展示映射，
+	 * 不再按标签切 CLI 文本帧、也不再用正则取字段。每个 route() 都不会 reject，
+	 * 失败返回 null，对应那一行显示空值 —— 与迁移前「取不到就留空」一致。
+	 */
+	fetchDiagnostics: function() {
+		return Promise.all([
+			api.atRadioDiagnostics(),          // 邻区卡片（下一步迁到 cell.neighbors）
+			api.route('beam.ssb'),
+			api.route('modem.mcs'),
+			api.route('modem.nr_txpower'),
+			api.route('qos.get'),
+			api.route('modem.endc'),
+			api.route('ca.get'),
+			api.route('registration.get'),
+			api.route('network.ims')
+		]);
+	},
+
+	/* 后端 4 位登网状态 -> 页面文案（1/5 = 已注册，与旧版一致）。 */
+	registrationText: function(payload) {
+		if (!payload)
+			return '';
+		return (payload.state === 1 || payload.state === 5) ? _('Registered') : _('Not registered');
+	},
+
+	/* `modem.nr_txpower` 第一个载波的读数：999/-0 视为无读数（后端已置空）。 */
+	nrTxPowerRows: function(payload) {
+		var carrier = (payload && payload.carriers && payload.carriers[0]) || {};
+		var dbm = function(value) {
+			return (value === undefined || value === null) ? '' : value + ' dBm';
+		};
+		return {
+			pusch: dbm(carrier.pusch),
+			pucch: dbm(carrier.pucch),
+			freq: (carrier.freq === undefined || carrier.freq === null || carrier.freq === 0)
+				? '' : (Number(carrier.freq) / 1000).toFixed(1) + ' MHz'
+		};
+	},
+
+	/* ---------- 行渲染 ---------- */
+
+	radioDiagnostics: function(raw, payloads) {
+		var ssbInfo = ssbStateFromPayload(payloads.ssb);
+		var mcs = payloads.mcs || {};
+		var txPowerRows = this.nrTxPowerRows(payloads.txPower);
+		var qos = payloads.qos || {};
+		var endc = payloads.endc || {};
+		var ca = payloads.ca || {};
 		var monnc = parser.parseMonnc(parser.section(raw, 'Neighbour cells') || '');
 		var nrMonnc = monnc.filter(function(nb) { return nb.rat === 'NR'; });
 		var lteMonnc = monnc.filter(function(nb) { return nb.rat === 'LTE'; });
@@ -182,15 +219,17 @@ return view.extend({
 			E('div', { 'class': 'mt-grid', 'style': 'margin-top:12px' }, [
 				E('section', { 'class': 'mt-card' }, [
 					E('h3', { 'class': 'mt-card-title' }, _('Radio link details')),
-					this.row(_('Uplink modulation'), c.mcsDetailNode(uplinkMcsText)), this.row(_('Downlink modulation'), c.mcsDetailNode(downlinkMcsText)),
-					this.row(_('QoS class'), qos[1] ? 'QCI ' + qos[1] : ''), this.row(_('NR PUSCH power'), txPower[0] && txPower[0] !== '999' ? txPower[0] + ' dBm' : ''),
-					this.row(_('NR PUCCH power'), txPower[1] && txPower[1] !== '999' ? txPower[1] + ' dBm' : ''), this.row(_('NR transmit frequency'), txPower[4] && txPower[4] !== '0' ? (Number(txPower[4]) / 1000).toFixed(1) + ' MHz' : '')
+					this.row(_('Uplink modulation'), c.mcsDetailNode(mcs.uplink)), this.row(_('Downlink modulation'), c.mcsDetailNode(mcs.downlink)),
+					this.row(_('QoS class'), qos.qci ? 'QCI ' + qos.qci : ''), this.row(_('NR PUSCH power'), txPowerRows.pusch),
+					this.row(_('NR PUCCH power'), txPowerRows.pucch), this.row(_('NR transmit frequency'), txPowerRows.freq)
 				]),
 				E('section', { 'class': 'mt-card' }, [
-					E('h3', { 'class': 'mt-card-title' }, _('5G beam and service')), this.row(_('LTE secondary carriers'), String(lteSecondary)), this.row(_('NSA secondary connections'), String(nsaSecondary)),
+					E('h3', { 'class': 'mt-card-title' }, _('5G beam and service')),
+					this.row(_('LTE secondary carriers'), payloads.ca ? String(ca.lte_secondary_count) : ''), this.row(_('NSA secondary connections'), payloads.ca ? String(ca.secondary_connection_count) : ''),
 					this.row(_('NR neighbour cells'), ssbInfo ? String(ssbInfo.neighbours.length) : ''),
-					this.row(_('Data registration'), dataRegistration[1] === '1' || dataRegistration[1] === '5' ? _('Registered') : dataRegistration.length ? _('Not registered') : ''),
-					this.row(_('IMS registration'), ims[1] === '1' ? _('Registered') : ims.length ? _('Not registered') : ''), this.row(_('LTE-NR dual connectivity'), endc[0] === '1' ? _('Enabled') : endc.length ? _('Disabled') : '')
+					this.row(_('Data registration'), this.registrationText(payloads.registration)),
+					this.row(_('IMS registration'), payloads.ims ? (payloads.ims.registered === 1 ? _('Registered') : payloads.ims.registered !== undefined ? _('Not registered') : '') : ''),
+					this.row(_('LTE-NR dual connectivity'), payloads.endc ? (endc.available === 1 ? _('Enabled') : endc.available !== undefined ? _('Disabled') : '') : '')
 				])
 			])
 		].concat(extra));
@@ -351,10 +390,14 @@ return view.extend({
 		var self = this;
 		window.setTimeout(function() {
 			if (!document.body.contains(diagnosticHost)) return;
-			Promise.all([ api.atRadioDiagnostics(), api.getSsb() ]).then(function(results) {
-				var result = results[0] || {};
+			self.fetchDiagnostics().then(function(results) {
+				var frame = results[0] || {};
+				var payloads = {
+					ssb: results[1], mcs: results[2], txPower: results[3], qos: results[4],
+					endc: results[5], ca: results[6], registration: results[7], ims: results[8]
+				};
 				if (document.body.contains(diagnosticHost))
-					dom.content(diagnosticHost, self.radioDiagnostics(result.stdout || '', results[1]));
+					dom.content(diagnosticHost, self.radioDiagnostics(frame.stdout || '', payloads));
 			}, function(err) {
 				if (document.body.contains(diagnosticHost))
 					dom.content(diagnosticHost, E('div', { 'class': 'alert-message warning' }, err.message || String(err)));

@@ -233,20 +233,41 @@ aliases, so the move itself changed no behaviour.
      diagnostic tool, admin-only). `modem/*.ts` holds types, display tables and
      merge helpers only.
    * LuCI — `api.js` gained `route(name, params)` (the `api.<route>` command
-     path over `mt5700.at`, documented in `api-contract.md`), and the first
-     section moved over: the SSB panel and the "NR neighbour cells" row now
-     read `beam.ssb`, and `parser.js`'s `parseNrsSbid` — the second, JS copy of
-     the `^NRSSBID` offsets — is deleted. Parity was checked against the old
-     decoder with a node harness (same intermediate shape for every well-formed
-     reply; the only difference is the error path, where the panel now shows its
-     own "Not available" card, and a shifted reply, where the Rust rule drops
-     id-255 / rsrp-32767 slots).  Still on text frames, to be migrated with the
-     same helper: `radioDiagnostics`'s MCS (`modem.mcs`), NR transmit power
-     (`modem.nr_txpower`), QoS (`qos.get`), data/IMS registration and EN-DC,
-     the secondary-carrier counts (`ca.get`) and the neighbour cards
-     (`cell.neighbors`); `parser.js` (`parseMcsSection`, `parseMonnc`,
-     `matchValues`) is deleted when the last of them moves. The dashboard
-     already reads the daemon cache via `api.cachedSnapshot()`.
+     path over `mt5700.at`, documented in `api-contract.md`), and the wireless
+     page's whole diagnostics block moved over:
+     * the SSB panel and the "NR neighbour cells" row read `beam.ssb`
+       (`parser.js`'s `parseNrsSbid` — the second, JS copy of the `^NRSSBID`
+       offsets — is deleted);
+     * the two modulation rows read `modem.mcs`. The route flattens all `^MCS`
+       lines into one carrier list, so the module's `McsCarrier` carries the
+       reply's own `group` and `rat`, and the page rebuilds the exact blocks it
+       printed before ("NR Carrier 1", "LTE Carrier 1", …) —
+       `parser.js`'s `parseMcsSection` is deleted, the modulation table
+       (`mcsModulation`) stays, because it is display;
+     * NR PUSCH/PUCCH power and transmit frequency read `modem.nr_txpower`,
+       the QoS class `qos.get`, the secondary-carrier counts `ca.get`
+       (`lte_secondary_count` / `secondary_connection_count`), data
+       registration `registration.get`, EN-DC `modem.endc`, IMS registration
+       the new `network.ims` route (`+CIREG`, which no module decoded before).
+     * Parity was verified with a node harness that runs the *old* view and the
+       *new* one in the same stubbed DOM and compares every rendered row
+       (12 rows on the mock modem, plus nine corner cases: single- and
+       multi-carrier MCS replies, an empty reply, a missing `+CGEQOSRDP`, the
+       999/0 transmit-power sentinels, a missing `^CASCELLINFO`, `^MONSSC:
+       NONE`, a missing `+C5GREG`): byte-identical in every case, MCS labels
+       included. Two differences, both in the failure path and both
+       intentional: when `+CIREG` or `^LENDC` does not answer, the old code
+       printed "Not registered" / "Disabled" from a placeholder row the text
+       matcher invented, and the page now shows the row's own `--` (the same
+       placeholder every other empty row uses).
+     * Still on text frames, to be migrated with the same helper: the neighbour
+       cards (`cell.neighbors` — the module already decodes `^MONNC`, decimal
+       PCI included; the JS side renders the hex bytes it never converted, so
+       the migration fixes those PCI values and the lock write along with it),
+       and the `status`/`sms`/`system` pages, which still call the CLI verbs.
+       `parser.js` (`parseMonnc`, `matchValues`, `section`) is deleted when the
+       last of them moves. The dashboard already reads the daemon cache via
+       `api.cachedSnapshot()`.
 10. **Fold `mt5700m-traffic` into `modules/traffic`** (last non-Rust business
    process) and the dialing glue of `mt5700m-manager` into `modules/network`
    actions.

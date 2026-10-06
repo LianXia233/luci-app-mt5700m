@@ -643,14 +643,15 @@ const MOCK_API_ROUTES: Record<string, unknown> = {
     downlink: {
       rat: 'NR',
       carriers: [
-        { index: 1, mcs_table_index: 0, code0: 25, code1: 23 },
-        { index: 2, mcs_table_index: 1, code0: 21, code1: 19 },
+        // group/rat 是后端按 ^MCS 行回填的分组信息（LuCI 的行标签用）。
+        { index: 1, group: 1, rat: 'NR', mcs_table_index: 0, code0: 25, code1: 23 },
+        { index: 2, group: 2, rat: 'LTE', mcs_table_index: 1, code0: 21, code1: 19 },
       ],
       avg_mcs: 23,
     },
     uplink: {
       rat: 'NR',
-      carriers: [{ index: 1, mcs_table_index: 0, code0: 18, code1: 16 }],
+      carriers: [{ index: 1, group: 1, rat: 'NR', mcs_table_index: 0, code0: 18, code1: 16 }],
       avg_mcs: 18,
     },
   },

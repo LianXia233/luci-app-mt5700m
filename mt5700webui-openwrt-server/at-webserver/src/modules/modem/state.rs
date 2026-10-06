@@ -178,6 +178,15 @@ impl EndcState {
 pub struct McsCarrier {
     /// 1-based position, in the order the modem listed the carriers.
     pub index: usize,
+    /// The reply's own group number (`^MCS: <group>,<rat>,…`): one group per
+    /// line the modem sent. LuCI renders one block per group (its labels are
+    /// "NR Carrier 1" / "LTE Carrier 1"); the WebUI ignores it and pairs the
+    /// carriers with `^HFREQINFO` by position.
+    pub group: i64,
+    /// Access technology of the group this carrier came from: `NR`, `LTE`, or
+    /// empty when the reply's token was neither (`rat` above is the merged
+    /// view of the whole direction).
+    pub rat: &'static str,
     pub mcs_table_index: i64,
     /// Primary code (`255` = the carrier is not in use).
     pub code0: i64,
@@ -188,6 +197,8 @@ impl McsCarrier {
     pub fn to_json(&self) -> Value {
         let mut m = std::collections::BTreeMap::new();
         m.insert("index".to_string(), json::num_val(self.index));
+        m.insert("group".to_string(), json::num_val(self.group));
+        m.insert("rat".to_string(), json::str_val(self.rat));
         m.insert("mcs_table_index".to_string(), json::num_val(self.mcs_table_index));
         m.insert("code0".to_string(), json::num_val(self.code0));
         m.insert("code1".to_string(), json::num_val(self.code1));
@@ -305,8 +316,8 @@ mod tests {
         let st = McsState {
             rat: "NR",
             carriers: vec![
-                McsCarrier { index: 1, mcs_table_index: 0, code0: 25, code1: 23 },
-                McsCarrier { index: 2, mcs_table_index: 1, code0: 255, code1: 21 },
+                McsCarrier { index: 1, group: 1, rat: "NR", mcs_table_index: 0, code0: 25, code1: 23 },
+                McsCarrier { index: 2, group: 1, rat: "NR", mcs_table_index: 1, code0: 255, code1: 21 },
             ],
             avg_mcs: 25,
         };
@@ -316,6 +327,16 @@ mod tests {
         assert_eq!(m.get("rat").and_then(|v| v.as_str()), Some("NR"));
         assert_eq!(m.get("avg_mcs").and_then(|v| v.as_i64()), Some(25));
         assert_eq!(m.get("carriers").map(|v| v.as_arr().map(|a| a.len())), Some(Some(2)));
+        // The per-carrier group + RAT survive into JSON: LuCI renders one block
+        // per `^MCS` line and labels it with this RAT.
+        let Value::Arr(carriers) = m.get("carriers").unwrap() else {
+            panic!("carriers")
+        };
+        let Value::Obj(first) = &carriers[0] else {
+            panic!("carrier")
+        };
+        assert_eq!(first.get("group").and_then(|v| v.as_i64()), Some(1));
+        assert_eq!(first.get("rat").and_then(|v| v.as_str()), Some("NR"));
     }
 
     #[test]

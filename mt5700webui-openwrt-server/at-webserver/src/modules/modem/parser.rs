@@ -154,6 +154,14 @@ pub fn parse_mcs(raw: &str) -> McsState {
         } else if rat == "0" && st.rat == "UNKNOWN" {
             st.rat = "LTE";
         }
+        // Per-carrier group + RAT, for the renderers that group by line (LuCI
+        // prints one block per `^MCS` line; see `McsCarrier`).
+        let group_no: i64 = group.parse().unwrap_or(0);
+        let line_rat = match rat {
+            "1" => "NR",
+            "0" => "LTE",
+            _ => "",
+        };
         // Unparseable codes are treated as "not in use" (255), the same value
         // the firmware uses, so one bad token cannot poison the average.
         let values: Vec<i64> = rest
@@ -164,6 +172,8 @@ pub fn parse_mcs(raw: &str) -> McsState {
         while i + 2 < values.len() {
             st.carriers.push(McsCarrier {
                 index: st.carriers.len() + 1,
+                group: group_no,
+                rat: line_rat,
                 mcs_table_index: values[i],
                 code0: values[i + 1],
                 code1: values[i + 2],
@@ -251,6 +261,15 @@ mod tests {
         assert_eq!(st.carriers[2].code0, 18);
         // 25, 21 and 18 -> 64/3 = 21.33 -> 21
         assert_eq!(st.avg_mcs, 21);
+        // Per-carrier group + RAT come from the line, so LuCI can rebuild the
+        // two blocks it printed before this data came from a route: the first
+        // `^MCS` line is group 1 (NR, two carriers), the second group 2 (LTE).
+        assert_eq!(st.carriers[0].group, 1);
+        assert_eq!(st.carriers[0].rat, "NR");
+        assert_eq!(st.carriers[1].group, 1);
+        assert_eq!(st.carriers[1].rat, "NR");
+        assert_eq!(st.carriers[2].group, 2);
+        assert_eq!(st.carriers[2].rat, "LTE");
     }
 
     #[test]
@@ -266,6 +285,16 @@ mod tests {
         assert_eq!(unused.avg_mcs, 20);
         assert_eq!(parse_mcs("OK").avg_mcs, 0);
         assert!(parse_mcs("OK").is_empty());
+    }
+
+    #[test]
+    fn mcs_unknown_rat_token_keeps_an_empty_per_carrier_rat() {
+        // The merged direction RAT stays "UNKNOWN", the per-carrier one is
+        // empty: the extra `rat` field never invents a technology.
+        let st = parse_mcs("^MCS: 3,7,0,9,8");
+        assert_eq!(st.rat, "UNKNOWN");
+        assert_eq!(st.carriers[0].group, 3);
+        assert_eq!(st.carriers[0].rat, "");
     }
 
     #[test]
