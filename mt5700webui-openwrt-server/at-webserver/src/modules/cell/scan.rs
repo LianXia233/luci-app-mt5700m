@@ -638,7 +638,11 @@ mod tests {
         ];
         for (filter, expected) in cases {
             let err = build_command(&filter).expect_err(expected);
-            assert_eq!(err.message(), expected.to_string());
+            assert_eq!(err.code(), "INVALID_PARAMETER", "{}", expected);
+            // `message()` is the log line; the pages show `detail()`, which is
+            // the bare rejection — assert both so neither drifts.
+            assert!(err.message().contains(expected), "{}", err.message());
+            assert_eq!(err.detail(), expected.to_string());
         }
     }
 

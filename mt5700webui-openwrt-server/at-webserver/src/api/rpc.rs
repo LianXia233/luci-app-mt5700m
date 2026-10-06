@@ -53,7 +53,9 @@ pub fn ws_response(
         }
         Err(e) => {
             m.insert("success".to_string(), Value::Bool(false));
-            m.insert("error".to_string(), json::str_val(&e.message()));
+            // `detail`, not `message`: a rejected parameter reaches the UI as
+            // the rejection text the form used to show (see detail()).
+            m.insert("error".to_string(), json::str_val(&e.detail()));
             m.insert("code".to_string(), json::str_val(e.code()));
             m.insert("retryable".to_string(), Value::Bool(e.retryable()));
         }
@@ -78,7 +80,7 @@ pub fn control_response(
         }
         Err(e) => {
             m.insert("ok".to_string(), Value::Bool(false));
-            m.insert("error".to_string(), json::str_val(&e.message()));
+            m.insert("error".to_string(), json::str_val(&e.detail()));
             m.insert("code".to_string(), json::str_val(e.code()));
         }
     }

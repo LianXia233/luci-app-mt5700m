@@ -107,6 +107,11 @@ matching the previous writers.
 | TCP RPC (ucode/LuCI) | `{"id":1,"method":"api","params":{"path":"signal.get"}}` | `{success: true, data: {…}}` | as above |
 | `mt5700m-at` CLI | `mt5700m-at <verb>` | legacy text on stdout | exit code + stderr (`124` on timeout) |
 
+`error` in the envelopes is `BackendError::detail()`: for a rejected parameter
+it is the bare rejection text ("频段与频点不能同时指定") — the exact copy the
+pages showed when they validated locally — and for everything else it is the
+same `message()` the logs and the CLI print. `code` is always `Error::code()`.
+
 A route is reachable through every transport, and the `api.` prefix is
 normalised inside `registry::dispatch`, so `api.signal.get` (WS/LuCI command
 line, `split_api_command` carries the optional trailing JSON as `params`) and

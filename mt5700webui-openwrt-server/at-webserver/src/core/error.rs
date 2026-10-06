@@ -34,6 +34,18 @@ pub enum BackendError {
 }
 
 impl BackendError {
+    /// The text a *frontend* shows. For a rejected parameter that is the
+    /// rejection itself ("频段与频点不能同时指定"), not the log line that
+    /// prefixes it with the fact that it was a parameter rejection — the pages
+    /// showed exactly this text before the check moved into the module, and the
+    /// copy is part of the UI.
+    pub fn detail(&self) -> String {
+        match self {
+            BackendError::InvalidParameter(p) => p.clone(),
+            other => other.message(),
+        }
+    }
+
     /// Stable machine-readable code, e.g. `AT_TIMEOUT`.
     pub fn code(&self) -> &'static str {
         match self {
@@ -116,6 +128,16 @@ mod tests {
         assert_eq!(BackendError::AtTimeout.code(), "AT_TIMEOUT");
         assert_eq!(BackendError::TaskCancelled.code(), "TASK_CANCELLED");
         assert_eq!(BackendError::ModemUnavailable.code(), "MODEM_UNAVAILABLE");
+    }
+
+    #[test]
+    fn invalid_parameter_detail_is_the_ui_copy() {
+        let e = BackendError::InvalidParameter("频段与频点不能同时指定".into());
+        assert_eq!(e.code(), "INVALID_PARAMETER");
+        assert!(e.message().contains("参数无效"));
+        assert_eq!(e.detail(), "频段与频点不能同时指定");
+        // Every other variant's UI text is its message.
+        assert_eq!(BackendError::Busy.detail(), BackendError::Busy.message());
     }
 
     #[test]
