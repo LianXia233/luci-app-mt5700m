@@ -132,7 +132,7 @@ pub fn write(params: &Value) -> Result<(), BackendError> {
         if n < MIN_CHECK_INTERVAL {
             return bad(&format!("检测间隔不能小于 {} 秒", MIN_CHECK_INTERVAL));
         }
-        sets.push(("schedule_check_interval", n.to_string()));
+        sets.push(("schedule_check_interval".to_string(), n.to_string()));
     }
     if let Some(v) = params.get("timeout") {
         let Some(n) = v.as_u64() else {
@@ -141,7 +141,7 @@ pub fn write(params: &Value) -> Result<(), BackendError> {
         if n < MIN_TIMEOUT {
             return bad(&format!("无服务超时不能小于 {} 秒", MIN_TIMEOUT));
         }
-        sets.push(("schedule_timeout", n.to_string()));
+        sets.push(("schedule_timeout".to_string(), n.to_string()));
     }
     for (key, uci) in [
         ("unlock_lte", "schedule_unlock_lte"),
