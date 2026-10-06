@@ -560,8 +560,9 @@ fn split_at_args(payload: &str) -> Vec<String> {
 /// the page's own parser did, and what the NDIS fallback exists for.
 pub fn parse_autodial(raw: &str) -> AutodialState {
     let mut st = AutodialState::default();
-    let Some(line) = raw
-        .replace('\r', "")
+    // The cleaned text must outlive the borrow `line` takes from it.
+    let cleaned = raw.replace('\r', "");
+    let Some(line) = cleaned
         .lines()
         .map(str::trim)
         .find(|l| l.starts_with("^SETAUTODIAL:"))
