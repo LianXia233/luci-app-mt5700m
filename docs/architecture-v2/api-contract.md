@@ -103,6 +103,9 @@ Two kinds of route, declared in the table itself (`Route::display` /
 | `sms.center_set` | `{applied: true}` — `{number}` → `+CSCA="<number>"`; empty/illegal characters rejected here |
 | `sms.ims_set` | `{applied: true}` — `{enabled}` runs the module's five-step IMS sequence (`+CFUN=0` → IMS PDP profile → `+CEUS` → `^IMSSWITCH` → `+CFUN=1`) with its settle times, one implementation shared by both frontends and the CLI |
 | `sms.analyze` | `{encoding: "7bit"\|"UCS2", chars, parts}` — `{text}`; the compose hint's part count comes from the same codec `sms.send` uses, so the promise and the send cannot disagree |
+| `sms.ussd_send` | `{sent: true, reply?}` — `{code}`; the code is validated and packed here (GSM 7-bit, the manual's own example `*133#` → `AAD86C3602`, sent as `AT+CUSD=1,"…",15`), a rejected code answers the panel's copy verbatim, and a firmware that returns the answer inline gets it decoded into `reply` (`{m, mText, text, needsReply}`) |
+| `sms.ussd_cancel` | `{cancelled: true}` — `AT+CUSD=2`, releasing the session |
+| push `sms.ussd` | `{m, mText, text, needsReply}` — the `+CUSD:` line the network sends out-of-band, decoded by the same codec (the `sms` topic). The raw line still goes out as `raw_data`, but no page parses it |
 
 Field names and types are exactly what the cache published before the refactor,
 so existing consumers (LuCI topics, WebUI `stateCache`, `mt5700m-at cached`)

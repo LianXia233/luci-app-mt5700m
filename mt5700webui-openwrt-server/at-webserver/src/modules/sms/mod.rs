@@ -8,6 +8,7 @@
 //! state.rs     SmsMessage / SmsStorage / SmsSettings domain model
 //! service.rs   send + list + storage + IMS transactions through the scheduler
 //! pdu.rs       SMS-SUBMIT encoder and SMS-DELIVER decoder (GSM 7-bit / UCS-2)
+//! ussd.rs      AT+CUSD codec: GSM 7-bit packing, the reply decoder, the copy
 //! api.rs       routes exposed to LuCI, WebUI and the CLI
 //! ```
 //!
@@ -20,3 +21,4 @@ pub mod parser;
 pub mod pdu;
 pub mod service;
 pub mod state;
+pub mod ussd;

@@ -1186,7 +1186,7 @@ fn spawn_urc_monitor(client: Arc<AtClient>, bus: Arc<EventBus>) {
                 }
                 for (msg_type, data) in dispatcher.handle_line(&line) {
                     let topic = match msg_type {
-                        "new_sms" | "memory_full" => crate::state::bus::TOPIC_SMS,
+                        "new_sms" | "memory_full" | "sms.ussd" => crate::state::bus::TOPIC_SMS,
                         "signal" => crate::state::bus::TOPIC_SIGNAL,
                         "pdcp_data" => crate::state::bus::TOPIC_TRAFFIC,
                         _ => crate::state::bus::TOPIC_MODEM,

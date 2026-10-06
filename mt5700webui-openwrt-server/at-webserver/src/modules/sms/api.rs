@@ -28,6 +28,9 @@ pub fn routes() -> Vec<Route> {
         Route::on_demand("sms.ims_set", ims_set),
         // 纯算术，不碰模组：显示类路由（冷启动/模组离线也必须给出统计）。
         Route::display("sms.analyze", analyze),
+        // USSD 会话（手动 5.21/5.22）：下发与退出，回复走 +CUSD URC。
+        Route::on_demand("sms.ussd_send", ussd_send),
+        Route::on_demand("sms.ussd_cancel", ussd_cancel),
     ]
 }
 
@@ -123,6 +126,32 @@ fn ims_set(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
     service::set_ims(&refresh, enabled)?;
     let mut m = std::collections::BTreeMap::new();
     m.insert("applied".to_string(), Value::Bool(true));
+    Ok(Value::Obj(m))
+}
+
+/// `{sent: true, reply?}` — run a USSD code.
+///
+/// The module packs and validates the code; a rejected code fails with the
+/// panel's own copy, and a firmware that answers inline returns the decoded
+/// `reply` ({m, mText, text, needsReply}) for the page to render at once.
+fn ussd_send(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+    let code = required_text(params, "code")?;
+    let refresh = ctx.refresh();
+    let reply = service::ussd_send(&refresh, code)?;
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("sent".to_string(), Value::Bool(true));
+    if let Some(reply) = reply {
+        m.insert("reply".to_string(), reply.to_json());
+    }
+    Ok(Value::Obj(m))
+}
+
+/// `{cancelled: true}` — release the USSD session.
+fn ussd_cancel(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    let refresh = ctx.refresh();
+    service::ussd_cancel(&refresh)?;
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("cancelled".to_string(), Value::Bool(true));
     Ok(Value::Obj(m))
 }
 

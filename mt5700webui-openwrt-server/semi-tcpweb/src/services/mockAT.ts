@@ -792,6 +792,29 @@ const mockSmsApiResponse = (
       const text = typeof params.text === 'string' ? params.text : '';
       return { success: true, data: { sent: true, parts: mockSmsStats(text).parts } };
     }
+    // USSD：真实现是后端 modules/sms/ussd.rs（打包 + 解 + 文案），
+    // 演示模式给出同样的形状，校验文案也照抄。
+    case 'api.sms.ussd_send': {
+      const code = String(params.code ?? '').trim();
+      if (!code) return { success: false, error: '请输入 USSD 代码，例如 *133#' };
+      if (code.length > 160) return { success: false, error: 'USSD 字符串最长 160 个字符' };
+      if (!/^[0-9*#+]+$/.test(code)) return { success: false, error: 'USSD 代码只能包含数字与 * # +' };
+      // 演示读数固定，方便核对页面渲染（真机由运营商决定）。
+      return {
+        success: true,
+        data: {
+          sent: true,
+          reply: {
+            m: 0,
+            mText: '网络无需回复',
+            text: code === '*133#' ? '您当前话费余额为 12.30 元' : `演示应答：${code}`,
+            needsReply: false,
+          },
+        },
+      };
+    }
+    case 'api.sms.ussd_cancel':
+      return { success: true, data: { cancelled: true } };
     case 'api.sms.delete': {
       const index = Number(params.index);
       state.receivedSMS = state.receivedSMS.filter((message) => message.index !== index);

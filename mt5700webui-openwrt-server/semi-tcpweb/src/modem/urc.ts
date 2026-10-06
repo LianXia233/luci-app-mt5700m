@@ -5,7 +5,6 @@
 // 这里把这些行翻译成结构化数据，命令应答的解析在各页面里各管各的。
 
 import { parseRejInfo } from './reject';
-import { parseUssd } from './ussd';
 
 export interface PDCPData {
   id: number;
@@ -37,8 +36,7 @@ export type URCType =
   | 'ANLEVEL'
   | 'IMSSRVSTATUS'
   | 'DSAMBR'
-  | 'REJINFO'
-  | 'CUSD';
+  | 'REJINFO';
 
 export interface URCData {
   type: URCType;
@@ -182,15 +180,9 @@ const urcParsers: { keyword: string; parse: (line: string) => URCData | null }[]
       return info ? { type: 'REJINFO', raw: line, parsed: info } : null;
     },
   },
-  {
-    // 手册 5.22：USSD 的结果是主动上报回来的，不在 AT+CUSD 的应答里。
-    keyword: '+CUSD:',
-    parse: (line) => {
-      const reply = parseUssd(line);
-      return reply ? { type: 'CUSD', raw: line, parsed: reply } : null;
-    },
-  },
 ];
+// `+CUSD:` 不在表里：后端 modules/sms/ussd.rs 解好之后按 `sms.ussd`
+// 事件推给页面（transport/urc.rs），前端不再留第二份理解。
 
 export function parseURCLine(line: string): URCData | null {
   for (const parser of urcParsers) {

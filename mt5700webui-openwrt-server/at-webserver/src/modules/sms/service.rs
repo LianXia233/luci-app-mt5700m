@@ -28,6 +28,7 @@ use crate::modules::sms::commands::{
 };
 use crate::modules::sms::parser::{parse_cmgf, parse_cpms, parse_csca, parse_cmgl, parse_imsswitch};
 use crate::modules::sms::pdu;
+use crate::modules::sms::ussd;
 use crate::modules::sms::state::{SmsMessage, SmsSettings, SmsStorage};
 use crate::state::refresh::RefreshCtx;
 use std::time::Duration;
@@ -231,6 +232,25 @@ pub fn set_ims(ctx: &RefreshCtx, enable: bool) -> Result<(), BackendError> {
             std::thread::sleep(Duration::from_millis(step.delay_ms));
         }
     }
+    Ok(())
+}
+
+/// Run a USSD code: validate and pack it (the codec's rules), send
+/// `AT+CUSD=1,"<gsm7 hex>",15`, and return the answer when the firmware puts
+/// it in the command reply.
+///
+/// With `n=1` the network normally answers out-of-band as a `+CUSD:` URC —
+/// the dispatcher already publishes those raw, so the page decodes nothing and
+/// this returns `None` for the caller to fall back to the URC.
+pub fn ussd_send(ctx: &RefreshCtx, code: &str) -> Result<Option<ussd::Reply>, BackendError> {
+    let command = ussd::build_command(code).map_err(BackendError::InvalidParameter)?;
+    let raw = ctx.action(&command)?;
+    Ok(ussd::parse_reply(&raw))
+}
+
+/// `AT+CUSD=2` — release the USSD session (manual 5.21.3, n=2).
+pub fn ussd_cancel(ctx: &RefreshCtx) -> Result<(), BackendError> {
+    ctx.action(ussd::CANCEL)?;
     Ok(())
 }
 

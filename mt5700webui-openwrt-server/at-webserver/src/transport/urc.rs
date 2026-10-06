@@ -168,6 +168,12 @@ impl Dispatcher {
         // `typeof data == "string"` before dispatching it).
         if passthrough(t) {
             events.push(("raw_data", json::str_val(t)));
+            // A `+CUSD:` line is the network's USSD answer: decode it here (the
+            // SMS module owns the GSM 7-bit / UCS-2 codec) so the page renders
+            // an object instead of parsing the line itself.
+            if let Some(reply) = crate::modules::sms::ussd::parse_reply(t) {
+                events.push(("sms.ussd", reply.to_json()));
+            }
         }
         events
     }

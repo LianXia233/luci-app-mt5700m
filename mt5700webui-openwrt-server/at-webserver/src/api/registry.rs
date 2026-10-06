@@ -244,6 +244,7 @@ mod tests {
             "system.nic_rate_set" => pairs(&[("rate", json::num_val(1))]),
             "system.power_control_set" => pairs(&[("enabled", Value::Bool(true))]),
             "modem.imei_set" => pairs(&[("imei", json::str_val("861234567890123"))]),
+            "sms.ussd_send" => pairs(&[("code", json::str_val("*133#"))]),
             "network.radio_set" => pairs(&[("airplane", Value::Bool(true))]),
             "network.syscfg_set" => pairs(&[
                 ("acqorder", json::str_val("080302")),

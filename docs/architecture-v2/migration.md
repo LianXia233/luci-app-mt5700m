@@ -190,7 +190,14 @@ aliases, so the move itself changed no behaviour.
    (`network.autodial`, `network.usb_mode`, `network.interface_cfg`,
    `network.pdp_contexts`) and the page renders the objects, so the WebUI has no
    AT command outside the deliberate `/at` terminal.
-5. **Frontend AT removal**:
+5. **USSD**: the SMS page's USSD panel packed the code itself
+   (`AT+CUSD=1,"<gsm7 hex>",15`) and unpacked the network's `+CUSD:` URC,
+   mapping `<m>` to Chinese copy — three copies of the same handbook tables if
+   the LuCI side had ever needed it. `modules/sms/ussd.rs` now owns packing,
+   decoding and the copy; `sms.ussd_send`/`sms.ussd_cancel` are the routes and
+   the decoded answer also goes out as the `sms.ussd` event, so no page parses
+   a `+CUSD` line.
+6. **Frontend AT removal**:
    * WebUI — display already flows through the daemon's topic cache
      (`services/stateCache.ts` + `useSharedStateTopic`); the remaining AT usage
      is action/refresh paths in `services/at.ts` + `modem/*.ts`, which convert
@@ -200,10 +207,10 @@ aliases, so the move itself changed no behaviour.
      `mt5700m-at status/advanced …`; those pages move to the routes above and
      the duplicated decoders are deleted. The dashboard already reads the
      daemon cache via `api.cachedSnapshot()`.
-6. **Fold `mt5700m-traffic` into `modules/traffic`** (last non-Rust business
+7. **Fold `mt5700m-traffic` into `modules/traffic`** (last non-Rust business
    process) and the dialing glue of `mt5700m-manager` into `modules/network`
    actions.
-7. **Split the two god files** (`daemon.rs` ~1.9k lines, `api/cli.rs` ~2.4k):
+8. **Split the two god files** (`daemon.rs` ~1.9k lines, `api/cli.rs` ~2.4k):
    `daemon.rs` → `transport/{ws_server,rpc_server,control_server}` +
    `api/rpc.rs`; `api/cli.rs` → one `render_text` per module + a small verb
    table. Both are now pure wiring/adapters, so the split is mechanical.

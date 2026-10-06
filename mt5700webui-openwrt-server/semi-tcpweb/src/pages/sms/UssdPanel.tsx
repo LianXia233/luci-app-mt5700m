@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Button, Input, Space, Toast, Typography } from '@douyinfe/semi-ui';
 import { ATService, type ATResponse } from '@/services/at';
-import { buildUssdCommand, parseUssd, USSD_CANCEL_COMMAND, type UssdReply } from '@/modem/ussd';
+import { USSD_EVENT_TYPE, ussdCancel, ussdSend, type UssdReply } from '@/services/ussd';
 import { Field, PageCard } from '@/ui/widgets';
 
 const at = () => ATService.getInstance();
@@ -14,12 +14,12 @@ export const UssdPanel: React.FC = () => {
   busyRef.current = busy;
 
   // 网络的回复通过 +CUSD 主动上报回来，不在命令应答里（手册 5.22）。
+  // 后端已经把该行解成 sms.ussd 事件（含解码文本与 <m> 文案），页面只收结果。
   useEffect(() => {
     const handle = (response: ATResponse) => {
-      if (!('type' in response) || response.type !== 'urc_data') return;
-      const urc = response.data as { raw?: string };
-      const parsed = urc.raw ? parseUssd(urc.raw) : null;
-      if (parsed) {
+      if (!('type' in response) || response.type !== USSD_EVENT_TYPE) return;
+      const parsed = response.data as UssdReply;
+      if (parsed && typeof parsed.m === 'number') {
         setReply(parsed);
         setBusy(false);
       }
@@ -39,18 +39,11 @@ export const UssdPanel: React.FC = () => {
   }, [busy]);
 
   const send = async () => {
-    const { command, error } = buildUssdCommand(code);
-    if (error) {
-      Toast.error(error);
-      return;
-    }
     setBusy(true);
     setReply(null);
     try {
-      const res = await at().sendCommand(command);
-      if (!res.success) throw new Error('模组拒绝了 USSD 请求');
-      // 有些固件会把结果直接放在应答里，先试着解一次。
-      const inline = parseUssd(String(res.data || ''));
+      const { reply: inline } = await ussdSend(code);
+      // 有些固件会把结果直接放在应答里，有就先显示，否则等 sms.ussd 推送。
       if (inline && inline.text) {
         setReply(inline);
         setBusy(false);
@@ -62,7 +55,11 @@ export const UssdPanel: React.FC = () => {
   };
 
   const cancel = async () => {
-    await at().sendCommand(USSD_CANCEL_COMMAND);
+    try {
+      await ussdCancel();
+    } catch {
+      // 取消失败不打断界面，超时逻辑会放开按钮
+    }
     setBusy(false);
   };
 
