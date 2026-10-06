@@ -6,7 +6,7 @@
 //! and modules run. If the daemon is not running there is no AT access at all,
 //! which is exactly what "single AT owner" means.
 
-use crate::core::channel::AtChannel;
+use crate::core::channel::{AtChannel, SmsPart};
 use crate::core::error::BackendError;
 use crate::core::json::Value;
 use crate::transport::control::{self, ControlError};
@@ -62,6 +62,16 @@ impl AtChannel for DaemonChannel {
 
     fn action(&self, command: &str) -> Result<String, BackendError> {
         control::daemon_send(command, WRITE_TIMEOUT_S).map_err(to_backend)
+    }
+
+    fn send_sms_pdu(&self, _parts: &[SmsPart]) -> Result<String, BackendError> {
+        // An SMS is one multi-phase `AT+CMGS` transaction that only the daemon
+        // may run: this client can read and write single commands, but it has no
+        // business holding the '>' prompt. Callers outside the daemon use the
+        // `sms.send` route.
+        Err(BackendError::TransportError(
+            "SMS sends go through the daemon's sms.send route".into(),
+        ))
     }
 }
 

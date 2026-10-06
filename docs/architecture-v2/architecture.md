@@ -76,7 +76,7 @@ Modules present after this refactor:
 | `modem` | `modem`, `txpower`, `nr_txpower`, `endc` | `modem.get`, `modem.cached`, `modem.txpower`, `modem.endc`, `modem.nr_txpower`, `modem.mcs`, `modem.reset`, `modem.imei_set`, `modem.nr_capability`, `modem.nr_capability_set` | `ATI`, `+CGSN`, `^TXPOWER?`, `^NTXPOWER?`, `^LENDC?`, `^MCS`, `AT^RESET`, `^PHYNUM=IMEI`, `^NRRCCAPQRY`/`^NRRCCAPCFG` (CA / VoNR / DSS) |
 | `traffic` | `traffic`, `netrate` | `traffic.get`, `traffic.cached`, `traffic.netrate`, `traffic.clear` | `^PDCPDATAINFO?`, `^DSFLOWCLR`, interface counters, accounting report |
 | `system` | `temperature` | `system.temperature`, `system.temperature.cached`, `system.device_control`, `system.nic_rate_set`, `system.power_control_set`, `system.factory_reset`, `system.service_mode`, `system.thermal`, `system.thermal_set` | `^CHIPTEMP?`, `^TDPCIELANCFG`, `^TDPMCFG`, `AT&F`, `^THERMAUTOFUN`/`^THERMLDLOGSW`/`^THERMLDAUTOPARA`/`^THERMLDAUTOSTATUS` |
-| `sms` | `sms` | (in progress) | SMS-SUBMIT PDU codec, send transaction |
+| `sms` | `sms` | `sms.status`, `sms.storage`, `sms.list`, `sms.send`, `sms.delete`, `sms.clear_all`, `sms.storage_set`, `sms.center_set`, `sms.ims_set`, `sms.analyze` | `+CMGF`/`+CMGL`/`+CMGD`/`+CPMS`/`+CSCA`/`^IMSSWITCH` (plus the IMS profile sequence's `+CGDCONT`/`+CEUS`/`+CFUN`) — SMS-SUBMIT PDU encoder and SMS-DELIVER decoder, multipart split/merge, send transaction |
 
 ## 4. Frontends
 

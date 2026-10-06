@@ -18,6 +18,20 @@ use crate::core::error::BackendError;
 use crate::core::task::Priority;
 use std::time::Duration;
 
+/// One encoded SMS-SUBMIT PDU, ready for the two-phase `AT+CMGS` transaction.
+///
+/// The module's PDU codec produces these; the channel (and below it the
+/// transport) only puts the octets on the wire. Encoding stays business logic,
+/// the wire stays infrastructure — and a multipart message is *one* request, so
+/// the parts cannot interleave with another module's AT traffic.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SmsPart {
+    /// Octet count of `hex` — the argument of `AT+CMGS=<length>`.
+    pub length: usize,
+    /// Hex-encoded PDU, without the trailing `Ctrl-Z`.
+    pub hex: String,
+}
+
 /// Read/write access to the modem, already serialized by the AT scheduler.
 pub trait AtChannel: Send + Sync {
     /// Read-only AT command. Implementations are expected to serve the cached
@@ -61,6 +75,16 @@ pub trait AtChannel: Send + Sync {
     fn duty_gate(&self) -> bool {
         false
     }
+
+    /// Send an already-encoded SMS (one `AT+CMGS` transaction per part), on the
+    /// single arbiter thread so nothing else can interleave with the prompt.
+    ///
+    /// Modules never build the wire sequence themselves: the module's PDU codec
+    /// gives the parts, this method performs them, and the transport below owns
+    /// the serial port. Required rather than defaulted so every channel states
+    /// its answer — an out-of-process client has to go through the daemon's
+    /// `sms.send` route instead of pretending it can write the tty.
+    fn send_sms_pdu(&self, parts: &[SmsPart]) -> Result<String, BackendError>;
 }
 
 /// Normalise a transport result for parsers: a timeout/busy channel means

@@ -178,24 +178,78 @@ fn assemble_tpdu(number: &str, dcs: u8, length: u32, udhi: bool, data: &[u8]) ->
     tpdu
 }
 
+/// Payload ceilings from 3GPP 23.040: what fits in one SMS and what fits in one
+/// part of a concatenated SMS (the part budget is the single budget minus the
+/// 6-octet UDH, expressed in septets for GSM-7 and octets for UCS-2).
+///
+/// One copy for the encoder and the compose-hint statistics, so the hint can
+/// never disagree with what `encode` actually sends.
+const GSM7_SINGLE_MAX: usize = 160;
+const GSM7_PART_MAX: usize = 153; // 160 - 7 (6-byte header + pad bit)
+const UCS2_SINGLE_MAX: usize = 140; // 70 UCS-2 characters
+const UCS2_PART_MAX: usize = 134; // 140 - 6 header octets
+
+/// Parts a payload of `units` needs: one while it fits, then ceil(units/part).
+fn part_count(units: usize, single_max: usize, part_max: usize) -> usize {
+    if units <= single_max {
+        1
+    } else {
+        (units + part_max - 1) / part_max
+    }
+}
+
+/// How a message will be sent — what the compose hint next to the input box
+/// shows. Pure arithmetic on the same tables the encoder uses: no AT traffic.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MessageStats {
+    /// `"7bit"` (GSM default alphabet) or `"UCS2"`.
+    pub encoding: &'static str,
+    /// Characters in the message (the hint's "N 字").
+    pub chars: usize,
+    /// Parts the encoder will produce; 0 for empty text.
+    pub parts: usize,
+}
+
+/// Statistics for `text` without encoding it (a send re-encodes for real).
+pub fn message_stats(text: &str) -> MessageStats {
+    let chars = text.chars().count();
+    if text.is_empty() {
+        return MessageStats {
+            encoding: "7bit",
+            chars: 0,
+            parts: 0,
+        };
+    }
+    match gsm7_septets(text) {
+        Some(septets) => MessageStats {
+            encoding: "7bit",
+            chars,
+            parts: part_count(septets.len(), GSM7_SINGLE_MAX, GSM7_PART_MAX),
+        },
+        None => MessageStats {
+            encoding: "UCS2",
+            chars,
+            parts: part_count(ucs2_be(text).len(), UCS2_SINGLE_MAX, UCS2_PART_MAX),
+        },
+    }
+}
+
 /// Build the final list of PDUs for `number`/`text`. Returns at least one PDU;
 /// long text is split into concatenated parts carrying a UDHI header.
 pub fn encode(number: &str, text: &str) -> Vec<SmsPdu> {
     let refnum = next_ref();
 
     if let Some(septets) = gsm7_septets(text) {
-        const SINGLE_MAX: usize = 160;
-        const PART_MAX: usize = 153; // 160 - 7 (6-byte header + pad bit)
-        if septets.len() <= SINGLE_MAX {
+        if septets.len() <= GSM7_SINGLE_MAX {
             let packed = pack_septets(&septets);
             let tpdu = assemble_tpdu(number, 0x00, septets.len() as u32, false, &packed);
             return vec![SmsPdu::new(septets.len() as u32, tpdu)];
         }
-        let total_parts = (septets.len() + PART_MAX - 1) / PART_MAX;
+        let total_parts = part_count(septets.len(), GSM7_SINGLE_MAX, GSM7_PART_MAX);
         let mut pdus = Vec::with_capacity(total_parts);
         for seq in 0..total_parts {
-            let start = seq * PART_MAX;
-            let end = (start + PART_MAX).min(septets.len());
+            let start = seq * GSM7_PART_MAX;
+            let end = (start + GSM7_PART_MAX).min(septets.len());
             // Concatenation header as septets: IEI, IEL, ref, total, seq.
             let mut part: Vec<u8> = vec![0x00, 0x03, refnum, total_parts as u8, seq as u8 + 1];
             part.extend_from_slice(&septets[start..end]);
@@ -208,23 +262,286 @@ pub fn encode(number: &str, text: &str) -> Vec<SmsPdu> {
 
     // UCS-2 path.
     let octets = ucs2_be(text);
-    const SINGLE_MAX: usize = 140; // 70 UCS-2 chars
-    const PART_MAX: usize = 134; // 140 - 6 header octets
-    if octets.len() <= SINGLE_MAX {
+    if octets.len() <= UCS2_SINGLE_MAX {
         let tpdu = assemble_tpdu(number, 0x08, octets.len() as u32, false, &octets);
         return vec![SmsPdu::new(octets.len() as u32, tpdu)];
     }
-    let total_parts = (octets.len() + PART_MAX - 1) / PART_MAX;
+    let total_parts = part_count(octets.len(), UCS2_SINGLE_MAX, UCS2_PART_MAX);
     let mut pdus = Vec::with_capacity(total_parts);
     for seq in 0..total_parts {
-        let start = seq * PART_MAX;
-        let end = (start + PART_MAX).min(octets.len());
+        let start = seq * UCS2_PART_MAX;
+        let end = (start + UCS2_PART_MAX).min(octets.len());
         let mut data: Vec<u8> = vec![0x00, 0x03, refnum, total_parts as u8, seq as u8 + 1];
         data.extend_from_slice(&octets[start..end]);
         let tpdu = assemble_tpdu(number, 0x08, data.len() as u32, true, &data);
         pdus.push(SmsPdu::new(data.len() as u32, tpdu));
     }
     pdus
+}
+
+// ------------------------------------------------------------- GSM 7-bit decode
+
+/// GSM 03.38 default alphabet, indexed by septet value. The encoder above
+/// writes exactly this alphabet (including `\u{1b}` for the escape), so a
+/// decoded message always round-trips through `encode`.
+pub const GSM7_ALPHABET: [char; 128] = [
+    '@', '£', '$', '¥', 'è', 'é', 'ù', 'ì',
+    'ò', 'Ç', '\n', 'Ø', 'ø', '\r', 'Å', 'å',
+    'Δ', '_', 'Φ', 'Γ', 'Λ', 'Ω', 'Π', 'Ψ',
+    'Σ', 'Θ', 'Ξ', '\u{1b}', 'Æ', 'æ', 'ß', 'É',
+    ' ', '!', '"', '#', '¤', '%', '&', '\'',
+    '(', ')', '*', '+', ',', '-', '.', '/',
+    '0', '1', '2', '3', '4', '5', '6', '7',
+    '8', '9', ':', ';', '<', '=', '>', '?',
+    '¡', 'A', 'B', 'C', 'D', 'E', 'F', 'G',
+    'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
+    'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W',
+    'X', 'Y', 'Z', 'Ä', 'Ö', 'Ñ', 'Ü', '§',
+    '¿', 'a', 'b', 'c', 'd', 'e', 'f', 'g',
+    'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
+    'p', 'q', 'r', 's', 't', 'u', 'v', 'w',
+    'x', 'y', 'z', 'ä', 'ö', 'ñ', 'ü', 'à',
+];
+
+/// Characters reachable through the 0x1B escape sequence.
+fn gsm7_escaped(code: u8) -> Option<char> {
+    Some(match code {
+        0x0A => '\u{0c}', // form feed
+        0x14 => '^',
+        0x28 => '{',
+        0x29 => '}',
+        0x2F => '\\',
+        0x3C => '[',
+        0x3D => '~',
+        0x3E => ']',
+        0x40 => '|',
+        0x65 => '\u{20ac}', // €
+        _ => return None,
+    })
+}
+
+/// One septet -> the character it means (handling the escape sequence).
+fn decode_septets(septets: &[u8], escape_state: &mut bool) -> String {
+    let mut out = String::new();
+    for &s in septets {
+        if *escape_state {
+            *escape_state = false;
+            if let Some(c) = gsm7_escaped(s) {
+                out.push(c);
+                continue;
+            }
+            // Unknown escape: keep the escaped character itself.
+        }
+        if s == 0x1B {
+            *escape_state = true;
+            continue;
+        }
+        out.push(GSM7_ALPHABET[(s & 0x7F) as usize]);
+    }
+    out
+}
+
+/// Unpack `count` septets from GSM 7-bit packed octets.
+fn unpack_septets(octets: &[u8], count: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(count);
+    let mut bit = 0usize;
+    for _ in 0..count {
+        let byte = bit / 8;
+        let shift = bit % 8;
+        // Zeros past the end are padding, not data.
+        let lo = octets.get(byte).copied().unwrap_or(0) as u16;
+        let hi = octets.get(byte + 1).copied().unwrap_or(0) as u16;
+        let value = ((lo >> shift) | (hi << (8 - shift))) & 0x7F;
+        out.push(value as u8);
+        bit += 7;
+    }
+    out
+}
+
+// ------------------------------------------------------------ SMS-DELIVER
+
+/// A decoded incoming message.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeliverSms {
+    pub number: String,
+    pub text: String,
+    /// Service-centre timestamp, formatted `YY/MM/DD,HH:MM:SS` — the shape the
+    /// UI's time parser and formatter expect.
+    pub time: String,
+    /// Concatenation reference/total/sequence for multipart messages.
+    pub concat: Option<(u8, u8, u8)>,
+}
+
+fn hex_byte(hex: &[u8], i: usize) -> Option<u8> {
+    let hi = (hex.get(i * 2).copied() as char).to_digit(16)?;
+    let lo = (hex.get(i * 2 + 1).copied() as char).to_digit(16)?;
+    Some((hi * 16 + lo) as u8)
+}
+
+/// Decode a semi-octet (BCD) address: digits, `*`/`#`/`a`-`f` for the special
+/// nibbles, `F` marks the unused half of the last octet.
+fn decode_address(hex: &[u8], start: usize, digits: usize) -> String {
+    let mut out = String::new();
+    for i in 0..digits {
+        let Some(byte) = hex_byte(hex, start + i / 2) else {
+            break;
+        };
+        let nibble = if i % 2 == 0 { byte & 0x0F } else { byte >> 4 };
+        match nibble {
+            0x0..=0x9 => out.push((b'0' + nibble) as char),
+            0x0A => out.push('*'),
+            0x0B => out.push('#'),
+            0x0C => out.push('a'),
+            0x0D => out.push('b'),
+            0x0E => out.push('c'),
+            0x0F => {}
+            _ => {}
+        }
+    }
+    out
+}
+
+fn decode_digits(hex: &[u8], start: usize, count: usize) -> Option<u8> {
+    let mut value = 0u32;
+    for i in 0..count {
+        let d = (hex.get(start + i).copied() as char).to_digit(16)?;
+        value = value * 16 + d;
+    }
+    Some(value as u8)
+}
+
+/// Decode one SMS-DELIVER PDU (the hex `AT+CMGL` returns, without the leading
+/// SMSC field, or with it — both are handled).
+pub fn decode_deliver(hex_str: &str) -> Option<DeliverSms> {
+    let hex: Vec<u8> = hex_str
+        .trim()
+        .bytes()
+        .filter(|b| !b.is_ascii_whitespace())
+        .collect();
+    if hex.len() < 20 || hex.len() % 2 != 0 {
+        return None;
+    }
+
+    // SMSC prefix: a length octet followed by that many bytes (often `00`).
+    let smsc_len = decode_digits(&hex, 0, 2)? as usize;
+    let mut i = 1 + smsc_len;
+    let first_octet = decode_digits(&hex, i, 2)?;
+    i += 1;
+    // TP-MTI must be 00 (SMS-DELIVER); 01 is a SUBMIT we cannot render.
+    if first_octet & 0x03 != 0 {
+        return None;
+    }
+    let udhi = first_octet & 0x40 != 0;
+
+    // TP-OA: length (digits), type-of-address, then the packed digits.
+    let oa_digits = decode_digits(&hex, i, 2)? as usize;
+    let oa_toa = decode_digits(&hex, i + 1, 2)?;
+    let oa_start = i + 2;
+    let oa_octets = (oa_digits + 1) / 2;
+    i = oa_start + oa_octets;
+
+    let number = if oa_toa & 0x70 == 0x50 {
+        // Alphanumeric sender (7-bit packed); decode it as text.
+        // Alphanumeric senders pack 4 bits per character: the length field
+        // counts semi-octets, so the number of septets is `digits * 4 / 7`.
+        let mut escape = false;
+        let raw = decoded_octets(&hex, oa_start, oa_octets)?;
+        let septets = unpack_septets(&raw, (oa_digits * 4) / 7);
+        decode_septets(&septets, &mut escape)
+    } else {
+        decode_address(&hex, oa_start, oa_digits)
+    };
+
+    let _pid = decode_digits(&hex, i, 2)?;
+    let dcs = decode_digits(&hex, i + 1, 2)?;
+    i += 2;
+
+    // TP-SCTS: YY MM DD HH MM SS TZ, two digits per octet, first digit in the
+    // low nibble (the same semi-octet order as the address). The timezone
+    // octet is quarters of an hour, which the UI's `+32` display also shows.
+    let mut scts = [0u8; 7];
+    for (k, slot) in scts.iter_mut().enumerate() {
+        let byte = decode_digits(&hex, i + k, 2)?;
+        let (tens, units) = (byte & 0x0F, byte >> 4);
+        if tens > 9 || units > 9 {
+            return None;
+        }
+        *slot = tens * 10 + units;
+    }
+    i += 7;
+    let time = format!(
+        "{:02}/{:02}/{:02},{:02}:{:02}:{:02}",
+        scts[0], scts[1], scts[2], scts[3], scts[4], scts[5]
+    );
+
+    // DCS bits 3..2: 00 = GSM 7-bit, 01 = 8-bit, 10 = UCS-2 (3GPP 23.038).
+    // The MT5700M's voice/SMS profile answers 0x08 for UCS-2, which is why the
+    // predicate must test both bits, not just the 0x04 one.
+    let ucs2 = (dcs >> 2) & 0x03 == 0x02;
+    let udl = decode_digits(&hex, i, 2)? as usize;
+    i += 1;
+    let ud_octets = if ucs2 { udl } else { (udl * 7 + 7) / 8 };
+    let ud = decoded_octets(&hex, i, ud_octets)?;
+
+    // User-data header (concatenation IE) sits in front of the payload.
+    let mut concat = None;
+    let mut body = ud.clone();
+    let mut header_octets = 0usize;
+    if udhi && ud.len() >= 1 {
+        let udhl = ud[0] as usize;
+        header_octets = (udhl + 1).min(ud.len());
+        let hdr = &ud[..header_octets];
+        let mut p = 1usize;
+        while p + 1 < hdr.len() {
+            let iei = hdr[p];
+            let iedl = hdr[p + 1] as usize;
+            if p + 2 + iedl > hdr.len() {
+                break;
+            }
+            if iei == 0x00 && iedl == 0x03 {
+                concat = Some((hdr[p + 2], hdr[p + 3], hdr[p + 4]));
+            }
+            p += 2 + iedl;
+        }
+        body = ud[header_octets..].to_vec();
+    }
+
+    let text = if ucs2 {
+        // UCS-2: big-endian pairs.
+        let mut s = String::new();
+        let mut k = 0usize;
+        while k + 1 < body.len() {
+            let cp = ((body[k] as u32) << 8) | body[k + 1] as u32;
+            if let Some(c) = char::from_u32(cp) {
+                s.push(c);
+            }
+            k += 2;
+        }
+        s
+    } else {
+        let septets = unpack_septets(&body, udl.saturating_sub((header_octets * 8 + 6) / 7));
+        let mut escape = false;
+        decode_septets(&septets, &mut escape)
+    };
+
+    if number.is_empty() && text.is_empty() {
+        return None;
+    }
+    Some(DeliverSms {
+        number,
+        text,
+        time,
+        concat,
+    })
+}
+
+/// Read `count` bytes starting at byte offset `start` of a hex string.
+fn decoded_octets(hex: &[u8], start: usize, count: usize) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(count);
+    for k in 0..count {
+        out.push(hex_byte(hex, start + k)?);
+    }
+    Some(out)
 }
 
 #[cfg(test)]
@@ -307,5 +624,92 @@ mod tests {
         // digits "861" -> pairs: ('8','6')='8'->0x68, then '1' with F pad.
         assert_eq!(d[2], 0x68);
         assert_eq!(d[3], 0xF1);
+    }
+
+    #[test]
+    fn message_stats_agree_with_the_encoder() {
+        // The compose hint must never disagree with what a send produces.
+        let mut cases: Vec<String> = vec![
+            String::new(),
+            "hello".to_string(),
+            "a".repeat(160),
+            "a".repeat(161),
+            "a".repeat(306),
+            "你好".to_string(),
+            "你".repeat(70),
+            "你".repeat(71),
+            "你".repeat(134),
+        ];
+        for text in cases.drain(..) {
+            let stats = message_stats(&text);
+            let sent = encode("+8613800138000", &text);
+            let expected_parts = if text.is_empty() { 0 } else { sent.len() };
+            assert_eq!(stats.parts, expected_parts, "parts for {} chars", text.chars().count());
+            assert_eq!(stats.chars, text.chars().count());
+            let expect_encoding = if gsm7_septets(&text).is_some() { "7bit" } else { "UCS2" };
+            assert_eq!(stats.encoding, expect_encoding);
+        }
+        // 161 GSM-7 characters split into 2 parts; 71 UCS-2 characters too.
+        assert_eq!(message_stats(&"a".repeat(161)).parts, 2);
+        assert_eq!(message_stats(&"你".repeat(71)).parts, 2);
+        assert_eq!(message_stats("你好").parts, 1);
+        assert_eq!(message_stats("你好").encoding, "UCS2");
+        assert_eq!(message_stats("").parts, 0);
+    }
+
+}
+
+#[cfg(test)]
+mod deliver_tests {
+    use super::*;
+
+    /// +8613800138000 / 2026-08-26 14:28:36 (+8h) / "hello" / GSM 7-bit.
+    const HELLO: &str = "00040D91683108108300F000006280624182632305E8329BFD06";
+    /// Same envelope, UCS-2 payload: "你好".
+    const UCS2: &str = "00040D91683108108300F0000862806241826323044F60597D";
+    /// Same envelope with the concatenation header (ref 0xAB, part 1 of 2).
+    const CONCAT: &str = "00440D91683108108300F00000628062418263230905C060250800D069";
+
+    #[test]
+    fn decodes_a_seven_bit_deliver() {
+        let sms = decode_deliver(HELLO).expect("deliver");
+        assert_eq!(sms.number, "8613800138000");
+        assert_eq!(sms.text, "hello");
+        assert_eq!(sms.time, "26/08/26,14:28:36");
+        assert_eq!(sms.concat, None);
+    }
+
+    #[test]
+    fn decodes_ucs2_and_the_udh() {
+        let sms = decode_deliver(UCS2).expect("deliver");
+        assert_eq!(sms.text, "你好");
+        assert_eq!(sms.number, "8613800138000");
+        let parts = decode_deliver(CONCAT).expect("deliver");
+        assert_eq!(parts.text, "hi");
+        assert_eq!(parts.concat, Some((0xAB, 2, 1)));
+    }
+
+    #[test]
+    fn rejects_submits_and_garbage() {
+        // MTI 01 is an SMS-SUBMIT, not something a list can render.
+        assert!(decode_deliver("00010191683108108300F000006280624182632305E8329BFD06").is_none());
+        assert!(decode_deliver("OK").is_none());
+        assert!(decode_deliver("").is_none());
+        assert!(decode_deliver("ZZZZ").is_none());
+    }
+
+    #[test]
+    fn seven_bit_alphabet_matches_the_encoder() {
+        // The alphabet table must stay in step with `gsm7_encode`: every entry
+        // re-encodes to its own index.
+        for (i, ch) in GSM7_ALPHABET.iter().enumerate() {
+            assert_eq!(
+                gsm7_encode(*ch),
+                Some(i as u8),
+                "alphabet entry {} ({:?}) does not round-trip",
+                i,
+                ch
+            );
+        }
     }
 }

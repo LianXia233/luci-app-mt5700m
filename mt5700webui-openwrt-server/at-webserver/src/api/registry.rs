@@ -103,6 +103,7 @@ pub fn routes() -> Vec<Route> {
     v.extend(crate::modules::traffic::api::routes());
     v.extend(crate::modules::qos::api::routes());
     v.extend(crate::modules::system::api::routes());
+    v.extend(crate::modules::sms::api::routes());
     v
 }
 
@@ -156,6 +157,12 @@ mod tests {
         fn action(&self, _c: &str) -> Result<String, BackendError> {
             Err(BackendError::ModemUnavailable)
         }
+        fn send_sms_pdu(
+            &self,
+            _parts: &[crate::core::channel::SmsPart],
+        ) -> Result<String, BackendError> {
+            Err(BackendError::ModemUnavailable)
+        }
     }
 
     /// Plausible parameters for the routes that take any.
@@ -205,6 +212,19 @@ mod tests {
                 ("interval", json::num_val(2)),
             ]),
             "modem.nr_capability_set" => pairs(&[("ca", Value::Bool(true))]),
+            "sms.send" => pairs(&[
+                ("number", json::str_val("+8613800138000")),
+                ("text", json::str_val("hello")),
+            ]),
+            "sms.delete" => pairs(&[("index", json::num_val(1))]),
+            "sms.storage_set" => pairs(&[
+                ("read", json::str_val("SM")),
+                ("write", json::str_val("SM")),
+                ("receive", json::str_val("SM")),
+            ]),
+            "sms.center_set" => pairs(&[("number", json::str_val("+8613800138000"))]),
+            "sms.ims_set" => pairs(&[("enabled", Value::Bool(true))]),
+            "sms.analyze" => pairs(&[("text", json::str_val("hello"))]),
             _ => Value::Null,
         }
     }

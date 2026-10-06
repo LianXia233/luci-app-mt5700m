@@ -190,7 +190,8 @@ const wsScheme = (): string =>
 
 // AT指令适配器接口
 export interface ATAdapter {
-  sendCommand(command: string): Promise<ATResponse>;
+  /** `timeoutMs` 覆盖默认的 6s 命令超时（慢路由：短信发送、清空、IMS 序列）。 */
+  sendCommand(command: string, timeoutMs?: number): Promise<ATResponse>;
   connect(): Promise<boolean>;
   disconnect(): Promise<void>;
   subscribeSMS?(callback: (response: ATResponse) => void): void;
@@ -224,10 +225,6 @@ export class WebSocketATAdapter implements ATAdapter {
     }
   > = new Map();
   private smsCallbacks: ((response: ATResponse) => void)[] = [];
-  private smsCollecting: boolean = false; // 是否正在收集短信大数据
-  private smsBuffer: string[] = []; // 短信数据缓存
-  private smsResolve: ((value: ATResponse) => void) | null = null; // 短信命令的resolve
-  private smsTimer: NodeJS.Timeout | null = null; // 短信命令的超时定时器
   private authenticated: boolean = false; // 是否已认证
   private requireAuth: boolean = false; // 是否需要认证
   private authKey: string = ''; // 认证密钥
@@ -798,7 +795,7 @@ export class WebSocketATAdapter implements ATAdapter {
     return p;
   }
 
-  async sendCommand(command: string): Promise<ATResponse> {
+  async sendCommand(command: string, timeoutMs?: number): Promise<ATResponse> {
     // 🔒 使用队列确保命令串行执行，避免 PDCP 等主动上报数据干扰
     return this.commandQueue = this.commandQueue
       .then(async () => {
@@ -807,20 +804,6 @@ export class WebSocketATAdapter implements ATAdapter {
             success: false,
             error: '未连接到调制解调器',
           };
-        }
-
-        // 短信列表可能被拆成多条消息返回，单独收集
-        if (command.trim() === 'AT+CMGL=4') {
-          this.smsCollecting = true;
-          this.smsBuffer = [];
-          return new Promise<ATResponse>((resolve) => {
-            this.smsResolve = resolve;
-            this.smsTimer = setTimeout(() => {
-              this.finishSMSCollect({ success: false, error: '短信数据收集超时' });
-            }, 10000);
-            const formattedCommand = command.endsWith('\r') ? command : command + '\r';
-            this.ws?.send(formattedCommand);
-          });
         }
 
         try {
@@ -835,7 +818,7 @@ export class WebSocketATAdapter implements ATAdapter {
                 success: false,
                 error: '命令执行超时',
               });
-            }, this.commandTimeout);
+            }, timeoutMs ?? this.commandTimeout);
 
             this.pendingCommands.set(commandId, { resolve, timer });
 
@@ -945,15 +928,6 @@ export class WebSocketATAdapter implements ATAdapter {
       return;
     }
 
-    if (this.smsCollecting) {
-      if (parsedData.success === false) {
-        this.finishSMSCollect({ success: false, error: parsedData.error || '读取短信失败' });
-      } else {
-        this.collectSMSChunk(typeof parsedData.data === 'string' ? parsedData.data : data);
-      }
-      return;
-    }
-
     // 读命令闸门的「采集中」应答：{success, pending:true, data:'', message}
     //
     // 必须**先于** matchesLastCommand 判定。pending 的 data 是空串，
@@ -985,11 +959,6 @@ export class WebSocketATAdapter implements ATAdapter {
   // handleTextMessage 处理非 JSON 消息。服务端只会发 ping/pong，
   // 其余裸文本按旧实现当作命令应答，但主动上报要挡掉。
   private handleTextMessage(data: string): void {
-    if (this.smsCollecting) {
-      this.collectSMSChunk(data);
-      return;
-    }
-
     if (isUnsolicitedText(data)) {
       console.log('忽略非 JSON 的主动上报数据:', data.substring(0, 50));
       return;
@@ -1061,43 +1030,7 @@ export class WebSocketATAdapter implements ATAdapter {
     this.ws?.close();
   }
 
-  // AT+CMGL=4 的应答可能被拆成多条消息，见到 OK/ERROR 才算读完。
-  private collectSMSChunk(content: string): void {
-    if (!content.includes('OK') && !content.includes('ERROR')) {
-      this.smsBuffer.push(content);
-      return;
-    }
 
-    const allData = [...this.smsBuffer, content].join('\n');
-    this.finishSMSCollect({ success: !allData.includes('ERROR'), data: allData });
-  }
-
-  private finishSMSCollect(response: ATResponse): void {
-    if (this.smsTimer) clearTimeout(this.smsTimer);
-    this.smsTimer = null;
-    this.smsCollecting = false;
-    this.smsBuffer = [];
-    const resolve = this.smsResolve;
-    this.smsResolve = null;
-    resolve?.(response);
-  }
-
-  // PDU解析辅助方法
-  // PDU内容解码
-  private decodePDUContent(pduContent: string): string {
-    try {
-      let result = '';
-      for (let i = 0; i < pduContent.length; i += 2) {
-        const byte = parseInt(pduContent.substring(i, i + 2), 16);
-        if (byte === 0) break;
-        result += String.fromCharCode(byte);
-      }
-      return result;
-    } catch (error) {
-      console.error('PDU内容解码失败:', error);
-      return '';
-    }
-  }
 }
 
 class MockWebSocketATAdapter extends WebSocketATAdapter {
@@ -1337,7 +1270,7 @@ class MockWebSocketATAdapter extends WebSocketATAdapter {
     };
   }
 
-  public async sendCommand(command: string): Promise<ATResponse> {
+  public async sendCommand(command: string, _timeoutMs?: number): Promise<ATResponse> {
     const execution = this.mockCommandQueue.then(async () => {
       if (!this.mockConnected) {
         return { success: false, error: 'Mock 调制解调器未连接' } as ATResponse;
@@ -1534,13 +1467,15 @@ export class ATService {
    * `api.network.pdp` …… 走既有命令通道，服务端把它分发给模块注册表。
    * `params` 会作为行尾 JSON 附在命令后（后端 split_api_command 解析）。
    */
+  /** `timeoutMs` 用于慢路由：发送/清空/IMS 序列可能远超默认 6s 命令超时。 */
   public async apiCommand<T = unknown>(
     path: string,
     params?: Record<string, unknown>,
+    timeoutMs?: number,
   ): Promise<ApiResponse<T>> {
     const line =
       params && Object.keys(params).length ? `api.${path} ${JSON.stringify(params)}` : `api.${path}`;
-    const response = await this.sendCommand(line);
+    const response = await this.sendCommand(line, timeoutMs);
     const raw = response as unknown as ApiResponse<T>;
     return {
       success: raw.success,
@@ -1591,9 +1526,9 @@ export class ATService {
     return coalesced;
   }
 
-  public async sendCommand(command: string): Promise<ATResponse> {
+  public async sendCommand(command: string, timeoutMs?: number): Promise<ATResponse> {
     try {
-      const response = await this.adapter.sendCommand(command);
+      const response = await this.adapter.sendCommand(command, timeoutMs);
 
       return response;
     } catch (error) {
@@ -1613,42 +1548,8 @@ export class ATService {
   // 获取短信服务类型
   // 设置短信文本模式参数
   // 获取短信文本模式参数
-  // 按状态读取短信
-  // 获取所有短信，先检查模式再设置
-  public async listAllSMS(): Promise<ATResponse> {
-    try {
-      console.log('开始执行listAllSMS');
-
-      // 先检查当前模式
-      const modeResponse = await this.readCommand('AT+CMGF?');
-      if (modeResponse.success && 'data' in modeResponse && typeof modeResponse.data === 'string' && !modeResponse.data.includes('+CMGF: 0')) {
-        // 只有不是PDU模式时才设置
-        console.log('当前不是PDU模式，设置为PDU模式');
-        await this.sendCommand('AT+CMGF=0');
-      }
-
-      // 获取所有短信
-      console.log('发送AT+CMGL=4命令获取所有短信');
-      const response = await this.sendCommand('AT+CMGL=4');
-
-      return response;
-    } catch (error) {
-      console.error('获取所有短信失败:', error);
-      return {
-        success: false,
-        error: `获取所有短信失败: ${error}`
-      };
-    }
-  }
-
-  // 存储短信
-  // 从存储器发送短信
-  // 设置短信存储器
-  // 查询短信存储器状态
-  public async getSMSStorage(): Promise<ATResponse> {
-    return this.readCommand('AT+CPMS?');
-  }
-
+  // 短信不再走 AT：列表/发送/删除/存储/IMS 都是 modules/sms 的 API 路由
+  // （sms.list、sms.send、sms.delete、sms.storage、sms.ims_set）。
   // 设置短信格式（PDU/Text）
   // 删除短信
   // 获取IMEI

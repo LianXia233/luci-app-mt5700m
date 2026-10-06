@@ -18,6 +18,7 @@
 //!   * **cooperative cancellation** (a cancel flag can inject an abort
 //!     token on the wire for interruptible commands like scan).
 
+use crate::core::channel::SmsPart;
 use crate::core::error::BackendError;
 use crate::core::runtime::now_ms;
 use crate::core::task::Priority;
@@ -48,7 +49,7 @@ pub trait AtTransport: Send + Sync {
     /// Multi-phase SMS send (PDU mode). Default: unsupported. Implemented by
     /// the daemon transport; executed on the single arbiter thread so the
     /// whole CMGS transaction is serialised with every other AT exchange.
-    fn send_sms(&self, _number: &str, _text: &str) -> Result<String, BackendError> {
+    fn send_sms_pdu(&self, _parts: &[SmsPart]) -> Result<String, BackendError> {
         Err(BackendError::TransportError(
             "SMS transport not supported".into(),
         ))
@@ -140,7 +141,7 @@ fn ui_query_timeout(upper: &str) -> Duration {
 #[derive(Debug, Clone)]
 pub enum AtPayload {
     None,
-    Sms { number: String, text: String },
+    SMS { parts: Vec<SmsPart> },
 }
 
 /// A request to the AT channel. Callers build this, then `submit`.
@@ -281,8 +282,8 @@ impl AtRequestSpec {
     }
 
     /// Interactive SMS send (long timeout; the CMGS transaction can take a
-    /// while on a busy network).
-    pub fn sms_send(number: &str, text: &str) -> Self {
+    /// while on a busy network). The parts are the module's encoded PDUs.
+    pub fn sms_send(parts: Vec<SmsPart>) -> Self {
         AtRequestSpec {
             command: "AT+CMGS".to_string(),
             priority: Priority::Interactive,
@@ -293,10 +294,7 @@ impl AtRequestSpec {
             retry: RetryPolicy::none(),
             cancel: None,
             abort_wire: None,
-            payload: AtPayload::Sms {
-                number: number.to_string(),
-                text: text.to_string(),
-            },
+            payload: AtPayload::SMS { parts },
             label: "action sms".to_string(),
         }
     }
@@ -616,8 +614,8 @@ impl AtArbiter {
 
     fn run_once(&self, spec: &AtRequestSpec) -> AtResult {
         match &spec.payload {
-            AtPayload::Sms { number, text } => {
-                return self.transport.send_sms(number, text);
+            AtPayload::SMS { parts } => {
+                return self.transport.send_sms_pdu(parts);
             }
             AtPayload::None => {}
         }

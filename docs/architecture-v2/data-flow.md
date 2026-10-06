@@ -72,8 +72,9 @@ The CLI has **no** direct serial or raw-TCP fallback: if the daemon is not
 running, `at_cmd` returns a `DaemonFailed` error naming the init script. This is
 deliberate — a second writer on the tty is not a degraded mode, it is a broken
 modem session (and a deadlock against the daemon's own lock). The same applies
-to SMS: `mt5700m-at sms-send` forwards to the daemon's `sms` control verb, which
-runs the whole PDU/`+CMGS` transaction under the arbiter.
+to SMS: `mt5700m-at sms-send` calls the daemon's `sms.send` route, which encodes
+the PDU and runs the whole `+CMGS` transaction under the arbiter — the CLI owns
+neither a PDU codec nor a send sequence.
 
 Port detection from a client is descriptor-based only (`detect_pcui_port`); only
 the daemon may run an AT probe (`auto_detect_serial`), and only before it takes

@@ -68,6 +68,39 @@ fn run_at(settings: &Settings, command: &str) -> i32 {
     }
 }
 
+/// Run a unified API route on the daemon. The legacy SMS verbs printed the
+/// modem's reply text, but no caller reads it (the LuCI page only checks
+/// success), so a route-backed verb prints nothing and keeps the exit codes:
+/// 2 = modem disabled, 1 = daemon/module error, 0 = applied.
+fn run_api(settings: &Settings, method: &str, params: crate::core::json::Value, timeout_s: u64) -> i32 {
+    if !settings.enabled {
+        return 2;
+    }
+    match crate::transport::control::daemon_api(method, &params, timeout_s) {
+        Ok(_) => 0,
+        Err(crate::transport::control::ControlError::Unavailable) => {
+            eprintln!(
+                "AT serial port is owned by the at-webserver daemon; start it first \
+                 (/etc/init.d/at-webserver start)"
+            );
+            1
+        }
+        Err(e) => {
+            eprintln!("{}", e.message());
+            1
+        }
+    }
+}
+
+/// Parameters object for [`run_api`].
+fn api_params(items: &[(&str, crate::core::json::Value)]) -> crate::core::json::Value {
+    let mut m = std::collections::BTreeMap::new();
+    for (k, v) in items {
+        m.insert(k.to_string(), v.clone());
+    }
+    crate::core::json::Value::Obj(m)
+}
+
 fn print_outcome(out: &AtOutcome) {
     if !out.text.is_empty() {
         println!("{}", out.text);
@@ -711,12 +744,14 @@ fn valid_thermal_thresholds(args: &[String]) -> bool {
         && values[8] < values[7]
 }
 
-/// Send one SMS through the daemon, which owns the AT port (and the PDU codec).
+/// Send one SMS through the unified `sms.send` route on the daemon.
 ///
-/// There is deliberately no serial or raw-TCP fallback here: writing `+CMGS`
-/// to the tty from the CLI would put a second writer on the modem, and writing
-/// AT to `host:port` would do the same over the network bridge. When the daemon
-/// is down, SMS is unavailable — the same contract the WebUI has.
+/// The CLI is a client of the same API as LuCI and the WebUI: it does not
+/// encode PDUs, does not open the port and does not carry its own copy of the
+/// send flow. There is deliberately no serial or raw-TCP fallback — writing
+/// `+CMGS` to the tty from the CLI would put a second writer on the modem, and
+/// writing AT to `host:port` would do the same over the network bridge. When
+/// the daemon is down, SMS is unavailable — the same contract the WebUI has.
 fn at_sms_send(settings: &Settings, number: &str, text: &str) -> i32 {
     if !settings.enabled {
         return 2;
@@ -727,7 +762,14 @@ fn at_sms_send(settings: &Settings, number: &str, text: &str) -> i32 {
         return 1;
     }
 
-    match crate::transport::control::daemon_sms(&number, &text) {
+    let mut params = std::collections::BTreeMap::new();
+    params.insert("number".to_string(), crate::core::json::str_val(&number));
+    params.insert("text".to_string(), crate::core::json::str_val(&text));
+    match crate::transport::control::daemon_api(
+        "sms.send",
+        &crate::core::json::Value::Obj(params),
+        60,
+    ) {
         Ok(_) => 0,
         Err(crate::transport::control::ControlError::Unavailable) => {
             eprintln!(
@@ -1356,50 +1398,15 @@ fn cmd_sim_pin(settings: &Settings, args: &[String]) -> i32 {
     }
 }
 
+/// `sms-ims 0|1`: the module's five-step IMS sequence, one route call.
 fn cmd_sms_ims(settings: &Settings, on: &str) -> i32 {
     match on {
-        "1" => {
-            if client::at_cmd(settings, "AT+CFUN=0").error.is_some() {
-                return 1;
-            }
-            if client::at_cmd(
-                settings,
-                "AT+CGDCONT=5,\"IPV4V6\",\"ims\",\"\",0,0,0,0,1,1,1,,,,,,0,,0,0,0,0",
-            )
-            .error
-            .is_some()
-            {
-                return 1;
-            }
-            if client::at_cmd(settings, "AT+CEUS=0").error.is_some() {
-                return 1;
-            }
-            if client::at_cmd(settings, "AT^IMSSWITCH=1,0,0").error.is_some() {
-                return 1;
-            }
-            run_at(settings, "AT+CFUN=1")
-        }
-        "0" => {
-            if client::at_cmd(settings, "AT+CFUN=0").error.is_some() {
-                return 1;
-            }
-            if client::at_cmd(
-                settings,
-                "AT+CGDCONT=5,\"IPV4V6\",\"\",\"\",0,0,0,0,1,1,1,,,,,,0,,0,0,0,0",
-            )
-            .error
-            .is_some()
-            {
-                return 1;
-            }
-            if client::at_cmd(settings, "AT+CEUS=1").error.is_some() {
-                return 1;
-            }
-            if client::at_cmd(settings, "AT^IMSSWITCH=0,0,0").error.is_some() {
-                return 1;
-            }
-            run_at(settings, "AT+CFUN=1")
-        }
+        "0" | "1" => run_api(
+            settings,
+            "sms.ims_set",
+            api_params(&[("enabled", crate::core::json::Value::Bool(on == "1"))]),
+            60,
+        ),
         _ => EXIT_USAGE,
     }
 }
@@ -1417,11 +1424,24 @@ fn cmd_sms_set(settings: &Settings, args: &[String]) -> i32 {
             if smsc.is_empty() {
                 return EXIT_USAGE;
             }
-            run_at(settings, &format!("AT+CSCA=\"{}\"", smsc))
+            run_api(
+                settings,
+                "sms.center_set",
+                api_params(&[("number", crate::core::json::str_val(&smsc))]),
+                25,
+            )
         }
         "storage" => match args.get(1).map(|s| s.as_str()) {
-            Some("SM") => run_at(settings, "AT+CPMS=\"SM\",\"SM\",\"SM\""),
-            Some("ME") => run_at(settings, "AT+CPMS=\"ME\",\"ME\",\"ME\""),
+            Some(name @ ("SM" | "ME")) => run_api(
+                settings,
+                "sms.storage_set",
+                api_params(&[
+                    ("read", crate::core::json::str_val(name)),
+                    ("write", crate::core::json::str_val(name)),
+                    ("receive", crate::core::json::str_val(name)),
+                ]),
+                25,
+            ),
             _ => EXIT_USAGE,
         },
         _ => EXIT_USAGE,
@@ -1618,14 +1638,20 @@ pub fn run(args: &[String]) -> i32 {
             if index.is_empty() {
                 return 1;
             }
-            run_at(&settings, &format!("AT+CMGD={}", index))
+            let index = index.parse::<i64>().unwrap_or(-1);
+            run_api(
+                &settings,
+                "sms.delete",
+                api_params(&[("index", crate::core::json::num_val(index))]),
+                25,
+            )
         }
-        "sms-clear" => {
-            if client::at_cmd(&settings, "AT+CMGF=0").error.is_some() {
-                return 1;
-            }
-            run_at(&settings, "AT+CMGD=1,4")
-        }
+        "sms-clear" => run_api(
+            &settings,
+            "sms.clear_all",
+            crate::core::json::Value::Null,
+            60,
+        ),
         "sms-set" => cmd_sms_set(&settings, &rest),
         "system" => {
             print!("{}", print_system_info(&settings));

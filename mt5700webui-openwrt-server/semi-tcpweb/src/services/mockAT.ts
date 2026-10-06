@@ -31,6 +31,10 @@ interface MockPDPContext {
 interface MockReceivedSMS {
   index: number;
   pdu: string;
+  /** 演示数据里附带的解码结果，`api.sms.list` 直接返回（真机由后端解 PDU）。 */
+  number?: string;
+  time?: string;
+  text?: string;
 }
 
 export interface MockPDCPData {
@@ -123,22 +127,37 @@ const RECEIVED_SMS: MockReceivedSMS[] = [
   {
     index: 1,
     pdu: '00000D91683108108300F00008628062801000231E6D4191CF7EDF8BA15DF24E8E4ECA65E596F670B981EA52A8523765B03002',
+    number: '8613800138000',
+    time: '26/08/26,08:01:00',
+    text: '流量统计已于今日零点自动刷新。',
   },
   {
     index: 2,
     pdu: '00000D91683108108300F00008628062905100231C8BBE59075DF26210529F63A5516500200035004700207F517EDC3002',
+    number: '8613800138000',
+    time: '26/08/26,09:15:00',
+    text: '设备已成功接入 5G 网络。',
   },
   {
     index: 3,
     pdu: '00000791680180F600086280526124002340672C67085957991052694F596D4191CF0020003100320038002E003600470042FF0C67096548671F81F300200030003800206708002000330031002065E53002',
+    number: '8610086',
+    time: '26/08/25,16:42:00',
+    text: '本月套餐剩余流量 128.6GB，有效期至 08 月 31 日。',
   },
   {
     index: 4,
     pdu: '00000D91683119325476F8000862804271820023345DE168C06E0553555DF27ECF53D152307FA491CCFF0C73B0573A91CD70B9770B00200035004700204FE153F7548C6E295EA63002',
+    number: '8613912345678',
+    time: '26/08/24,17:28:00',
+    text: '巡检清单已经发到群里，现场重点看 5G 信号和温度。',
   },
   {
     index: 5,
     pdu: '00000D91683119325476F8000862804281600023284ECA665A00200037002070B95230673A623F5DE168C0FF0C8BB05F975E266D4B8BD5753581113002',
+    number: '8613912345678',
+    time: '26/08/24,18:06:00',
+    text: '今晚 7 点到机房巡检，记得带测试电脑。',
   },
 ];
 
@@ -645,6 +664,112 @@ const mockSimApiResponse = (
   }
 };
 
+const mockStoragePlanes = (state: MockModemState) => {
+  const used = state.receivedSMS.length;
+  const plane = (name: string) => ({ name, used, total: state.smsStorage.total });
+  return {
+    read: plane(state.smsStorage.read),
+    write: plane(state.smsStorage.write),
+    receive: plane(state.smsStorage.receive),
+    storages: Array.from(
+      new Set([state.smsStorage.read, state.smsStorage.write, state.smsStorage.receive]),
+    ),
+  };
+};
+
+/**
+ * 演示用的分片统计，阈值和 modules/sms::pdu 一致：GSM 7bit 单条 160 字、
+ * 分片 153 字；UCS2 单条 70 字、分片 67 字。
+ */
+const mockSmsStats = (text: string) => {
+  const chars = text.length;
+  if (!text) return { encoding: '7bit' as const, chars: 0, parts: 0 };
+  const gsm7 = /^[\x20-\x7e\n\r\u00a1\u00a3-\u00a5\u00c7\u00d8\u00d9\u00e0-\u00e5\u00c6\u00e7\u00d6\u00dc\u00df\u00e9\u00ec\u00f1\u00f6\u00f8\u00fc]*$/.test(text);
+  if (gsm7) {
+    return { encoding: '7bit' as const, chars, parts: chars <= 160 ? 1 : Math.ceil(chars / 153) };
+  }
+  return { encoding: 'UCS2' as const, chars, parts: chars <= 70 ? 1 : Math.ceil(chars / 67) };
+};
+
+/**
+ * sms 路由的演示应答：状态形状与 modules/sms::state 一致（sms.status /
+ * sms.storage / sms.list / sms.send / sms.delete / sms.clear_all /
+ * sms.storage_set / sms.center_set / sms.ims_set / sms.analyze）。
+ */
+const mockSmsApiResponse = (
+  commandLine: string,
+  state: MockModemState,
+): MockCommandResponse | null => {
+  const key = commandLine.split(/\s+/)[0];
+  if (!key.startsWith('api.sms.')) return null;
+  const params = mockApiParams(commandLine, key);
+
+  switch (key) {
+    case 'api.sms.status':
+      return {
+        success: true,
+        data: {
+          enabled: true,
+          imsOn: state.imsOn,
+          center: state.smsCenter,
+          storage: mockStoragePlanes(state),
+        },
+      };
+    case 'api.sms.storage':
+      return { success: true, data: mockStoragePlanes(state) };
+    case 'api.sms.list':
+      return {
+        success: true,
+        data: {
+          messages: state.receivedSMS.map((message) => ({
+            index: message.index,
+            content: message.text ?? '',
+            number: message.number ?? '',
+            time: message.time ?? '',
+            type: 'received',
+          })),
+        },
+      };
+    case 'api.sms.send': {
+      const text = typeof params.text === 'string' ? params.text : '';
+      return { success: true, data: { sent: true, parts: mockSmsStats(text).parts } };
+    }
+    case 'api.sms.delete': {
+      const index = Number(params.index);
+      state.receivedSMS = state.receivedSMS.filter((message) => message.index !== index);
+      return { success: true, data: { deleted: true } };
+    }
+    case 'api.sms.clear_all': {
+      const cleared = mockStoragePlanes(state).storages;
+      state.receivedSMS = [];
+      return { success: true, data: { cleared } };
+    }
+    case 'api.sms.storage_set': {
+      const read = typeof params.read === 'string' ? params.read : state.smsStorage.read;
+      state.smsStorage = {
+        ...state.smsStorage,
+        read,
+        write: typeof params.write === 'string' ? params.write : read,
+        receive: typeof params.receive === 'string' ? params.receive : read,
+      };
+      return { success: true, data: { applied: true } };
+    }
+    case 'api.sms.center_set':
+      if (typeof params.number === 'string') state.smsCenter = params.number;
+      return { success: true, data: { applied: true } };
+    case 'api.sms.ims_set':
+      state.imsOn = params.enabled === true;
+      return { success: true, data: { applied: true } };
+    case 'api.sms.analyze':
+      return {
+        success: true,
+        data: mockSmsStats(typeof params.text === 'string' ? params.text : ''),
+      };
+    default:
+      return null;
+  }
+};
+
 /**
  * system / modem / radio 路由的演示应答：网卡速率、电源开关、飞行模式、IMEI
  * 都是页面会改的，演示状态跟着走，和真机的 modules/system + modules/modem 一致。
@@ -762,7 +887,9 @@ const mockApiResponse = (
   const key = commandLine.split(/\s+/)[0];
   if (!key.startsWith('api.')) return null;
   const dynamic =
-    mockSimApiResponse(commandLine, state) ?? mockDeviceApiResponse(commandLine, state);
+    mockSimApiResponse(commandLine, state) ??
+    mockSmsApiResponse(commandLine, state) ??
+    mockDeviceApiResponse(commandLine, state);
   if (dynamic) return dynamic;
   const data = MOCK_API_ROUTES[key];
   if (data === undefined) return null;

@@ -15,10 +15,9 @@ import {
 import { IconSend, IconRefresh, IconPlus, IconDelete } from '@douyinfe/semi-icons';
 import { ATService } from '@/services/at';
 import type { ATResponse } from '@/services/at';
-import { buildSubmitParts, messageStats } from '@/modem/smsEncode';
+import { backendMessage } from '@/services/backendError';
 import { useATReady } from '@/hooks/useATReady';
 import {
-  parseCMGL,
   normalizePhoneNumber,
   isValidPhoneNumber,
   getCachedSentMessages,
@@ -26,7 +25,7 @@ import {
   parseMessageTime,
   SMS_CACHE_KEY,
 } from '@/modem/sms';
-import type { SMS } from '@/modem/sms';
+import type { SMS, SmsList, SmsStatus, SmsStorageInfo, SmsStats } from '@/modem/sms';
 
 const { Sider, Content } = Layout;
 
@@ -39,6 +38,11 @@ interface Contact {
 }
 
 const at = () => ATService.getInstance();
+
+// 慢路由的命令超时：默认 6s 只够一条 AT，短信读/发/删都要给足预算。
+const SMS_READ_TIMEOUT_MS = 15000;
+const SMS_SEND_TIMEOUT_MS = 60000;
+
 
 const formatDetailedTime = (time: string): string => {
   const m = time.match(/(\d{2})\/(\d{2})\/(\d{2}),(\d{2}):(\d{2}):(\d{2})/);
@@ -126,12 +130,11 @@ const SMSCenter: React.FC = () => {
     }
   }, []);
 
+  // 存储占用来自后端：+CPMS? 的解析、字段名和去重都在 modules/sms。
   const refreshStorage = useCallback(async () => {
-    const res = await at().getSMSStorage();
-    if (res.success && res.data) {
-      const m = String(res.data).match(/\+CPMS: "\w+",(\d+),(\d+)/);
-      if (m) setStorageInfo({ used: parseInt(m[1], 10), total: parseInt(m[2], 10) });
-    }
+    const res = await at().apiCommand<SmsStorageInfo>('sms.storage', undefined, SMS_READ_TIMEOUT_MS);
+    const read = res.success ? res.data?.read : undefined;
+    if (read) setStorageInfo({ used: read.used, total: read.total });
   }, []);
 
   const refresh = useCallback(() => {
@@ -140,15 +143,14 @@ const SMSCenter: React.FC = () => {
     const request = (async () => {
       setRefreshing(true);
       try {
-        const res = await at().listAllSMS();
+        const res = await at().apiCommand<SmsList>('sms.list', undefined, SMS_READ_TIMEOUT_MS);
         if (!res.success) {
-          Toast.error(res.error || '获取短信列表失败');
+          Toast.error(backendMessage(res.error, '获取短信列表失败'));
           return;
         }
-        const raw = typeof res.data === 'string' ? res.data : '';
-        const parsed = raw && raw !== 'OK' && raw !== 'NO SMS' ? parseCMGL(raw) : [];
+        const received = res.data?.messages ?? [];
         const cached = getCachedSentMessages();
-        buildContacts([...parsed, ...cached]);
+        buildContacts([...received, ...cached]);
       } catch {
         Toast.error('获取短信列表失败');
       } finally {
@@ -161,21 +163,21 @@ const SMSCenter: React.FC = () => {
   }, [buildContacts]);
 
   const init = useCallback(async () => {
-    const ims = await at().readCommand('AT^IMSSWITCH?');
-    if (ims.success && ims.data) {
-      setImsEnabled(String(ims.data).includes(': 1'));
-    }
+    const res = await at().apiCommand<SmsStatus>('sms.status', undefined, SMS_READ_TIMEOUT_MS);
+    const status = res.success ? res.data : undefined;
+    if (typeof status?.imsOn === 'boolean') setImsEnabled(status.imsOn);
 
-    const cmgf = await at().readCommand('AT+CMGF?');
-    if (!cmgf.success) {
+    if (status?.enabled !== true) {
       setSmsEnabled(false);
       Toast.warning('请先前往设置页开启短信');
       return;
     }
     setSmsEnabled(true);
-    await refreshStorage();
+    if (status.storage?.read) {
+      setStorageInfo({ used: status.storage.read.used, total: status.storage.read.total });
+    }
     await refresh();
-  }, [refresh, refreshStorage]);
+  }, [refresh]);
 
   useATReady(init);
 
@@ -237,13 +239,34 @@ const SMSCenter: React.FC = () => {
 
   // 中文走 UCS2 一条只能放 70 字，纯英文数字走 7bit 能放 160 字，
   // 超出就会拆成多条分别计费，这个差别得让用户看得见。
+  // 分片数/字符集来自后端编码器（sms.analyze）：提示里承诺的“拆成 N 条”
+  // 和真正发送时用的是同一套规则，前端不再自己算。
+  const [hintStats, setHintStats] = useState<SmsStats | null>(null);
+
+  useEffect(() => {
+    const text = inputMessage.trim();
+    if (!text) {
+      setHintStats(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      const res = await at().apiCommand<SmsStats>('sms.analyze', { text });
+      if (!cancelled && res.success && res.data) setHintStats(res.data);
+    }, 120);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [inputMessage]);
+
   const composeHint = useMemo(() => {
     const text = inputMessage.trim();
-    if (!text) return '';
-    const { encoding, parts, chars } = messageStats(text);
+    if (!text || !hintStats) return '';
+    const { encoding, parts, chars } = hintStats;
     const base = `${chars} 字 · ${encoding === 'UCS2' ? '含中文等字符，按 UCS2 编码' : '纯 ASCII，按 GSM 7bit 编码'}`;
     return parts > 1 ? `${base} · 将拆成 ${parts} 条发送` : base;
-  }, [inputMessage]);
+  }, [inputMessage, hintStats]);
 
   const handleSend = async (explicitTarget?: string) => {
     const content = inputMessage.trim();
@@ -263,36 +286,15 @@ const SMSCenter: React.FC = () => {
 
     setLoading(true);
     try {
-      const cmgf = await at().readCommand('AT+CMGF?');
-      if (!cmgf.success || (typeof cmgf.data === 'string' && !cmgf.data.includes('0'))) {
-        await at().sendCommand('AT+CMGF=0');
-      }
-
-      let smsc = '';
-      const csca = await at().readCommand('AT+CSCA?');
-      if (csca.success && typeof csca.data === 'string') {
-        const m = csca.data.match(/\+CSCA: "([^"]+)"/);
-        if (m) smsc = m[1];
-      }
-
-      let formatted = target.replace(/^\+/, '');
-      if (!formatted.startsWith('86') && formatted.length === 11) formatted = '86' + formatted;
-      if (!formatted.startsWith('+')) formatted = '+' + formatted;
-
-      // 超过一条长度的短信会被拆成多片，每片都是一条独立的 AT+CMGS，
-      // 收端靠拼接头合并。以前这里只发一条，长短信会拼出非法 PDU 直接失败。
-      const parts = buildSubmitParts({ smsc, destination: formatted, message: content });
-
-      for (let i = 0; i < parts.length; i += 1) {
-        // NOTE: real CR character (0x0D), not the two chars backslash-r
-        const res = await at().sendCommand(`AT+CMGS=${parts[i].tpduLength}\r${parts[i].pdu}`);
-        if (!res.success) {
-          throw new Error(
-            parts.length > 1
-              ? `第 ${i + 1}/${parts.length} 条发送失败：${res.error || '模组未接受'}`
-              : res.error || '发送失败',
-          );
-        }
+      // 一条路由发完整条短信：PDU 编码、分片、逐片 AT+CMGS 和“第 i/n 条失败”
+      // 的措辞都在 modules/sms，页面只负责提示。
+      const res = await at().apiCommand(
+        'sms.send',
+        { number: target, text: content },
+        SMS_SEND_TIMEOUT_MS,
+      );
+      if (!res.success) {
+        throw new Error(backendMessage(res.error, '发送失败'));
       }
 
       const sent: SMS = {
@@ -337,8 +339,12 @@ const SMSCenter: React.FC = () => {
             );
             localStorage.setItem(SMS_CACHE_KEY, JSON.stringify(updated));
           } else {
-            const res = await at().sendCommand(`AT+CMGD=${msg.index}`);
-            if (!res.success) throw new Error(res.error || '删除失败');
+            const res = await at().apiCommand(
+              'sms.delete',
+              { index: msg.index },
+              SMS_READ_TIMEOUT_MS,
+            );
+            if (!res.success) throw new Error(backendMessage(res.error, '删除失败'));
             await new Promise((r) => setTimeout(r, 500));
           }
           await Promise.all([refresh(), refreshStorage()]);
@@ -381,8 +387,12 @@ const SMSCenter: React.FC = () => {
           }
 
           for (const m of deviceToRemove) {
-            const res = await at().sendCommand(`AT+CMGD=${m.index}`);
-            if (!res.success) throw new Error(res.error || '批量删除失败');
+            const res = await at().apiCommand(
+              'sms.delete',
+              { index: m.index },
+              SMS_READ_TIMEOUT_MS,
+            );
+            if (!res.success) throw new Error(backendMessage(res.error, '批量删除失败'));
             await new Promise((r) => setTimeout(r, 300));
           }
 

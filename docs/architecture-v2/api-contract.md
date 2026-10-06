@@ -75,6 +75,16 @@ Two kinds of route, declared in the table itself (`Route::display` /
 | `system.service_mode` | `{mode: "serial"\|"network"}` — how the daemon reaches the modem, recorded once at startup (`core::modem`); replaces the pages' `AT+CONNECT?` probe |
 | `system.thermal` | `{enabled, caMimoSwitch, interval, logSwitch: {consoleLog, fileLog}, thresholds: [...], currentLevel}` — `^THERMAUTOFUN?` / `^THERMLDLOGSW?` / `^THERMLDAUTOPARA?` / `^THERMLDAUTOSTATUS?` (the level is the 6th status field, decoded here); a query that did not answer leaves its fields absent |
 | `system.thermal_set` | `{applied: true}` — `{enabled, caMimoSwitch?, interval}` → `^THERMAUTOFUN=<on>,<caMimo>,<interval>`; the interval range is validated here |
+| `sms.status` | `{enabled, imsOn?, center?, storage?}` — page-load snapshot: `+CMGF?` (the read that decides 短信是否开启), `^IMSSWITCH?`, `+CSCA?` (only when IMS is on, as the page always did) and `+CPMS?`; a missing/unread field is omitted and `enabled` is always present |
+| `sms.storage` | `{read, write, receive, storages: [name…]}` — `+CPMS?` decoded (`name`, `used`, `total` per plane, distinct names for the clear-all loop) |
+| `sms.list` | `{messages: [{index, content, number, time, type, isConcatenated?, concatenatedRef/Seq/Total?}]}` — `+CMGF=0` when needed, then `+CMGL=4`; every PDU is decoded and multipart parts are merged in sequence order, so no frontend reassembles a PDU |
+| `sms.send` | `{sent: true, parts}` — `{number, text}`; the destination is normalised (11-digit local numbers get country code 86) and encoded here (GSM 7-bit / UCS-2, multipart split), then sent as one `AT+CMGS` transaction per part on the arbiter thread; a multipart failure reads `第 i/n 条发送失败：<cause>` |
+| `sms.delete` | `{deleted: true}` — `{index}` → `+CMGD=<index>` |
+| `sms.clear_all` | `{cleared: [storage…]}` — reads `+CPMS?` itself, then per plane `+CPMS="X","X","X"` + `+CMGD=1,4` with the firmware's settle times (the settings page's 清空所有短信) |
+| `sms.storage_set` | `{applied: true}` — `{read, write?, receive?}` (defaults to `read`) → `+CPMS=…`; storage names are validated against `SM`/`ME` here |
+| `sms.center_set` | `{applied: true}` — `{number}` → `+CSCA="<number>"`; empty/illegal characters rejected here |
+| `sms.ims_set` | `{applied: true}` — `{enabled}` runs the module's five-step IMS sequence (`+CFUN=0` → IMS PDP profile → `+CEUS` → `^IMSSWITCH` → `+CFUN=1`) with its settle times, one implementation shared by both frontends and the CLI |
+| `sms.analyze` | `{encoding: "7bit"\|"UCS2", chars, parts}` — `{text}`; the compose hint's part count comes from the same codec `sms.send` uses, so the promise and the send cannot disagree |
 
 Field names and types are exactly what the cache published before the refactor,
 so existing consumers (LuCI topics, WebUI `stateCache`, `mt5700m-at cached`)
@@ -99,8 +109,9 @@ line, `split_api_command` carries the optional trailing JSON as `params`) and
 call routes; only the deliberate raw-AT consoles (`WebUI /at` terminal, LuCI
 `terminal.js`) still send AT.
 
-Legacy verbs are preserved byte for byte: control socket `send|sms|cached|scan`
-(+ `api`), TCP RPC `at|cached|events|scan|ping` (+ `api`), WS events
+Legacy verbs are preserved byte for byte: control socket `send|cached|scan`
+(+ `api`; the old `sms` verb is gone — `sms.send` is the one send path),
+TCP RPC `at|cached|events|scan|ping` (+ `api`), WS events
 `{type, data, timestamp}` with topic names `signal[.updated]`,
 `network.updated`, `cell.updated`, `temperature.updated`, `traffic.updated`,
 `netrate.updated`, `registration.updated`, `endc.updated`, `txpower.updated`,

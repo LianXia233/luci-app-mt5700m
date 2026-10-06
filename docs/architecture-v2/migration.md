@@ -41,9 +41,48 @@ aliases, so the move itself changed no behaviour.
   checks enum variants, so a renamed/removed variant cannot slip through).
 * `daemon.rs`: the dead one-shot SMS writer (`AtClient::send_sms` and
   `send_blocking`, which bypassed the arbiter) is deleted. Sending an SMS now
-  exists exactly once: `AtTransport::send_sms` → `send_pdu` → `+CMGS` on the
-  arbiter, reached by the control socket's `sms` verb, the WebSocket route and
-  the CLI alike.
+  exists exactly once: the transport's PDU writer → `send_pdu` → `+CMGS` on the
+  arbiter, reached by the WebSocket route and the CLI alike (the control
+  socket's separate `sms` verb that Stage C still used was folded into that one
+  path by Stage D).
+
+**Stage D — the SMS module (commit `8383b7d` and its successor).**
+
+* `modules/sms` gained `commands.rs`, `parser.rs`, `state.rs`, `service.rs` and
+  `api.rs` next to `pdu.rs`, and now owns the whole flow: `+CMGF`/`+CMGL`/
+  `+CMGD`/`+CPMS`/`+CSCA`/`^IMSSWITCH` construction, reply decoding, the
+  `SmsMessage`/`SmsStorage`/`SmsSettings` domain model and the five-step IMS
+  sequence. Nine routes (`sms.status|storage|list|send|delete|clear_all|
+  storage_set|center_set|ims_set|analyze`) are registered in the same table as
+  every other module's.
+* `pdu.rs` became a two-way codec: the existing SMS-SUBMIT encoder plus an
+  SMS-DELIVER decoder (GSM 7-bit alphabet, UCS-2, alphanumeric senders,
+  semi-octet SCTS, UDH concatenation). Multipart parts are *merged* in the
+  parser, so a list is a list of messages. The DCS predicate now tests bits 3..2
+  (`0x08` is UCS-2, as the modem sends it) instead of the 0x04 bit alone.
+* `core::channel::SmsPart` + a required `AtChannel::send_sms_pdu` replace the
+  old number/text payload: the module encodes, the channel/transport performs
+  the `AT+CMGS` transactions. `AtPayload::SMS { parts }`,
+  `AtTransport::send_sms_pdu`, and the daemon's `send_pdu(length, hex, timeout)`
+  carry the octets instead of the SMS PDU type, and the daemon names the failing
+  part (`第 i/n 条发送失败：…`) — the copy the send page used to assemble.
+* Deleted duplicates: the control socket's `sms` verb, the WebUI's
+  `modem/smsEncode.ts` (node-pdu SMS-SUBMIT builder), `modem/sms.ts`'s
+  `parseCMGL`/`processPDUMessage`/`mergeConcatenated` (node-pdu decode + merge),
+  `@/types/node-pdu.d.ts` and the `node-pdu` dependency itself, `services/at.ts`'s
+  `listAllSMS`/`getSMSStorage`, and the CLI's raw-AT IMS sequence / `+CMGD` /
+  `+CPMS` / `+CSCA` verb bodies.
+* The SMS pages (`pages/sms/Center.tsx`, `pages/sms/Settings.tsx`) now contain
+  no AT command: the list, storage planes, centre number, IMS switch, clear-all
+  and the compose hint all come from routes. The compose hint keeps its exact
+  copy but asks `sms.analyze`, so the promised part count comes from the codec
+  that sends.
+* The sent-message cache stayed in the frontend **on purpose**: the UI calls it
+  本地缓存 and ships export/import buttons for it, so it is browser-local data,
+  not modem state. Everything derived from the modem is backend state.
+* LuCI's own SMS view still reads the CLI's `sms-list`/`sms-info` text and
+  decodes it in `parser.js`; unifying that view is the LuCI batch, which is also
+  where `parser.js`'s SMS half gets deleted.
 
 ## 2. Verification performed
 
@@ -59,10 +98,17 @@ aliases, so the move itself changed no behaviour.
 ## 3. What remains (in order)
 
 1. **Remaining modules**: `beam` (beam/scan commands),
-   `diagnostics` (`cellscan`, port scan), `sms` service (list/send/receive
-   behind routes — the WebUI SMS pages still build PDUs in TS, which is the
-   last duplicated AT surface). Each follows [module-guide.md](module-guide.md);
-   the CLI verbs are the source of truth until they move. (`ca`, `qos` and the
+   `diagnostics` (`cellscan`, port scan). Each follows
+   [module-guide.md](module-guide.md); the CLI verbs are the source of truth
+   until they move. `sms` landed: `modules/sms` now owns the PDU codec both ways
+   (SMS-SUBMIT encode, SMS-DELIVER decode, GSM 7-bit / UCS-2, multipart split and
+   merge), so `pages/sms/Center.tsx` and `pages/sms/Settings.tsx` contain no AT
+   command at all, `modem/smsEncode.ts` and the `node-pdu` dependency are
+   deleted, `modem/sms.ts` keeps only the browser-local sent-message cache and
+   display formatters, and the CLI's `sms-send`/`sms-delete`/`sms-clear`/
+   `sms-set`/`sms-ims` verbs run the same routes (its `sms-list`/`sms-info`
+   verbs still print the raw text the LuCI view parses — that view and
+   `parser.js`'s SMS half move in the LuCI batch). (`ca`, `qos` and the
    Info page's data-call fields landed already: carrier aggregation lives in
    `modules/ca` — the CLI's `append_hfreqinfo_line`/`CaTotals` are gone and the
    frozen `carrier_*`/`ca_*` text comes from `CaState::to_text()` —
@@ -100,8 +146,8 @@ aliases, so the move itself changed no behaviour.
    included), and `modules/network` took the airplane switch
    (`network.radio`/`network.radio_set`). The system page's identity card and NR
    transmit-power card now read `modem.get`/`modem.nr_txpower`. The only raw-AT
-   surfaces left in the WebUI are the cell-scan panel, the FOTA page, the SMS
-   pages and the deliberate `pages/at/Terminal.tsx` console. The last three
+   surfaces left in the WebUI are the cell-scan panel, the FOTA page and the
+   deliberate `pages/at/Terminal.tsx` console. The last three
    system-page cards followed: `modules/modem` owns the NR capability reads and
    writes (`modem.nr_capability`/`_set`, `^NRRCCAPQRY`/`^NRRCCAPCFG` for CA, VoNR
    and DSS with the reply-kind matching and the range rules), `modules/network`

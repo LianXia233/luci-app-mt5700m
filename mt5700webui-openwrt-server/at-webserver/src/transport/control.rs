@@ -11,7 +11,7 @@
 //!
 //! ```json
 //! {"cmd":"send","command":"AT+CSQ","timeout":2}
-//! {"cmd":"sms","number":"+86...","text":"hello"}
+//! {"cmd":"api","path":"sms.send","params":{"number":"+86...","text":"hello"}}
 //! {"cmd":"scan"}
 //! ```
 //!
@@ -138,28 +138,6 @@ pub fn daemon_api(method: &str, params: &json::Value, timeout: u64) -> Result<js
         return Err(ControlError::BadResponse(err));
     }
     Ok(resp.get("result").cloned().unwrap_or(json::Value::Null))
-}
-
-/// Request the daemon to enable PDU-mode SMS sending.
-pub fn daemon_sms(number: &str, text: &str) -> Result<String, ControlError> {
-    let mut map = std::collections::BTreeMap::new();
-    map.insert("cmd".to_string(), json::str_val("sms"));
-    map.insert("number".to_string(), json::str_val(number));
-    map.insert("text".to_string(), json::str_val(text));
-    let resp = request(&json::Value::Obj(map))?;
-    let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-    if !ok {
-        let err = resp
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown error")
-            .to_string();
-        return Err(ControlError::BadResponse(err));
-    }
-    resp.get("response")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| ControlError::BadResponse("missing response field".into()))
 }
 
 /// Request the daemon's cached state snapshot (no AT traffic at all).

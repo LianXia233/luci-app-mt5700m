@@ -233,9 +233,9 @@ impl AtClient {
 
 
     /// Send one SMS-SUBMIT PDU through the persistent stream (two-phase
-    /// `AT+CMGS`). Used by the control socket so the exclusive serial owner
-    /// performs the whole transaction.
-    fn send_pdu(&self, pdu: &crate::modules::sms::pdu::SmsPdu, timeout: u64) -> Result<String, String> {
+    /// `AT+CMGS`). Used by the SMS module's send service through the arbiter, so
+    /// the exclusive serial owner performs the whole transaction.
+    fn send_pdu(&self, length: usize, hex: &str, timeout: u64) -> Result<String, String> {
         self.in_flight.store(true, Ordering::SeqCst);
         let mut guard = self.lock.lock().map_err(|_| "client lock poisoned")?;
         {
@@ -254,7 +254,7 @@ impl AtClient {
         }
         {
             // 2) CMGS length; wait for the '>' prompt (or an error).
-            let cmd = format!("AT+CMGS={}\r", pdu.length);
+            let cmd = format!("AT+CMGS={}\r", length);
             if let Err(e) = self.write_locked(&mut guard, cmd.as_bytes()) {
                 self.in_flight.store(false, Ordering::SeqCst);
                 return Err(e);
@@ -270,7 +270,7 @@ impl AtClient {
         }
         {
             // 3) Payload + CTRL-Z; expect +CMGS/<mr> then OK.
-            let payload = format!("{}\u{1a}", pdu.hex);
+            let payload = format!("{}\u{1a}", hex);
             if let Err(e) = self.write_locked(&mut guard, payload.as_bytes()) {
                 self.in_flight.store(false, Ordering::SeqCst);
                 return Err(e);
@@ -451,13 +451,24 @@ impl AtTransport for AtClient {
         }
     }
 
-    fn send_sms(&self, number: &str, text: &str) -> Result<String, BackendError> {
-        let pdus = crate::modules::sms::pdu::encode(number, text);
+    fn send_sms_pdu(&self, parts: &[crate::core::channel::SmsPart]) -> Result<String, BackendError> {
+        let total = parts.len();
         let mut last = String::new();
-        for pdu in &pdus {
-            last = self
-                .send_pdu(pdu, self.config.serial_timeout)
-                .map_err(BackendError::TransportError)?;
+        for (i, part) in parts.iter().enumerate() {
+            match self.send_pdu(part.length, &part.hex, self.config.serial_timeout) {
+                Ok(text) => last = text,
+                Err(e) => {
+                    // Which part failed is transport knowledge (only this loop
+                    // knows), so the index is added here and the message travels
+                    // up unchanged to the user.
+                    let msg = if total > 1 {
+                        format!("第 {}/{} 条发送失败：{}", i + 1, total, e)
+                    } else {
+                        e
+                    };
+                    return Err(BackendError::TransportError(msg));
+                }
+            }
         }
         Ok(last)
     }
@@ -777,36 +788,6 @@ fn handle_control_request(
                         }
                         ok.insert("ok".to_string(), Value::Bool(true));
                         ok.insert("response".to_string(), json::str_val(text.trim()));
-                    }
-                    Err(e) => {
-                        ok.insert("ok".to_string(), Value::Bool(false));
-                        ok.insert("error".to_string(), json::str_val(&e.message()));
-                    }
-                }
-            }
-        }
-        "sms" => {
-            let number = parsed
-                .as_ref()
-                .and_then(|v| v.get("number"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let text = parsed
-                .as_ref()
-                .and_then(|v| v.get("text"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            if number.is_empty() || text.is_empty() {
-                ok.insert("ok".to_string(), Value::Bool(false));
-                ok.insert("error".to_string(), json::str_val("empty number or text"));
-            } else {
-                let spec = AtRequestSpec::sms_send(&number, &text);
-                match await_request(arbiter, spec) {
-                    Ok(resp) => {
-                        ok.insert("ok".to_string(), Value::Bool(true));
-                        ok.insert("response".to_string(), json::str_val(resp.trim()));
                     }
                     Err(e) => {
                         ok.insert("ok".to_string(), Value::Bool(false));

@@ -9,7 +9,7 @@
 //! Both keep every module on one path: module -> channel -> arbiter -> serial.
 //! Nothing here or below opens a serial port directly.
 
-use crate::core::channel::AtChannel;
+use crate::core::channel::{AtChannel, SmsPart};
 use crate::core::error::BackendError;
 use crate::core::task::Priority;
 use crate::scheduler::arbiter::{
@@ -101,6 +101,11 @@ impl AtChannel for TaskChannel<'_> {
         self.ctx.action(command)
     }
 
+    fn send_sms_pdu(&self, parts: &[SmsPart]) -> Result<String, BackendError> {
+        self.ctx
+            .at_request(AtRequestSpec::sms_send(parts.to_vec()))
+    }
+
     fn duty_gate(&self) -> bool {
         channel_budget_exhausted() || channel_user_starved()
     }
@@ -158,6 +163,10 @@ impl AtChannel for DirectChannel<'_> {
 
     fn action(&self, command: &str) -> Result<String, BackendError> {
         await_spec(self.arbiter, AtRequestSpec::interactive(command))
+    }
+
+    fn send_sms_pdu(&self, parts: &[SmsPart]) -> Result<String, BackendError> {
+        await_spec(self.arbiter, AtRequestSpec::sms_send(parts.to_vec()))
     }
 
     fn duty_gate(&self) -> bool {

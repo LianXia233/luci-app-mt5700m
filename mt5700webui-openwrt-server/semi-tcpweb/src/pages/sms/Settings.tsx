@@ -15,12 +15,23 @@ import {
 import { IconDownload, IconUpload, IconDelete } from '@douyinfe/semi-icons';
 import { ATService } from '@/services/at';
 import { useATReady } from '@/hooks/useATReady';
-import { getCachedSentMessages, setCachedSentMessages, clearSentMessageCache } from '@/modem/sms';
+import {
+  getCachedSentMessages,
+  setCachedSentMessages,
+  clearSentMessageCache,
+} from '@/modem/sms';
+import type { SmsStatus, SmsStorageInfo } from '@/modem/sms';
+import { backendMessage } from '@/services/backendError';
 import { sleep } from '@/modem/atx';
 import { Field, PageCard, RefreshBtn } from '@/ui/widgets';
 import { UssdPanel } from './UssdPanel';
 
 const at = () => ATService.getInstance();
+
+// 慢路由的命令超时：默认 6s 只够一条 AT。IMS 序列和清空都要跑好几条命令
+// 加固件等待时间，必须给足；读类路由也要覆盖 CMGF/CPMS/CSCA 三条查询。
+const SMS_READ_TIMEOUT_MS = 15000;
+const SMS_SLOW_TIMEOUT_MS = 60000;
 
 interface StorageConfig {
   read: string;
@@ -83,20 +94,11 @@ const SMSSettings: React.FC = () => {
   const loadIMS = useCallback(async () => {
     setSmsLoading(true);
     try {
-      const res = await at().readCommand('AT^IMSSWITCH?');
-      if (res.success && typeof res.data === 'string') {
-        const m = res.data.match(/\^IMSSWITCH:\s*(\d+),\d+,\d+/);
-        if (m) {
-          const on = m[1] === '1';
-          setImsOn(on);
-          if (on) {
-            const csca = await at().readCommand('AT+CSCA?');
-            if (csca.success && typeof csca.data === 'string') {
-              const cm = csca.data.match(/\+CSCA: "([^"]+)"/);
-              if (cm) setCenterNumber(cm[1]);
-            }
-          }
-        }
+      const res = await at().apiCommand<SmsStatus>('sms.status', undefined, SMS_READ_TIMEOUT_MS);
+      const status = res.success ? res.data : undefined;
+      if (typeof status?.imsOn === 'boolean') {
+        setImsOn(status.imsOn);
+        if (status.imsOn && status.center) setCenterNumber(status.center);
       }
     } catch {
       Toast.error('获取短信功能状态失败');
@@ -108,25 +110,20 @@ const SMSSettings: React.FC = () => {
   const loadStorage = useCallback(async () => {
     setStorageLoading(true);
     try {
-      await at().sendCommand('AT+CMGF=0');
-      const res = await at().readCommand('AT+CPMS?');
-      if (res.success && typeof res.data === 'string') {
-        const m = res.data.match(
-          /\+CPMS: "(\w+)",(\d+),(\d+),"(\w+)",(\d+),(\d+),"(\w+)",(\d+),(\d+)/,
-        );
-        if (m) {
-          setStorage({
-            read: m[1],
-            readUsed: parseInt(m[2], 10),
-            readTotal: parseInt(m[3], 10),
-            write: m[4],
-            writeUsed: parseInt(m[5], 10),
-            writeTotal: parseInt(m[6], 10),
-            receive: m[7],
-            receiveUsed: parseInt(m[8], 10),
-            receiveTotal: parseInt(m[9], 10),
-          });
-        }
+      const res = await at().apiCommand<SmsStorageInfo>('sms.storage', undefined, SMS_READ_TIMEOUT_MS);
+      const info = res.success ? res.data : undefined;
+      if (info?.read && info.write && info.receive) {
+        setStorage({
+          read: info.read.name,
+          readUsed: info.read.used,
+          readTotal: info.read.total,
+          write: info.write.name,
+          writeUsed: info.write.used,
+          writeTotal: info.write.total,
+          receive: info.receive.name,
+          receiveUsed: info.receive.used,
+          receiveTotal: info.receive.total,
+        });
       }
     } catch {
       Toast.error('获取存储配置失败');
@@ -143,45 +140,38 @@ const SMSSettings: React.FC = () => {
 
   useATReady(onReady);
 
+  // 五步 IMS 配置序列（含每步的等待时间）在后端 modules/sms 的 ims_sequence 里，
+  // 页面只按同样的节奏显示进度文案——命令、顺序和 settle 时间都不再出现在前端。
   const toggleSMS = async (enable: boolean) => {
     setSmsLoading(true);
-    const steps: Array<[string, number, string]> = enable
+    const steps: Array<[number, string]> = enable
       ? [
-          ['AT+CFUN=0', 2000, '正在开启飞行模式...'],
-          [
-            'AT+CGDCONT=5,"IPV4V6","ims","",0,0,0,0,1,1,1,,,,,,0,,0,0,0,0',
-            0,
-            '正在配置IMS参数...',
-          ],
-          ['AT+CEUS=0', 1000, '正在设置EPS服务...'],
-          ['AT^IMSSWITCH=1,0,0', 1000, '正在开启IMS功能...'],
-          ['AT+CFUN=1', 2000, '正在关闭飞行模式...'],
+          [2000, '正在开启飞行模式...'],
+          [0, '正在配置IMS参数...'],
+          [1000, '正在设置EPS服务...'],
+          [1000, '正在开启IMS功能...'],
+          [2000, '正在关闭飞行模式...'],
         ]
       : [
-          ['AT+CFUN=0', 2000, '正在开启飞行模式...'],
-          [
-            'AT+CGDCONT=5,"IPV4V6","","",0,0,0,0,1,1,1,,,,,,0,,0,0,0,0',
-            0,
-            '正在清除IMS参数...',
-          ],
-          ['AT+CEUS=1', 1000, '正在关闭EPS服务...'],
-          ['AT^IMSSWITCH=0,0,0', 1000, '正在关闭IMS功能...'],
-          ['AT+CFUN=1', 2000, '正在关闭飞行模式...'],
+          [2000, '正在开启飞行模式...'],
+          [0, '正在清除IMS参数...'],
+          [1000, '正在关闭EPS服务...'],
+          [1000, '正在关闭IMS功能...'],
+          [2000, '正在关闭飞行模式...'],
         ];
     try {
-      for (const [cmd, delay, step] of steps) {
+      const request = at().apiCommand('sms.ims_set', { enabled: enable }, SMS_SLOW_TIMEOUT_MS);
+      for (const [delay, step] of steps) {
         Toast.info(step);
-        const res = await at().sendCommand(cmd);
-        if (!res.success) throw new Error(`${enable ? '开启' : '关闭'}短信功能失败`);
         if (delay > 0) await sleep(delay);
       }
+      const res = await request;
+      if (!res.success) throw new Error(`${enable ? '开启' : '关闭'}短信功能失败`);
       setImsOn(enable);
       if (enable) {
-        const csca = await at().readCommand('AT+CSCA?');
-        if (csca.success && typeof csca.data === 'string') {
-          const m = csca.data.match(/\+CSCA: "([^"]+)"/);
-          if (m) setCenterNumber(m[1]);
-        }
+        const status = await at().apiCommand<SmsStatus>('sms.status', undefined, SMS_READ_TIMEOUT_MS);
+        const center = status.success ? status.data?.center : undefined;
+        if (center) setCenterNumber(center);
       }
       Toast.success(`短信功能已${enable ? '开启' : '关闭'}`);
     } catch (e) {
@@ -200,8 +190,8 @@ const SMSSettings: React.FC = () => {
     }
     setCenterLoading(true);
     try {
-      const res = await at().sendCommand(`AT+CSCA="${num}"`);
-      if (!res.success) throw new Error('设置短信中心号码失败');
+      const res = await at().apiCommand('sms.center_set', { number: num }, SMS_READ_TIMEOUT_MS);
+      if (!res.success) throw new Error(backendMessage(res.error, '设置短信中心号码失败'));
       Toast.success('短信中心号码设置成功');
     } catch {
       Toast.error('设置保存失败');
@@ -217,10 +207,16 @@ const SMSSettings: React.FC = () => {
   const handleStorageSave = async () => {
     setStorageLoading(true);
     try {
-      const res = await at().sendCommand(
-        `AT+CPMS="${storage.read}","${storage.write}","${storage.receive}"`,
+      const res = await at().apiCommand(
+        'sms.storage_set',
+        {
+          read: storage.read,
+          write: storage.write,
+          receive: storage.receive,
+        },
+        SMS_READ_TIMEOUT_MS,
       );
-      if (!res.success) throw new Error('设置存储配置失败');
+      if (!res.success) throw new Error(backendMessage(res.error, '设置存储配置失败'));
       Toast.success('存储配置已更新');
       await loadStorage();
     } catch {
@@ -333,22 +329,10 @@ const SMSSettings: React.FC = () => {
         setClearingAll(true);
         try {
           Toast.info('正在清空所有短信，请稍候...');
-          const cpms = await at().readCommand('AT+CPMS?');
-          if (!cpms.success || typeof cpms.data !== 'string') throw new Error('获取存储配置失败');
-          const m = cpms.data.match(
-            /\+CPMS: "(\w+)",(\d+),(\d+),"(\w+)",(\d+),(\d+),"(\w+)",(\d+),(\d+)/,
-          );
-          if (!m) throw new Error('解析存储配置失败');
-          const storages = [m[1], m[4], m[7]].filter((v, i, arr) => arr.indexOf(v) === i);
-          for (const storageName of storages) {
-            await at().sendCommand('AT+CMGF=0');
-            await sleep(500);
-            await at().sendCommand(`AT+CPMS="${storageName}","${storageName}","${storageName}"`);
-            await sleep(500);
-            const del = await at().sendCommand('AT+CMGD=1,4');
-            if (!del.success) throw new Error(del.error || '删除短信失败');
-            await sleep(1000);
-          }
+          // 存储面来自后端：读 +CPMS?、去重、逐个切换存储并 CMGD=1,4
+          // （含固件需要的等待）都在 modules/sms::service::clear_all。
+          const res = await at().apiCommand('sms.clear_all', undefined, SMS_SLOW_TIMEOUT_MS);
+          if (!res.success) throw new Error(backendMessage(res.error, '删除短信失败'));
           clearSentMessageCache();
           refreshCacheCount();
           await loadStorage();
