@@ -257,6 +257,7 @@ pub fn parse(hfreqinfo: &str, cascellinfo: &str, monssc: &str) -> CaState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::json::Value;
 
     #[test]
     fn hfreqinfo_real_nr_carrier() {

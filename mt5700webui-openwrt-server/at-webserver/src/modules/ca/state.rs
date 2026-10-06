@@ -461,6 +461,7 @@ mod tests {
     fn text_matches_the_frozen_cli_contract() {
         let mut st = CaState {
             carriers: vec![hfreq_nr(), scell_lte()],
+            secondary: Vec::new(),
             secondary_connection_count: 1,
         };
         assert_eq!(
@@ -487,6 +488,7 @@ mod tests {
     fn single_nr_carrier_is_plain_nr() {
         let st = CaState {
             carriers: vec![hfreq_nr()],
+            secondary: Vec::new(),
             secondary_connection_count: 0,
         };
         assert!(!st.ca_active() && !st.dc_active());
@@ -497,6 +499,7 @@ mod tests {
     fn json_round_trips() {
         let st = CaState {
             carriers: vec![hfreq_nr(), scell_lte()],
+            secondary: Vec::new(),
             secondary_connection_count: 2,
         };
         let Value::Obj(m) = st.to_json() else {
