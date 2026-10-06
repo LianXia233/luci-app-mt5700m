@@ -373,8 +373,8 @@ pub struct DeliverSms {
 }
 
 fn hex_byte(hex: &[u8], i: usize) -> Option<u8> {
-    let hi = (hex.get(i * 2).copied() as char).to_digit(16)?;
-    let lo = (hex.get(i * 2 + 1).copied() as char).to_digit(16)?;
+    let hi = (*hex.get(i * 2)? as char).to_digit(16)?;
+    let lo = (*hex.get(i * 2 + 1)? as char).to_digit(16)?;
     Some((hi * 16 + lo) as u8)
 }
 
@@ -404,7 +404,7 @@ fn decode_address(hex: &[u8], start: usize, digits: usize) -> String {
 fn decode_digits(hex: &[u8], start: usize, count: usize) -> Option<u8> {
     let mut value = 0u32;
     for i in 0..count {
-        let d = (hex.get(start + i).copied() as char).to_digit(16)?;
+        let d = (*hex.get(start + i)? as char).to_digit(16)?;
         value = value * 16 + d;
     }
     Some(value as u8)

@@ -26,6 +26,7 @@ pub fn routes() -> Vec<Route> {
         Route::on_demand("sms.storage_set", storage_set),
         Route::on_demand("sms.center_set", center_set),
         Route::on_demand("sms.ims_set", ims_set),
+        // 纯算术，不碰模组：显示类路由（冷启动/模组离线也必须给出统计）。
         Route::display("sms.analyze", analyze),
     ]
 }
@@ -126,7 +127,7 @@ fn ims_set(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
 }
 
 /// `{encoding, chars, parts}` — the compose hint, from the module's codec.
-fn analyze(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+fn analyze(_ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
     let text = text(params, "text").unwrap_or("");
     Ok(service::analyze(text))
 }

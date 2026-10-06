@@ -1431,8 +1431,15 @@ fn cmd_sms_set(settings: &Settings, args: &[String]) -> i32 {
                 25,
             )
         }
-        "storage" => match args.get(1).map(|s| s.as_str()) {
-            Some(name @ ("SM" | "ME")) => run_api(
+        "storage" => {
+            let Some(name) = args
+                .get(1)
+                .map(|s| s.as_str())
+                .filter(|n| matches!(*n, "SM" | "ME"))
+            else {
+                return EXIT_USAGE;
+            };
+            run_api(
                 settings,
                 "sms.storage_set",
                 api_params(&[
@@ -1441,9 +1448,8 @@ fn cmd_sms_set(settings: &Settings, args: &[String]) -> i32 {
                     ("receive", crate::core::json::str_val(name)),
                 ]),
                 25,
-            ),
-            _ => EXIT_USAGE,
-        },
+            )
+        }
         _ => EXIT_USAGE,
     }
 }
