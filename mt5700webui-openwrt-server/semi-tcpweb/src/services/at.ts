@@ -1,11 +1,5 @@
 import { Toast } from '@douyinfe/semi-ui';
-import {
-  extractPDCP,
-  extractURCs,
-  isUnsolicitedText,
-  type PDCPData,
-  type URCData,
-} from '@/modem/urc';
+import { isUnsolicitedText, type PDCPData } from '@/modem/urc';
 import type { ScanCell, ScanPush } from '@/services/scan';
 import type { MockCommandResponse } from './mockAT';
 import {
@@ -18,7 +12,7 @@ import {
   type MockModemState,
 } from './mockAT';
 
-export type { PDCPData, URCData } from '@/modem/urc';
+export type { PDCPData } from '@/modem/urc';
 
 // AT指令响应接口
 interface PushEventData {
@@ -86,7 +80,6 @@ export type PushEventType =
   | 'pdcp_data'
   | 'memory_full'
   | 'signal_data'
-  | 'urc_data'
   | 'cellscan'
   | 'signal'
   | 'signal.updated'
@@ -107,11 +100,15 @@ export type PushEventType =
   | `scan.${string}`
   | `beam.${string}`
   | `sms.${string}`
-  | `fota.${string}`;
+  | `fota.${string}`
+  // 后端解析后推送的上报事件（详见 services/events.ts）。
+  | 'network.reject'
+  | 'qos.ambr'
+  | 'sim.changed';
 
 interface PushATResponse extends BaseATResponse {
   type: PushEventType;
-  data: PushEventData | PDCPData | SignalData | URCData | ScanPush | Record<string, unknown>;
+  data: PushEventData | PDCPData | SignalData | ScanPush | Record<string, unknown>;
 }
 
 // 服务端推送的类型，data 已经是结构化对象，直接转发给订阅者。
@@ -149,7 +146,11 @@ const STATE_EVENT_TYPES = [
 
 const isStateEventType = (type: string): boolean =>
   (STATE_EVENT_TYPES as readonly string[]).includes(type) ||
-  /^(usb|modem|task|scan|beam|sms|fota)\./.test(type);
+  /^(usb|modem|task|scan|beam|sms|fota)\./.test(type) ||
+  // 上报事件：负载已经是后端解好的对象。
+  type === 'network.reject' ||
+  type === 'qos.ambr' ||
+  type === 'sim.changed';
 
 // 服务端拒绝未认证连接时的固定应答，命令应答不会长这样。
 const AUTH_REJECTIONS = ['Authentication failed', 'Authentication timeout', 'Invalid authentication'];
@@ -990,10 +991,11 @@ export class WebSocketATAdapter implements ATAdapter {
     });
   }
 
+  // raw_data 只是诊断用的原文：后端已经把可识别的内容解成结构化事件推过来
+  // （`pdcp_data` / `signal.updated` / `sms.ussd` / `network.reject` …），
+  // 前端不再留第二套上报解析器。
   private dispatchRawData(text: string): void {
-    const { entries, rest } = extractPDCP(text);
-    entries.forEach((entry) => this.emitPush({ success: true, type: 'pdcp_data', data: entry }));
-    extractURCs(rest).forEach((urc) => this.emitPush({ success: true, type: 'urc_data', data: urc }));
+    console.debug('上报原文（已由后端结构化推送）:', text.substring(0, 120));
   }
 
   private handleAuthHandshake(parsedData: any): boolean {
@@ -1102,20 +1104,17 @@ class MockWebSocketATAdapter extends WebSocketATAdapter {
         Math.min(-70, this.mockSignalRsrp + (Math.random() - 0.5) * 6),
       );
       const sinr = Math.max(0, Math.min(30, 13 + (Math.random() - 0.5) * 8));
-      // ^HCSQ 上报的是档位原值，这里按 convertRsrp/convertSinr 的换算反推：
-      // RSRP 档位 = dBm + 140，SINR 档位 = (dB + 20) / 0.2
+      // 真机由后端把 ^HCSQ 的档位换算成 dBm/dB 后推 `signal.updated`，
+      // 演示模式直接推同一形状的帧，页面两条路径共用一套渲染。
       this.emitMockResponse({
         success: true,
-        type: 'urc_data',
+        type: 'signal.updated',
         data: {
-          type: 'HCSQ',
-          raw: '^HCSQ mock',
-          parsed: {
-            networkMode: 'NR',
-            rsrp: Math.round(this.mockSignalRsrp + 140),
-            sinr: Math.round((sinr + 20) / 0.2),
-            rsrq: Math.round((-11 + 20) / 0.5),
-          },
+          sysmode: 'NR',
+          rsrp: Math.round(this.mockSignalRsrp),
+          rsrq: -11,
+          sinr: Math.round(sinr),
+          rssi: -70,
         },
       });
     };

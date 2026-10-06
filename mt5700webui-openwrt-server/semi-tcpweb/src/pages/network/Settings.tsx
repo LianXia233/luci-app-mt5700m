@@ -10,7 +10,7 @@ import {
   Toast,
   Typography,
 } from '@douyinfe/semi-ui';
-import { ATService, type ATResponse, type URCData } from '@/services/at';
+import { ATService, type ATResponse } from '@/services/at';
 import { useATReady } from '@/hooks/useATReady';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { QUERY_MOBILE } from '@/styles/breakpoints';
@@ -26,7 +26,7 @@ import {
 } from '@/modem/lock';
 import { atErrorText, sleep } from '@/modem/atx';
 import type { C5gOptionPayload, NeighborsPayload, SsbPayload } from '@/modem/status';
-import { type RejectInfo } from '@/modem/reject';
+import { NETWORK_REJECT_EVENT, type RejectInfo } from '@/services/events';
 import { AutoRefresh, Field, PageCard, Panel, SectionHeader, TwoCol } from '@/ui/widgets';
 import { LockEditor } from '@/ui/LockEditor';
 import { SchedulePanel } from './SchedulePanel';
@@ -207,11 +207,11 @@ const NetworkSettings: React.FC = () => {
   };
 
   // 手册 13.14：注册/业务请求被网络拒绝时模组会主动上报原因值。
+  // 释义表在后端 modules/network/reject.rs，页面只收解好的对象。
   useEffect(() => {
     const handle = (response: ATResponse) => {
-      if (!('type' in response) || response.type !== 'urc_data') return;
-      const urc = response.data as URCData;
-      if (urc.type === 'REJINFO') setReject(urc.parsed as RejectInfo);
+      if (!('type' in response) || response.type !== NETWORK_REJECT_EVENT) return;
+      setReject(response.data as RejectInfo);
     };
     at().subscribe(handle);
     return () => at().unsubscribe(handle);

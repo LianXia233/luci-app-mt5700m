@@ -163,6 +163,28 @@ impl Dispatcher {
             return events;
         }
 
+        // ---- subscribed AMBR (`^DSAMBR: <cid>,<down>,<up>,<apn>`) ----
+        // 手册 5.33：签约速率变化时主动上报。解析归 modules::qos，页面不自己
+        // 拆字段（原来 Info.tsx 收原始行、按 bps 除 1000）。
+        if t.starts_with("^DSAMBR:") {
+            if let Some(ambr) = crate::modules::qos::parser::parse_dsambr(t) {
+                events.push(("qos.ambr", crate::modules::qos::service::ambr_json(&ambr)));
+            }
+            events.push(("raw_data", json::str_val(t)));
+            return events;
+        }
+
+        // ---- SIM 状态变化（+CPIN: / ^SIMSQ: / ^SIMST） ----
+        // 只是一声提醒：页面收到后去读 sim.pin_status，避免前端拿正则去认上报。
+        if t.starts_with("+CPIN:")
+            || t.starts_with("^SIMSQ:")
+            || t.starts_with("^SIMST")
+        {
+            events.push(("raw_data", json::str_val(t)));
+            events.push(("sim.changed", json::str_val(t)));
+            return events;
+        }
+
         // ---- passthrough ----
         // raw_data payload must be a plain string (the frontend checks
         // `typeof data == "string"` before dispatching it).
@@ -173,6 +195,10 @@ impl Dispatcher {
             // an object instead of parsing the line itself.
             if let Some(reply) = crate::modules::sms::ussd::parse_reply(t) {
                 events.push(("sms.ussd", reply.to_json()));
+            }
+            // `^REJINFO` 的释义表在 modules::network::reject（手册 13.14）。
+            if let Some(info) = crate::modules::network::reject::parse(t) {
+                events.push(("network.reject", info));
             }
         }
         events

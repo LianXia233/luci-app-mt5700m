@@ -6,8 +6,9 @@
 //! leaves the previous value in place).
 
 use crate::core::error::BackendError;
+use crate::core::json::{self, Value};
 use crate::modules::qos::commands::{dsambr, cgeqosrdp, CGACT, CGEQOSRDP_ALL};
-use crate::modules::qos::parser::{parse_cgeqosrdp, parse_cgact_active_cid, parse_dsambr};
+use crate::modules::qos::parser::{parse_cgeqosrdp, parse_cgact_active_cid, parse_dsambr, Ambr};
 use crate::modules::qos::state::QosState;
 use crate::state::bus::{EVENT_QOS_UPDATED, TOPIC_QOS};
 use crate::state::refresh::RefreshCtx;
@@ -82,6 +83,18 @@ pub fn refresh(ctx: &RefreshCtx) -> Result<QosState, BackendError> {
 
     ctx.store(TOPIC_QOS, EVENT_QOS_UPDATED, &st.to_json());
     Ok(st)
+}
+
+/// The `qos.ambr` event payload from an unsolicited `^DSAMBR` line: the same
+/// field names `qos.get` uses, minus the fields the URC does not carry.
+pub fn ambr_json(ambr: &Ambr) -> Value {
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("ambr_down_kbps".to_string(), json::num_val(ambr.down_kbps));
+    m.insert("ambr_up_kbps".to_string(), json::num_val(ambr.up_kbps));
+    if let Some(apn) = &ambr.apn {
+        m.insert("ambr_apn".to_string(), json::str_val(apn));
+    }
+    Value::Obj(m)
 }
 
 /// Cache-first read for the API and the CLI.

@@ -1129,11 +1129,25 @@ export const resolveMockATCommand = (
     );
   }
 
-  // 定时锁频配置：真实环境里由后端拦下这条伪命令，从 UCI 读写
+  // 定时锁频：真机是 `network.schedule_get`/`schedule_set` 两条路由，伪命令
+  // `AT+SCHED?`/`AT+SCHED=` 只是它们的别名（后端 daemon.rs），演示模式照做。
   if (commandLine === 'AT+SCHED?') {
-    return ok(`+SCHED: ${JSON.stringify(createMockSchedule())}\r\nOK`);
+    return ok(`+SCHED: ${JSON.stringify(state.schedule)}\r\nOK`);
   }
-  if (commandLine.startsWith('AT+SCHED=')) return ok('+SCHED: OK\r\nOK');
+  if (commandLine.startsWith('AT+SCHED=')) {
+    try {
+      const payload = JSON.parse(commandLine.slice('AT+SCHED='.length));
+      if (payload && typeof payload === 'object') {
+        const { enabled, status, ...rest } = payload;
+        void enabled;
+        void status;
+        state.schedule = { ...state.schedule, ...rest };
+      }
+      return ok('+SCHED: OK\r\nOK');
+    } catch {
+      return { success: false, error: 'invalid schedule json' };
+    }
+  }
 
   if (commandLine === 'AT^HCSQ?') {
     return ok(

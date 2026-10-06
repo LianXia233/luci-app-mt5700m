@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, InputNumber, Modal, Space, Switch, Tag, Toast, Typography } from '@douyinfe/semi-ui';
 import { IconArrowDown, IconArrowUp, IconSetting } from '@douyinfe/semi-icons';
-import { ATResponse, ATService, PDCPData, URCData, type StateSnapshot } from '@/services/at';
+import { ATResponse, ATService, PDCPData, type StateSnapshot } from '@/services/at';
 import { refreshSharedStateFeed, useSharedStateTopic } from '@/services/stateCache';
 import { useATReady } from '@/hooks/useATReady';
 import type { QosPayload } from '@/modem/qos';
+import { QOS_AMBR_EVENT } from '@/services/events';
 import { useCommandQueue } from '@/hooks/useCommandQueue';
 import { SvgSignalTower, SvgDataStream } from '@/ui/svgVisuals';
 import {
@@ -423,13 +424,16 @@ const NetworkInfo: React.FC = () => {
   useEffect(() => {
     const handle = (response: ATResponse) => {
       if (!('type' in response) || !('data' in response)) return;
-      if (response.type === 'urc_data') {
-        const urc = response.data as URCData;
-        if (urc.type === 'DSAMBR' && urc.parsed) {
-          if (urc.parsed.apn) setApn(String(urc.parsed.apn).replace(/^["']|["']$/g, ''));
-          if (urc.parsed.maxDownlinkRate) setDownSpeed(urc.parsed.maxDownlinkRate / 1000);
-          if (urc.parsed.maxUplinkRate) setUpSpeed(urc.parsed.maxUplinkRate / 1000);
-        }
+      // 手册 5.33：签约速率变化时后端推 qos.ambr（已经按 kbps 解好）。
+      if (response.type === QOS_AMBR_EVENT) {
+        const ambr = response.data as {
+          ambr_down_kbps?: number;
+          ambr_up_kbps?: number;
+          ambr_apn?: string;
+        };
+        if (ambr.ambr_apn) setApn(ambr.ambr_apn);
+        if (typeof ambr.ambr_down_kbps === 'number') setDownSpeed(ambr.ambr_down_kbps / 1000);
+        if (typeof ambr.ambr_up_kbps === 'number') setUpSpeed(ambr.ambr_up_kbps / 1000);
         return;
       }
       if (response.type !== 'pdcp_data') return;

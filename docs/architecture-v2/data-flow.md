@@ -37,7 +37,7 @@ cannot reach the AT layer: it can only call a route or read a topic.
 | `scan` | `cell::scan::start` (exclusive task) | **on demand** (`cell.scan_start`) | one `{state, cells, count}` push per scan; `cell.scan_state`/`cell.scan_abort` are task introspection |
 | `fota` | `system::fota::start` (long-running task) | **on demand** (`system.fota_start`) | one `fota.progress` push per state change; `system.fota` answers from the snapshot, `system.fota_abort` cancels the task |
 | `schedule` | `network::schedule::write` (UCI) | on save | not a modem topic: `scheduler::plan` re-reads UCI every 15 s, `network.schedule_get` reads it on page load |
-| `sms`, `task`, `usb`, `beam`, `raw:*` | daemon/URC/dispatch paths | event-driven | topic-specific — the `+CUSD` line is decoded with `modules::sms::ussd::parse_reply` in the URC path and pushed as `sms.ussd` (+ the raw `raw_data` line) |
+| `sms`, `task`, `usb`, `beam`, `raw:*` | daemon/URC/dispatch paths | event-driven | topic-specific. The URC path is the decoder for everything the modem volunteers: `+CUSD` → `sms.ussd` (`modules::sms::ussd`), `^REJINFO` → `network.reject` (`modules::network::reject`), `^DSAMBR` → `qos.ambr` (`modules::qos`), `+CPIN`/`^SIMSQ`/`^SIMST` → `sim.changed`, and the raw line still goes out as `raw_data` for the diagnostic views |
 
 TTLs live in `state/cache.rs`; publishing goes through
 `RefreshCtx::store`/`stale`, which is the only place that sets a topic *and*

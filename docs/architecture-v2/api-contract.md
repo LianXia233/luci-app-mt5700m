@@ -103,6 +103,9 @@ Two kinds of route, declared in the table itself (`Route::display` /
 | `sms.analyze` | `{encoding: "7bit"\|"UCS2", chars, parts}` — `{text}`; the compose hint's part count comes from the same codec `sms.send` uses, so the promise and the send cannot disagree |
 | `sms.ussd_send` | `{sent: true, reply?}` — `{code}`; the code is validated and packed here (GSM 7-bit, the manual's own example `*133#` → `AAD86C3602`, sent as `AT+CUSD=1,"…",15`), a rejected code answers the panel's copy verbatim, and a firmware that returns the answer inline gets it decoded into `reply` (`{m, mText, text, needsReply}`) |
 | `sms.ussd_cancel` | `{cancelled: true}` — `AT+CUSD=2`, releasing the session |
+| push `network.reject` | `{plmn, domain, domainText, cause, causeText, rat, ratText, rejectType, rejectTypeText, originalCause, lac, rac, cellId, esmCause?, raw, at}` — a `^REJINFO` line (手册 13.14) decoded by `modules/network/reject.rs`: the cause table, the USIM range 65537–65543 and the domain/rat/type labels live here, not in a page (the `network` topic) |
+| push `qos.ambr` | `{ambr_down_kbps, ambr_up_kbps, ambr_apn?}` — an unsolicited `^DSAMBR` line (手册 5.33) decoded by `modules/qos` with the same field names `qos.get` uses, so the info page updates APN/AMBR without polling (the `qos` topic) |
+| push `sim.changed` | the raw line (`+CPIN:` / `^SIMSQ:` / `^SIMST`) — a nudge on the `sim` topic: the card handler re-reads `sim.pin_status` instead of pattern-matching URC text in the browser |
 | push `sms.ussd` | `{m, mText, text, needsReply}` — the `+CUSD:` line the network sends out-of-band, decoded by the same codec (the `sms` topic). The raw line still goes out as `raw_data`, but no page parses it |
 
 Field names and types are exactly what the cache published before the refactor,

@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Banner, Button, Input, Modal, Space, Toast, Typography } from '@douyinfe/semi-ui';
 import { IconLock } from '@douyinfe/semi-icons';
-import { ATService, type ATResponse, type URCData } from '@/services/at';
+import { ATService, type ATResponse } from '@/services/at';
+import { SIM_CHANGED_EVENT } from '@/services/events';
 import { useATReady } from '@/hooks/useATReady';
 import {
   cardStateOf,
@@ -58,13 +59,11 @@ const SimPinHandler: React.FC = () => {
   useATReady(refresh);
 
   // 插拔卡或解锁成功后模组会主动上报，据此重新判断，不做轮询。
+  // 哪些行算卡状态变化由后端判定（transport/urc.rs → sim.changed）。
   useEffect(() => {
     const handle = (response: ATResponse) => {
       if (!('type' in response)) return;
-      if (response.type === 'urc_data') {
-        const urc = response.data as URCData;
-        if (urc.raw && /\^SIMSQ:|\+CPIN:|\^SIMST/.test(urc.raw)) refresh();
-      }
+      if (response.type === SIM_CHANGED_EVENT) refresh();
     };
     at().subscribe(handle);
     return () => at().unsubscribe(handle);
