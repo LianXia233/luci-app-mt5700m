@@ -29,13 +29,29 @@ pub fn parse_imsi(raw: &str) -> Option<String> {
         .map(|t| t.to_string())
 }
 
-/// `+CNUM: "","+8613800138000",145` -> the second quoted field.
+/// `+CNUM: "","+8613800138000",145` -> the second quoted field, normalized.
+///
+/// The field is a dialable MSISDN, so it is validated here rather than by every
+/// reader: quotes/CR/spaces are stripped, the result must be digits with an
+/// optional leading `+` and at least 5 characters long. A SIM that stores a
+/// placeholder (or a firmware that answers something else entirely) therefore
+/// yields `None` — the pages render a blank/"not stored" row instead of a
+/// bogus number. This is the rule the CLI used to re-implement inline.
 pub fn parse_cnum(raw: &str) -> Option<String> {
     let line = raw.lines().find(|l| l.trim().starts_with("+CNUM:"))?;
     let body = line.trim().strip_prefix("+CNUM:")?.trim();
     let mut quoted = body.split('"').filter(|s| !s.trim().is_empty());
     let _name = quoted.next();
-    quoted.next().map(|s| s.trim().to_string())
+    let raw_field = quoted.next()?;
+    let cleaned: String = raw_field
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '\r' | '"'))
+        .collect();
+    let digits = cleaned.strip_prefix('+').unwrap_or(&cleaned);
+    let valid = cleaned.len() >= 5
+        && !digits.is_empty()
+        && digits.bytes().all(|b| b.is_ascii_digit());
+    valid.then_some(cleaned)
 }
 
 /// `^SIMSQ: <n>,<status>` -> `<status>` (manual 6.6.3).
@@ -75,8 +91,9 @@ pub fn parse_clck(raw: &str) -> Option<bool> {
 }
 
 /// CMEE=2 descriptions that carry the same meaning as a CMEE=1 number.
-const CME_TEXTS: [(&str, i64); 10] = [
+const CME_TEXTS: [(&str, i64); 11] = [
     ("operation not allowed", 3),
+    ("not found", 22),
     ("sim not inserted", 10),
     ("sim pin required", 11),
     ("sim puk required", 12),
@@ -106,6 +123,20 @@ pub fn parse_cme_error(raw: &str) -> Option<i64> {
         }
     }
     None
+}
+
+/// State of the subscriber number when the card has none stored.
+///
+/// `AT+CNUM` answers `+CME ERROR: 22` ("not found") on a SIM whose MSISDN was
+/// never written, which is common on data-only cards. That is an answer, not a
+/// failure: the pages render it as their own "not stored" copy instead of a
+/// blank, and only the module can tell the two apart (`+CNUM` also fails for a
+/// missing card or a wedged channel).
+pub fn cnum_number_state(raw: &str) -> Option<String> {
+    match parse_cme_error(raw) {
+        Some(22) => Some("not_stored".to_string()),
+        _ => None,
+    }
 }
 
 /// The `+CPIN?` state, accepting the CME errors that mean the same thing.
@@ -191,6 +222,13 @@ mod tests {
             Some("+8613800138000")
         );
         assert_eq!(parse_cnum("OK"), None);
+        // 归一化 + 校验：空格/引号剥掉，占位符与非号码串一律 None。
+        assert_eq!(
+            parse_cnum("+CNUM: \"\",\" +86 138 0013 8000 \",145").as_deref(),
+            Some("+8613800138000")
+        );
+        assert_eq!(parse_cnum("+CNUM: \"\",\"1\",145"), None);
+        assert_eq!(parse_cnum("+CNUM: \"\",\"n/a\",145"), None);
     }
 
     #[test]
@@ -229,6 +267,15 @@ mod tests {
         assert_eq!(parse_cme_error("+CME ERROR: SIM not inserted"), Some(10));
         assert_eq!(parse_cme_error("ERROR"), None);
         assert_eq!(parse_cme_error("+CMS ERROR: 500"), None);
+    }
+
+    #[test]
+    fn cnum_state_separates_not_stored_from_a_failed_read() {
+        assert_eq!(cnum_number_state("+CME ERROR: 22").as_deref(), Some("not_stored"));
+        assert_eq!(cnum_number_state("+CME ERROR: not found").as_deref(), Some("not_stored"));
+        assert_eq!(cnum_number_state("+CME ERROR: 10"), None);
+        assert_eq!(cnum_number_state("ERROR"), None);
+        assert_eq!(cnum_number_state("+CNUM: \"\",\"+8613800138000\",145\r\nOK"), None);
     }
 
     #[test]

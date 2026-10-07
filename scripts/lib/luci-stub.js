@@ -32,7 +32,10 @@ class El {
 		const list = children === undefined || children === null ? []
 			: Array.isArray(children) ? children : [ children ];
 		for (const child of list)
-			if (child !== null && child !== undefined && child !== false) this.children.push(child);
+			if (child !== null && child !== undefined && child !== false) {
+				this.children.push(child);
+				if (child && typeof child === 'object') child.parentNode = this;
+			}
 		// LuCI 的 E() 把 attrs 里的 click 等属性接成监听器（btn() 就是这么发的）
 		for (const key of Object.keys(this.attrs))
 			if (typeof this.attrs[key] === 'function' && key.indexOf('on') !== 0)
@@ -45,8 +48,42 @@ class El {
 		if (this.attrs.value !== undefined)
 			this.value = this.attrs.value;
 	}
-	appendChild(child) { this.children.push(child); return child; }
-	replaceChildren(...kids) { this.children = kids.filter(k => k !== null && k !== undefined); }
+	appendChild(child) {
+		this.children.push(child);
+		if (child && typeof child === 'object') child.parentNode = this;
+		return child;
+	}
+	replaceChildren(...kids) {
+		for (const old of this.children)
+			if (old && typeof old === 'object' && old.parentNode === this) old.parentNode = null;
+		this.children = kids.filter(k => k !== null && k !== undefined);
+		for (const child of this.children)
+			if (child && typeof child === 'object') child.parentNode = this;
+	}
+	/* status.js 的 updateRegions() 走的是真实的 DOM 增量替换：按
+	 * [data-live-region="…"] 找到旧节点、用 parentNode.replaceChild 换掉。桩必须
+	 * 提供同样的入口，否则「详情帧到达后只替换一块区域」这条路径根本跑不到。 */
+	removeChild(child) {
+		const i = this.children.indexOf(child);
+		if (i === -1) return child;
+		if (child && typeof child === 'object') child.parentNode = null;
+		this.children.splice(i, 1);
+		return child;
+	}
+	replaceChild(next, old) {
+		const i = this.children.indexOf(old);
+		if (i === -1) return old;
+		if (old && typeof old === 'object') old.parentNode = null;
+		if (next && typeof next === 'object') next.parentNode = this;
+		this.children[i] = next;
+		return old;
+	}
+	querySelectorAll(selector) {
+		const found = [];
+		collectNodes(this, node => { if (matchesSelector(node, selector)) found.push(node); });
+		return found;
+	}
+	querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
 	addEventListener(type, fn) { (this._listeners[type] = this._listeners[type] || []).push(fn); }
 	dispatchEvent(event) { return this.fire(event && event.type ? event.type : 'change', event); }
 	click() { return this.fire('click', {}); }
@@ -66,6 +103,28 @@ class El {
 		if (node === this) return true;
 		return this.children.some(ch => ch && ch.contains && ch.contains(node));
 	}
+}
+
+/* 桩选择器：够 [attr="value"] / tag / .class 三种写法即可（页面只用
+ * `[data-live-region="x"]`），不做完整 CSS 解析。 */
+function matchesSelector(node, selector) {
+	const sel = String(selector || '').trim();
+	if (!sel || !node || !node.tagName) return false;
+	const attr = /^\[([\w-]+)(?:=("([^"]*)"|'([^']*)'))?\]$/.exec(sel);
+	if (attr) {
+		const want = attr[3] !== undefined ? attr[3] : attr[4];
+		const have = node.attrs ? node.attrs[attr[1]] : undefined;
+		return want === undefined ? have !== undefined && have !== null
+			: have !== undefined && have !== null && String(have) === want;
+	}
+	if (sel[0] === '.') return String((node.attrs && node.attrs['class']) || '').split(' ').indexOf(sel.slice(1)) !== -1;
+	return node.tagName === sel.toUpperCase();
+}
+function collectNodes(node, visit) {
+	if (node === null || node === undefined || node === false) return;
+	if (typeof node !== 'object' || !node.tagName) return;
+	visit(node);
+	node.children.forEach(ch => collectNodes(ch, visit));
 }
 
 class StubEvent {
@@ -173,8 +232,9 @@ function makeScope(api) {
 		clear: () => store.clear()
 	};
 	const dom = { content: (host, child) => host.replaceChildren(child), append: () => {}, parse: () => null };
-	// components.js 在模块求值时注入 <style>，需要 L.resource
-	const L = { resource: p => p };
+	// components.js 在模块求值时注入 <style>，需要 L.resource；概览页的
+	// 卡片底部有 `L.url('admin/modem/…')` 的跳转链接，L.url 也要在。
+	const L = { resource: p => p, url: p => '/cgi-bin/luci/' + String(p).replace(/^\//, '') };
 	return {
 		E, document, window, ui, dom, L, modals, notifications,
 		localStorage: window.localStorage,

@@ -61,9 +61,17 @@ fn cached(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
 /// UI keeps it until the card changes.
 fn number(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
     let refresh = ctx.refresh();
-    let raw = refresh.query(CNUM)?;
+    // A rejected `+CNUM?` still carries an answer when the card has no MSISDN
+    // stored (`+CME ERROR: 22`), exactly like `+CPIN?`'s "no card" branch — so
+    // the reply text is kept and classified instead of being dropped.
+    let raw = match refresh.query(CNUM) {
+        Ok(text) => text,
+        Err(BackendError::AtRejected(text)) => text,
+        Err(e) => return Err(e),
+    };
     let mut st = service::cached(ctx.cache).unwrap_or_default();
     st.number = parser::parse_cnum(&raw);
+    st.number_state = parser::cnum_number_state(&raw);
     ctx.cache.set(TOPIC_SIM, st.to_json(), "api");
     ctx.bus
         .publish(TOPIC_SIM, crate::state::bus::EVENT_SIM_UPDATED, st.to_json());

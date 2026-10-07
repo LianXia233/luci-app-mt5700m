@@ -535,3 +535,79 @@ Gaps that need a **new backend route** before those pages can move (each is one
 Those are Rust slices (CI is the only compiler), which is why the LuCI batch
 splits page-by-page behind them; the two pages whose fields are already covered
 (`status.js`, and `system.js`'s SIM/thermal/FOTA half) can move first.
+
+### Status page: the CLI status frame is gone (slice, 2026-10-07)
+
+`view/mt5700m/status.js` was the page the inventory called "already covered".
+Done here, on baseline `8a8c501`:
+
+* the **detail frame** no longer calls `mt5700m-at status` (a cached key=value
+  frame *plus* four live AT queries *plus* a reachability probe, all through
+  `client::at_cmd` in the CLI process — the second AT owner this architecture
+  forbids). The four dashboard rows it fed are now routes:
+  `network.pdp_contexts` for the cid-1 APN (`+CGDCONT?`/`+CGACT?`, the same
+  command the CLI read), `qos.get` for QCI + subscribed rate (kbps → Mbps with
+  the CLI's `{:.1}`), `sim.number` for `+CNUM`;
+* `usb_state` comes from the `usb` topic (the presence collector already
+  classifies 3301/3302/3303; `present=false` maps to `absent`, exactly what the
+  CLI printed when `mt5700m_usb_info()` found nothing);
+* `api.js` lost the `atStatus` verb. `advanced session` is still a CLI call —
+  the address card is the next slice;
+* backend: `modules/sim/parser.rs::cnum_number_state` (+CME ERROR 22 *and* its
+  CMEE=2 text "not found" → `not_stored`, added to `CME_TEXTS`),
+  `SimState::number_state` (JSON `numberState`), `sim.number` keeps a rejected
+  `+CNUM` reply instead of dropping it (that reply *is* the answer, same pattern
+  as `+CPIN?`), and `parse_cnum` now normalizes/validates the field (strip
+  quotes/spaces, digits with optional `+`, length ≥ 5) — the rule the CLI had
+  re-implemented inline, now single-sourced in the module.
+
+Two defects in the old detail frame, both fixed by the rewrite and both pinned
+by `scripts/prove-status-parity.js`:
+
+1. `refreshDetail` passed `native.stdout` (**a string**) as `mergeStatusLines`'s
+   `overrides`, whose body does `(overrides || []).forEach` → guaranteed
+   `TypeError`, caught by the chain's `.catch`. So the CLI frame never merged at
+   all: the deployed page showed a permanent "Some modem details could not be
+   refreshed. … (overrides || []).forEach is not a function" banner and the
+   APN / QCI / subscribed-rate / phone rows were **always blank**.
+2. That exception fired before `state.sessionDetail` was assigned, so the
+   Mobile IP card (`advanced session`) was **always empty** on the deployed
+   page too. The route-based version sets the session frame independently, so
+   the card renders.
+
+Both are the UI the cards were built for, not new UI: nothing was added to the
+DOM except the values the page always meant to render. Deliberate, counted
+difference (see `NUM_PLUS` in the proof): the phone number loses the CLI's `+`
+prefix, because the backend's domain numbers are bare digits (same as the
+WebUI's `normalizePhoneNumber`). Two more recording-only notes:
+
+* the CLI published `network.sysmode` under the key `network_mode`, and
+  `parseStatus` prefers it over `sysmode_detail` — following that would have
+  changed the "Network Mode" cell from `5G SA` (the deployed value, and the one
+  the WebUI derives from the same topic) to the coarse `NR5G`. The snapshot
+  mapping therefore keeps `sysmode`/`sysmode_detail` and the proof asserts the
+  cell is byte-identical to the deployed page.
+* temperature: `mergeStatusLines` was last-write-wins, so the snapshot's raw
+  float always overrode the CLI's `round()`. The page has shown `45.1`, not
+  `45`, since long before this slice — the mapping keeps it.
+* carrier frequencies: the CLI derived `dl_freq` with `nr_arfcn_to_mhz()`
+  (LTE's ARFCN rule, applied to NR ARFCNs → wrong by orders of magnitude) and
+  the page's own `carrier_1` line overrode it in the merge, so it was never
+  visible for the single serving carrier. The page's `carrier_1` now leaves the
+  frequency columns blank; real multi-carrier MHz values come from the `ca`
+  topic when the carrier card grows a multi-carrier list.
+
+Remaining CLI call sites afterwards: `status.js` 1 (`advanced session`),
+`system.js` 5, `connection.js` 3 reads + its write verbs, `advanced.js` 1,
+`terminal.js` 1 (deliberate).
+
+Harness work in this slice: `scripts/lib/luci-stub.js` grew
+`querySelector(All)` / `parentNode` / `replaceChild` / `removeChild` and
+`L.url`, because `updateRegions` does a real incremental DOM replacement —
+without them the detail frame's update path could not run in a proof at all.
+`scripts/prove-status-parity.js` (baseline `8a8c501`) compares eight shapes
+three ways: deployed baseline vs new with the detail routes stubbed to `null`
+(body must be byte-identical), the CLI frame's values vs the routes' values
+(patched baseline), and the two regions that legitimately change
+(`alerts`, `address`) asserted by content. `scripts/smoke-minified-luci.js`
+now renders the status page too (16 checks; minified tree 297 500 → 186 254 B).

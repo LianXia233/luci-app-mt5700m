@@ -13,9 +13,12 @@
  *   bash scripts/minify-luci-frontend.sh /tmp/htdocs-min     # 先压缩一份
  *   node scripts/smoke-minified-luci.js [/tmp/htdocs-min]
  *
- * 覆盖目前零 CLI 调用的两个页面（无线页、短信页）：断言路由调用面、页面上的
- * 关键文字（仪表盘读数、无线偏好下拉、会话侧栏）与一条写路径（短信发送）。
- * 退出码 0 = 通过。
+ * 覆盖已迁完详情帧的三个页面：
+ *   - 无线页（零 CLI）、短信页（零 CLI）；
+ *   - 概览页：CLI 只剩 `advanced session`（地址卡那一刀未动），详情读
+ *     qos.get / sim.number / network.pdp_contexts。
+ * 断言路由调用面、页面上的关键文字（盘面读数、无线偏好下拉、会话侧栏、概览页的
+ * APN/QCI/速率/号码）与一条写路径（短信发送）。退出码 0 = 通过。
  */
 
 const fs = require('fs');
@@ -128,6 +131,54 @@ async function smsPage() {
 	check('短信页：发送成功提示', side.scope.ui.notifications.some(n => n.text === 'Message sent.'));
 }
 
+/* ------------------------------------------------------------ 概览页 */
+async function statusPage() {
+	const snapshot = {
+		signal: { value: { sysmode: 'NR5G', rsrp: -83, rsrq: -12, sinr: 12.8, rssi: -55 } },
+		network: { value: { operator: 'CHN-UNICOM', sysmode: 'NR5G', sysmode_detail: '5G SA' } },
+		temperature: { value: { average: 45.1 } },
+		modem: { value: { manufacturer: 'Quectel', model: 'MT5700M', revision: 'MT5700M-2.5.0', imei: '862853030012345' } },
+		sim: { value: { status: 'READY', iccid: '89860312345678901234', imsi: '460011234567890' } },
+		cell: { value: { band: 41, channel: 504990, dlBandwidth: 100, sysmode: 'NR' } },
+		endc: { value: { established: 1 } },
+		usb: { value: { present: true, state: 'normal', path: '/dev/ttyUSB3', available: true } }
+	};
+	const api = lib.makeApi({
+		'route:qos.get': { active_cid: 1, qci: '9', ambr_down_kbps: 102400, ambr_up_kbps: 51200, ambr_apn: 'cmnet' },
+		'route:sim.number': { status: 'READY', number: '8613800138000' },
+		'route:network.pdp_contexts': { contexts: [ { cid: 1, type: 'IP', apn: 'cmnet', pdp_addr: '10.6.172.152', active: true } ] },
+		'at:advanced': { stdout: '', stderr: '' }
+	});
+	api.atSession = () => api.at([ 'advanced', 'session' ]);
+	api.managerStatus = () => Promise.resolve({ connected: true, at_port: '/dev/ttyUSB3', network: 'eth2' });
+	api.trafficSummary = () => Promise.resolve({ interfaces: [] });
+	api.cachedSnapshot = () => Promise.resolve(snapshot);
+	const side = lib.loadSide(read, api, RES + '/view/mt5700m/status.js');
+	side.view.load();
+	const holder = side.view.render();
+	side.scope.document.body.replaceChildren(holder);
+	for (let i = 0; i < 200; i++) {
+		if (lib.collect(holder, x => x.attrs && x.attrs['data-live-region'] === 'facts').length) break;
+		await lib.tick();
+	}
+	for (let i = 0; i < 8; i++) await lib.tick();
+	const at = api.calls.filter(c => c.kind === 'at').map(c => c.args.join(' '));
+	const routes = api.calls.filter(c => c.kind === 'route').map(c => c.name);
+	const text = lib.textOf(holder);
+	check('概览页：CLI 只剩 advanced session 一条（详情帧已全部走路由）',
+		sameJson(at, [ 'advanced session' ]), JSON.stringify(at));
+	check('概览页：详情读 qos.get + sim.number + network.pdp_contexts',
+		sameJson(routes, [ 'qos.get', 'sim.number', 'network.pdp_contexts' ]), JSON.stringify(routes));
+	check('概览页：盘面读数来自快照主题（-83 / 12.8 / 45.1 / n41 / 504990）',
+		text.indexOf('-83') !== -1 && text.indexOf('12.8') !== -1 && text.indexOf('45.1') !== -1
+		&& text.indexOf('B41') !== -1 && text.indexOf('504990') !== -1);
+	check('概览页：详情行来自路由（cmnet / QCI 9 / Down 102 Mbps / 纯数字号码 / Not stored 不出现）',
+		text.indexOf('cmnet') !== -1 && text.indexOf('QCI 9') !== -1
+		&& text.indexOf('Down 102 Mbps / Up 51 Mbps') !== -1 && text.indexOf('8613800138000') !== -1
+		&& text.indexOf('Not stored') === -1);
+	check('概览页：没有任何告警横幅（详情帧不再因 CLI 类型错误挂横幅）', text.indexOf('could not be refreshed') === -1);
+}
+
 (async function () {
 	if (!fs.existsSync(path.join(ROOT, RES))) {
 		console.error('压缩树不存在：' + ROOT + '\n先跑 bash scripts/minify-luci-frontend.sh ' + ROOT);
@@ -136,7 +187,8 @@ async function smsPage() {
 	console.log('压缩树：' + ROOT);
 	await networkPage();
 	await smsPage();
-	console.log(failures === 0 ? '\nSMOKE OK：压缩后的无线页与短信页照常读路由、照常发送' : '\nSMOKE FAIL：' + failures + ' 项');
+	await statusPage();
+	console.log(failures === 0 ? '\nSMOKE OK：压缩后的无线页 / 短信页 / 概览页照常读路由、照常发送' : '\nSMOKE FAIL：' + failures + ' 项');
 	process.exit(failures === 0 ? 0 : 1);
 })().catch(function (err) {
 	console.error('渲染失败：' + (err && err.stack || err));

@@ -17,6 +17,10 @@ pub struct SimState {
     /// Phone number from `+CNUM` (not part of the periodic snapshot, filled by
     /// the on-demand route).
     pub number: Option<String>,
+    /// `not_stored` when `+CNUM` answered `+CME ERROR: 22` — the card exists but
+    /// carries no MSISDN. The pages show their own copy for it; only the module
+    /// can tell it apart from a failed read.
+    pub number_state: Option<String>,
     /// Active slot (`^SCICHG`, 0 = external, 1 = internal).
     pub slot: Option<i64>,
     /// Hot-plug detection switch (`^TDSIMHP`).
@@ -47,6 +51,9 @@ impl SimState {
                 }
             }
         }
+        if let Some(state) = &self.number_state {
+            put("numberState", json::str_val(state));
+        }
         if let Some(v) = self.slot {
             put("slot", json::num_val(v));
         }
@@ -64,6 +71,7 @@ impl SimState {
             iccid: s("iccid"),
             imsi: s("imsi"),
             number: s("number"),
+            number_state: s("numberState"),
             slot: m.get("slot").and_then(|v| v.as_i64()),
             hotplug: m.get("hotplug").and_then(|v| v.as_bool()),
         }
@@ -130,6 +138,7 @@ mod tests {
             iccid: Some("89860012345678901234".into()),
             imsi: None,
             number: None,
+            number_state: None,
             slot: None,
             hotplug: None,
         };
@@ -137,6 +146,23 @@ mod tests {
             panic!("object")
         };
         assert!(!m.contains_key("imsi"));
+        assert!(!m.contains_key("numberState"));
+        assert_eq!(SimState::from_json(&m), st);
+    }
+
+    /// The "card has no MSISDN stored" state must survive the topic round trip:
+    /// the page renders its own copy for it, so dropping it would turn "Not
+    /// stored" into a blank row.
+    #[test]
+    fn number_state_round_trips_as_camel_case() {
+        let st = SimState {
+            number_state: Some("not_stored".into()),
+            ..Default::default()
+        };
+        let Value::Obj(m) = st.to_json() else {
+            panic!("object")
+        };
+        assert_eq!(m.get("numberState").and_then(|v| v.as_str()), Some("not_stored"));
         assert_eq!(SimState::from_json(&m), st);
     }
 

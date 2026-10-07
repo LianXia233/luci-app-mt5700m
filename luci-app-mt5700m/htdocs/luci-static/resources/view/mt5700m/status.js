@@ -55,9 +55,18 @@ return view.extend({
 		return Promise.resolve();
 	},
 
-	/* 快照 / 详情合并成 parseStatus 可消费的 key=value 行。 */
-	frameFromSnapshot: function(snapshot, manager, nativeDetail, sessionDetail) {
-		var lines = this.mergeStatusLines(nativeDetail || '', this.snapshotLines(snapshot, nativeDetail));
+	/*
+	 * 快照 / 详情合并成 parseStatus 可消费的 key=value 行。
+	 *
+	 * 行的来源只剩三处，全部是「已经解码过的领域值」：
+	 *   1) daemon StateCache 快照（后台采集器，零 AT）；
+	 *   2) 详情路由（qos.get / sim.number，见 refreshDetail）；
+	 *   3) mt5700m-manager 的 ubus 状态。
+	 * 旧版还有一处 `mt5700m-at status` 的 CLI 文本帧 —— 那是同一份缓存的第二种
+	 * 渲染，且 daemon 不在时它会自己去开串口（禁止的第二 AT 持有者）。
+	 */
+	frameFromSnapshot: function(snapshot, manager, detail, sessionDetail) {
+		var lines = this.snapshotLines(snapshot).concat(detail || []);
 		if (manager) {
 			if (manager.at_port) lines.push('at_port=' + manager.at_port);
 			if (manager.network) lines.push('network_interface=' + manager.network);
@@ -71,26 +80,6 @@ return view.extend({
 			session: sessionDetail || { stdout: '', stderr: '' },
 			traffic: this.trafficCache || { interfaces: [] }
 		};
-	},
-
-	/*
-	 * 以「有值者優先」合併 key=value 行：详情补充快照没有的字段，
-	 * 快照则覆盖同名详情值；空字段不会抹掉上一次成功读取的值。
-	 */
-	mergeStatusLines: function(base, overrides) {
-		var values = Object.create(null), order = [];
-		function add(line) {
-			var pos = line.indexOf('=');
-			if (pos < 1) return;
-			var key = line.substring(0, pos).trim();
-			var value = line.substring(pos + 1);
-			if (!key || !value.trim()) return;
-			if (!(key in values)) order.push(key);
-			values[key] = value;
-		}
-		String(base || '').split(/\r?\n/).forEach(add);
-		(overrides || []).forEach(add);
-		return order.map(function(key) { return key + '=' + values[key]; });
 	},
 
 	/* StateCache 的不完整 / 空条目不覆盖最近一次有效值。 */
@@ -146,7 +135,7 @@ return view.extend({
 
 	frameFromState: function(state) {
 		var frame = this.frameFromSnapshot(
-			state.snapshot, state.manager, state.nativeDetail, state.sessionDetail);
+			state.snapshot, state.manager, state.detail, state.sessionDetail);
 		frame.traffic = state.traffic || { interfaces: [] };
 		frame.uiErrors = [];
 		if (state.detailError)
@@ -328,30 +317,42 @@ return view.extend({
 		return pending;
 	},
 
+	/*
+	 * 详情帧：快照里没有、必须按需问一次的四行（APN / QCI / 订阅速率 / 手机号）
+	 * 与会话面板。
+	 *
+	 * 旧版这里是 `mt5700m-at status`（CLI 把同一份缓存渲染成文本帧 + 4 条实时
+	 * AT 查询）与 `mt5700m-at advanced session` 两块：前者换成统一路由
+	 * （network.pdp_contexts = +CGDCONT?/+CGACT?，qos.get = APN/QCI/AMBR 解码，
+	 * sim.number = +CNUM 含「卡里没存号码」这一状态），后者这一刀没动。
+	 *
+	 * 两条路由都用 route()（失败返回 null、该行保持原值）而不是 routeCall：
+	 * 读不到 APN/手机号在没插卡的模组上是常态，旧版此时也只是少几行，不该弹出
+	 * 「详情刷新失败」的告警条。
+	 */
 	refreshDetail: function(holder, state) {
 		var self = this;
 		if (state.detailPending) return state.detailPending;
 		var beforeWarnings = this.stateWarnings(state).join('\n');
-		var oldNative = state.nativeDetail || '';
+		var oldDetail = (state.detail || []).join('\n');
 		var oldSession = state.sessionDetail && state.sessionDetail.stdout || '';
 		function failedResponse(err) {
 			return { stdout: '', stderr: err && err.message || String(err) };
 		}
 		var pending = Promise.all([
-			api.atStatus().catch(failedResponse),
+			api.route('qos.get'),
+			api.route('sim.number'),
+			api.route('network.pdp_contexts'),
 			api.atSession().catch(failedResponse)
 		]).then(function(result) {
 			if (!document.body.contains(holder)) return;
-			var native = result[0] || { stdout: '', stderr: '' };
-			var session = result[1] || { stdout: '', stderr: '' };
+			var qos = result[0], number = result[1], contexts = result[2];
+			var session = result[3] || { stdout: '', stderr: '' };
 			var errors = [];
-			var nativeChanged = false, sessionChanged = false;
+			var detailChanged = false, sessionChanged = false;
 
-			if (native.stderr) errors.push(native.stderr);
-			else if (native.stdout) {
-				state.nativeDetail = self.mergeStatusLines(oldNative, native.stdout).join('\n');
-				nativeChanged = state.nativeDetail !== oldNative;
-			}
+			state.detail = self.detailLines(qos, number, contexts);
+			detailChanged = state.detail.join('\n') !== oldDetail;
 			if (session.stderr) errors.push(session.stderr);
 			else if (session.stdout) {
 				state.sessionDetail = { stdout: session.stdout, stderr: '' };
@@ -362,8 +363,7 @@ return view.extend({
 				? _('Some modem details could not be refreshed. Existing values are retained.') + ' ' + errors.join(' · ')
 				: '';
 			var regions = [];
-			if (nativeChanged)
-				regions = regions.concat([ 'hero', 'facts', 'signal', 'carrier', 'module', 'sim' ]);
+			if (detailChanged) regions.push('sim');
 			if (sessionChanged) regions.push('address');
 			if (beforeWarnings !== self.stateWarnings(state).join('\n')) regions.push('alerts');
 			if (regions.length)
@@ -385,10 +385,15 @@ return view.extend({
 	 * 仅映射既有 UI 字段，且跳过空值 —— parseStatus 之后照常做
 	 * temperature 清洗、connected 推导等，行为与完整帧一致。
 	 */
-	snapshotLines: function(snapshot, nativeDetail) {
+	snapshotLines: function(snapshot) {
 		snapshot = snapshot || {};
 		var map = {
 			signal: { sysmode: 'sysmode', rsrp: 'rsrp', rsrq: 'rsrq', sinr: 'sinr', rssi: 'rssi' },
+			// 这里刻意**不**把 network.sysmode 印成 `network_mode`（CLI 那么印过）：
+			// parseStatus 按 `network_mode || sysmode_detail || sysmode` 取值，
+			// 一旦出现 network_mode，页面上的「网络制式」就会从快照的
+			// sysmode_detail（5G SA，与 WebUI 同源）退回粗档的 NR5G。
+			// 详情帧停摆期间部署版显示的就是 sysmode_detail，保持它＝UI 不变。
 			network: { operator: 'operator', sysmode: 'sysmode', sysmode_detail: 'sysmode_detail' },
 			temperature: { average: 'temperature' },
 			modem: { manufacturer: 'manufacturer', model: 'product_name', revision: 'revision', imei: 'imei' },
@@ -407,9 +412,15 @@ return view.extend({
 		});
 
 		/*
-		 * The cell collector already stores the serving band/channel in the
-		 * shared daemon cache. Mirror the existing parser's carrier_N shape so
-		 * polling can update that card without issuing another AT query.
+		 * 服务小区（cell 主题）折成既有的 carrier_N 形状，轮询即可刷新载波卡，
+		 * 不额外发 AT。
+		 *
+		 * 频点两栏留空：旧版是从 CLI 帧里「同一个小区就沿用上一次的值」搬过来
+		 * 的，而那个值是 CLI 用 `nr_arfcn_to_mhz()`（LTE 的 ARFCN 规则）算的 ——
+		 * 对 NR 的 ARFCN 会算出量级完全不同的数。这两栏只在多载波列表里渲染，
+		 * 而这里恒为单载波，所以页面上一直是不可见的；多载波的真实频点由后端
+		 * 的 ca 主题（`^HFREQINFO`/`^MONSSC` 的原生 MHz 读数）提供，等载波卡
+		 * 真要显示多载波时再用。
 		 */
 		var cell = snapshot.cell && snapshot.cell.value;
 		if (cell && typeof cell === 'object') {
@@ -417,21 +428,9 @@ return view.extend({
 			var channel = cell.channel == null ? '' : String(cell.channel);
 			var radio = cell.sysmode || (snapshot.signal && snapshot.signal.value && snapshot.signal.value.sysmode) || 'NR';
 			var bandwidth = cell.dlBandwidth == null ? '' : String(cell.dlBandwidth);
-			var previousCarrier = null;
-			String(nativeDetail || '').split(/\r?\n/).some(function(line) {
-				if (line.indexOf('carrier_1=') !== 0) return false;
-				previousCarrier = line.substring('carrier_1='.length).split('|');
-				return true;
-			});
 			if (band || channel) {
-				// Keep the last known frequency only for the same radio, band, and
-				// ARFCN; never carry it over to a different serving cell.
-				var sameCell = previousCarrier && previousCarrier[0] === radio &&
-					previousCarrier[1] === 'B' + band && previousCarrier[2] === channel;
-				var dlFrequency = sameCell ? previousCarrier[3] || '' : '';
-				var ulFrequency = sameCell ? previousCarrier[5] || '' : '';
 				lines.push('carrier_count=1');
-				lines.push('carrier_1=' + radio + '|B' + band + '|' + channel + '|' + dlFrequency + '|' + bandwidth + '|' + ulFrequency + '|0|' + bandwidth);
+				lines.push('carrier_1=' + radio + '|B' + band + '|' + channel + '||' + bandwidth + '||0|' + bandwidth);
 				lines.push('ca_active=0');
 				lines.push('ca_mode=' + radio);
 				if (bandwidth) {
@@ -444,6 +443,62 @@ return view.extend({
 		var endc = snapshot.endc && snapshot.endc.value;
 		if (endc && typeof endc === 'object' && endc.established !== undefined && endc.established !== null)
 			lines.push('dc_active=' + (Number(endc.established) === 1 ? '1' : '0'));
+
+		/*
+		 * usb 主题 = 串口存在性采集器的载荷 {present, state, path, available}；
+		 * `state` 的取值域（normal/upgrade/dump/unknown）与旧 CLI 的 usb_state
+		 * 一致，设备不在时旧 CLI 印 `absent`，这里照搬同一映射。
+		 */
+		var usb = snapshot.usb && snapshot.usb.value;
+		if (usb && typeof usb === 'object') {
+			if (usb.present === false)
+				lines.push('usb_state=absent');
+			else if (usb.state)
+				lines.push('usb_state=' + usb.state);
+		}
+		return lines;
+	},
+
+	/*
+	 * 详情路由的载荷 → 页面既有 key=value 行。
+	 *
+	 * APN：cid 1 的 `+CGDCONT?` APN（旧 CLI 的取数口径），取不到再用 ^DSAMBR
+	 * 里的活动 APN；都取不到就整行省略 —— 页面自己会渲染「Carrier default」，
+	 * 与旧 CLI 印出空 `active_apn=` 的观感一致。
+	 * QCI：`+CGEQOSRDP` 解码出的等级，与旧 CLI 的 `qci=` 文本一致。
+	 * AMBR：kbps 折成 Mbps 一位小数，与 `QosState::ambr_text()` 的 `{:.1}` 一致
+	 * （唯一差别是 .X5 的取整方向：Rust 取偶，JS 的 toFixed 远离零）。
+	 * 手机号：`numberState === 'not_stored'` 就是旧 CLI 的
+	 * `phone_number_state=not_stored`（+CME ERROR: 22，卡在但没写号码）。
+	 */
+	detailLines: function(qos, number, contexts) {
+		var lines = [];
+		var apn = '';
+		if (contexts && Array.isArray(contexts.contexts)) {
+			var primary = contexts.contexts.filter(function(item) {
+				return item && Number(item.cid) === 1 && item.apn;
+			})[0];
+			if (primary) apn = String(primary.apn);
+		}
+		if (!apn && qos && typeof qos === 'object' && qos.ambr_apn)
+			apn = String(qos.ambr_apn);
+		if (apn)
+			lines.push('active_apn=' + apn);
+		if (qos && typeof qos === 'object') {
+			if (qos.qci)
+				lines.push('qci=' + qos.qci);
+			var down = Number(qos.ambr_down_kbps), up = Number(qos.ambr_up_kbps);
+			if (!isNaN(down) && !isNaN(up)) {
+				lines.push('ambr_down_mbps=' + (down / 1000).toFixed(1));
+				lines.push('ambr_up_mbps=' + (up / 1000).toFixed(1));
+			}
+		}
+		if (number && typeof number === 'object') {
+			if (number.numberState === 'not_stored')
+				lines.push('phone_number_state=not_stored');
+			else if (number.number)
+				lines.push('phone_number=' + number.number);
+		}
 		return lines;
 	},
 
@@ -759,7 +814,7 @@ return view.extend({
 				managerPending: null,
 				traffic: data.traffic || { interfaces: [] },
 				snapshot: data.snapshot || {},
-				nativeDetail: '',
+				detail: [],
 				sessionDetail: null,
 				detailError: '',
 				snapshotError: data.snapshot ? '' : _('Shared modem status is temporarily unavailable. Showing available data.'),
