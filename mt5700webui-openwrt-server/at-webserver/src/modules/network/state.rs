@@ -711,8 +711,10 @@ mod tests {
         assert_eq!(m.get("mtu").and_then(|v| v.as_i64()), Some(1500));
         let Value::Obj(flow) = m.get("flow").cloned().unwrap() else { panic!("flow object") };
         assert_eq!(flow.get("current_rx").and_then(|v| v.as_u64()), Some(187500));
-        // Fields that were not decoded stay absent instead of turning into 0.
-        assert!(!flow.contains_key("total_rx"));
+        // The counters travel as one object: every field is written, and the
+        // ones this reply did not carry are zeros (the page sums them).
+        assert_eq!(flow.get("total_rx").and_then(|v| v.as_u64()), Some(0));
+        assert_eq!(flow.len(), 6);
         let Value::Arr(sessions) = m.get("sessions").cloned().unwrap() else { panic!("sessions") };
         assert_eq!(sessions.len(), 1);
         // An empty snapshot is recognisable, so the route can tell "no answer"
