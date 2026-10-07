@@ -15,8 +15,10 @@
  *
  * 覆盖已迁完详情帧的三个页面：
  *   - 无线页（零 CLI）、短信页（零 CLI）；
- *   - 概览页：CLI 只剩 `advanced session`（地址卡那一刀未动），详情读
- *     qos.get / sim.number / network.pdp_contexts。
+ *   - 概览页：零 CLI，详情读 qos.get / sim.number / network.pdp_contexts /
+ *     network.session；
+ *   - 连接页：拨号设置仍走 CLI 动词（未迁移），会话面板读 network.session，
+ *     「清空计数」走 network.flow_clear 路由。
  * 断言路由调用面、页面上的关键文字（盘面读数、无线偏好下拉、会话侧栏、概览页的
  * APN/QCI/速率/号码）与一条写路径（短信发送）。退出码 0 = 通过。
  */
@@ -147,9 +149,8 @@ async function statusPage() {
 		'route:qos.get': { active_cid: 1, qci: '9', ambr_down_kbps: 102400, ambr_up_kbps: 51200, ambr_apn: 'cmnet' },
 		'route:sim.number': { status: 'READY', number: '8613800138000' },
 		'route:network.pdp_contexts': { contexts: [ { cid: 1, type: 'IP', apn: 'cmnet', pdp_addr: '10.6.172.152', active: true } ] },
-		'at:advanced': { stdout: '', stderr: '' }
+		'route:network.session': fixtures.sessionPayload({})
 	});
-	api.atSession = () => api.at([ 'advanced', 'session' ]);
 	api.managerStatus = () => Promise.resolve({ connected: true, at_port: '/dev/ttyUSB3', network: 'eth2' });
 	api.trafficSummary = () => Promise.resolve({ interfaces: [] });
 	api.cachedSnapshot = () => Promise.resolve(snapshot);
@@ -165,10 +166,10 @@ async function statusPage() {
 	const at = api.calls.filter(c => c.kind === 'at').map(c => c.args.join(' '));
 	const routes = api.calls.filter(c => c.kind === 'route').map(c => c.name);
 	const text = lib.textOf(holder);
-	check('概览页：CLI 只剩 advanced session 一条（详情帧已全部走路由）',
-		sameJson(at, [ 'advanced session' ]), JSON.stringify(at));
-	check('概览页：详情读 qos.get + sim.number + network.pdp_contexts',
-		sameJson(routes, [ 'qos.get', 'sim.number', 'network.pdp_contexts' ]), JSON.stringify(routes));
+	check('概览页：零 CLI 调用（mt5700m-at 的任何动词都不再出现在概览页）',
+		at.length === 0, JSON.stringify(at));
+	check('概览页：详情读 qos.get + sim.number + network.pdp_contexts + network.session',
+		sameJson(routes, [ 'qos.get', 'sim.number', 'network.pdp_contexts', 'network.session' ]), JSON.stringify(routes));
 	check('概览页：盘面读数来自快照主题（-83 / 12.8 / 45.1 / n41 / 504990）',
 		text.indexOf('-83') !== -1 && text.indexOf('12.8') !== -1 && text.indexOf('45.1') !== -1
 		&& text.indexOf('B41') !== -1 && text.indexOf('504990') !== -1);
@@ -177,6 +178,57 @@ async function statusPage() {
 		&& text.indexOf('Down 102 Mbps / Up 51 Mbps') !== -1 && text.indexOf('8613800138000') !== -1
 		&& text.indexOf('Not stored') === -1);
 	check('概览页：没有任何告警横幅（详情帧不再因 CLI 类型错误挂横幅）', text.indexOf('could not be refreshed') === -1);
+}
+
+/* ------------------------------------------------------------ 连接页 */
+async function connectionPage() {
+	const api = lib.makeApi({
+		'route:network.session': fixtures.sessionPayload({}),
+		'at:advanced connection-settings': { stdout: '', stderr: '' }
+	});
+	api.atConnectionSettings = () => api.at([ 'advanced', 'connection-settings' ]);
+	api.managerStatus = () => Promise.resolve({ connected: true, network: 'eth2', at_port: '/dev/ttyUSB3' });
+	api.deviceStatus = () => Promise.resolve({ up: true, carrier: true });
+	api.dialLog = () => Promise.resolve({ log: '' });
+	const uci = {
+		load: () => Promise.resolve(),
+		get: (pkg, sec, opt) => ({ 'mt5700m.connection.enabled': '1', 'mt5700m.connection.apn': 'cmnet',
+			'mt5700m.connection.pdp_type': 'ipv4v6' })[pkg + '.' + sec + '.' + opt],
+		set: () => {}, save: () => Promise.resolve(), apply: () => Promise.resolve()
+	};
+	const option = () => { const o = { value: () => o, depends: () => o }; return o; };
+	const section = { anonymous: false, option: () => option() };
+	const form = {
+		Map: function () { return { section: () => section, render: () => Promise.resolve({ tagName: 'DIV', attrs: { 'class': 'cbi-map' }, children: [] }) }; },
+		NamedSection: function () {}, Flag: 'flag', Value: 'value', ListValue: 'list',
+		DynamicList: 'dynamic', Section: function () {}
+	};
+	const side = lib.loadSide(read, api, RES + '/view/mt5700m/connection.js', { uci: uci, form: form });
+	side.view.load();
+	const holder = side.view.render();
+	await side.view.contentReady;
+	for (let i = 0; i < 20; i++) await lib.tick();
+	const at = api.calls.filter(c => c.kind === 'at').map(c => c.args.join(' '));
+	const routes = api.calls.filter(c => c.kind === 'route').map(c => c.name);
+	const text = lib.textOf(holder);
+	check('连接页：CLI 只剩拨号设置一条（会话面板已走路由）',
+		sameJson(at, [ 'advanced connection-settings' ]), JSON.stringify(at));
+	check('连接页：会话面板读 network.session', sameJson(routes, [ 'network.session' ]), JSON.stringify(routes));
+	check('连接页：地址 / 网关 / DNS / MTU / 会话行来自路由载荷',
+		text.indexOf('10.6.172.152') !== -1 && text.indexOf('223.5.5.5') !== -1
+		&& text.indexOf('2408:8207::1') !== -1 && text.indexOf('IPv4 / IPv6 · same APN') !== -1
+		&& text.indexOf('1500') !== -1 && text.indexOf('CID 1 · cmnet') !== -1);
+	check('连接页：固件计数（十六进制→十进制后由页面按 1024 进制显示）',
+		text.indexOf('303.7 KiB') !== -1 && text.indexOf('143.1 MiB') !== -1 && text.indexOf('1min') !== -1);
+	/* 写路径：「清空计数」确认后走 network.flow_clear */
+	api.calls.length = 0;
+	lib.pressButton(holder, 'Clear counters');
+	lib.modalButton(side.scope, 'Apply');
+	for (let i = 0; i < 4; i++) await lib.tick();
+	const write = api.calls.filter(c => c.kind === 'routeCall').map(c => c.name);
+	check('连接页：清空计数走 network.flow_clear 路由（零 CLI）',
+		sameJson(write, [ 'network.flow_clear' ]) && api.calls.every(c => c.kind !== 'at'), JSON.stringify(api.calls));
+	check('连接页：确认后 900 ms 重载页面', side.scope.window.pending.some(p => p.delay === 900));
 }
 
 (async function () {
@@ -188,7 +240,8 @@ async function statusPage() {
 	await networkPage();
 	await smsPage();
 	await statusPage();
-	console.log(failures === 0 ? '\nSMOKE OK：压缩后的无线页 / 短信页 / 概览页照常读路由、照常发送' : '\nSMOKE FAIL：' + failures + ' 项');
+	await connectionPage();
+	console.log(failures === 0 ? '\nSMOKE OK：压缩后的无线页 / 短信页 / 概览页 / 连接页照常读路由、照常发送' : '\nSMOKE FAIL：' + failures + ' 项');
 	process.exit(failures === 0 ? 0 : 1);
 })().catch(function (err) {
 	console.error('渲染失败：' + (err && err.stack || err));

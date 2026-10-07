@@ -216,6 +216,86 @@ function textFrame(sections) {
 	}).join('');
 }
 
+/* ------------------------------------------------------- 数据会话（network.session）
+ *
+ * 事实对象 = 一份读数；两个形态（CLI `advanced session` 文本帧 / 路由载荷）都从它
+ * 生成，所以「帧里解出来的值」和「路由给的值」不可能漂移。
+ *
+ * 解码规则（与 modules/network 对齐，由 Rust 单测钉住）：
+ *   ^DHCP?   : <地址>,<掩码>,<网关>,<服务器>,<主DNS>,<备DNS>[,<最大下行>,<最大上行>]
+ *              IPv4 六字段是十六进制小端，后两字段是固件原样文本
+ *   ^DHCPV6? : 同上但字段是文本；`::` 视为空
+ *   ^DSFLOWQRY: 六个十六进制字段
+ *   ^CGMTU=1 : <cid>,<mtu>（0 = 未配置）
+ *   ^IPV6CAP?: 能力码（1/2/7，独立 APN 是 0B）
+ *   ^DCONNSTAT?: <cid>,"<apn>",<ipv4>,<ipv6>,<type>[,<ethernet>]，无 APN 的行跳过
+ *   ^NDISSTATQRY?: 满 9 字段时由它判定连通（第 1 个字段 =1 且第 5 / 第 9 个字段是
+ *               IPV4 / IPV6）；固件返回空应答时退回「有没有地址」
+ */
+const SESSION_FACTS = {
+	ipv4: '10.6.172.152', ipv4Gateway: '10.6.172.1', ipv4Dns: [ '223.5.5.5', '223.6.6.6' ],
+	ipv6: '2408:8207::1', ipv6Dns: [ '2408:8088::a', '2408:8088::b' ],
+	capability: 7, mtu: 1500, maximumDown: '05DC', maximumUp: '03E8',
+	flow: { currentDuration: 10, currentTx: 123456, currentRx: 187500, totalDuration: 100, totalTx: 50000000, totalRx: 100000000 },
+	sessions: [ { cid: 1, apn: 'cmnet', ipv4: true, ipv6: true, type: '3', ethernet: true } ],
+	ndis: true
+};
+const sessionFacts = (over) => Object.assign({}, SESSION_FACTS, over || {});
+
+const hex = (n) => (n >>> 0).toString(16).toUpperCase();
+const hexLe = (ip) => ip.split('.').map(Number).reverse().map((b) => ('0' + b.toString(16)).slice(-2)).join('').toUpperCase();
+const flowHex = (v) => ('00000000' + hex(v)).slice(-8);
+
+/* CLI 帧（`mt5700m-at advanced session` 的八段） */
+function advancedSessionFrame(facts) {
+	const f = sessionFacts(facts);
+	const ndis = f.ndis
+		? '^NDISSTATQRY: 1,,,,"IPV4",1,,,"IPV6"'
+		: '';
+	const dhcp4 = '^DHCP: ' + [
+		hexLe(f.ipv4), 'FFFFFF00', hexLe(f.ipv4Gateway), '00000000',
+		hexLe(f.ipv4Dns[0]), hexLe(f.ipv4Dns[1]), f.maximumDown, f.maximumUp
+	].join(',');
+	const dhcp6 = '^DHCPV6: ' + [ f.ipv6, '64', '2408:8207::2', '::', f.ipv6Dns[0], f.ipv6Dns[1] ].join(',');
+	const flow = '^DSFLOWQRY: ' + [
+		flowHex(f.flow.currentDuration), flowHex(f.flow.currentTx), flowHex(f.flow.currentRx),
+		flowHex(f.flow.totalDuration), flowHex(f.flow.totalTx), flowHex(f.flow.totalRx)
+	].join(',');
+	// 能力码缺省 = 固件不答这一条（不是「答了个 null」）：帧里整段空掉，
+	// 载荷里也不给 capability，两侧才在同一个起点上。
+	const cap = f.capability == null ? '' : '^IPV6CAP: ' + (f.capability === 11 ? '0B' : String(f.capability));
+	return textFrame([
+		[ 'Data session', 'AT^NDISSTATQRY?', ndis ],
+		[ 'Detailed sessions', 'AT^DCONNSTAT?', f.sessions.map((x) =>
+			'^DCONNSTAT: ' + x.cid + ',"' + x.apn + '",' + (x.ipv4 ? 1 : 0) + ',' + (x.ipv6 ? 1 : 0) + ',' + x.type + (x.ethernet ? ',1' : '')).join('\n') ],
+		[ 'IPv4 lease', 'AT^DHCP?', dhcp4 ],
+		[ 'IPv6 lease', 'AT^DHCPV6?', dhcp6 ],
+		[ 'IP capability', 'AT^IPV6CAP?', cap ],
+		[ 'Data flow', 'AT^DSFLOWQRY', flow ],
+		[ 'MTU', 'AT^CGMTU=1', f.mtu ? '^CGMTU: 1,' + f.mtu : '^CGMTU: 1,0' ],
+		[ 'PDP address', 'AT+CGPADDR=1', f.ipv4 ? '+CGPADDR: 1,"' + f.ipv4 + '"' : '' ]
+	]);
+}
+
+/* 路由载荷（modules::network::state::SessionState::to_json） */
+function sessionPayload(facts) {
+	const f = sessionFacts(facts);
+	const payload = {
+		ipv4: { connected: f.ndis ? true : !!f.ipv4, address: f.ipv4, gateway: f.ipv4Gateway, dns: f.ipv4Dns.slice() },
+		ipv6: { connected: f.ndis ? true : !!f.ipv6, address: f.ipv6, dns: f.ipv6Dns.slice() }
+	};
+	if (f.capability != null) payload.capability = f.capability;
+	if (f.mtu != null) payload.mtu = f.mtu;
+	if (f.maximumDown != null) payload.maximum_down = f.maximumDown;
+	if (f.maximumUp != null) payload.maximum_up = f.maximumUp;
+	payload.flow = {
+		current_duration: f.flow.currentDuration, current_tx: f.flow.currentTx, current_rx: f.flow.currentRx,
+		total_duration: f.flow.totalDuration, total_tx: f.flow.totalTx, total_rx: f.flow.totalRx
+	};
+	payload.sessions = f.sessions.map((x) => ({ cid: x.cid, apn: x.apn, ipv4: x.ipv4, ipv6: x.ipv6, type: x.type, ethernet: x.ethernet }));
+	return payload;
+}
+
 module.exports = {
 	round1, ord,
 	decodeSignal, decodeCell, decodeRegistration, decodeRrc, decodeOperator, decodeTemps,
@@ -223,4 +303,5 @@ module.exports = {
 	NRRCCAP_CA, NRRCCAP_VONR, NRRCCAP_DSS,
 	temperatureText, textFrame,
 	SENSORS, SENSOR_KEYS,
+	sessionFacts, advancedSessionFrame, sessionPayload,
 };

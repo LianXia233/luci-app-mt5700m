@@ -9,7 +9,9 @@ use crate::api::registry::{ApiCtx, Route};
 use crate::core::error::BackendError;
 use crate::core::json::{self, Value};
 use crate::core::task::Priority;
-use crate::modules::network::commands::{self, CGREG_DETAILED, CGPADDR, DHCP_V4, DHCP_V6, IPV6CAP};
+use crate::modules::network::commands::{
+    self, CGREG_DETAILED, CGPADDR, DHCP_V4, DHCP_V6, IPV6CAP,
+};
 use crate::modules::network::parser::{
     self, parse_cgpaddr, parse_dhcp_v4, parse_dhcp_v6, parse_ipv6cap,
 };
@@ -29,6 +31,13 @@ pub fn routes() -> Vec<Route> {
         Route::display("network.ims", ims),
         Route::on_demand("network.pdp", pdp),
         Route::on_demand("network.dhcp", dhcp),
+        // The data-session snapshot (addresses, MTU, dual-stack mode, firmware
+        // counters, per-cid sessions) and the counters reset. These replace the
+        // `advanced session` text dump the two connection surfaces used to
+        // regex, and the `flow-clear` CLI verb behind the "Clear counters"
+        // button.
+        Route::on_demand("network.session", session),
+        Route::on_demand("network.flow_clear", flow_clear),
         Route::on_demand("network.registration_urc", registration_urc),
         Route::on_demand("network.rrc", rrc),
         Route::on_demand("network.lock_get", lock_get),
@@ -280,6 +289,27 @@ fn dhcp(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
             return Err(e);
         }
     }
+    Ok(Value::Obj(m))
+}
+
+/// Data-session snapshot (`^NDISSTATQRY?` + `^DHCP?`/`^DHCPV6?` + `+CGPADDR`
+/// + `^IPV6CAP?` + `^CGMTU` + `^DSFLOWQRY` + `^DCONNSTAT?`).
+///
+/// On-demand: the overview page refreshes it with its poll and the connection
+/// page asks once per load. A partially answering modem still produces the
+/// object (each command is independent); an entirely silent one is an error so
+/// the caller can keep its previous values.
+fn session(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    let refresh = ctx.refresh();
+    Ok(service::read_session(&refresh)?.to_json())
+}
+
+/// Reset the firmware's data-flow counters (`AT^DSFLOWCLR`).
+fn flow_clear(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    let refresh = ctx.refresh();
+    service::clear_flow(&refresh)?;
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("cleared".to_string(), Value::Bool(true));
     Ok(Value::Obj(m))
 }
 

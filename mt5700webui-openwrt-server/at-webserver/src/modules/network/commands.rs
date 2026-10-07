@@ -377,7 +377,23 @@ pub fn is_hex_mask(v: &str) -> bool {
 pub const SETAUTODIAL_QUERY: &str = "AT^SETAUTODIAL?";
 /// USB data-session state (`^NDISSTATQRY: <up>,…`), used to tell "modem dials
 /// itself" from "the host dials" when the autodial reply omits the mode.
+///
+/// The same command is the authority for "did this cid's data plane come up"
+/// (`network.session`): the reply carries `<up>,…,<IPv4 state>,…,<IPv6 state>`
+/// and the module-side answer outranks "there is an address", because the
+/// MT5700M answers this query with an empty reply on some networks.
 pub const NDISSTATQRY: &str = "AT^NDISSTATQRY?";
+/// Data-flow counters (`^DSFLOWQRY: <cur_dur>,<cur_tx>,<cur_rx>,<total_dur>,
+/// <total_tx>,<total_rx>`), six hex-encoded fields.
+pub const DSFLOWQRY: &str = "AT^DSFLOWQRY";
+/// Reset those counters (`network.flow_clear`, the connection page's "Clear
+/// counters" button).
+pub const DSFLOWCLR: &str = "AT^DSFLOWCLR";
+/// Data-call MTU (`^CGMTU: <cid>,<mtu>`), asked for cid 1 exactly like the CLI
+/// verb did (`AT^CGMTU=1` is a query on this firmware).
+pub const CGMTU_QUERY: &str = "AT^CGMTU=1";
+/// Detailed session list (`^DCONNSTAT: <cid>,"<apn>",<ipv4>,<ipv6>,<type>[,<ethernet>]`).
+pub const DCONNSTAT: &str = "AT^DCONNSTAT?";
 /// Interface configuration (`Mode:` / `PostRoute:` / `Dmz:` lines).
 pub const TDCFG_QUERY: &str = "AT^TDCFG?";
 /// PDP context definitions (`+CGDCONT: <cid>,"<type>","<apn>",…`).

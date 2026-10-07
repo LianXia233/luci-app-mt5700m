@@ -4,18 +4,19 @@
 /*
  * 概览页（status）一致性证明（LuCI 概览页 → 统一路由，前端最后一条 CLI 状态帧消失）
  *
- * 这一刀切掉的是概览页详情帧里的 `mt5700m-at status`：那个动词在 daemon 常驻
- * 时读的是**同一份 StateCache**（CLI 侧的第二种渲染），而它的 4 行「实时补充」
- * （active_apn / qci / ambr_* / phone_number）是自己另开一条 AT 通道现问模组
- * —— 也就是本项目明令禁止的「第二个 AT 串口持有者」。现在：
+ * 这一刀切掉的是概览页详情帧里的两条 CLI 文本帧：`mt5700m-at status`（CLI 把
+ * 同一份 StateCache 渲染第二遍，4 行「实时补充」还自己另开 AT 通道现问模组 ——
+ * 本项目明令禁止的「第二个 AT 串口持有者」）与 `mt5700m-at advanced session`
+ * （八个慢命令的文本转储，前端拿正则从里面取值）。现在：
  *   - APN：`network.pdp_contexts`（+CGDCONT?/+CGACT?，旧 CLI 取的是同一条
  *     命令的 cid 1），取不到再退到 `qos.get` 的 ^DSAMBR APN；
  *   - QCI / AMBR：`qos.get`（WebUI 的 Info 页读同一组字段）；
  *   - 手机号：`sim.number`（+CNUM；`numberState=not_stored` 等于旧 CLI 的
  *     `phone_number_state=not_stored`，即 +CME ERROR: 22）；
+ *   - 会话（移动 IP 卡）：`network.session`，与连接页同一条路由；
  *   - usb_state：`usb` 主题（串口存在性采集器），设备不在时与旧 CLI 一样映射
  *     成 `absent`；
- *   - 删除：`api.js` 的 `atStatus`（`advanced session` 那一刀未动，仍在用）。
+ *   - 删除：`api.js` 的 `atStatus`/`atSession` —— 概览页不再有任何 CLI 调用。
  *
  * 用法：
  *   node scripts/prove-status-parity.js [基线]   # 基线默认 8a8c501（本刀之前）
@@ -48,15 +49,19 @@
  *          `state.sessionDetail` 之前），所以「移动 IP」卡在部署版里**永远是空的**；
  *          新实现两条路径互不干扰。
  *   B. 打补丁的基线（把类型错误按行拆开修掉，= 旧实现*本来想*渲染的 UI）再跑一遍：
- *      只断言「CLI 帧带来的四行值」与「新实现从路由拿到的值」逐字相同 ——
+ *      只断言「CLI 帧带来的值」与「新实现从路由拿到的值」逐字相同 ——
  *      也就是路由 ≠ 另一套解码，而是同一条 AT 答案。
- *   C. 单向覆盖：新侧不许再出现 `at:status`。
+ *   C. 单向覆盖：新侧不许再出现任何 `at:` 调用。
+ *
+ * 会话夹具在 scripts/lib/at-fixtures.js：一份事实对象同时生成 CLI 帧与路由载荷
+ * （会话那一刀之后连接页与概览页共用它，见 prove-connection-parity.js）。
  */
 
 const fs = require('fs');
 const path = require('path');
 const cp = require('child_process');
 const lib = require('./lib/luci-stub');
+const fixtures = require('./lib/at-fixtures');
 
 const REPO = path.resolve(__dirname, '..');
 const RES = 'luci-app-mt5700m/htdocs/luci-static/resources';
@@ -166,8 +171,8 @@ function cliStatusFrame(shape) {
 	return lines.join('\n') + '\n';
 }
 
-/* `mt5700m-at advanced session`：八个 dump_section（两侧同一条，未改动的路径） */
-function sessionFrame() {
+/* 兜底：夹具没覆盖时仍用旧版这八段（现在由 lib/at-fixtures 生成）。 */
+function legacySessionFrame() {
 	const section = (label, command, text) => '===== ' + label + ': ' + command + ' =====\n' + text + '\n\n';
 	return section('Data session', 'AT^NDISSTATQRY?', 'AT^NDISSTATQRY?\r\n^NDISSTATQRY: 1,,,,"IPV4",1,,,"IPV6"\r\n\r\nOK')
 		+ section('Detailed sessions', 'AT^DCONNSTAT?', 'AT^DCONNSTAT?\r\n^DCONNSTAT: 1,"cmnet",1,1,3,1\r\n\r\nOK')
@@ -283,15 +288,16 @@ const SHAPES = [
 
 /* ------------------------------------------------------------ 装载 */
 function answers(kind, shape) {
+	const sessionFacts = shape.sessions || {};
 	if (kind === 'old') {
 		return {
 			'at:status': { stdout: cliStatusFrame(shape), stderr: '' },
-			'at:advanced': { stdout: sessionFrame(), stderr: '' }
+			'at:advanced': { stdout: fixtures.advancedSessionFrame(sessionFacts), stderr: '' }
 		};
 	}
 	const none = shape.detail === null || shape.noDetail === true;
 	return {
-		'at:advanced': { stdout: sessionFrame(), stderr: '' },
+		'route:network.session': none ? null : fixtures.sessionPayload(sessionFacts),
 		[none ? 'route:__none__' : 'route:qos.get']: none ? null : qosPayload(shape),
 		[none ? 'route:__none2__' : 'route:sim.number']: none ? null : numberPayload(shape),
 		[none ? 'route:__none3__' : 'route:network.pdp_contexts']: none ? null : contextsPayload(shape)
@@ -341,8 +347,10 @@ if (oldSource(VIEW).indexOf('api.atStatus()') === -1) {
 }
 check('基线里旧侧确实读 CLI 状态帧（api.atStatus + atSession）',
 	oldSource(VIEW).indexOf('api.atStatus()') !== -1 && oldSource(VIEW).indexOf('api.atSession()') !== -1);
-check('新侧 status.js 不再读 CLI 状态帧（只剩 advanced session 一刀未动）',
-	newSource(VIEW).indexOf('api.atStatus') === -1 && newSource(VIEW).indexOf('atSession()') !== -1);
+check('新侧 status.js 零 CLI 调用（atStatus / atSession 都已删除）',
+	newSource(VIEW).indexOf('api.atStatus') === -1 && newSource(VIEW).indexOf('atSession') === -1);
+check('新侧 api.js 删除了 atSession 动词（概览页与连接页都不再用它）',
+	newSource(RES + '/mt5700m/api.js').indexOf('atSession') === -1);
 check('新侧 api.js 删除了 atStatus 动词',
 	newSource(RES + '/mt5700m/api.js').indexOf('atStatus') === -1);
 
@@ -385,13 +393,21 @@ check('新侧 api.js 删除了 atStatus 动词',
 			&& (n.text.match(/\+[\d]/g) || []).length === 0,
 			JSON.stringify([ (oFixed.text.match(/\+[\d]/g) || []).length, (n.text.match(/\+[\d]/g) || []).length ]));
 
-		// 地址卡（advanced session 那一路）：旧侧被同一个 TypeError 一起打断 → 永远空
-		check(shape.key + '：地址卡差异被点名（旧=空卡，新=会话帧渲染出的地址）',
-			regionText(o.holder, 'address').indexOf('Disconnected') !== -1
-			&& regionText(n.holder, 'address').indexOf('10.6.172.152') !== -1
-			&& regionText(n.holder, 'address').indexOf('2408:8207::1') !== -1
-			&& regionText(n.holder, 'address').indexOf('MTU 1500') !== -1,
-			JSON.stringify([ regionText(o.holder, 'address').slice(0, 60), regionText(n.holder, 'address').slice(0, 60) ]));
+		// 地址卡（会话那一路）：旧侧被同一个 TypeError 一起打断 → 永远空
+		if (shape.detail === null || shape.noDetail === true) {
+			// 会话路由也不可用时，新侧退回「空卡」而不是崩溃/错位。
+			check(shape.key + '：会话路由不可用时新侧退回空卡（Disconnected + --）',
+				regionText(n.holder, 'address').indexOf('Disconnected') !== -1
+				&& regionText(n.holder, 'address').indexOf('--') !== -1,
+				JSON.stringify(regionText(n.holder, 'address').slice(0, 80)));
+		} else {
+			check(shape.key + '：地址卡差异被点名（旧=空卡，新=会话路由渲染出的地址）',
+				regionText(o.holder, 'address').indexOf('Disconnected') !== -1
+				&& regionText(n.holder, 'address').indexOf('10.6.172.152') !== -1
+				&& regionText(n.holder, 'address').indexOf('2408:8207::1') !== -1
+				&& regionText(n.holder, 'address').indexOf('MTU 1500') !== -1,
+				JSON.stringify([ regionText(o.holder, 'address').slice(0, 60), regionText(n.holder, 'address').slice(0, 60) ]));
+		}
 
 		// 告警区：旧侧永远是那条 TypeError 横幅；新侧只在 usb 主题真的异常时挂横幅
 		const usbAbnormal = shape.usb.present && (shape.usb.state === 'upgrade' || shape.usb.state === 'dump' || shape.usb.state === 'unknown');
@@ -423,13 +439,12 @@ check('新侧 api.js 删除了 atStatus 动词',
 		const oldCalls = names(o), newCalls = names(n);
 		check('旧侧确实调了 CLI（at:status + at:advanced）',
 			oldCalls.indexOf('at:status') !== -1 && oldCalls.indexOf('at:advanced') !== -1, JSON.stringify(oldCalls));
-		check('新侧不再调 CLI 状态帧，但仍读 advanced session（地址卡未迁移）',
-			newCalls.indexOf('at:status') === -1 && newCalls.indexOf('at:advanced') !== -1, JSON.stringify(newCalls));
-		check('新侧读的是三个统一路由（qos.get / sim.number / network.pdp_contexts）',
+		check('新侧零 CLI 调用（概览页不再有 mt5700m-at 任何动词）',
+			newCalls.filter((c) => c.indexOf('at:') === 0).length === 0, JSON.stringify(newCalls));
+		check('新侧读的是四个统一路由（qos.get / sim.number / network.pdp_contexts / network.session）',
 			newCalls.indexOf('route:qos.get') !== -1 && newCalls.indexOf('route:sim.number') !== -1
-			&& newCalls.indexOf('route:network.pdp_contexts') !== -1, JSON.stringify(newCalls));
-		check('新侧不再把 AT 查询放进关键路径（首屏只有 manager/traffic/cached 三个非阻塞源）',
-			newCalls.filter((c) => c.indexOf('at:') === 0).length === 1, JSON.stringify(newCalls));
+			&& newCalls.indexOf('route:network.pdp_contexts') !== -1 && newCalls.indexOf('route:network.session') !== -1,
+			JSON.stringify(newCalls));
 	}
 
 	/* 详情帧到达后确实是「增量替换一块区域」，而不是整页重画 */

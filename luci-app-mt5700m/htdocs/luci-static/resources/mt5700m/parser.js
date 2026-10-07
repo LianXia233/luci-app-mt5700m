@@ -33,11 +33,6 @@ function pick(text, expression, fallback) {
 	return match ? match[1] : fallback;
 }
 
-// 取以 prefix 开头的首行，剥掉前缀后按逗号拆成数组
-function csvValues(text, prefix) {
-	var line = (text || '').split(/\n/).filter(function(item) { return item.indexOf(prefix) === 0; })[0] || '';
-	return line.substring(prefix.length).replace(/^[ :]+/, '').replace(/"/g, '').split(',').map(function(value) { return value.trim(); });
-}
 
 // 以 prefix 开头首行的取值（去前导冒号/空格）
 function lineValue(text, prefix) {
@@ -52,12 +47,6 @@ function countLines(text, prefix) {
 
 /* ---------- 数值 / 地址格式化 ---------- */
 
-// 8 位十六进制 → 点分 IPv4
-function hexIPv4(value) {
-	if (!/^[0-9a-f]{8}$/i.test(value || ''))
-		return '';
-	return [ 6, 4, 2, 0 ].map(function(offset) { return parseInt(value.substr(offset, 2), 16); }).join('.');
-}
 
 // 64 位十六进制（模块计数的标准编码）→ 十进制，超出 32 位自动拆分
 function hexNumber(value) {
@@ -98,63 +87,55 @@ function subscriptionRate(value) {
 	return value > 0 ? (value / 1000).toFixed(value % 1000 ? 1 : 0) + ' Mbps' : '--';
 }
 
-/* ---------- 会话（advanced session） ---------- */
+/* ---------- 会话（network.session 路由） ---------- */
 
-// 解析 NDISSTATQRY / DHCP / DHCPV6 / DSFLOWQRY / CGMTU / CGPADDR / IPV6CAP / DCONNSTAT
-function parseSession(raw) {
-	var ndis = csvValues(section(raw, 'Data session'), '^NDISSTATQRY');
-	var dhcp4 = csvValues(section(raw, 'IPv4 lease'), '^DHCP');
-	var dhcp6 = csvValues(section(raw, 'IPv6 lease'), '^DHCPV6');
-	var flow = csvValues(section(raw, 'Data flow'), '^DSFLOWQRY');
-	var mtu = csvValues(section(raw, 'MTU'), '^CGMTU');
-	var pdpAddress = csvValues(section(raw, 'PDP address'), '+CGPADDR');
-	var capability = pick(section(raw, 'IP capability'), /\^IPV6CAP:\s*(\w+)/, '');
-	var capabilityNames = { '1':_('IPv4 only'), '2':_('IPv6 only'), '7':_('IPv4 / IPv6 · same APN'), '0B':_('IPv4 / IPv6 · separate APNs'), '0b':_('IPv4 / IPv6 · separate APNs') };
-	var detailed = (section(raw, 'Detailed sessions') || '').split(/\n/).map(function(line) {
-		var match = line.match(/^\^DCONNSTAT:\s*(\d+)(?:[,，]["“”]?([^,"“”]*)["“”]?[,，](\d+)[,，](\d+)[,，](\d+)(?:[,，](\d+))?)?/);
-		return match ? { cid:match[1], apn:match[2] || '', ipv4:match[3] === '1', ipv6:match[4] === '1', type:match[5] || '', ethernet:match[6] === '1' } : null;
-	}).filter(function(item) { return item && item.apn; });
-
-	var ipv4Address = hexIPv4(dhcp4[0]) || pdpAddress[1] || '';
-	var ipv6Address = dhcp6[0] && dhcp6[0] !== '::' ? dhcp6[0] : '';
-
-	/*
-	 * 连接状态判定。
-	 *
-	 * 首选 NDISSTATQRY（`ndis[0]==='1' && ndis[4]==='IPV4'`）—— 它是模组
-	 * 侧对「这条 cid 的数据面是否真的建起来」的权威回答。
-	 *
-	 * 但实测 MT5700M 在中国移动网络下对 `AT^NDISSTATQRY?` **返回空应答**，
-	 * 于是 ndis 恒为空 → ipv4Connected 恒 false → 概览页 Mobile IP 卡片永远
-	 * 显示 Disconnected，哪怕 IPv4 地址就在 DHCP 租约里（实测
-	 * `AT^DHCP?` 正常返回 `98AC060A` = 10.6.172.152，且与 eth2 实际地址一致）。
-	 * 这就是「luci 经常不显示数据」的一条真实成因。
-	 *
-	 * 兜底：NDIS 不可用时改用「是否真的拿到了地址」判定 —— 有租约地址或
-	 * PDP 地址就算 IPv4 已连接。宁可在极端情况下多显示一次「已连接」，
-	 * 也不要拿着真实地址却告诉用户「未分配」。
-	 */
-	var ndisUsable = ndis.length >= 9;
-	var ipv4Connected = ndisUsable
-		? (ndis[0] === '1' && ndis[4] === 'IPV4')
-		: Boolean(ipv4Address);
-	var ipv6Connected = ndisUsable
-		? (ndis[5] === '1' && ndis[8] === 'IPV6')
-		: Boolean(ipv6Address);
-
+/*
+ * `network.session` 的领域载荷 → 页面用的会话视图字段。
+ *
+ * 字段名沿用旧 `parseSession()`（从 `advanced session` 文本帧里正则出来的那张
+ * 对象）的产物，所以概览页的「移动 IP」卡与连接页的会话面板的渲染代码没动：
+ * 换掉的只是数据来源 —— 八个 AT 命令的解码现在只有后端一份
+ * （modules/network/{parser,state,service}.rs）。
+ *
+ * 三个纯展示的映射留在这里（各自的语言文案）：DSL 能力码 → 文案、MTU 缺省 →
+ * 「Network default」、DNS 列表 → 「 · 」拼接。
+ */
+function sessionInfo(payload) {
+	payload = payload || {};
+	var v4 = payload.ipv4 || {}, v6 = payload.ipv6 || {}, flow = payload.flow || {};
+	var capabilityNames = {
+		1: _('IPv4 only'), 2: _('IPv6 only'), 7: _('IPv4 / IPv6 · same APN'),
+		11: _('IPv4 / IPv6 · separate APNs')
+	};
+	var joinDns = function(list) {
+		return (list || []).filter(function(value) { return value && value !== '::'; }).join(' · ');
+	};
+	var capability = payload.capability;
 	return {
-		ipv4Connected: ipv4Connected,
-		ipv6Connected: ipv6Connected,
-		ipv4Address: ipv4Address,
-		ipv4Gateway:hexIPv4(dhcp4[2]),
-		ipv4Dns:[ hexIPv4(dhcp4[4]), hexIPv4(dhcp4[5]) ].filter(Boolean).join(' · '),
-		ipv6Address: ipv6Address,
-		ipv6Dns:[ dhcp6[4], dhcp6[5] ].filter(function(value) { return value && value !== '::'; }).join(' · '),
-		capability:capabilityNames[capability] || capability,
-		mtu:mtu[1] && mtu[1] !== '0' ? mtu[1] : _('Network default'),
-		currentDuration:hexNumber(flow[0]), currentTx:hexNumber(flow[1]), currentRx:hexNumber(flow[2]),
-		totalDuration:hexNumber(flow[3]), totalTx:hexNumber(flow[4]), totalRx:hexNumber(flow[5]),
-		maximumDown:dhcp4[6] || dhcp6[6], maximumUp:dhcp4[7] || dhcp6[7], detailed:detailed
+		ipv4Connected: v4.connected === true,
+		ipv6Connected: v6.connected === true,
+		ipv4Address: v4.address || '',
+		ipv4Gateway: v4.gateway || '',
+		ipv4Dns: joinDns(v4.dns),
+		ipv6Address: v6.address || '',
+		ipv6Dns: joinDns(v6.dns),
+		capability: capabilityNames[capability] || (capability != null ? String(capability) : ''),
+		mtu: payload.mtu ? String(payload.mtu) : _('Network default'),
+		currentDuration: Number(flow.current_duration) || 0,
+		currentTx: Number(flow.current_tx) || 0,
+		currentRx: Number(flow.current_rx) || 0,
+		totalDuration: Number(flow.total_duration) || 0,
+		totalTx: Number(flow.total_tx) || 0,
+		totalRx: Number(flow.total_rx) || 0,
+		maximumDown: payload.maximum_down || '',
+		maximumUp: payload.maximum_up || '',
+		detailed: (payload.sessions || []).map(function(item) {
+			return {
+				cid: String(item.cid), apn: item.apn || '',
+				ipv4: item.ipv4 === true, ipv6: item.ipv6 === true,
+				type: item.type || '', ethernet: item.ethernet === true
+			};
+		})
 	};
 }
 
@@ -394,16 +375,14 @@ var FOTA_STATE_NAMES = {
 return baseclass.extend({
 	section: section,
 	pick: pick,
-	csvValues: csvValues,
 	lineValue: lineValue,
 	countLines: countLines,
-	hexIPv4: hexIPv4,
 	hexNumber: hexNumber,
 	formatBytes: formatBytes,
 	formatDuration: formatDuration,
 	formatRate: formatRate,
 	subscriptionRate: subscriptionRate,
-	parseSession: parseSession,
+	sessionInfo: sessionInfo,
 	parseContexts: parseContexts,
 	operatorInfo: operatorInfo,
 	parseStatus: parseStatus,

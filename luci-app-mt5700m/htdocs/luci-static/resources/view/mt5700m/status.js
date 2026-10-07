@@ -7,8 +7,9 @@
 /*
  * MT5700M LuCI — 概览（status）
  * ---------------------------------------------
- * 数据：mt5700m status（manager）+ fs.exec status / advanced session + mt5700m-traffic summary
- * + mt5700m-at cached（StateCache 快照，SWR 首屏）。
+ * 数据：mt5700m status（manager）+ network.session / qos.get / sim.number /
+ * network.pdp_contexts + mt5700m-traffic summary + mt5700m-at cached
+ * （StateCache 快照，SWR 首屏）。页面不再读任何 CLI 文本帧。
  * 无内联样式；信号/载波/地址/模块/SIM/流量/快捷入口全部由组件拼装。
  *
  * 渲染策略（Async Architecture）：
@@ -60,12 +61,12 @@ return view.extend({
 	 *
 	 * 行的来源只剩三处，全部是「已经解码过的领域值」：
 	 *   1) daemon StateCache 快照（后台采集器，零 AT）；
-	 *   2) 详情路由（qos.get / sim.number，见 refreshDetail）；
+	 *   2) 详情路由（qos.get / sim.number / network.pdp_contexts，见 refreshDetail）；
 	 *   3) mt5700m-manager 的 ubus 状态。
 	 * 旧版还有一处 `mt5700m-at status` 的 CLI 文本帧 —— 那是同一份缓存的第二种
 	 * 渲染，且 daemon 不在时它会自己去开串口（禁止的第二 AT 持有者）。
 	 */
-	frameFromSnapshot: function(snapshot, manager, detail, sessionDetail) {
+	frameFromSnapshot: function(snapshot, manager, detail, session) {
 		var lines = this.snapshotLines(snapshot).concat(detail || []);
 		if (manager) {
 			if (manager.at_port) lines.push('at_port=' + manager.at_port);
@@ -77,7 +78,7 @@ return view.extend({
 		return {
 			manager: manager || {},
 			native: { stdout: lines.join('\n'), stderr: '' },
-			session: sessionDetail || { stdout: '', stderr: '' },
+			session: session,
 			traffic: this.trafficCache || { interfaces: [] }
 		};
 	},
@@ -135,7 +136,7 @@ return view.extend({
 
 	frameFromState: function(state) {
 		var frame = this.frameFromSnapshot(
-			state.snapshot, state.manager, state.detail, state.sessionDetail);
+			state.snapshot, state.manager, state.detail, state.session);
 		frame.traffic = state.traffic || { interfaces: [] };
 		frame.uiErrors = [];
 		if (state.detailError)
@@ -319,15 +320,15 @@ return view.extend({
 
 	/*
 	 * 详情帧：快照里没有、必须按需问一次的四行（APN / QCI / 订阅速率 / 手机号）
-	 * 与会话面板。
+	 * 与移动 IP 卡的会话数据。
 	 *
 	 * 旧版这里是 `mt5700m-at status`（CLI 把同一份缓存渲染成文本帧 + 4 条实时
-	 * AT 查询）与 `mt5700m-at advanced session` 两块：前者换成统一路由
-	 * （network.pdp_contexts = +CGDCONT?/+CGACT?，qos.get = APN/QCI/AMBR 解码，
-	 * sim.number = +CNUM 含「卡里没存号码」这一状态），后者这一刀没动。
+	 * AT 查询）与 `mt5700m-at advanced session`（八个慢命令的文本转储）两块；
+	 * 现在四行来自 network.pdp_contexts / qos.get / sim.number，会话来自
+	 * network.session —— 与连接页读同一条路由，后端只有一份解码。
 	 *
-	 * 两条路由都用 route()（失败返回 null、该行保持原值）而不是 routeCall：
-	 * 读不到 APN/手机号在没插卡的模组上是常态，旧版此时也只是少几行，不该弹出
+	 * 四个源都用 route()（失败返回 null、该区域保持原值）而不是 routeCall：
+	 * 读不到这些值在没插卡的模组上是常态，旧版此时也只是少几行/空卡，不该弹出
 	 * 「详情刷新失败」的告警条。
 	 */
 	refreshDetail: function(holder, state) {
@@ -335,33 +336,25 @@ return view.extend({
 		if (state.detailPending) return state.detailPending;
 		var beforeWarnings = this.stateWarnings(state).join('\n');
 		var oldDetail = (state.detail || []).join('\n');
-		var oldSession = state.sessionDetail && state.sessionDetail.stdout || '';
-		function failedResponse(err) {
-			return { stdout: '', stderr: err && err.message || String(err) };
-		}
+		var oldSession = JSON.stringify(state.session || null);
 		var pending = Promise.all([
 			api.route('qos.get'),
 			api.route('sim.number'),
 			api.route('network.pdp_contexts'),
-			api.atSession().catch(failedResponse)
+			api.route('network.session')
 		]).then(function(result) {
 			if (!document.body.contains(holder)) return;
-			var qos = result[0], number = result[1], contexts = result[2];
-			var session = result[3] || { stdout: '', stderr: '' };
-			var errors = [];
+			var qos = result[0], number = result[1], contexts = result[2], session = result[3];
 			var detailChanged = false, sessionChanged = false;
 
 			state.detail = self.detailLines(qos, number, contexts);
 			detailChanged = state.detail.join('\n') !== oldDetail;
-			if (session.stderr) errors.push(session.stderr);
-			else if (session.stdout) {
-				state.sessionDetail = { stdout: session.stdout, stderr: '' };
-				sessionChanged = session.stdout !== oldSession;
-			}
+			// 会话载荷整体替换：后端每次给的是完整快照，没读到的字段为空
+			// （旧版 CLI 帧里缺段时页面同样按空值渲染）。
+			state.session = session || null;
+			sessionChanged = JSON.stringify(state.session) !== oldSession;
 
-			state.detailError = errors.length
-				? _('Some modem details could not be refreshed. Existing values are retained.') + ' ' + errors.join(' · ')
-				: '';
+			state.detailError = '';
 			var regions = [];
 			if (detailChanged) regions.push('sim');
 			if (sessionChanged) regions.push('address');
@@ -682,7 +675,7 @@ return view.extend({
 
 	statusViewData: function(res) {
 		var data = parser.parseStatus(res);
-		var session = parser.parseSession(res.session && res.session.stdout || '');
+		var session = parser.sessionInfo(res.session);
 		var opInfo = parser.operatorInfo(data.operator);
 		var operator = opInfo.name;
 		if (!/[A-Za-z0-9\u4e00-\u9fff]/.test(operator)) operator = '';
@@ -709,8 +702,6 @@ return view.extend({
 		var notices = [];
 		if (viewData.data.error)
 			notices.push(E('div', { 'class': 'alert-message warning' }, viewData.data.error));
-		if (res.session && res.session.stderr)
-			notices.push(E('div', { 'class': 'alert-message warning' }, res.session.stderr));
 		(res.uiErrors || []).forEach(function(error) {
 			var message = typeof error === 'string' ? error : error.message;
 			var retry = typeof error === 'string' ? res.onRetry : error.retry;
@@ -815,7 +806,7 @@ return view.extend({
 				traffic: data.traffic || { interfaces: [] },
 				snapshot: data.snapshot || {},
 				detail: [],
-				sessionDetail: null,
+				session: null,
 				detailError: '',
 				snapshotError: data.snapshot ? '' : _('Shared modem status is temporarily unavailable. Showing available data.'),
 				trafficError: '',

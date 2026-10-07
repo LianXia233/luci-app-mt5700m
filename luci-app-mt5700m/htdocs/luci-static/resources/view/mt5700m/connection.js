@@ -11,7 +11,8 @@
 /*
  * MT5700M LuCI — 移动数据（connection）
  * ---------------------------------------------
- * 数据：manager status + network.device status + advanced connection-settings + advanced session
+ * 数据：manager status + network.device status + advanced connection-settings +
+ * network.session（会话面板；八个 AT 命令的解码在后端）
  * 结构：英雄区 → 事实卡 → 会话面板 → 连接操作 → 拨号配置（LuCI form）→ 高级工具（PDP / 模块数据通道）→ 拨号日志
  * 无内联样式；表单框架（form.Map）保留 LuCI 原生能力。
  */
@@ -24,7 +25,10 @@ return view.extend({
 		var previousManager = this.manager || {};
 		this.managerError = '';
 		var settings = api.atConnectionSettings();
-		var session = api.atSession();
+		// 会话面板读统一路由（与概览页的「移动 IP」卡同一条）。route() 失败返回
+		// null，面板按空值渲染 —— 与旧版 CLI 帧读不到时完全一样的观感（那时
+		// `advanced session` 的 stderr 也只在帧里，页面同样是空卡）。
+		var session = api.route('network.session');
 		this.pending = uci.load('mt5700m').then(function() {
 			return api.managerStatus().catch(function(err) {
 					self.managerError = err && err.message || String(err);
@@ -58,7 +62,7 @@ return view.extend({
 		return E('div', { 'class': 'mt-session-row' }, [ E('span', { 'class': 'mt-muted' }, label), E('strong', {}, value || '--') ]);
 	},
 
-	sessionPanel: function(session, error) {
+	sessionPanel: function(session) {
 		var self = this;
 		var active = session.ipv4Connected || session.ipv6Connected;
 		var addressRows = [
@@ -77,7 +81,6 @@ return view.extend({
 					E('div', {}, [ E('h3', { 'class': 'mt-card-title', 'style': 'margin:0 0 4px' }, _('Assigned addresses')), E('p', { 'class': 'mt-card-desc', 'style': 'margin:0' }, _('Gateway, DNS and PDP session details reported by the MT5700M.')) ]),
 					c.badge(active ? _('Active') : _('Disconnected'), active ? 'active' : 'slate')
 				]),
-				error ? E('div', { 'class': 'alert-message warning' }, error) : null,
 				E('div', { 'class': 'mt-session-columns', 'style': 'display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 18px' }, addressRows)
 			]),
 			E('section', { 'class': 'mt-card' }, [
@@ -91,7 +94,7 @@ return view.extend({
 				self.sessionRow(_('Accumulated total'), parser.formatBytes(session.totalRx + session.totalTx)),
 				self.sessionRow(_('Network maximum downlink'), parser.formatRate(session.maximumDown)),
 				self.sessionRow(_('Network maximum uplink'), parser.formatRate(session.maximumUp)),
-				E('div', { 'class': 'mt-session-actions' }, E('button', { 'class': 'btn', 'click': function() { c.confirmRun(_('Clear module traffic counters'), _('This permanently clears current and accumulated MT5700M data-flow counters.'), [ 'flow-clear' ]); } }, _('Clear counters')))
+				E('div', { 'class': 'mt-session-actions' }, E('button', { 'class': 'btn', 'click': function() { c.confirmRoute(_('Clear module traffic counters'), _('This permanently clears current and accumulated MT5700M data-flow counters.'), 'network.flow_clear'); } }, _('Clear counters')))
 			])
 		]);
 	},
@@ -176,8 +179,7 @@ return view.extend({
 		var dial = results[0] || {};
 		var device = results[1] || {};
 		var moduleSettings = results[2] || {};
-		var sessionResult = results[3] || {};
-		var session = parser.parseSession(sessionResult.stdout || '');
+		var session = parser.sessionInfo(results[3]);
 		var moduleRaw = moduleSettings.stdout || '';
 		var managerError = this.managerError || '';
 		var online = dial.connected === true && device.up === true && device.carrier !== false;
@@ -355,7 +357,7 @@ return view.extend({
 					self.fact('APN', configuredApn),
 					self.fact(_('IP protocol'), configuredProtocol)
 				]),
-				self.sessionPanel(session, sessionResult.stderr),
+				self.sessionPanel(session),
 				E('div', { 'class': 'mt-advanced-actions', 'style': 'margin:0 0 18px' }, online ? [
 					E('button', { 'class': 'btn cbi-button-action', 'click': function() { return self.runAction(api.redial, _('Redial started.'), _('The 5G connection will be interrupted briefly while the modem redials.')); } }, _('Redial')),
 					E('button', { 'class': 'btn cbi-button-negative', 'click': function() { return self.runAction(api.disconnect, _('Connection stopped.'), _('Disconnect the mobile data connection now?')); } }, _('Disconnect'))

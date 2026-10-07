@@ -255,10 +255,14 @@ function loadModule(source, scope) {
 /*
  * 与 LuCI 一样的装载顺序：parser → components（拿到 parser）→ view
  * （拿到 api/parser/components/dom/ui）。`read(rel)` 读一份源码。
+ *
+ * `globals` 用来补那些「LuCI 框架提供、stub 默认没有」的全局：连接页要
+ * `uci` 与 `form`（拨号表单），其它页面暂时不需要。
  */
-function loadSide(read, api, viewRel) {
+function loadSide(read, api, viewRel, globals) {
 	const RES = 'luci-app-mt5700m/htdocs/luci-static/resources';
 	const scope = makeScope(api);
+	Object.keys(globals || {}).forEach((key) => { scope[key] = globals[key]; });
 	const parser = loadModule(read(RES + '/mt5700m/parser.js'), scope);
 	scope.parser = parser;
 	scope.c = loadModule(read(RES + '/mt5700m/components.js'), scope);

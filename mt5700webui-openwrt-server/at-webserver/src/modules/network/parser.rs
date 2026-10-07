@@ -7,8 +7,9 @@
 
 use crate::modules::network::state::{
     SysCfgState,
-    AutodialState, C5gOptionState, DhcpLease, ImsState, InterfaceCfgState, LockItem, LockKind,
-    LockState, PdpAddress, PdpContext, RegistrationState, RrcState,
+    AutodialState, C5gOptionState, DetailedSession, DhcpLease, FlowCounters, ImsState,
+    InterfaceCfgState, LockItem, LockKind, LockState, PdpAddress, PdpContext, RegistrationState,
+    RrcState,
 };
 
 /// Parse a `+CxxREG:` line: registration state + family-specific fields.
@@ -317,6 +318,13 @@ fn parse_dhcp(raw: &str, marker: &str, ipv4: bool) -> Option<DhcpLease> {
                 s.to_string()
             }
         };
+        // Fields 7/8 are the firmware's advertised maximum down/up rates and
+        // are only present on some replies. They are kept verbatim (the
+        // connection page renders them through its rate formatter) — decoding
+        // them here would change what that page shows.
+        let keep = |idx: usize| {
+            fields.get(idx).map(|f| f.trim().trim_matches('"').to_string()).filter(|s| !s.is_empty())
+        };
         return Some(DhcpLease {
             address: Some(conv(fields[0])),
             netmask: Some(conv(fields[1])),
@@ -324,6 +332,8 @@ fn parse_dhcp(raw: &str, marker: &str, ipv4: bool) -> Option<DhcpLease> {
             dhcp_server: Some(conv(fields[3])),
             primary_dns: Some(conv(fields[4])),
             secondary_dns: Some(conv(fields[5])),
+            maximum_down: keep(6),
+            maximum_up: keep(7),
         });
     }
     None
@@ -339,7 +349,14 @@ pub fn parse_dhcp_v6(raw: &str) -> Option<DhcpLease> {
     parse_dhcp(raw, "^DHCPV6:", false)
 }
 
-/// IPv6 capability code from `^IPV6CAP?` (single decimal value).
+/// IPv6 capability code from `^IPV6CAP?`.
+///
+/// The value is a bitmask the WebUI already renders as a number (0x01 IPv4
+/// only, 0x02 IPv6 only, 0x07 dual stack same APN, 0x0B dual stack separate
+/// APNs), and some firmware answers the separate-APN case as `0B` — so the
+/// field is parsed as decimal first and as hex when it carries hex letters.
+/// Without that, `0B` fell through as "no answer" and the pages lost a value
+/// they used to show.
 pub fn parse_ipv6cap(raw: &str) -> Option<u32> {
     for line in raw.lines() {
         let t = line.trim();
@@ -347,14 +364,125 @@ pub fn parse_ipv6cap(raw: &str) -> Option<u32> {
             continue;
         };
         let body = t[idx + "^IPV6CAP:".len()..].trim();
-        if let Some(code) = body
+        let field = body
             .split(|c: char| c == ',' || c.is_whitespace())
-            .find_map(|f| f.trim().parse::<u32>().ok())
-        {
+            .map(|f| f.trim().trim_matches('"'))
+            .find(|f| !f.is_empty())?;
+        if let Ok(code) = field.parse::<u32>() {
             return Some(code);
         }
+        if let Ok(code) = u32::from_str_radix(field, 16) {
+            return Some(code);
+        }
+        return None;
     }
     None
+}
+
+/// Data-flow counters from `^DSFLOWQRY` (six hex fields, see [`FlowCounters`]).
+///
+/// A missing or malformed field is 0 — the same thing the frontend's
+/// `hexNumber()` produced, so a modem that answers nothing shows the same
+/// zeros the page always showed.
+pub fn parse_dsflow(raw: &str) -> FlowCounters {
+    let mut counters = FlowCounters::default();
+    for line in raw.lines() {
+        let t = line.trim();
+        let Some(idx) = t.find("^DSFLOWQRY:") else {
+            continue;
+        };
+        let body = t[idx + "^DSFLOWQRY:".len()..].trim();
+        if body.is_empty() {
+            continue;
+        }
+        let hex = |i: usize| -> u64 {
+            body.split(',')
+                .nth(i)
+                .map(|f| f.trim().trim_matches('"').trim_start_matches("0x").to_string())
+                .and_then(|f| u64::from_str_radix(&f, 16).ok())
+                .unwrap_or(0)
+        };
+        counters = FlowCounters {
+            current_duration_s: hex(0),
+            current_tx_bytes: hex(1),
+            current_rx_bytes: hex(2),
+            total_duration_s: hex(3),
+            total_tx_bytes: hex(4),
+            total_rx_bytes: hex(5),
+        };
+        break;
+    }
+    counters
+}
+
+/// Data-call MTU from `^CGMTU: <cid>,<mtu>`.
+///
+/// `0` is the firmware's "not configured" answer and is reported as `None`, so
+/// the pages fall back to their own "Network default" copy — the rule the
+/// frontend used to apply itself.
+pub fn parse_cgmtu(raw: &str) -> Option<u32> {
+    for line in raw.lines() {
+        let t = line.trim();
+        let Some(idx) = t.find("^CGMTU:") else {
+            continue;
+        };
+        let body = t[idx + "^CGMTU:".len()..].trim();
+        let mtu = body
+            .split(',')
+            .nth(1)
+            .map(|f| f.trim().trim_matches('"'))
+            .and_then(|f| f.parse::<u32>().ok())?;
+        if mtu == 0 {
+            return None;
+        }
+        return Some(mtu);
+    }
+    None
+}
+
+/// `^DCONNSTAT?` -> the detailed session rows (see [`DetailedSession`]).
+///
+/// One row is `<cid>,"<apn>",<ipv4>,<ipv6>,<type>[,<ethernet>]`, with the tail
+/// optional and the separators/quotes sometimes full-width (both appear in the
+/// wild). A row without an APN is skipped: it is the firmware's "cid 0 /
+/// internal" marker, not a user-visible session — the same filter the frontend
+/// applied.
+pub fn parse_dconnstat(raw: &str) -> Vec<DetailedSession> {
+    let mut out = Vec::new();
+    for line in raw.lines() {
+        let t = line.trim();
+        let Some(body) = t.strip_prefix("^DCONNSTAT:") else {
+            continue;
+        };
+        let normalized: String = body
+            .chars()
+            .map(|c| match c {
+                '，' => ',',
+                '“' | '”' | '"' => '"',
+                _ => c,
+            })
+            .collect();
+        let fields: Vec<&str> = normalized
+            .split(',')
+            .map(|f| f.trim().trim_matches('"').trim())
+            .collect();
+        let Some(cid) = fields.first().and_then(|f| f.parse::<u32>().ok()) else {
+            continue;
+        };
+        let apn = fields.get(1).copied().unwrap_or("").to_string();
+        if apn.is_empty() {
+            continue;
+        }
+        out.push(DetailedSession {
+            cid,
+            apn,
+            ipv4: fields.get(2).map(|f| *f == "1").unwrap_or(false),
+            ipv6: fields.get(3).map(|f| *f == "1").unwrap_or(false),
+            dial_type: fields.get(4).copied().unwrap_or("").to_string(),
+            ethernet: fields.get(5).map(|f| *f == "1").unwrap_or(false),
+        });
+    }
+    out
 }
 
 /// Hex-encoded little-endian IPv4 field -> dotted quad.
@@ -818,6 +946,83 @@ pub fn parse_cireg(raw: &str) -> ImsState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dsflow_decodes_six_hex_fields() {
+        // 10 s, 123456 B TX, 187500 B RX, 100 s, 50000000 B, 100000000 B
+        let c = parse_dsflow("AT^DSFLOWQRY\r\n^DSFLOWQRY: 0000000A,0001E240,0002DC6C,00000064,02FAF080,05F5E100\r\nOK");
+        assert_eq!(c.current_duration_s, 10);
+        assert_eq!(c.current_tx_bytes, 123456);
+        assert_eq!(c.current_rx_bytes, 187500);
+        assert_eq!(c.total_duration_s, 100);
+        assert_eq!(c.total_tx_bytes, 50_000_000);
+        assert_eq!(c.total_rx_bytes, 100_000_000);
+        assert!(!c.is_zero());
+        // A silent modem leaves the zeros the page has always shown.
+        let none = parse_dsflow("");
+        assert!(none.is_zero());
+        // 64-bit counters survive (the frontend's hexNumber split them in two).
+        let big = parse_dsflow("^DSFLOWQRY: 0,0,0,0,FFFFFFFFFFFFFFFF,0");
+        assert_eq!(big.total_tx_bytes, u64::MAX);
+    }
+
+    #[test]
+    fn cgmtu_zero_means_not_configured() {
+        assert_eq!(parse_cgmtu("AT^CGMTU=1\r\n^CGMTU: 1,1500\r\nOK"), Some(1500));
+        // `0` is the firmware's "no MTU"; the pages render their own default.
+        assert_eq!(parse_cgmtu("^CGMTU: 1,0"), None);
+        assert_eq!(parse_cgmtu("ERROR"), None);
+    }
+
+    #[test]
+    fn dconnstat_rows_skip_apnless_lines() {
+        let rows = parse_dconnstat(
+            "AT^DCONNSTAT?\r\n^DCONNSTAT: 1,\"cmnet\",1,1,3,1\r\n^DCONNSTAT: 2,\"ims\",1,0,3\r\n^DCONNSTAT: 0\r\nOK",
+        );
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].cid, 1);
+        assert_eq!(rows[0].apn, "cmnet");
+        assert!(rows[0].ipv4 && rows[0].ipv6 && rows[0].ethernet);
+        assert_eq!(rows[0].dial_type, "3");
+        assert_eq!(rows[1].cid, 2);
+        assert!(rows[1].ipv4 && !rows[1].ipv6 && !rows[1].ethernet);
+        // `^DCONNSTAT: 0` (the firmware's internal marker) is skipped, exactly
+        // like the frontend's "needs an APN" filter did.
+        assert!(!rows.iter().any(|r| r.cid == 0));
+    }
+
+    #[test]
+    fn dconnstat_accepts_full_width_separators() {
+        let rows = parse_dconnstat("^DCONNSTAT: 1，“cmnet”，1，1，3，1");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].apn, "cmnet");
+        assert!(rows[0].ipv4 && rows[0].ipv6 && rows[0].ethernet);
+    }
+
+    #[test]
+    fn ipv6cap_reads_decimal_and_the_0b_hex_form() {
+        assert_eq!(parse_ipv6cap("^IPV6CAP: 7\r\nOK"), Some(7));
+        assert_eq!(parse_ipv6cap("^IPV6CAP: 1\r\nOK"), Some(1));
+        // The separate-APN case arrives as `0B` on some firmware; the WebUI
+        // renders 0x0B as a real value, so it must not fall through as "none".
+        assert_eq!(parse_ipv6cap("^IPV6CAP: 0B\r\nOK"), Some(11));
+        assert_eq!(parse_ipv6cap("^IPV6CAP: 0b\r\nOK"), Some(11));
+        assert_eq!(parse_ipv6cap("ERROR"), None);
+    }
+
+    #[test]
+    fn dhcp_keeps_the_two_trailing_rate_fields() {
+        let lease = parse_dhcp_v4("^DHCP: 98AC060A,FFFFFF00,98AC0601,00000000,0A060B0B,0A060B0C,05DC,03E8")
+            .expect("lease");
+        assert_eq!(lease.address.as_deref(), Some("10.6.172.152"));
+        assert_eq!(lease.maximum_down.as_deref(), Some("05DC"));
+        assert_eq!(lease.maximum_up.as_deref(), Some("03E8"));
+        // Six-field replies (the shape the WebUI demo uses) leave them unset.
+        let short = parse_dhcp_v4("^DHCP: 98AC060A,FFFFFF00,98AC0601,00000000,0A060B0B,0A060B0C")
+            .expect("lease");
+        assert_eq!(short.maximum_down, None);
+        assert_eq!(short.maximum_up, None);
+    }
 
     #[test]
     fn cireg_reports_ims_registration() {

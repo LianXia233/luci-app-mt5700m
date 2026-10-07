@@ -611,3 +611,74 @@ three ways: deployed baseline vs new with the detail routes stubbed to `null`
 (patched baseline), and the two regions that legitimately change
 (`alerts`, `address`) asserted by content. `scripts/smoke-minified-luci.js`
 now renders the status page too (16 checks; minified tree 297 500 → 186 254 B).
+
+### The session frame is gone: `network.session` (slice, 2026-10-07)
+
+Second half of the same job, on baseline `c0268e0`. `advanced session` — the CLI
+verb that dumped eight AT replies (`^NDISSTATQRY?`, `^DHCP?`, `^DHCPV6?`,
+`^IPV6CAP?`, `+CGPADDR`, `^DSFLOWQRY`, `^CGMTU=1`, `^DCONNSTAT?`) as text for
+`parser.parseSession()` to regex — is now a route:
+
+* `network.session` (`modules/network/{commands,parser,state,service,api}.rs`)
+  returns the decoded snapshot: `{ipv4:{connected,address,gateway,dns[]},
+  ipv6:{connected,address,dns[]}, capability, mtu, maximum_down, maximum_up,
+  flow:{current_duration,current_tx,current_rx,total_duration,total_tx,total_rx},
+  sessions:[{cid,apn,ipv4,ipv6,type,ethernet}]}`. Both surface's readers
+  (overview "Mobile IP" card, connection page panel) call it — one decoder.
+* `network.flow_clear` (`AT^DSFLOWCLR`) replaces the `flow-clear` CLI verb
+  behind the "Clear counters" button; the button now uses `c.confirmRoute`.
+* `api.js` lost `atSession`; `parser.js` lost the whole text decoder —
+  `parseSession`, `csvValues`, `hexIPv4` (the smallest helpers existed only to
+  read that frame) — and gained `sessionInfo(payload)`, which keeps the
+  page-facing field names (`ipv4Connected`, `maximumDown`, …) so the rendering
+  code did not move. The three remaining mappings there are display choices
+  (capability code → localized label, missing MTU → "Network default", DNS list
+  → " · " join).
+* `DhcpLease` kept the reply's two trailing fields (`maximum_down`/`maximum_up`,
+  verbatim — the CLI page rendered them through its rate formatter, so decoding
+  them in the module would have changed what it shows).
+
+Two decoders got stricter/correcter while moving, both asserted by unit tests:
+
+* `parse_ipv6cap` now also reads the hex form. The WebUI has always rendered
+  `0x0B` ("separate APNs") but the field was parsed as decimal only, so `0B`
+  fell through as "no answer" and both pages lost a value they were designed to
+  show.
+* `parse_dconnstat` normalizes the full-width separators/quotes (`，`, `“”`)
+  the firmware sometimes sends — the frontend's regex tolerated them, a naive
+  comma split would not have.
+
+An earlier plan in this series had the connection page drop `form.Map` and build
+the dialing form by hand. It was dropped: `form.Map` is LuCI's own UCI form
+machinery (the same thing `settings.js` uses), the page's UCI reads/writes are
+host configuration rather than modem business logic, and hand-reproducing CBI's
+markup/CSS byte-for-byte is a UI-change risk with no architectural payoff. The
+page keeps the framework form; only the modem data path moved to routes.
+
+The CLI verbs themselves stay. `mt5700m-at status`, `advanced session` and
+`flow-clear` are documented tools (`README.md` uses `status` in its diagnostic
+recipes) and they are **not** a second implementation of anything: `status`
+renders the daemon's StateCache in the CLI's own `key=value` shape, and the
+`advanced <group>` dump is raw reply text, not a parser. Deleting them would be
+a user-visible loss with no architectural gain — what the refactor forbids is a
+*frontend* owning a second decoder, and that is what this slice removed. (Their
+AT reads go through the daemon channel, i.e. the one scheduler; the only
+remaining "opens the port itself" path is the CLI's no-daemon fallback, which is
+the next candidate.)
+
+`scripts/prove-connection-parity.js` (baseline `c0268e0`, 30 checks) renders the
+connection page and compares five shapes: the session fixture
+(`scripts/lib/at-fixtures.js::sessionFacts`) generates **both** the CLI text
+frame and the route payload from one object, so "identical render" means the
+module's decoding equals what the frontend used to regex out of the dump —
+covering the full `^NDISSTATQRY` rule, the empty-NDIS fallback ("has an address
+⇒ connected"), IPv4-only, the `0B` capability case, and a session read that
+fails entirely (both sides then render the same empty card — no new banner, the
+CLI failure path did not have one either). It also pins the write path
+(`flow-clear` → `network.flow_clear`) and the 900 ms reload.
+
+With this, the overview page has **zero** CLI calls and the connection page is
+down to one (`advanced connection-settings`, which is the read half of the
+dialing settings the page still writes through `advanced-set`); the remaining
+CLI call sites are `system.js` 1, `advanced.js` 1, `connection.js` 1,
+`terminal.js` 1 (deliberate).

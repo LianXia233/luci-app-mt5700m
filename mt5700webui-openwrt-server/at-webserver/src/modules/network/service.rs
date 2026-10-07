@@ -16,7 +16,7 @@ use crate::modules::network::commands::{self, COPS, SYSCFGEX_QUERY, SYSINFOEX};
 use crate::modules::network::parser;
 use crate::modules::network::state::{
     AutodialState, C5gOptionState, ImsState, InterfaceCfgState, LockKind, LockState, NetworkState,
-    PdpContext, RegistrationState, RrcState, SysCfgState, UsbModeState,
+    PdpContext, RegistrationState, RrcState, SessionState, SysCfgState, UsbModeState,
 };
 use crate::scheduler::channel::run_in_task;
 use crate::scheduler::jobs::TaskManager;
@@ -503,6 +503,121 @@ pub fn read_interface_cfg(ctx: &RefreshCtx) -> Result<InterfaceCfgState, Backend
         )));
     }
     Ok(st)
+}
+
+/// Data-session snapshot for the two "connection" surfaces
+/// (`network.session`).
+///
+/// The eight commands are the ones the CLI's `advanced session` verb dumped as
+/// text; decoding them here means the pages render values instead of regexing a
+/// dump. Failures are per-command: a modem that answers only some of them still
+/// produces a useful object (a partial answer is an answer), and the error is
+/// returned only when *everything* failed — the caller then decides whether to
+/// show an empty card or an error line.
+pub fn read_session(ctx: &RefreshCtx) -> Result<SessionState, BackendError> {
+    let at = Duration::from_secs(8);
+    let queued = Duration::from_secs(6);
+    let mut errors = crate::state::refresh::ReadErrors::new();
+
+    let ndis = errors.note(ctx.read(commands::NDISSTATQRY, at, queued, Priority::Normal));
+    let dhcp4 = errors.note(ctx.read(commands::DHCP_V4, at, queued, Priority::Normal));
+    let dhcp6 = errors.note(ctx.read(commands::DHCP_V6, at, queued, Priority::Normal));
+    let cap = errors.note(ctx.read(commands::IPV6CAP, at, queued, Priority::Normal));
+    let pdp = errors.note(ctx.read(commands::CGPADDR, at, queued, Priority::Normal));
+    let flow = errors.note(ctx.read(commands::DSFLOWQRY, at, queued, Priority::Normal));
+    let mtu = errors.note(ctx.read(commands::CGMTU_QUERY, at, queued, Priority::Normal));
+    let detailed = errors.note(ctx.read(commands::DCONNSTAT, at, queued, Priority::Normal));
+
+    let lease4 = dhcp4.as_deref().and_then(parser::parse_dhcp_v4);
+    let lease6 = dhcp6.as_deref().and_then(parser::parse_dhcp_v6);
+    let mut st = SessionState::default();
+
+    if let Some(lease) = &lease4 {
+        st.ipv4_address = lease.address.clone();
+        st.ipv4_gateway = lease.gateway.clone();
+        st.ipv4_dns = [ lease.primary_dns.clone(), lease.secondary_dns.clone() ]
+            .into_iter()
+            .flatten()
+            .filter(|s| !s.is_empty())
+            .collect();
+        st.maximum_down = lease.maximum_down.clone();
+        st.maximum_up = lease.maximum_up.clone();
+    }
+    // `+CGPADDR` is the fallback address source (some firmwares report the PDP
+    // address but no lease).
+    if st.ipv4_address.is_none() {
+        st.ipv4_address = pdp
+            .as_deref()
+            .map(parser::parse_cgpaddr)
+            .and_then(|list| list.into_iter().find(|a| a.cid == 1))
+            .map(|a| a.address);
+    }
+    if let Some(lease) = &lease6 {
+        st.ipv6_address = lease.address.clone().filter(|s| s != "::");
+        st.ipv6_dns = [ lease.primary_dns.clone(), lease.secondary_dns.clone() ]
+            .into_iter()
+            .flatten()
+            .filter(|s| !s.is_empty() && s != "::")
+            .collect();
+        if st.maximum_down.is_none() {
+            st.maximum_down = lease.maximum_down.clone();
+        }
+        if st.maximum_up.is_none() {
+            st.maximum_up = lease.maximum_up.clone();
+        }
+    }
+
+    // Connection state: `^NDISSTATQRY` is the authority when the reply has the
+    // full shape (>= 9 fields: `<up>,…,<IPv4 state>,…,<IPv6 state>`); the
+    // MT5700M answers it empty on some networks, and then "is there an address"
+    // decides. Showing the real address but "not assigned" is the bug this
+    // rule exists to prevent.
+    let ndis_fields: Vec<String> = ndis
+        .as_deref()
+        .map(|text| {
+            text.lines()
+                .find_map(|l| l.trim().strip_prefix("^NDISSTATQRY:"))
+                .map(|body| {
+                    body.split(',')
+                        .map(|f| f.trim().trim_matches('"').to_string())
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+    let usable = ndis_fields.len() >= 9;
+    st.ipv4_connected = if usable {
+        ndis_fields[4] == "IPV4" && ndis_fields[0] == "1"
+    } else {
+        st.ipv4_address.is_some()
+    };
+    st.ipv6_connected = if usable {
+        ndis_fields[8] == "IPV6" && ndis_fields[5] == "1"
+    } else {
+        st.ipv6_address.is_some()
+    };
+
+    st.capability = cap.as_deref().and_then(parser::parse_ipv6cap);
+    st.mtu = mtu.as_deref().and_then(parser::parse_cgmtu);
+    if let Some(text) = &flow {
+        st.flow = parser::parse_dsflow(text);
+    }
+    if let Some(text) = &detailed {
+        st.sessions = parser::parse_dconnstat(text);
+    }
+
+    if st.is_empty() {
+        if let Some(e) = errors.into_option() {
+            return Err(e);
+        }
+    }
+    Ok(st)
+}
+
+/// Reset the firmware's data-flow counters (`AT^DSFLOWCLR`).
+pub fn clear_flow(ctx: &RefreshCtx) -> Result<(), BackendError> {
+    ctx.action(commands::DSFLOWCLR)?;
+    Ok(())
 }
 
 /// PDP context table (`+CGDCONT?` + `+CGACT?`).

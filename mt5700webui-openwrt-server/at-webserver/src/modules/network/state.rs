@@ -96,6 +96,10 @@ pub struct DhcpLease {
     pub dhcp_server: Option<String>,
     pub primary_dns: Option<String>,
     pub secondary_dns: Option<String>,
+    /// Fields 7/8 of the reply when the firmware sends them: the advertised
+    /// maximum down/up rates, kept verbatim (see `parser::parse_dhcp`).
+    pub maximum_down: Option<String>,
+    pub maximum_up: Option<String>,
 }
 
 impl DhcpLease {
@@ -125,6 +129,164 @@ impl DhcpLease {
         put("dhcp_server", &self.dhcp_server);
         put("primary_dns", &self.primary_dns);
         put("secondary_dns", &self.secondary_dns);
+        put("maximum_down", &self.maximum_down);
+        put("maximum_up", &self.maximum_up);
+        Value::Obj(m)
+    }
+}
+
+/// Firmware data-flow counters (`^DSFLOWQRY`): the current and accumulated
+/// session time and byte counts, already decoded from their hex fields.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct FlowCounters {
+    pub current_duration_s: u64,
+    pub current_tx_bytes: u64,
+    pub current_rx_bytes: u64,
+    pub total_duration_s: u64,
+    pub total_tx_bytes: u64,
+    pub total_rx_bytes: u64,
+}
+
+impl FlowCounters {
+    /// True when every field is zero (nothing was decoded).
+    pub fn is_zero(&self) -> bool {
+        *self == FlowCounters::default()
+    }
+}
+
+/// One `^DCONNSTAT` row of the data-session list.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DetailedSession {
+    pub cid: u32,
+    pub apn: String,
+    pub ipv4: bool,
+    pub ipv6: bool,
+    pub dial_type: String,
+    pub ethernet: bool,
+}
+
+impl DetailedSession {
+    pub fn to_json(&self) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert("cid".to_string(), json::num_val(self.cid as u64));
+        m.insert("apn".to_string(), json::str_val(&self.apn));
+        m.insert("ipv4".to_string(), Value::Bool(self.ipv4));
+        m.insert("ipv6".to_string(), Value::Bool(self.ipv6));
+        m.insert("type".to_string(), json::str_val(&self.dial_type));
+        m.insert("ethernet".to_string(), Value::Bool(self.ethernet));
+        Value::Obj(m)
+    }
+}
+
+/// The data-session snapshot the two "connection" surfaces render:
+/// `^NDISSTATQRY?` (is the data plane up) + `^DHCP?`/`^DHCPV6?` (addresses) +
+/// `+CGPADDR` (fallback address) + `^IPV6CAP?` (dual-stack mode) + `^CGMTU`
+/// (MTU) + `^DSFLOWQRY` (firmware counters) + `^DCONNSTAT?` (per-cid sessions).
+///
+/// One decoder for the eight commands the CLI's `advanced session` verb used to
+/// dump as text for the frontends to regex — the frontends now render this.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SessionState {
+    pub ipv4_connected: bool,
+    pub ipv4_address: Option<String>,
+    pub ipv4_gateway: Option<String>,
+    pub ipv4_dns: Vec<String>,
+    pub ipv6_connected: bool,
+    pub ipv6_address: Option<String>,
+    pub ipv6_dns: Vec<String>,
+    /// `^IPV6CAP` code (1 = IPv4 only, 2 = IPv6 only, 7 = dual stack, 0x0B =
+    /// separate APNs). The label mapping stays in the frontends.
+    pub capability: Option<u32>,
+    pub mtu: Option<u32>,
+    pub maximum_down: Option<String>,
+    pub maximum_up: Option<String>,
+    pub flow: FlowCounters,
+    pub sessions: Vec<DetailedSession>,
+}
+
+impl SessionState {
+    /// True when nothing was decoded at all.
+    pub fn is_empty(&self) -> bool {
+        self.ipv4_address.is_none()
+            && self.ipv6_address.is_none()
+            && self.capability.is_none()
+            && self.mtu.is_none()
+            && self.flow.is_zero()
+            && self.sessions.is_empty()
+            && self.maximum_down.is_none()
+            && self.maximum_up.is_none()
+    }
+
+    /// Domain JSON. Each family is an object so the "connected" bit travels
+    /// with its address; the DNS lists stay lists (joining them is a rendering
+    /// choice).
+    pub fn to_json(&self) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+
+        let mut v4 = std::collections::BTreeMap::new();
+        v4.insert("connected".to_string(), Value::Bool(self.ipv4_connected));
+        for (key, value) in [("address", &self.ipv4_address), ("gateway", &self.ipv4_gateway)] {
+            if let Some(s) = value {
+                if !s.is_empty() {
+                    v4.insert(key.to_string(), json::str_val(s));
+                }
+            }
+        }
+        if !self.ipv4_dns.is_empty() {
+            v4.insert(
+                "dns".to_string(),
+                Value::Arr(self.ipv4_dns.iter().map(|s| json::str_val(s)).collect()),
+            );
+        }
+        m.insert("ipv4".to_string(), Value::Obj(v4));
+
+        let mut v6 = std::collections::BTreeMap::new();
+        v6.insert("connected".to_string(), Value::Bool(self.ipv6_connected));
+        if let Some(s) = &self.ipv6_address {
+            if !s.is_empty() {
+                v6.insert("address".to_string(), json::str_val(s));
+            }
+        }
+        if !self.ipv6_dns.is_empty() {
+            v6.insert(
+                "dns".to_string(),
+                Value::Arr(self.ipv6_dns.iter().map(|s| json::str_val(s)).collect()),
+            );
+        }
+        m.insert("ipv6".to_string(), Value::Obj(v6));
+
+        if let Some(code) = self.capability {
+            m.insert("capability".to_string(), json::num_val(code as u64));
+        }
+        if let Some(mtu) = self.mtu {
+            m.insert("mtu".to_string(), json::num_val(mtu as u64));
+        }
+        if let Some(v) = &self.maximum_down {
+            m.insert("maximum_down".to_string(), json::str_val(v));
+        }
+        if let Some(v) = &self.maximum_up {
+            m.insert("maximum_up".to_string(), json::str_val(v));
+        }
+        if !self.flow.is_zero() {
+            let mut flow = std::collections::BTreeMap::new();
+            for (key, value) in [
+                ("current_duration", self.flow.current_duration_s),
+                ("current_tx", self.flow.current_tx_bytes),
+                ("current_rx", self.flow.current_rx_bytes),
+                ("total_duration", self.flow.total_duration_s),
+                ("total_tx", self.flow.total_tx_bytes),
+                ("total_rx", self.flow.total_rx_bytes),
+            ] {
+                flow.insert(key.to_string(), json::num_val(value));
+            }
+            m.insert("flow".to_string(), Value::Obj(flow));
+        }
+        if !self.sessions.is_empty() {
+            m.insert(
+                "sessions".to_string(),
+                Value::Arr(self.sessions.iter().map(|s| s.to_json()).collect()),
+            );
+        }
         Value::Obj(m)
     }
 }
@@ -513,6 +675,68 @@ impl ImsState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_json_carries_both_families_and_counters() {
+        let st = SessionState {
+            ipv4_connected: true,
+            ipv4_address: Some("10.6.172.152".into()),
+            ipv4_gateway: Some("10.6.172.1".into()),
+            ipv4_dns: vec![ "223.5.5.5".into(), "223.6.6.6".into() ],
+            ipv6_connected: false,
+            ipv6_address: Some("2408:8207::1".into()),
+            capability: Some(7),
+            mtu: Some(1500),
+            maximum_down: Some("05DC".into()),
+            flow: FlowCounters { current_rx_bytes: 187500, ..Default::default() },
+            sessions: vec![ DetailedSession {
+                cid: 1,
+                apn: "cmnet".into(),
+                ipv4: true,
+                ipv6: true,
+                dial_type: "3".into(),
+                ethernet: true,
+            } ],
+            ..Default::default()
+        };
+        let Value::Obj(m) = st.to_json() else { panic!("object") };
+        let Value::Obj(v4) = m.get("ipv4").cloned().unwrap() else { panic!("ipv4 object") };
+        assert_eq!(v4.get("connected").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(v4.get("address").and_then(|v| v.as_str()), Some("10.6.172.152"));
+        assert_eq!(
+            v4.get("dns").map(|v| v.as_arr().unwrap().len()),
+            Some(2)
+        );
+        assert_eq!(m.get("capability").and_then(|v| v.as_i64()), Some(7));
+        assert_eq!(m.get("mtu").and_then(|v| v.as_i64()), Some(1500));
+        let Value::Obj(flow) = m.get("flow").cloned().unwrap() else { panic!("flow object") };
+        assert_eq!(flow.get("current_rx").and_then(|v| v.as_u64()), Some(187500));
+        // Fields that were not decoded stay absent instead of turning into 0.
+        assert!(!flow.contains_key("total_rx"));
+        let Value::Arr(sessions) = m.get("sessions").cloned().unwrap() else { panic!("sessions") };
+        assert_eq!(sessions.len(), 1);
+        // An empty snapshot is recognisable, so the route can tell "no answer"
+        // from "a modem that answered zeros".
+        assert!(SessionState::default().is_empty());
+        assert!(!st.is_empty());
+    }
+
+    #[test]
+    fn dhcp_lease_json_omits_the_absent_rate_fields() {
+        let lease = DhcpLease {
+            address: Some("10.6.172.152".into()),
+            ..Default::default()
+        };
+        let Value::Obj(m) = lease.to_json() else { panic!("object") };
+        assert!(!m.contains_key("maximum_down"));
+        assert!(!m.contains_key("maximum_up"));
+        let with_rates = DhcpLease {
+            maximum_down: Some("05DC".into()),
+            ..Default::default()
+        };
+        let Value::Obj(m) = with_rates.to_json() else { panic!("object") };
+        assert_eq!(m.get("maximum_down").and_then(|v| v.as_str()), Some("05DC"));
+    }
 
     #[test]
     fn c5goption_json_omits_missing_fields() {

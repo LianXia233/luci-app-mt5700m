@@ -207,7 +207,6 @@ function cachedSnapshot() {
 
 /* ---------- AT 子命令速记 ---------- */
 
-function atSession()           { return atSafe([ 'advanced', 'session' ]); }
 function atHardware()          { return atSafe([ 'advanced', 'hardware' ]); }
 function atSystem()            { return atSafe([ 'system' ]); }
 function atConnectionSettings(){ return atSafe([ 'advanced', 'connection-settings' ]); }
@@ -291,7 +290,6 @@ return baseclass.extend({
 	at: at,
 	atSafe: atSafe,
 	cachedSnapshot: cachedSnapshot,
-	atSession: atSession,
 	route: route,
 	routeCall: routeCall,
 	atHardware: atHardware,
