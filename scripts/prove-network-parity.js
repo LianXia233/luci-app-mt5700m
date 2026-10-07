@@ -57,132 +57,12 @@ function diffText(a, b) {
 	return '';
 }
 
-/* ------------------------------------------------------- mini 解码器
- * 按后端 parser 的规则把同一份 AT 应答解成路由载荷。只实现测试用得到的
- * 分支，但字段索引/进制/换算与 Rust 逐条对齐，并由下面的钉子钉住。
- */
-const round1 = (v) => Math.round(v * 10) / 10;
-const ord = (v, radix) => {
-	const m = String(v === undefined ? '' : v).trim();
-	if (!/^[0-9a-fA-F]+$/.test(m)) return undefined;
-	return parseInt(m, radix);
-};
-
-/* modules/signal/parser.rs：^HCSQ 索引 → dBm/dB（各 RAT 字段顺序不同） */
-function decodeSignal(raw) {
-	const line = (raw || '').split('\n').find(l => l.trim().indexOf('^HCSQ:') === 0) || '';
-	const f = line.trim().slice('^HCSQ:'.length).split(',').map(s => s.trim().replace(/"/g, ''));
-	const valid = (v) => /^\d+$/.test(v || '') && v !== '255';
-	const n = (v) => parseInt(v, 10);
-	const st = { sysmode: f[0] || '' };
-	if (f[0] === 'NR') {
-		if (valid(f[1])) st.rsrp = n(f[1]) >= 97 ? -44 : n(f[1]) - 141;
-		if (valid(f[2])) st.sinr = n(f[2]) >= 251 ? 30.0 : round1(-20.2 + n(f[2]) * 0.2);
-		if (valid(f[3])) st.rsrq = n(f[3]) >= 34 ? -3.0 : round1(-20.0 + n(f[3]) * 0.5);
-	} else if (f[0] === 'LTE') {
-		if (valid(f[1])) st.rssi = n(f[1]) - 121;
-		if (valid(f[2])) st.rsrp = n(f[2]) >= 97 ? -44 : n(f[2]) - 141;
-		if (valid(f[3])) st.sinr = n(f[3]) >= 251 ? 30.0 : round1(-20.2 + n(f[3]) * 0.2);
-		if (valid(f[4])) st.rsrq = n(f[4]) >= 34 ? -3.0 : round1(-20.0 + n(f[4]) * 0.5);
-	} else if (f[0] === 'WCDMA') {
-		if (valid(f[1])) st.rssi = n(f[1]) - 121;
-		if (valid(f[2])) st.rscp = n(f[2]) >= 96 ? -25 : n(f[2]) - 121;
-		if (valid(f[3])) st.ecio = round1(-32.5 + n(f[3]) * 0.5);
-	} else if (f[0] === 'GSM') {
-		if (valid(f[1])) st.rssi = n(f[1]) - 121;
-	}
-	return st;
-}
-
-/* modules/cell/parser.rs::parse_monsc：LTE cid/pci/lac 十六进制；NR 多一个 scs 码 */
-function decodeCell(raw) {
-	const line = (raw || '').split('\n').find(l => l.trim().indexOf('^MONSC:') === 0) || '';
-	const f = line.trim().slice('^MONSC:'.length).split(',').map(s => s.trim());
-	const st = { sysmode: f[0] };
-	[ 'mcc', 'mnc', 'channel' ].forEach((k, i) => { if (f[i + 1]) st[k] = f[i + 1]; });
-	if (f[0] === 'LTE') {
-		if (ord(f[4], 16) !== undefined) st.cid = String(ord(f[4], 16));
-		if (ord(f[5], 16) !== undefined) st.pci = ord(f[5], 16);
-		if (ord(f[6], 16) !== undefined) st.lac = String(ord(f[6], 16));
-	} else if (f[0] === 'NR') {
-		if (ord(f[4], 10) !== undefined) st.scs = ord(f[4], 10);
-		if (ord(f[5], 16) !== undefined) st.cid = String(ord(f[5], 16));
-		if (ord(f[6], 16) !== undefined) st.pci = ord(f[6], 16);
-		if (ord(f[7], 16) !== undefined) st.lac = String(ord(f[7], 16));
-	} else if (f[0] === 'WCDMA') {
-		if (ord(f[4], 10) !== undefined) st.pci = ord(f[4], 10);
-		if (ord(f[5], 16) !== undefined) st.cid = String(ord(f[5], 16));
-		if (ord(f[6], 16) !== undefined) st.lac = String(ord(f[6], 16));
-	}
-	return st;
-}
-
-/* modules/network/parser.rs::parse_registration（CEREG：<n>,<stat>[,"<tac>","<ci>"[,<AcT>]]） */
-function decodeRegistration(raw) {
-	const line = (raw || '').split('\n').find(l => l.trim().indexOf('+CEREG:') === 0) || '';
-	const f = line.trim().slice('+CEREG:'.length).split(',').map(s => s.trim().replace(/"/g, ''));
-	const st = {};
-	if (f[1] !== undefined) st.state = parseInt(f[1], 10);
-	if (f[2]) st.tac = f[2];
-	if (f[3]) st.ci = f[3];
-	if (f[4]) st.act = f[4];
-	return st;
-}
-
-/* modules/network/parser.rs::parse_rrcstat：末字段 98/99 是驻留标记，之前一位是状态；
- * 没有标记时末字段就是状态（两字段与三字段两种固件形态都要读对）。 */
-function decodeRrc(raw) {
-	const line = (raw || '').split('\n').find(l => l.trim().indexOf('^RRCSTAT:') === 0) || '';
-	const f = line.trim().slice('^RRCSTAT:'.length).split(',').map(s => s.trim()).filter(s => s !== '');
-	const st = {};
-	let idx = f.length;
-	if (f.length && (f[f.length - 1] === '98' || f[f.length - 1] === '99'))
-		st.camped = parseInt(f[--idx], 10);
-	if (idx > 0 && /^-?\d+$/.test(f[idx - 1])) st.state = parseInt(f[idx - 1], 10);
-	return st;
-}
-
-/* modules/network/parser.rs::parse_cops_operator：优先引号里的运营商名 */
-function decodeOperator(raw) {
-	const line = (raw || '').split('\n').find(l => l.trim().indexOf('+COPS:') === 0) || '';
-	const body = line.trim().slice('+COPS:'.length).trim();
-	const q = body.indexOf('"'), q2 = body.indexOf('"', q + 1);
-	if (q >= 0 && q2 > q) return { operator: body.slice(q + 1, q2) };
-	return {};
-}
-
-/* modules/system/parser.rs::parse_chiptemp（十分之一度，65535/越界 = 未上报）
- * + state.rs::TemperatureState::peak（>0 且 ≤150 里取最大，取不到就没有） */
-const SENSORS = [ 'sub3GPA', 'sub6GPA', 'mimoPa', 'tcxo', 'peri1', 'peri2', 'ap1', 'ap2', 'modem1', 'modem2', 'bbp1', 'bbp2' ];
-const SENSOR_KEYS = [ 'sub3g_pa', 'sub6g_pa', 'mimo_pa', 'tcxo', 'peri1', 'peri2', 'ap1', 'ap2', 'modem1', 'modem2', 'bbp1', 'bbp2' ];
-function decodeTemps(raw) {
-	const line = (raw || '').split('\n').find(l => l.trim().indexOf('^CHIPTEMP:') === 0) || '';
-	const f = line.trim().slice('^CHIPTEMP:'.length).split(',').map(s => s.trim());
-	const st = {};
-	let sum = 0, count = 0;
-	SENSORS.forEach((name, i) => {
-		const raw_v = /^\d+$/.test(f[i] || '') ? parseInt(f[i], 10) : 0;
-		const v = (raw_v >= 65535 || raw_v > 1500) ? 0 : raw_v / 10;
-		if (v > 0) { sum += v; count++; }
-		st[name] = v;
-	});
-	if (count) st.average = round1(sum / count);
-	SENSORS.forEach((name, i) => {
-		const v = st[name];
-		if (v > 0 && v <= 150 && (st.peak === undefined || v > st.peak)) { st.peak = v; st.peak_sensor = SENSOR_KEYS[i]; }
-	});
-	return st;
-}
-/* modules/system/state.rs::to_text：`temp_*` 逐行 + `temperature=` + `temperature_sensor=` */
-function temperatureText(temps) {
-	const out = [];
-	SENSOR_KEYS.forEach((key, i) => { if (temps[SENSORS[i]] > 0) out.push('temp_' + key + '=' + temps[SENSORS[i]].toFixed(1)); });
-	if (temps.peak !== undefined) {
-		out.push('temperature=' + temps.peak.toFixed(1));
-		out.push('temperature_sensor=' + temps.peak_sensor);
-	}
-	return out.join('\n') + '\n';
-}
+const fixtures = require('./lib/at-fixtures');
+const {
+	round1,
+	decodeSignal, decodeCell, decodeRegistration, decodeRrc, decodeOperator, decodeTemps,
+	temperatureText,
+} = fixtures;
 
 /* ------------------------------------------------------------ 钉子 */
 
@@ -244,26 +124,23 @@ const MODEM = {
 
 /* 旧输入：`mt5700m-at network` 的帧（api/cli.rs::dump_section 的格式） */
 function oldFrame() {
-	let out = '';
-	for (const [ label, command, reply ] of [
+	return fixtures.textFrame([
 		[ 'Signal', 'AT^HCSQ?', MODEM.hcsq ],
 		[ 'Serving cell', 'AT^MONSC', MODEM.monsc ],
 		[ 'RRC state', 'AT^RRCSTAT?', MODEM.rrc ],
 		[ 'Network registration', 'AT+CEREG?', MODEM.cereg ],
 		[ 'Operator', 'AT+COPS?', MODEM.cops ]
-	])
-		out += '===== ' + label + ': ' + command + ' =====\n' + reply + '\nOK\n\n';
-	return out + temperatureText(decodeTemps(MODEM.chiptemp));
+	]) + temperatureText(decodeTemps(MODEM.chiptemp));
 }
 /* 新输入：无线偏好区块仍是文本帧（这一刀没动它），其余走路由 */
 function radioFrame() {
-	return [
+	return fixtures.textFrame([
 		[ 'Radio mode', 'AT^SYSCFGEX?', MODEM.syscfgex ],
 		[ '5G access mode', 'AT^C5GOPTION?', MODEM.c5g ],
-		[ 'NR carrier aggregation', 'AT^NRRCCAPQRY=3', MODEM.nrrccap ],
-		[ 'VoNR', 'AT^NRRCCAPQRY=2', MODEM.nrrccap ],
-		[ 'DSS', 'AT^NRRCCAPQRY=5', MODEM.nrrccap ]
-	].map(([ label, command, reply ]) => '===== ' + label + ': ' + command + ' =====\n' + reply + '\nOK\n\n').join('');
+		[ 'NR carrier aggregation', 'AT^NRRRCCAPQRY=3', undefined ],
+		[ 'VoNR', 'AT^NRRCCAPQRY=2', undefined ],
+		[ 'DSS', 'AT^NRRCCAPQRY=5', undefined ]
+	]).replace(/undefined\nOK/g, MODEM.nrrccap + '\nOK');
 }
 
 const ANSWERS = {

@@ -94,7 +94,7 @@ aliases, so the move itself changed no behaviour.
 | `cargo test --locked` (CI) | see the run on the head commit |
 | Shell/JS/JSON/PO checks (CI `static-checks`) | see the run on the head commit |
 | UI files touched by this refactor | none (by design) |
-| LuCI migration parity (`scripts/prove-neighbors-parity.js`, `prove-lock-parity.js`, `prove-network-parity.js`) | each renders the baseline view and the new one in one stubbed DOM from the same modem replies and diffs the DOM: structure/labels byte-identical, only the listed value corrections differ. Migration-time tools, not CI checks — each takes its pre-slice commit as an argument (`663f989`, `dfb4810`, `24ed5ef`) and exits 2 when handed a revision that already contains its slice |
+| LuCI migration parity (`scripts/prove-neighbors-parity.js`, `prove-lock-parity.js`, `prove-network-parity.js`, `prove-cellscan-parity.js`) | each renders the baseline view and the new one in one stubbed DOM from the same modem replies and diffs the DOM: structure/labels byte-identical, only the listed value corrections differ. Migration-time tools, not CI checks — each takes its pre-slice commit as an argument (`663f989`, `dfb4810`, `24ed5ef`, `fceb6ea`) and exits 2 when handed a revision that already contains its slice. The AT-side fixtures they share live in `scripts/lib/at-fixtures.js`, each script pinning them against the matching Rust unit tests |
 
 ## 3. What remains (in order)
 
@@ -339,16 +339,41 @@ aliases, so the move itself changed no behaviour.
        reading — collapsing them onto one is a UI decision, not a decode one,
        and is left to the owner (the decode itself is single now: one
        `TemperatureState`, one `peak()`).
-     * Still on text frames, to be migrated next: the scan modal's serving cell
-       (`cell.get` needs `band` from `core::radio::arfcn_to_band`, and its
-       measurement bars become `signal.get`) — which is the last caller of
-       `parser.arfcnToBand` — the page's radio-preference block
-       (`^SYSCFGEX`/`^C5GOPTION`/`^NRRCCAPQRY` rows still slice the `radio`
+     * the scan modal followed. Its serving-cell card read the `^MONSC` text and
+       guessed the band with `parser.arfcnToBand`, its measurement bars came from
+       `^MONSC`'s fields 7..10, the scan state came from the
+       `mt5700m-at cellscan-result` text JSON and starting a scan was a side
+       effect of the `cellscan` verb. Now: `cell.get` (band from
+       `core::radio::arfcn_to_band`, PCI/CID decimal) + `signal.get` for the
+       bars, `cell.scan_result` for the state, `cell.scan_start` when nothing has
+       been scanned yet — the last three mirroring what the CLI verb did
+       (present a finished scan rather than starting a new one).
+       `parser.parseMonsc` (the third JS copy of the `^MONSC` layout — `cell.get`
+       and `cell.neighbors` no longer need it either) and `parser.arfcnToBand`
+       (the band table that only covered up to 3 GHz: for an n78 ARFCN it did the
+       0–3 GHz linear conversion, landed outside every range and printed
+       `NR · NR`) are deleted, as are `api.atCellscan`/`api.atCellscanResult`;
+       the wireless page is now down to `atRadio` for its radio-preference block.
+       Parity: `scripts/prove-cellscan-parity.js fceb6ea` drives the real
+       «Cell Scan → Continue» path on both revisions — the modal title, both
+       neighbour cards, the labels and the copy are byte-identical and all four
+       differing lines are the intended value corrections (the `NR · NR` →
+       `NR · n78` band, the decimal PCI/CID, and the SINR bar that `^MONSC`'s NR
+       layout does not carry, so the old card drew `--`); it also pins the
+       no-`band` fallback, which is the same `NR · NR` the old table produced.
+       The modal's **"Frequency scan" card is deleted, not restored**: it has
+       never rendered (the `parser.section` prefix mismatch described below), so
+       removing the text path removes dead code, not UI. Bringing the scan
+       results back is a UI decision — `cell.scan_result` already carries the
+       decoded `cells` and the raw `^CELLSCAN` text whenever someone decides what
+       the card should show.
+     * Still on text frames, to be migrated next: the page's radio-preference
+       block (`^SYSCFGEX`/`^C5GOPTION`/`^NRRCCAPQRY` rows still slice the `radio`
        frame, now the page's only CLI call), `parser.section`/`matchValues` for
        the settings-page rows, and the `status`/`sms`/`system` pages, which
-       still call the CLI verbs. `parser.js` (`arfcnToBand`, `matchValues`,
-       `section`) is deleted when the last of them moves. The dashboard already
-       reads the daemon cache via `api.cachedSnapshot()`.
+       still call the CLI verbs. `parser.js` (`section`, `matchValues`) is
+       deleted when the last of them moves. The dashboard already reads the
+       daemon cache via `api.cachedSnapshot()`.
      * Defect found while proving the above, **not** changed (it is a UI
        change, so it needs a decision): the scan modal's "Frequency scan" card
        never renders, on HEAD or now. `parser.section()` matches a prefix
@@ -356,9 +381,11 @@ aliases, so the move itself changed no behaviour.
        while `cli.rs` prints `===== Frequency scan: AT^CELLSCAN =====` — no
        match, so the card (and its "+CME ERROR: 3" note) is dead. The two
        other labels that include the AT command survive only because their
-       callers pass `|| raw`. The modal migration to `cell.scan_result` would
-       fix it deliberately, with the card coming back. The same pass removes the
-       modal's `mt5700m-at cellscan` call itself, which the control socket's
+       callers pass `|| raw`. The modal migration deleted the card together with
+       the text path instead of restoring it — it had never been visible, so the
+       rendered UI is unchanged, and what the card should show is a UI decision
+       (the decoded `cells` or the raw `^CELLSCAN` text). The same pass removed
+       the modal's `mt5700m-at cellscan` call itself, which the control socket's
        timeout cannot carry for a full-band scan.
 10. **Fold `mt5700m-traffic` into `modules/traffic`** (last non-Rust business
    process) and the dialing glue of `mt5700m-manager` into `modules/network`

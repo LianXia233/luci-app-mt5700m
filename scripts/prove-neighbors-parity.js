@@ -50,6 +50,7 @@ function newSource(rel) {
 /* ------------------------------------------------------------------ 公共桩 */
 // DOM 桩、序列化与装载逻辑在 scripts/lib/luci-stub.js（三个证明脚本共用一份）
 const lib = require('./lib/luci-stub');
+const fixtures = require('./lib/at-fixtures');
 
 const VALUE_CLASS = /mt-lock-cell-name|mt-lock-cell-desc|mt-signal-value|mt-ssb-serving-title/;
 
@@ -250,14 +251,21 @@ check('取值差异 == 预期清单（' + EXPECTED_VALUE_DIFFS.length + ' 条）
 check('诊断邻区节只显示 NR（NR 优先，与迁移前相同）',
 	slotValues(newDiag).indexOf('B3 · 1650') === -1 && countTag(serialize(newDiag, true), 'div.mt-lock-cell-card') === 2);
 
-/* 3) 扫频弹窗：邻区段读路由，标题分组逻辑不变 */
-console.log('\n扫频弹窗（renderCellScan）');
+/* 3) 扫频弹窗：邻区段读路由，标题分组逻辑不变
+ *
+ * 663f989 的 `renderCellScan(raw)` 从帧里的 ^MONNC 段切邻区，没有载荷入口，
+ * 所以这一节只渲染**当前**实现（模块级函数由视图导出），断言的是「同一份
+ * `cell.neighbors` 领域值渲染出与迁移前相同的邻区小节」。弹窗本身的新旧一致性
+ * 由 `scripts/prove-cellscan-parity.js fceb6ea` 负责（它能在两边都驱动真实路径）。
+ */
 const scanFrame = [
 	'===== Serving cell: AT^MONSC =====', '^MONSC: NR,460,00,636648,0,10321,1FA,2F01,-82,-9', 'OK',
 	'===== Frequency scan: AT^CELLSCAN =====', '^CELLSCAN: 636648,506,-82', 'OK', '',
 ].join('\n');
-const scan = after.view.renderCellScan(scanFrame, { neighbors: NEIGHBORS_PAYLOAD });
-const scanShape = serialize(scan, true), scanLines = lines(scan);
+const CELL_PAYLOAD = Object.assign({ band: '78' }, fixtures.decodeCell('^MONSC: NR,460,00,636648,0,10321,1FA,2F01,-82,-9'));
+const SIGNAL_PAYLOAD = fixtures.decodeSignal('^HCSQ: "NR",58,165,22');
+const scan = after.view.renderCellScan(CELL_PAYLOAD, SIGNAL_PAYLOAD, NEIGHBORS_PAYLOAD);
+const scanShape = serialize(scan, true);
 check('NR 邻区优先成节：NR neighbour cells (#)', scanShape.indexOf('text=NR neighbour cells (#)') !== -1);
 check('其余 LTE 邻区成节：LTE neighbour cells (#)', scanShape.indexOf('text=LTE neighbour cells (#)') !== -1);
 check('两张邻区卡片', countTag(scanShape, 'div.mt-lock-cell-card') === 2);
@@ -267,7 +275,9 @@ const scanPcis = slotsOf(scan, 'mt-lock-cell-desc');
 check('弹窗邻区卡片取值 = 领域值（PCI 十进制 / 频段标签）',
 	sameJson(scanCards, [ 'n78 · 636648', 'B3 · 1650' ]) && sameJson(scanPcis, [ 'PCI 64', 'PCI 476' ]),
 	JSON.stringify({ cards: scanCards, pcis: scanPcis }));
-check('服务小区仍读帧（标题含 ARFCN:636648 与 PCI:1FA）', textOf(scan).indexOf('ARFCN:636648') !== -1 && textOf(scan).indexOf('PCI:1FA') !== -1);
+check('服务小区现在也读载荷（ARFCN:636648 / 十进制 PCI:506 / 模块频段 n78）',
+	textOf(scan).indexOf('ARFCN:636648') !== -1 && textOf(scan).indexOf('PCI:506') !== -1 && textOf(scan).indexOf('n78') !== -1,
+	textOf(scan).slice(0, 100));
 // 扫频原文卡片：迁移前后都取不到（`section()` 的前缀规则要求 '===== <label>:' 前缀，
 // cli.rs 打的是 '===== Frequency scan: AT^CELLSCAN ====='）——既有缺陷，不在本刀范围。
 check('扫频原文段迁移前后同样解析为空（既有缺陷，未改动）',

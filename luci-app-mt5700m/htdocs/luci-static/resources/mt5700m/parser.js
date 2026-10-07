@@ -307,54 +307,6 @@ function cleanSignal(value) {
 	return String(value).trim();
 }
 
-// AT^MONSC 服务小区（RAT 不同字段布局不同）
-function parseMonsc(text) {
-	var lines = (text || '').split(/\n/).map(function(l) { return l.trim(); }).filter(function(l) { return l.indexOf('^MONSC:') === 0; });
-	if (!lines.length) return null;
-	var v = lines[0].replace(/^\^MONSC:/, '').replace(/^[ :=]+/, '').replace(/"/g, '').split(',').map(function(x) { return x.trim(); });
-	var rat = String(v[0] || '').toUpperCase();
-	if (!rat || rat === 'NONE') return null;
-	if (rat.indexOf('NR') === 0)
-		return { rat: 'NR', mcc: v[1], mnc: v[2], arfcn: v[3], scs: v[4], cellId: v[5], pci: v[6], tac: v[7],
-			rsrp: cleanSignal(v[8]), rsrq: cleanSignal(v[9]), sinr: cleanSignal(v[10]) };
-	if (rat.indexOf('LTE') === 0)
-		return { rat: 'LTE', mcc: v[1], mnc: v[2], arfcn: v[3], scs: '', cellId: v[4], pci: v[5], tac: v[6],
-			rsrp: cleanSignal(v[7]), rsrq: cleanSignal(v[8]), rssi: cleanSignal(v[9]), sinr: '' };
-	return { rat: rat, mcc: v[1], mnc: v[2], arfcn: v[3], scs: '', cellId: v[5], pci: v[4], tac: v[6],
-		rsrp: cleanSignal(v[7]), rsrq: '', sinr: '' };
-}
-
-// NR / LTE ARFCN → 频段名（MT5700M-CN Hardware Design Guide Table 5-1）
-function arfcnToBand(arfcn, rat) {
-	var n = parseInt(arfcn, 10);
-	if (isNaN(n) || n < 0) return null;
-	if (rat === '101' || rat === 'NR' || rat === 'nr') {
-		var freqMHz = n * 0.005;
-		if (freqMHz >= 703    && freqMHz <= 803)    return 'n28';
-		if (freqMHz >= 824    && freqMHz <= 894)    return 'n5';
-		if (freqMHz >= 880    && freqMHz <= 960)    return 'n8';
-		if (freqMHz >= 1710   && freqMHz <= 1880)   return 'n3';
-		if (freqMHz >= 1920   && freqMHz <= 2170)   return 'n1';
-		if (freqMHz >= 2496   && freqMHz <= 2690)   return 'n41';
-		if (freqMHz >= 3300   && freqMHz <= 3800)   return 'n78';
-		if (freqMHz >= 4400   && freqMHz <= 5000)   return 'n79';
-		return 'NR';
-	}
-	if (rat === '1' || rat === 'LTE' || rat === 'lte') {
-		if (n >= 0     && n <= 359)     return 'B1';
-		if (n >= 1200  && n <= 1949)    return 'B3';
-		if (n >= 2400  && n <= 2649)    return 'B5';
-		if (n >= 3450  && n <= 3799)    return 'B8';
-		if (n >= 10000 && n <= 10200)   return 'B34';
-		if (n >= 37750 && n <= 38249)   return 'B38';
-		if (n >= 38250 && n <= 38649)   return 'B39';
-		if (n >= 38650 && n <= 39649)   return 'B40';
-		if (n >= 39650 && n <= 41589)   return 'B41';
-		return 'LTE';
-	}
-	return null;
-}
-
 // 频段名 → 后端锁频命令所需的数字（n41→41, B3→3）
 function bandNameToNumber(bandName) {
 	if (!bandName) return '';
@@ -562,8 +514,6 @@ return baseclass.extend({
 	currentTraffic: currentTraffic,
 	trafficUpdated: trafficUpdated,
 	cleanSignal: cleanSignal,
-	parseMonsc: parseMonsc,
-	arfcnToBand: arfcnToBand,
 	bandNameToNumber: bandNameToNumber,
 	ssbValue: ssbValue,
 	cleanCsv: cleanCsv,

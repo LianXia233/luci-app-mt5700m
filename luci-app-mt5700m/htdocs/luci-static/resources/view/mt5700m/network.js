@@ -120,32 +120,47 @@ function ssbStateFromPayload(payload) {
 	};
 }
 
-// 小区扫描结果（模态）——服务小区 / 邻区 / 频段扫描
-function renderCellScan(raw, payloads) {
+// 小区扫描结果（模态）——服务小区 / 邻区。
+//
+// 服务小区卡片的数据来自两条路由：`cell.get`（modules/cell 解码 ^MONSC /
+// ^HFREQINFO，PCI/CID/LAC 已是十进制、频段是模块的频段号）与 `signal.get`
+// （modules/signal 解码 ^HCSQ —— 与整页仪表同一份读数）。旧版这里切
+// `mt5700m-at cellscan` 帧里的 ^MONSC 文本，用 parser.arfcnToBand 猜频段，
+// 再自己把十六进制字段当字符串显示。
+//
+// 频段标签沿用 bandLabel()：有频段号是 'n78'/'B3'，取不到时回退 RAT 名 ——
+// 与旧版 arfcnToBand 在表外回退 'NR'/'LTE' 的形状一致。
+function renderCellScan(cell, signal, neighbors) {
 	var sections = [];
-	var monsc = parser.parseMonsc(parser.section(raw, 'Serving cell: AT^MONSC') || raw);
-	if (monsc && monsc.rat) {
-		var scsKhz = monsc.scs ? ({ '0':'15', '1':'30', '2':'60', '3':'120', '4':'240' }[monsc.scs] || '?') : '';
-		var scRatLabel = monsc.rat;
-		var scBand = parser.arfcnToBand(monsc.arfcn, scRatLabel);
-		var scBars = [ c.signalBar(monsc.rsrp, 'rsrp', 'RSRP'), c.signalBar(monsc.rsrq, 'rsrq', 'RSRQ') ];
-		if (monsc.rat === 'LTE')
-			scBars.push(c.signalBar(monsc.rssi, 'rsrp', 'RSSI'));
+	cell = cell || {};
+	signal = signal || {};
+	if (cell.sysmode) {
+		// SCS 是编码值，0（15 kHz）也是有效值，所以按「字段在不在」判断。
+		var scsKhz = (cell.scs === undefined || cell.scs === null)
+			? '' : ({ '0':'15', '1':'30', '2':'60', '3':'120', '4':'240' }[cell.scs] || '?');
+		var scRatLabel = cell.sysmode;
+		var scBand = bandLabel(cell.band, scRatLabel);
+		// 读数与旧版同形：NR 是 RSRP/RSRQ/SINR，LTE 是 RSRP/RSRQ/RSSI，
+		// 其余 RAT 仍是 RSRP/RSRQ/SINR（取不到就 '--'，由 signalBar 负责）。
+		var scBars = [ c.signalBar(signal.rsrp, 'rsrp', 'RSRP'), c.signalBar(signal.rsrq, 'rsrq', 'RSRQ') ];
+		if (scRatLabel === 'LTE')
+			scBars.push(c.signalBar(signal.rssi, 'rsrp', 'RSSI'));
 		else
-			scBars.push(c.signalBar(monsc.sinr, 'sinr', 'SINR'));
+			scBars.push(c.signalBar(signal.sinr, 'sinr', 'SINR'));
+		var hasPci = cell.pci !== undefined && cell.pci !== null;
+		var hasArfcn = cell.channel !== undefined && cell.channel !== null && cell.channel !== '';
 		sections.push(E('section', { 'class': 'mt-card' }, [
 			E('h4', { 'class': 'mt-card-title', 'style': 'margin:0 0 12px' }, _('Serving cell')),
 			E('div', { 'class': 'mt-ssb-serving' }, [
 				E('div', { 'class': 'mt-ssb-serving-head' }, [
-					E('span', { 'class': 'mt-ssb-serving-title' }, scRatLabel + (scBand ? ' · ' + scBand : '') + (monsc.pci ? ' · PCI:' + monsc.pci : '') + (monsc.arfcn ? ' · ARFCN:' + monsc.arfcn : '')),
-					E('span', { 'class': 'mt-ssb-serving-meta' }, (monsc.cellId || '') + (scsKhz ? ' · SCS:' + scsKhz + 'kHz' : ''))
+					E('span', { 'class': 'mt-ssb-serving-title' }, scRatLabel + (scBand ? ' · ' + scBand : '') + (hasPci ? ' · PCI:' + cell.pci : '') + (hasArfcn ? ' · ARFCN:' + cell.channel : '')),
+					E('span', { 'class': 'mt-ssb-serving-meta' }, (cell.cid || '') + (scsKhz ? ' · SCS:' + scsKhz + 'kHz' : ''))
 				])
 			].concat(scBars))
 		]));
 	}
-	var monnc = (((payloads || {}).neighbors || {}).cells || []).map(neighborCard);
+	var monnc = (((neighbors || {}).cells) || []).map(neighborCard);
 	if (monnc.length) {
-		var scRat = (monsc && monsc.rat) || '';
 		var nrNbs = monnc.filter(function(nb) { return nb.rat === 'NR'; });
 		var lteNbs = monnc.filter(function(nb) { return nb.rat === 'LTE'; });
 		var activeNbs, activeLabel, otherNbs = [], otherLabel = '';
@@ -181,21 +196,12 @@ function renderCellScan(raw, payloads) {
 			]));
 		}
 	}
-	var cellscanSection = parser.section(raw, 'Frequency scan: AT^CELLSCAN');
-	var cellscanLines = (cellscanSection || '').split(/\n/).filter(function(l) { return l.trim() && l.trim() !== 'OK'; });
-	var hasCellScanData = cellscanLines.some(function(l) { return l.indexOf('^CELLSCAN:') === 0; });
-	var hasCellScanError = cellscanLines.some(function(l) { return l.indexOf('ERROR') !== -1; });
-	if (hasCellScanData) {
-		sections.push(E('section', { 'class': 'mt-card' }, [
-			E('h4', { 'class': 'mt-card-title', 'style': 'margin:0 0 12px' }, _('Frequency scan')),
-			E('pre', { 'class': 'mt-raw mt-scan-raw' }, cellscanSection)
-		]));
-	} else if (hasCellScanError) {
-		sections.push(E('section', { 'class': 'mt-card' }, [
-			E('h4', { 'class': 'mt-card-title', 'style': 'margin:0 0 12px' }, _('Frequency scan')),
-			E('div', { 'class': 'mt-scan-note' }, _('Frequency scan is not available while the module is camped on a cell (%s).').format('+CME ERROR: 3'))
-		]));
-	}
+	// 频段扫描卡片在旧实现里从未渲染过（`parser.section()` 找
+	// `===== Frequency scan: AT^CELLSCAN:`，而 CLI 打印
+	// `===== Frequency scan: AT^CELLSCAN =====`，前缀永远不匹配 —— 发布版
+	// 起就是这样），所以随文本路径一起删除，弹窗的可见内容不变。扫描结果
+	// （`cell.scan_result` 的 `cells` / `raw`）随时可用，要恢复这张卡片是
+	// 一个独立决定，见 docs/architecture-v2/migration.md。
 	if (!sections.length)
 		return E('div', {}, E('div', { 'class': 'alert-message warning' }, _('No scan data received.')));
 	return E('div', { 'class': 'mt-scan-results' }, sections);
@@ -638,34 +644,43 @@ return view.extend({
 						E('div', { 'class': 'right' }, [ E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')), ' ', E('button', { 'class': 'btn cbi-button-apply', 'click': function() {
 							ui.hideModal();
 							/*
-							 * 扫频是后端的长任务（几分钟），这条调用只负责「取回当前结果」：
-							 * 还没有结果时会顺带发起一次扫描，然后轮询 cellscan-result，
-							 * 扫完再取一次，弹窗里呈现的内容与旧版同步扫频完全一致。
+							 * 扫频是后端的长任务（几分钟）。弹窗的取数全部走统一路由：
+							 * 服务小区 cell.get、读数 signal.get、邻区 cell.neighbors、
+							 * 扫描状态 cell.scan_result；没有结果时顺带 cell.scan_start
+							 * （旧版由 `mt5700m-at cellscan` 动词做同一件事：有 raw 就只
+							 * 呈现，不再扫）。扫完重取一次服务小区并重绘，邻区沿用首屏
+							 * 那一份 —— 与旧版重取一次 CLI 帧、复用 neighbors 相同。
+							 *
+							 * `api.route()` 不 reject（取不到返回 null），所以「后端完全
+							 * 不可达」按旧版的失败路径处理：danger 通知，不弹窗。
 							 */
-							var showScan = function(scan, payloads) {
-								var body = scan.stdout ? renderCellScan(scan.stdout, payloads) : E('div', { 'class': 'alert-message warning' }, _('No response.'));
-								ui.showModal(_('Cell Scan'), [ body, E('div', { 'class': 'right', 'style': 'margin-top:14px' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close'))) ]);
-							};
-							// 邻区与扫频帧并发取：邻区走 cell.neighbors（与 WebUI 同一份解码），
-							// 帧里只剩服务小区与 ^CELLSCAN 原文。
-							Promise.all([ api.atCellscan(), api.route('cell.neighbors') ]).then(function(both) {
-								var scan = both[0], neighbors = both[1];
-								showScan(scan, { neighbors: neighbors });
+							Promise.all([ api.route('cell.get'), api.route('signal.get'), api.route('cell.neighbors'), api.route('cell.scan_result') ]).then(function(all) {
+								var cell = all[0], signal = all[1], neighbors = all[2], scan = all[3];
+								if (!cell && !signal && !neighbors && !scan) {
+									ui.addNotification(null, E('p', {}, _('Cell scan failed.')), 'danger');
+									return;
+								}
+								var showScan = function(cell, signal) {
+									ui.showModal(_('Cell Scan'), [ renderCellScan(cell, signal, neighbors), E('div', { 'class': 'right', 'style': 'margin-top:14px' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close'))) ]);
+								};
+								if (scan && !scan.running && !scan.raw)
+									api.route('cell.scan_start');
+								showScan(cell, signal);
 								var waited = 0;
 								var poll = window.setInterval(function() {
 									waited += 3000;
-									api.atCellscanResult().then(function(res) {
-										var state = null;
-										try { state = JSON.parse((res && res.stdout) || 'null'); } catch (e) { state = null; }
-										// 没有 state 说明后端读不到结果，别再空转。
-										if (!state || !state.running || waited > 600000) {
+									api.route('cell.scan_result').then(function(next) {
+										// 取不到结果说明后端不可达，别再空转。
+										if (!next || !next.running || waited > 600000) {
 											window.clearInterval(poll);
-											if (state && !state.running) api.atCellscan().then(function(next) { showScan(next, { neighbors: neighbors }); }, function() {});
+											if (next && !next.running)
+												Promise.all([ api.route('cell.get'), api.route('signal.get') ]).then(function(both) {
+													// 重取失败就保持弹窗原内容（旧版失败分支同样什么都不做）。
+													if (both[0] || both[1]) showScan(both[0], both[1]);
+												});
 										}
-									}, function() { window.clearInterval(poll); });
+									});
 								}, 3000);
-							}, function(err) {
-								ui.addNotification(null, E('p', {}, err.message || _('Cell scan failed.')), 'danger');
 							});
 						} }, _('Continue')) ])
 					]);
