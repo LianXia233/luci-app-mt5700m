@@ -37,6 +37,13 @@ class El {
 		for (const key of Object.keys(this.attrs))
 			if (typeof this.attrs[key] === 'function' && key.indexOf('on') !== 0)
 				this.addEventListener(key, this.attrs[key]);
+		// 浏览器会把 checked/value 这类属性反射成同名 property，桩必须一样：
+		// bandChecklist 用 `checked` 属性标记选中，selectedBandMask 读的是
+		// `checkbox.checked` —— 不反射的话「全选」看起来一个都没选。
+		if (this.attrs.checked !== undefined && this.attrs.checked !== null)
+			this.checked = !!this.attrs.checked;
+		if (this.attrs.value !== undefined)
+			this.value = this.attrs.value;
 	}
 	appendChild(child) { this.children.push(child); return child; }
 	replaceChildren(...kids) { this.children = kids.filter(k => k !== null && k !== undefined); }
@@ -47,7 +54,11 @@ class El {
 		(this._listeners[type] || []).forEach(fn => fn(event));
 		return true;
 	}
-	setAttribute(k, v) { this.attrs[k] = v; }
+	setAttribute(k, v) {
+		this.attrs[k] = v;
+		if (k === 'checked') this.checked = !!v;
+		if (k === 'value') this.value = v;
+	}
 	getAttribute(k) { return this.attrs[k]; }
 	closest() { return null; }
 	scrollIntoView() {}

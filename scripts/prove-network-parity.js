@@ -61,6 +61,7 @@ const fixtures = require('./lib/at-fixtures');
 const {
 	round1,
 	decodeSignal, decodeCell, decodeRegistration, decodeRrc, decodeOperator, decodeTemps,
+	decodeSyscfg, decodeC5gOption, decodeNrCapability,
 	temperatureText,
 } = fixtures;
 
@@ -151,7 +152,13 @@ const ANSWERS = {
 	'route:registration.get': decodeRegistration(MODEM.cereg),
 	'route:network.get': decodeOperator(MODEM.cops),
 	'route:network.rrc': decodeRrc(MODEM.rrc),
-	'route:system.temperature': decodeTemps(MODEM.chiptemp)
+	'route:system.temperature': decodeTemps(MODEM.chiptemp),
+	// radio-preference 切片：无线偏好区块也改读路由（^SYSCFGEX / ^C5GOPTION /
+	// ^NRRCCAPQRY 3/2/5），载荷由共享夹具层按 modules/{network,modem} 的规则解码
+	// —— 同一批应答，页面看到的取值与旧版切帧一致，所以整页比较仍然是逐字相同。
+	'route:network.syscfg': decodeSyscfg(MODEM.syscfgex),
+	'route:network.c5goption': decodeC5gOption(MODEM.c5g),
+	'route:modem.nr_capability': decodeNrCapability({ ca: MODEM.nrrccap, vonr: MODEM.nrrccap, dss: MODEM.nrrccap })
 };
 
 /* ------------------------------------------------------------ 装载 */
@@ -267,11 +274,14 @@ Promise.all([ renderView(old), renderView(neu) ]).then(function (holders) {
 	const oldAt = apiOld.calls.filter(c => c.kind === 'at').map(c => c.args[0]);
 	const newAt = apiNew.calls.filter(c => c.kind === 'at').map(c => c.args[0]);
 	check('旧版：at network（状态区块的文本帧）+ at radio', sameJson(oldAt, [ 'network', 'radio' ]), JSON.stringify(oldAt));
-	check('新版：不再有 at network；只剩 at radio（无线偏好区块，这一刀没动）', sameJson(newAt, [ 'radio' ]), JSON.stringify(newAt));
+	// radio-preference 切片把最后一块 CLI 调用（advanced radio）也迁到路由，
+	// 无线页到此零 CLI 调用 —— 下面两条断言随之收紧。
+	check('新版：零 CLI 调用（at network 与 at radio 都已迁成路由）', sameJson(newAt, []), JSON.stringify(newAt));
 	const newRoutes = apiNew.calls.filter(c => c.kind === 'route').map(c => c.name + (c.params && c.params.rat ? '/' + c.params.rat : ''));
-	check('新版：状态区块六个路由 + 两个锁路由',
+	check('新版：状态区块六个路由 + 无线偏好三条 + 两个锁路由（顺序即 load() 的 Promise.all）',
 		sameJson(newRoutes, [ 'signal.get', 'cell.get', 'registration.get', 'network.get',
-			'network.rrc', 'system.temperature', 'network.lock_get/lte', 'network.lock_get/nr' ]),
+			'network.rrc', 'system.temperature', 'network.syscfg', 'network.c5goption',
+			'modem.nr_capability', 'network.lock_get/lte', 'network.lock_get/nr' ]),
 		JSON.stringify(newRoutes));
 	check('旧版：没有 RRC 路由（^RRCSTAT 只能从帧里切），锁路由已在',
 		kind(apiOld.calls, 'route', 'network.rrc').length === 0

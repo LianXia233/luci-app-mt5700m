@@ -94,7 +94,7 @@ aliases, so the move itself changed no behaviour.
 | `cargo test --locked` (CI) | see the run on the head commit |
 | Shell/JS/JSON/PO checks (CI `static-checks`) | see the run on the head commit |
 | UI files touched by this refactor | none (by design) |
-| LuCI migration parity (`scripts/prove-neighbors-parity.js`, `prove-lock-parity.js`, `prove-network-parity.js`, `prove-cellscan-parity.js`) | each renders the baseline view and the new one in one stubbed DOM from the same modem replies and diffs the DOM: structure/labels byte-identical, only the listed value corrections differ. Migration-time tools, not CI checks — each takes its pre-slice commit as an argument (`663f989`, `dfb4810`, `24ed5ef`, `fceb6ea`) and exits 2 when handed a revision that already contains its slice. The AT-side fixtures they share live in `scripts/lib/at-fixtures.js`, each script pinning them against the matching Rust unit tests |
+| LuCI migration parity (`scripts/prove-neighbors-parity.js`, `prove-lock-parity.js`, `prove-network-parity.js`, `prove-cellscan-parity.js`, `prove-radio-parity.js`) | each renders the baseline view and the new one in one stubbed DOM from the same modem replies and diffs the DOM: structure/labels byte-identical, only the listed value corrections differ. Migration-time tools, not CI checks — each takes its pre-slice commit as an argument (`663f989`, `dfb4810`, `24ed5ef`, `fceb6ea`, `4474436`) and exits 2 when handed a revision that already contains its slice. The AT-side fixtures they share live in `scripts/lib/at-fixtures.js` (`decodeSyscfg`/`decodeC5gOption`/`decodeNrCapability` cover the radio-preference replies the same way the other decoders cover their modules), each script pinning them against the matching Rust unit tests |
 
 ## 3. What remains (in order)
 
@@ -353,7 +353,9 @@ aliases, so the move itself changed no behaviour.
        (the band table that only covered up to 3 GHz: for an n78 ARFCN it did the
        0–3 GHz linear conversion, landed outside every range and printed
        `NR · NR`) are deleted, as are `api.atCellscan`/`api.atCellscanResult`;
-       the wireless page is now down to `atRadio` for its radio-preference block.
+       the wireless page was left with a single CLI call (`atRadio`, its
+       radio-preference block), which the next slice removed as well — see
+       below.
        Parity: `scripts/prove-cellscan-parity.js fceb6ea` drives the real
        «Cell Scan → Continue» path on both revisions — the modal title, both
        neighbour cards, the labels and the copy are byte-identical and all four
@@ -367,12 +369,47 @@ aliases, so the move itself changed no behaviour.
        results back is a UI decision — `cell.scan_result` already carries the
        decoded `cells` and the raw `^CELLSCAN` text whenever someone decides what
        the card should show.
-     * Still on text frames, to be migrated next: the page's radio-preference
-       block (`^SYSCFGEX`/`^C5GOPTION`/`^NRRCCAPQRY` rows still slice the `radio`
-       frame, now the page's only CLI call), `parser.section`/`matchValues` for
-       the settings-page rows, and the `status`/`sms`/`system` pages, which
-       still call the CLI verbs. `parser.js` (`section`, `matchValues`) is
-       deleted when the last of them moves. The dashboard already reads the
+     * the wireless page's radio-preference block closed the page: the
+       access-technology rows read `network.syscfg` (`^SYSCFGEX?`),
+       `network.c5goption` (`^C5GOPTION?`) and `modem.nr_capability`
+       (`^NRRCCAPQRY` 3/2/5), and its five buttons write
+       `network.syscfg_set`, `network.c5goption_set` and
+       `modem.nr_capability_set` — the same three read routes and three write
+       routes `pages/network/Settings.tsx` and `pages/system/Info.tsx` already
+       call, so the two frontends edit the same contract. The five
+       `advanced-set radio-policy|5g-access|carrier-aggregation|vonr|dss`
+       invocations are gone, which makes `mt5700m-at advanced radio` dead;
+       `api.js`'s `atRadio` (the page's last CLI call, and with it the page's
+       last text frame) and `parser.js`'s `matchValues` (whose only caller was
+       this block) are deleted. The preset→triple mapping lives on the page
+       (`1,0,1` = Option 2, `0,1,0` = Option 3, else `1,1,1`), and `ca` is sent
+       as the boolean the route validates rather than the CLI's `'1'`/`'0'`.
+       Missing fields keep the old fallbacks (`080302`/`3FFFFFFF`/`1`/`2`/
+       `7FFFFFFFFFFFFFFF`) because `SysCfgState` omits unread fields, an
+       incomplete `^C5GOPTION` triple still lands on Option 2 + 3, and a
+       half-read `^NRRCCAPQRY` set still leaves VoNR/DSS on their previous
+       defaults. Two warning banners disappear with the frames that filled them:
+       the page's top banner and the 5G card's both rendered the `radio` frame's
+       `stderr` (`status.stderr`/`radioSettings.stderr`), and a read route has no
+       stderr to show — `api.route()` is the deliberate "never reject, missing
+       data renders blank" contract the other ten reads on this page already
+       use, so a failed read now shows an empty control or the default value
+       instead of a raw CLI error box. ucode's migrated-write budget list gains
+       the three routes (`c5goption_set` cycles airplane mode like the old
+       `advanced-set 5g-access`, so it needs the 25 s budget; the other two are
+       multi-command configuration writes). Parity:
+       `scripts/prove-radio-parity.js 4474436` renders both revisions from the
+       same replies — the card is byte-identical in eight shapes (all fields
+       missing, empty `^SYSCFGEX` fields, roam/service 0, the three access-mode
+       triples, an incomplete triple, CA off with VoNR FR2) and all five write
+       paths are driven through the real modal: the old CLI argv and the new
+       typed params carry the same values, the same notification text and the
+       same 900 ms reload. The wireless page now makes no CLI call at all —
+       asserted on the call surface, not by grepping the source.
+     * Still on text frames, to be migrated next: `parser.section`/`pick` for
+       the settings-page and dial-page rows, and the `status`/`sms`/`system`
+       pages, which still call the CLI verbs. `parser.js` (`section`, `pick`)
+       is deleted when the last of them moves. The dashboard already reads the
        daemon cache via `api.cachedSnapshot()`.
      * Defect found while proving the above, **not** changed (it is a UI
        change, so it needs a decision): the scan modal's "Frequency scan" card
@@ -394,3 +431,21 @@ aliases, so the move itself changed no behaviour.
    `daemon.rs` → `transport/{ws_server,rpc_server,control_server}` +
    `api/rpc.rs`; `api/cli.rs` → one `render_text` per module + a small verb
    table. Both are now pure wiring/adapters, so the split is mechanical.
+12. **Fold the CLI's radio write verbs onto the routes.** With LuCI's
+   radio-preference block migrated, `advanced-set
+   radio-policy|5g-access|carrier-aggregation|vonr|dss` have no frontend
+   caller, yet each still builds its own AT string (`AT^SYSCFGEX=`,
+   `AT+CFUN=0` + `AT^C5GOPTION=`, `AT^NRRCCAPCFG=`) while `modules::network`/
+   `modules::modem` build the same commands for `network.syscfg_set`,
+   `network.c5goption_set` and `modem.nr_capability_set` — the same write
+   implemented twice inside the backend. The SMS verbs already show the target
+   shape (`run_api(settings, "api.sms.send", …)`: the CLI is a client of the
+   same API as both frontends, no second writer on the port). Folding these
+   five means translating argv → route params (keeping each verb's own
+   validation and `EXIT_USAGE` argc checks) and accepting two CLI-visible
+   changes the SMS verbs already made: a route-backed verb prints nothing on
+   success, and a module/daemon failure exits 1 instead of the AT error code.
+   Rust-only change → CI is the only compiler, so it wants its own slice with
+   unit tests over the argv → params mapping.
+   The read side stays: `advanced radio` / `radio-diagnostics` are the CLI's
+   raw-AT diagnostic views (the same reason `radio-diagnostics` was kept).

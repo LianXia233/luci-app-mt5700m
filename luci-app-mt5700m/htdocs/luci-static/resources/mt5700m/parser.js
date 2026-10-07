@@ -39,12 +39,6 @@ function csvValues(text, prefix) {
 	return line.substring(prefix.length).replace(/^[ :]+/, '').replace(/"/g, '').split(',').map(function(value) { return value.trim(); });
 }
 
-// 同 csvValues，但允许 "=" 作为分隔符（^NRSSBID= 等私有命令不一致）
-function matchValues(text, prefix) {
-	var line = (text || '').split(/\n/).filter(function(item) { return item.indexOf(prefix) === 0; })[0] || '';
-	return line.substring(prefix.length).replace(/^[ :=]+/, '').replace(/"/g, '').split(',').map(function(value) { return value.trim(); });
-}
-
 // 以 prefix 开头首行的取值（去前导冒号/空格）
 function lineValue(text, prefix) {
 	var line = (text || '').split(/\n/).filter(function(item) { return item.indexOf(prefix) === 0; })[0] || '';
@@ -493,7 +487,6 @@ return baseclass.extend({
 	section: section,
 	pick: pick,
 	csvValues: csvValues,
-	matchValues: matchValues,
 	lineValue: lineValue,
 	countLines: countLines,
 	hexIPv4: hexIPv4,

@@ -70,6 +70,21 @@ function signalMetrics(signal, rat) {
 }
 
 /*
+ * 页面预设 → `network.c5goption_set` 的三元组（`^C5GOPTION=` 的三个标志）。
+ *
+ * 与上面读取方向的映射成对：'1,0,1' = Option 2、'0,1,0' = Option 3、'1,1,1' =
+ * Option 2+3。这三个值就是旧版 `advanced-set 5g-access <preset>` 动词写下去的
+ * 值 —— modules/network 只负责下发与飞行模式循环，页面负责预设语义。
+ */
+function c5gFlags(preset) {
+	if (preset === 'option2')
+		return { nr_sa_support_flag: 1, nr_dc_mode: 0, gc_access_mode: 1 };
+	if (preset === 'option3')
+		return { nr_sa_support_flag: 0, nr_dc_mode: 1, gc_access_mode: 0 };
+	return { nr_sa_support_flag: 1, nr_dc_mode: 1, gc_access_mode: 1 };
+}
+
+/*
  * `api.cell.neighbors` 的一行 → cellLockCard 的既有形状。
  *
  * 后端给的是领域值：PCI 十进制（十六进制解码在 modules/cell）、频段号、
@@ -211,19 +226,21 @@ return view.extend({
 	load: function() {
 		// 请求发起即返回，不阻塞首屏；render() 等 pending 填充。
 		//
-		// 状态区块（信号/服务小区/注册/运营商/RRC/温度）与两种锁模型全部走统一
-		// 路由：后端 modules/* 解码 AT 应答，页面只做展示映射。旧版这里切
-		// `fs.exec network` 的文本帧（^HCSQ/^MONSC/+CEREG/+COPS/^RRCSTAT/
-		// temperature=），那是同一批 AT 应答的第二份 JS 解码。
-		// `atRadio` 仍是文本帧：无线偏好/5G 能力几行还没迁完（见 migration）。
+		// 全页走统一路由：后端 modules/* 解码 AT 应答，页面只做展示映射。
+		// 旧版这里切两个 CLI 文本帧 —— `network`（^HCSQ/^MONSC/+CEREG/+COPS/
+		// ^RRCSTAT/temperature=）与 `advanced radio`（^SYSCFGEX/^C5GOPTION/
+		// ^NRRCCAPQRY 的 3/2/5 三种查询），那是同一批 AT 应答的第二份 JS 解码。
+		// 读路由都取不到时该行留空/回落默认值，写操作走 confirmRoute。
 		this.pending = Promise.all([
-			api.atRadio(),
 			api.route('signal.get'),
 			api.route('cell.get'),
 			api.route('registration.get'),
 			api.route('network.get'),
 			api.route('network.rrc'),
 			api.route('system.temperature'),
+			api.route('network.syscfg'),
+			api.route('network.c5goption'),
+			api.route('modem.nr_capability'),
 			api.route('network.lock_get', { rat: 'lte' }),
 			api.route('network.lock_get', { rat: 'nr' })
 		]);
@@ -419,11 +436,10 @@ return view.extend({
 	},
 
 	renderPage: function(results) {
-		var radioSettings = results[0] || {};
-		var radioRaw = radioSettings.stdout || '';
-		var signal = results[1] || {}, cell = results[2] || {}, registration = results[3] || {};
-		var network = results[4] || {}, rrc = results[5] || {}, temperaturePayload = results[6] || {};
-		var lteLock = results[7], nrLock = results[8];
+		var signal = results[0] || {}, cell = results[1] || {}, registration = results[2] || {};
+		var network = results[3] || {}, rrc = results[4] || {}, temperaturePayload = results[5] || {};
+		var syscfg = results[6] || {}, c5g = results[7] || {}, nrCap = results[8] || {};
+		var lteLock = results[9], nrLock = results[10];
 		var rrcState = this.rrcText(rrc);
 		var registered = registration.state === 1 || registration.state === 5;
 		var opInfo = parser.operatorInfo(network.operator);
@@ -459,12 +475,13 @@ return view.extend({
 		];
 		var lteLockState = this.lockStateText(lteLock);
 		var nrLockState = this.lockStateText(nrLock);
-		var systemValues = parser.matchValues(parser.section(radioRaw, 'Radio mode'), '^SYSCFGEX');
-		var radioCode = systemValues[0] || '';
-		var wcdmaMask = systemValues[1] || '3FFFFFFF';
-		var roamValue = systemValues[2] || '1';
-		var serviceDomain = systemValues[3] || '2';
-		var lteMask = systemValues[4] || '7FFFFFFFFFFFFFFF';
+		// `network.syscfg`（modules/network 解码 ^SYSCFGEX?）：字段缺失时的回退值
+		// 与旧版 `|| 默认` 逐条相同，所以取不到配置时下拉仍落在手册默认档。
+		var radioCode = syscfg.acqorder || '';
+		var wcdmaMask = syscfg.band || '3FFFFFFF';
+		var roamValue = (syscfg.roam === undefined || syscfg.roam === null) ? '1' : String(syscfg.roam);
+		var serviceDomain = (syscfg.srvdomain === undefined || syscfg.srvdomain === null) ? '2' : String(syscfg.srvdomain);
+		var lteMask = syscfg.lteband || '7FFFFFFFFFFFFFFF';
 		var radioLabels = {
 			'00': _('Automatic'), '01': 'GSM', '02': 'WCDMA', '03': 'LTE', '08': '5G NR',
 			'0302': 'LTE / WCDMA', '030201': 'LTE / WCDMA / GSM',
@@ -482,18 +499,23 @@ return view.extend({
 			['1','B1'],['4','B3'],['10','B5'],['80','B8'],['200000000','B34'],
 			['2000000000','B38'],['4000000000','B39'],['8000000000','B40'],['10000000000','B41']
 		], lteMask, '7FFFFFFFFFFFFFFF');
-		var accessValues = parser.matchValues(parser.section(radioRaw, '5G access mode'), '^C5GOPTION');
-		var accessCode = accessValues.slice(0, 3).join(',');
+		// `network.c5goption`（^C5GOPTION? 三元组）→ 页面预设：与旧版 join 前三个
+		// 字段后的判断逐字相同（'1,0,1' = Option 2，'0,1,0' = Option 3，其余 = 2+3）；
+		// 三元组不完整（或路由取不到）时按旧版同样落到 Option 2 + 3。
+		var accessCode = (c5g.nr_sa_support_flag === undefined || c5g.nr_dc_mode === undefined || c5g.gc_access_mode === undefined)
+			? '' : [ c5g.nr_sa_support_flag, c5g.nr_dc_mode, c5g.gc_access_mode ].join(',');
 		var accessPreset = c.select([
 			['option23',_('SA + NSA (Option 2 + 3)')],['option2',_('SA only (Option 2)')],['option3',_('NSA only (Option 3)')]
 		], accessCode === '1,0,1' ? 'option2' : accessCode === '0,1,0' ? 'option3' : 'option23');
-		var ca = parser.pick(parser.section(radioRaw, 'NR carrier aggregation'), /\^NRRCCAPQRY:\s*3,(\d+)/, '');
-		var vonr = parser.pick(parser.section(radioRaw, 'VoNR'), /\^NRRCCAPQRY:\s*2,(\d+)/, '');
-		var dssMatch = parser.section(radioRaw, 'DSS').match(/\^NRRCCAPQRY:\s*5,(\d+),(\d+)/);
+		// `modem.nr_capability`（^NRRCCAPQRY 3/2/5）：CA 是布尔、VoNR 是 0..3、DSS 是
+		// 两个 0/1；缺失时与旧版一样留空/落 '0'，下拉不会凭空变成 Enabled。
+		var ca = nrCap.ca === true ? '1' : nrCap.ca === false ? '0' : '';
+		var vonr = (nrCap.vonr === undefined || nrCap.vonr === null) ? '' : String(nrCap.vonr);
+		var dss = nrCap.dss || null;
 		var caEnabled = c.select([['1',_('Enabled')],['0',_('Disabled')]], ca);
 		var vonrMode = c.select([['0',_('Disabled')],['1','FR1 VoNR'],['2','FR2 VoNR'],['3','FR1 + FR2 VoNR']], vonr);
-		var dssRate = c.select([['0',_('Keep factory capability')],['1',_('Force capability off')]], dssMatch ? dssMatch[1] : '0');
-		var dssDmrs = c.select([['0',_('Keep factory capability')],['1',_('Force capability off')]], dssMatch ? dssMatch[2] : '0');
+		var dssRate = c.select([['0',_('Keep factory capability')],['1',_('Force capability off')]], dss ? String(dss.rateMatchingLTE) : '0');
+		var dssDmrs = c.select([['0',_('Keep factory capability')],['1',_('Force capability off')]], dss ? String(dss.additionalDMRS) : '0');
 		var diagnosticHost = E('div', { 'class': 'mt-diag-host' }, E('div', { 'class': 'alert-message notice' }, _('Loading detailed radio diagnostics…')));
 		var self = this;
 		window.setTimeout(function() {
@@ -515,7 +537,6 @@ return view.extend({
 				E('h3', { 'class': 'mt-card-title' }, _('Radio preferences')),
 				E('p', { 'class': 'mt-card-desc' }, _('5G service capabilities reported by the MT5700M. Keep the carrier defaults unless compatibility troubleshooting requires a change.'))
 			]),
-			radioSettings.stderr ? E('div', { 'class': 'alert-message warning' }, radioSettings.stderr) : null,
 			E('div', { 'class': 'mt-grid' }, [
 				c.card(_('Network access policy'), _('Select radio priority, roaming and the service domain. These values are applied together as required by the MT5700M manual.'), [
 					c.formRow(_('Radio access order'), radioModeSelect),
@@ -545,7 +566,10 @@ return view.extend({
 						var selectedLte = c.selectedBandMask(lteBands, '7FFFFFFFFFFFFFFF');
 						if (!selectedWcdma || !selectedLte)
 							return ui.addNotification(null, E('p', {}, _('Select at least one WCDMA band and one LTE band.')), 'warning');
-						c.confirmRun(_('Change network policy'), _('The module may lose service if the selected radio technology or bands are unavailable.'), [ 'advanced-set', 'radio-policy', radioModeSelect.value, selectedWcdma, roaming.value, service.value, selectedLte ], true);
+						c.confirmRoute(_('Change network policy'), _('The module may lose service if the selected radio technology or bands are unavailable.'), 'network.syscfg_set', {
+							acqorder: radioModeSelect.value, band: selectedWcdma,
+							roam: Number(roaming.value), srvdomain: Number(service.value), lteband: selectedLte
+						}, true);
 					} }, _('Apply network and band settings'))
 				])
 			]),
@@ -553,18 +577,18 @@ return view.extend({
 					c.formRow(_('5G access mode'), accessPreset),
 					E('div', { 'class': 'mt-scan-note' }, _('The MT5700M manual requires an airplane-mode cycle before this setting and a module restart afterwards. The cycle is handled automatically; restart when ready.')),
 					c.actionBar(c.btn(_('Apply 5G access mode'), function() {
-						c.confirmRun(_('Change 5G access mode'), _('Mobile service will disconnect briefly while the module enters airplane mode.'), [ 'advanced-set', '5g-access', accessPreset.value ], true);
+						c.confirmRoute(_('Change 5G access mode'), _('Mobile service will disconnect briefly while the module enters airplane mode.'), 'network.c5goption_set', c5gFlags(accessPreset.value), true);
 					}))
 				]),
 				c.card(_('5G service capabilities'), _('Carrier aggregation and voice capability advertised by the module.'), [
 					c.stateRow(_('Current radio mode'), radioMode),
 					c.formRow(_('NR carrier aggregation capability'), caEnabled),
 					c.actionBar(c.btn(_('Apply carrier aggregation'), function() {
-						c.confirmRun(_('NR carrier aggregation capability'), _('Apply the selected carrier aggregation capability?'), [ 'advanced-set', 'carrier-aggregation', caEnabled.value ], true);
+						c.confirmRoute(_('NR carrier aggregation capability'), _('Apply the selected carrier aggregation capability?'), 'modem.nr_capability_set', { ca: caEnabled.value === '1' }, true);
 					})),
 					c.formRow(_('VoNR mode'), vonrMode),
 					c.actionBar(c.btn(_('Apply VoNR mode'), function() {
-						c.confirmRun(_('VoNR mode'), _('Apply the selected VoNR capability?'), [ 'advanced-set', 'vonr', vonrMode.value ], true);
+						c.confirmRoute(_('VoNR mode'), _('Apply the selected VoNR capability?'), 'modem.nr_capability_set', { vonr: Number(vonrMode.value) }, true);
 					}))
 				]),
 				c.card(_('DSS compatibility'), _('Restrict optional DSS capabilities only when required by the mobile network.'), [
@@ -572,7 +596,9 @@ return view.extend({
 					c.formRow(_('Additional DMRS capability'), dssDmrs),
 					E('div', { 'class': 'mt-scan-note' }, _('Force capability off is a compatibility override. Keep the factory capability for normal operation.')),
 					c.actionBar(c.btn(_('Apply DSS settings'), function() {
-						c.confirmRun('DSS', _('Apply the selected DSS capability restrictions?'), [ 'advanced-set', 'dss', dssRate.value, dssDmrs.value ], true);
+						c.confirmRoute('DSS', _('Apply the selected DSS capability restrictions?'), 'modem.nr_capability_set', {
+							dss: { rateMatchingLTE: Number(dssRate.value), additionalDMRS: Number(dssDmrs.value) }
+						}, true);
 					}))
 				])
 			])
@@ -580,10 +606,9 @@ return view.extend({
 
 		return E('div', { 'class': 'mt-page' }, [
 			c.cssLink(),
-			// 页面顶部这条告警以前报的是 `network` 文本帧的 stderr。状态区块
-			// 改走路由后没有 stderr（某个路由取不到就是那一行留空，与其它
-			// 路由消费方一致），本页只剩 `radio` 这一次 CLI 调用，因此由它报错。
-			radioSettings.stderr ? E('div', { 'class': 'alert-message warning' }, radioSettings.stderr) : null,
+			// 页面顶部原有的 `alert-message warning`（报 CLI 帧的 stderr）随两处
+			// 文本帧一起删除：本页已无 CLI 调用，取不到数据就是对应控件留空/
+			// 回落默认档，与其它路由消费方一致（见 migration.md 的失败路径说明）。
 			c.hero(_('NETWORK AND CELL'), operatorName, _('Serving-cell and registration information reported by the modem.'), [
 				E('div', { 'class': 'mt-conn-state' }, [
 					c.svgStatusPulse(registered ? 'ok' : 'bad', 18),

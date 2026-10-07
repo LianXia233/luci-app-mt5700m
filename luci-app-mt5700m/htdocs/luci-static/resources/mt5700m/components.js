@@ -390,7 +390,16 @@ function select(options, value) {
 
 /* ---------- 模态确认（写入类命令） ---------- */
 
-function confirmRun(title, message, args, restartRequired) {
+/*
+ * 写入确认弹窗的**唯一**实现：`run()` 返回 Promise —— 成功弹「Settings applied.」
+ * 并在 900ms 后刷新，失败弹 danger 通知（消息取后端/CLI 的错误文本）。
+ *
+ * 两条写路径共用它，弹窗的 DOM/文案/按钮顺序因此不可能分叉：
+ *   - `confirmRun(title, message, args, restart)`   —— CLI 动词（还没迁到路由的页面）；
+ *   - `confirmRoute(title, message, name, params, restart)` —— 统一路由（已迁完的
+ *     页面，见 docs/architecture-v2/migration.md 的 item 9）。
+ */
+function confirmAction(title, message, run, restartRequired) {
 	return ui.showModal(title, [
 		E('p', {}, message),
 		restartRequired ? E('div', { 'class': 'alert-message warning' }, _('A module restart or airplane-mode cycle is required before this change takes effect.')) : null,
@@ -401,7 +410,7 @@ function confirmRun(title, message, args, restartRequired) {
 				'class': 'btn cbi-button-negative',
 				'click': function() {
 					ui.hideModal();
-					api.at(args).then(function() {
+					run().then(function() {
 						ui.addNotification(null, E('p', {}, _('Settings applied.')));
 						window.setTimeout(function() { window.location.reload(); }, 900);
 					}, function(err) {
@@ -411,6 +420,14 @@ function confirmRun(title, message, args, restartRequired) {
 			}, _('Apply'))
 		])
 	]);
+}
+
+function confirmRun(title, message, args, restartRequired) {
+	return confirmAction(title, message, function() { return api.at(args); }, restartRequired);
+}
+
+function confirmRoute(title, message, name, params, restartRequired) {
+	return confirmAction(title, message, function() { return api.routeCall(name, params); }, restartRequired);
 }
 
 // 通用确认执行（system 页），支持 danger 样式与自定义恢复延迟
@@ -921,6 +938,7 @@ return baseclass.extend({
 	actionBar: actionBar,
 	select: select,
 	confirmRun: confirmRun,
+	confirmRoute: confirmRoute,
 	runConfirmed: runConfirmed,
 	details: details,
 	raw: raw,

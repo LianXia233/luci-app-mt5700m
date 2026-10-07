@@ -106,6 +106,73 @@ function decodeOperator(raw) {
 	return {};
 }
 
+/* modules/network/parser.rs::parse_syscfgex + state.rs::SysCfgState.to_json
+ * `^SYSCFGEX: <acqorder>,<band>,<roam>,<srvdomain>,<lteband>,,`
+ * 少于五个字段或 acqorder 为空 → 整份配置 None（不是逐字段缺省）；band/lteband
+ * 永远是 Some，空串在 to_json 里被省略；roam/srvdomain 非数字 → 省略。 */
+function decodeSyscfg(raw) {
+	const line = String(raw || '').split('\n').map(l => l.trim()).find(l => l.indexOf('^SYSCFGEX:') === 0);
+	if (!line) return {};
+	const f = line.slice('^SYSCFGEX:'.length).trim().split(',').map(x => x.trim());
+	if (f.length < 5) return {};
+	const acqorder = f[0].replace(/"/g, '');
+	if (!acqorder) return {};
+	const st = { acqorder: acqorder };
+	if (f[1]) st.band = f[1];
+	if (/^-?\d+$/.test(f[2])) st.roam = parseInt(f[2], 10);
+	if (/^-?\d+$/.test(f[3])) st.srvdomain = parseInt(f[3], 10);
+	if (f[4]) st.lteband = f[4];
+	return st;
+}
+
+/* modules/network/parser.rs::parse_c5goption + state.rs::C5gOptionState.to_json
+ * `^C5GOPTION: <sa>,<dc>,<gc>` —— 三个字段缺一不可（少于三个就整行跳过），
+ * 每个字段是 u8（0..=255），解析失败的那个省略。 */
+function decodeC5gOption(raw) {
+	for (const line of String(raw || '').split('\n')) {
+		const t = line.trim();
+		const idx = t.indexOf('^C5GOPTION:');
+		if (idx === -1) continue;
+		const f = t.slice(idx + '^C5GOPTION:'.length).trim().split(',').map(x => x.trim());
+		if (f.length < 3) continue;
+		const st = {};
+		[ 'nr_sa_support_flag', 'nr_dc_mode', 'gc_access_mode' ].forEach((k, i) => {
+			if (/^\d+$/.test(f[i]) && parseInt(f[i], 10) <= 255) st[k] = parseInt(f[i], 10);
+		});
+		return st;
+	}
+	return {};
+}
+
+/* modules/modem/parser.rs::parse_nrrccap：应答回显 kind（3 = CA，2 = VoNR，5 = DSS），
+ * 所以「问哪个能力」只会拿到哪个能力的数字。kind 字段不是整数 → 整条 None；
+ * 数字全部不可解析 → 也是 None。
+ * modules/modem/state.rs::NrCapabilityState 的 JSON：ca 是布尔（== 1），vonr 是数字，
+ * dss 只在两个数字都在时才出现。 */
+const NRRCCAP_CA = 3, NRRCCAP_VONR = 2, NRRCCAP_DSS = 5;
+function parseNrrccap(raw, kind) {
+	for (const line of String(raw || '').split('\n')) {
+		const t = line.trim();
+		if (t.indexOf('^NRRCCAPQRY:') !== 0) continue;
+		const f = t.slice('^NRRCCAPQRY:'.length).split(',').map(x => x.trim());
+		if (!/^-?\d+$/.test(f[0] || '')) return null;
+		if (parseInt(f[0], 10) !== kind) continue;
+		const values = f.slice(1).filter(x => /^-?\d+$/.test(x)).map(x => parseInt(x, 10));
+		return values.length ? values : null;
+	}
+	return null;
+}
+function decodeNrCapability(parts) {
+	const st = {};
+	const ca = parseNrrccap((parts || {}).ca, NRRCCAP_CA);
+	if (ca) st.ca = ca[0] === 1;
+	const vonr = parseNrrccap((parts || {}).vonr, NRRCCAP_VONR);
+	if (vonr) st.vonr = vonr[0];
+	const dss = parseNrrccap((parts || {}).dss, NRRCCAP_DSS);
+	if (dss && dss.length >= 2) st.dss = { rateMatchingLTE: dss[0], additionalDMRS: dss[1] };
+	return st;
+}
+
 /* modules/system/parser.rs::parse_chiptemp（十分之一度，65535/越界 = 未上报）
  * + state.rs::TemperatureState::peak（>0 且 ≤150 里取最大，取不到就没有） */
 const SENSORS = [ 'sub3GPA', 'sub6GPA', 'mimoPa', 'tcxo', 'peri1', 'peri2', 'ap1', 'ap2', 'modem1', 'modem2', 'bbp1', 'bbp2' ];
@@ -152,6 +219,8 @@ function textFrame(sections) {
 module.exports = {
 	round1, ord,
 	decodeSignal, decodeCell, decodeRegistration, decodeRrc, decodeOperator, decodeTemps,
+	decodeSyscfg, decodeC5gOption, decodeNrCapability,
+	NRRCCAP_CA, NRRCCAP_VONR, NRRCCAP_DSS,
 	temperatureText, textFrame,
 	SENSORS, SENSOR_KEYS,
 };

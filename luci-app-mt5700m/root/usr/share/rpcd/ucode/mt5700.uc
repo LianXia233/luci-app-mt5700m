@@ -610,10 +610,20 @@ return {
 							break;
 						}
 					}
-					// 已迁到统一 API 的写操作：锁频要走「关机-写-开机-轮询校验」，
-					// 与上面 CLI 的 lock 同一套序列，所以同样给 25s。
+					// 已迁到统一 API 的写操作，与它们原来的 CLI 动词同样给 25s：
+					//   - lock_apply 走「关机-写-开机-轮询校验」（原来是 lock 动词）；
+					//   - c5goption_set 自带飞行模式循环（原来是 advanced-set 5g-access）；
+					//   - syscfg_set / nr_capability_set 是单/多命令配置写
+					//     （原来是 advanced-set radio-policy / carrier-aggregation /
+					//     vonr / dss）。超时截断的代价是前端看不到完成，
+					//     但写本身已下发 —— 与 CLI 时期的语义一致。
 					// 列表按迁移进度增长（写路由 = api.<module>.<name>）。
-					const slowRouteWrites = ['api.network.lock_apply'];
+					const slowRouteWrites = [
+						'api.network.lock_apply',
+						'api.network.c5goption_set',
+						'api.network.syscfg_set',
+						'api.modem.nr_capability_set'
+					];
 					for (let i = 0; i < length(slowRouteWrites); i++) {
 						if (substr(cmd, 0, length(slowRouteWrites[i])) == slowRouteWrites[i]) {
 							tmo = 25;
