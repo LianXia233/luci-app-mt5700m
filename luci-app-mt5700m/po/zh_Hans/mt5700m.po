@@ -1584,6 +1584,9 @@ msgstr "非激活"
 msgid "Invalid"
 msgstr "无效"
 
+msgid "Invalid response from the backend."
+msgstr "后端返回了无法识别的应答。"
+
 msgid "Camped"
 msgstr "已驻留"
 

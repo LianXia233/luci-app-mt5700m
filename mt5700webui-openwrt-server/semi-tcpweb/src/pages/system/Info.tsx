@@ -17,16 +17,17 @@ import {
 import { ATService } from '@/services/at';
 import { getSharedStateFeed, refreshSharedStateFeed, useSharedStateTopic } from '@/services/stateCache';
 import { useATReady } from '@/hooks/useATReady';
-import { extractATData } from '@/modem/parse';
+import { backendMessage } from '@/services/backendError';
 import { sleep } from '@/modem/atx';
 import {
-  buildPinCommand,
-  parseClck,
-  parseCpin,
-  parseSimsq,
-  simErrorMessage,
-  simStateOf,
+  READY_CARD,
+  cardStateOf,
+  pinErrorMessage,
+  pinLabel,
+  slotStatusOf,
   type PinOperation,
+  type SimCardState,
+  type SimPinStatusPayload,
   type SimSlotStatus,
 } from '@/modem/sim';
 import { Field, Kv, PageCard, Panel, RefreshBtn, SectionHeader, TwoCol } from '@/ui/widgets';
@@ -171,9 +172,8 @@ const SystemInfo: React.FC = () => {
   const [simSwitching, setSimSwitching] = useState(false);
   const [simHotPlug, setSimHotPlug] = useState(true);
   const [simHotPlugLoading, setSimHotPlugLoading] = useState(false);
-  const [pinStatus, setPinStatus] = useState('READY');
+  const [simCard, setSimCard] = useState<SimCardState>(READY_CARD);
   const [simSlotStatus, setSimSlotStatus] = useState<SimSlotStatus | null>(null);
-  const [pinEnabled, setPinEnabled] = useState(false);
   const [pinLoading, setPinLoading] = useState(false);
   const [showPinModal, setShowPinModal] = useState(false);
   const [pinOperation, setPinOperation] = useState<PinOperation>('verify');
@@ -225,31 +225,13 @@ const SystemInfo: React.FC = () => {
   // ---------- AT服务器配置 ----------
   const fetchConnectionMode = async () => {
     setServiceModeLoading(true);
-    let loaded = false;
     try {
-      for (let i = 0; i < 3; i += 1) {
-        const res = await at().readCommand('AT+CONNECT?');
-        if (res && res.success && res.data) {
-          const dataStr = String(res.data);
-          const lines = dataStr.split(/[\r\n]+/).filter((l) => l.trim());
-          const connectLine = lines.find((l) => l.includes('+CONNECT:'));
-          if (connectLine) {
-            const modeValue = connectLine.split('+CONNECT:')[1].trim();
-            if (modeValue === '0') setServiceMode('网络AT');
-            else if (modeValue === '1') setServiceMode('串口AT');
-            else setServiceMode('未知模式');
-            loaded = true;
-            return;
-          }
-          // 若返回 CPIN 状态则等待后重试
-          if (lines.some((l) => l.includes('+CPIN:'))) {
-            await sleep(500);
-            continue;
-          }
-        }
-        await sleep(100);
-      }
-      if (!loaded) {
+      // 链路类型由后端在启动时记录一次（core::modem），不再用 AT+CONNECT? 探测。
+      const res = await at().apiCommand<{ mode?: string }>('system.service_mode');
+      const mode = res.success ? res.data?.mode : undefined;
+      if (mode === 'network') setServiceMode('网络AT');
+      else if (mode === 'serial') setServiceMode('串口AT');
+      else {
         setServiceMode((previous) =>
           previous === '获取中...' || previous === '获取失败' ? '获取失败' : previous,
         );
@@ -286,22 +268,21 @@ const SystemInfo: React.FC = () => {
   const fetchDeviceInfo = async () => {
     setSystemInfoLoading(true);
     try {
-      const modemRes = await at().readCommand('ATI');
-      if (modemRes.success && typeof modemRes.data === 'string') {
-        const manufacturer = modemRes.data.match(/Manufacturer:\s*([^\r\n]+)/)?.[1]?.trim();
-        const model = modemRes.data.match(/Model:\s*([^\r\n]+)/)?.[1]?.trim();
-        const revision = modemRes.data.match(/Revision:\s*([^\r\n]+)/)?.[1]?.trim();
-        setDeviceInfo((prev) => ({
-          manufacturer: manufacturer || prev.manufacturer,
-          model: model || prev.model,
-          revision: revision || prev.revision,
-        }));
-      }
-      await sleep(100);
-      const imeiRes = await at().getIMEI();
-      if (imeiRes.success && typeof imeiRes.data === 'string') {
-        setImei(imeiRes.data.replace(/[\r\n]/g, '').trim());
-      }
+      // 身份块（ATI + AT+CGSN 的解码）由 modules/modem 负责，页面只渲染。
+      const res = await at().apiCommand<{
+        manufacturer?: string;
+        model?: string;
+        revision?: string;
+        imei?: string;
+      }>('modem.get');
+      if (!res.success || !res.data) return;
+      const info = res.data;
+      setDeviceInfo((prev) => ({
+        manufacturer: info.manufacturer || prev.manufacturer,
+        model: info.model || prev.model,
+        revision: info.revision || prev.revision,
+      }));
+      if (info.imei) setImei(info.imei);
     } finally {
       setSystemInfoLoading(false);
     }
@@ -322,17 +303,11 @@ const SystemInfo: React.FC = () => {
 
   // ---------- SIM卡配置 ----------
   const fetchSimConfig = async () => {
-    const slotRes = await at().readCommand('AT^SCICHG?');
-    if (slotRes.success && typeof slotRes.data === 'string') {
-      const m = slotRes.data.match(/\^SCICHG:\s*(\d+),\s*(\d+)/);
-      if (m) setSimSlot(parseInt(m[1], 10));
-    }
-    await sleep(100);
-    const hpRes = await at().readCommand('AT^TDSIMHP?');
-    if (hpRes.success && typeof hpRes.data === 'string') {
-      const m = hpRes.data.match(/\^TDSIMHP:\s*(\d+)/);
-      if (m) setSimHotPlug(m[1] === '1');
-    }
+    // 卡槽与热插拔开关都在后端 sim 主题里解码（modules/sim）。
+    const res = await at().apiCommand<{ slot?: number; hotplug?: boolean }>('sim.slot');
+    if (!res.success || !res.data) return;
+    if (typeof res.data.slot === 'number') setSimSlot(res.data.slot);
+    if (typeof res.data.hotplug === 'boolean') setSimHotPlug(res.data.hotplug);
   };
 
   const handleSwitchSim = (target: number) => {
@@ -344,14 +319,11 @@ const SystemInfo: React.FC = () => {
       onOk: async () => {
         setSimSwitching(true);
         try {
-          await at().sendCommand('AT^HVSST=1,0');
-          const sw = await at().sendCommand(`AT^SCICHG=${target},${1 - target}`);
-          if (!sw.success) throw new Error('切换SIM卡槽失败');
-          await at().sendCommand('AT^HVSST=1,1');
-          await at().sendCommand('AT+CFUN=0');
-          await sleep(100);
-          await at().sendCommand('AT+CFUN=1');
-          setSimSlot(target);
+          // 去激活 -> 切槽 -> 激活 -> 重启射频这套顺序在 modules/sim 里，
+          // 页面只声明"切到哪个槽"。
+          const res = await at().apiCommand<{ slot?: number }>('sim.slot_set', { slot: target });
+          if (!res.success) throw new Error(String(res.error || '切换SIM卡槽失败'));
+          setSimSlot(typeof res.data?.slot === 'number' ? res.data.slot : target);
           Toast.success(`正在切换到${target === 0 ? '外置' : '内置'}SIM卡，请等待设备重启...`);
           setTimeout(() => {
             setSimSwitching(false);
@@ -368,7 +340,9 @@ const SystemInfo: React.FC = () => {
   const handleSimHotPlug = async (checked: boolean) => {
     setSimHotPlugLoading(true);
     try {
-      const res = await at().sendCommand(`AT^TDSIMHP=${checked ? '1' : '0'}`);
+      const res = await at().apiCommand<{ hotplug?: boolean }>('sim.hotplug_set', {
+        hotplug: checked,
+      });
       if (res.success) {
         setSimHotPlug(checked);
         Toast.success(`${checked ? '开启' : '关闭'}SIM卡热插拔成功`);
@@ -381,25 +355,12 @@ const SystemInfo: React.FC = () => {
   };
 
   const fetchPinStatus = async () => {
-    // 没插卡时模组回的是 +CME ERROR: 10，不是 +CPIN，失败分支也要看。
-    const res = await at().readCommand('AT+CPIN?');
-    const state = parseCpin(String(res.data || res.error || ''));
-    if (state) {
-      setPinStatus(state.code);
-      if (state.lock === 'ready') await checkPinEnabled();
-    }
-
-    // 手册 6.6：^SIMSQ 能区分卡不在位 / 被锁 / PUK 锁死，+CPIN 看不出来。
-    const sq = await at().readCommand('AT^SIMSQ?');
-    if (sq.success && typeof sq.data === 'string') setSimSlotStatus(parseSimsq(sq.data));
-  };
-
-  const checkPinEnabled = async () => {
-    const res = await at().sendCommand('AT+CLCK="SC",2');
-    if (res.success && typeof res.data === 'string') {
-      const enabled = parseClck(res.data);
-      if (enabled !== null) setPinEnabled(enabled);
-    }
+    // +CPIN 的状态（含未插卡时的 CME 错误）、^SIMSQ 的卡状态和 +CLCK 的
+    // PIN 锁开关都由后端 sim.pin_status 一并解码，页面只负责渲染。
+    const res = await at().apiCommand<SimPinStatusPayload>('sim.pin_status');
+    if (!res.success || !res.data || !res.data.code) return;
+    setSimCard(cardStateOf(res.data));
+    setSimSlotStatus(res.data.card ? slotStatusOf(res.data.card) : null);
   };
 
   const openPinModal = (op: PinOperation) => {
@@ -422,15 +383,6 @@ const SystemInfo: React.FC = () => {
       return;
     }
 
-    const { command, error } = buildPinCommand(pinOperation, {
-      pin: pinInput,
-      newPin: pinOperation === 'enable' ? undefined : newPinInput,
-    });
-    if (error) {
-      Toast.error(error);
-      return;
-    }
-
     const successMessage: Record<PinOperation, string> = {
       verify: 'PIN码验证成功',
       enable: 'PIN码启用成功',
@@ -442,17 +394,18 @@ const SystemInfo: React.FC = () => {
 
     setPinLoading(true);
     try {
-      const res = await at().sendCommand(command);
+      // 密码规则与 AT 拼装都在后端 modules/sim；这里把后端拒绝的话原样展示。
+      const res = await at().apiCommand('sim.pin_apply', {
+        operation: pinOperation,
+        pin: pinInput,
+        newPin: pinOperation === 'enable' ? undefined : newPinInput,
+      });
       if (res.success) {
         Toast.success(successMessage[pinOperation]);
         closePinModal();
-        setTimeout(async () => {
-          await fetchPinStatus();
-          await checkPinEnabled();
-        }, 1500);
+        setTimeout(() => void fetchPinStatus(), 1500);
       } else {
-        // 开了 CMEE=2 后模组回的是错误描述而不是编号，两种都要认。
-        Toast.error(simErrorMessage(String(res.error || ''), 'PIN码操作失败'));
+        Toast.error(pinErrorMessage(String(res.error || ''), 'PIN码操作失败'));
       }
     } finally {
       setPinLoading(false);
@@ -460,17 +413,17 @@ const SystemInfo: React.FC = () => {
   };
 
   const fetchAirplaneMode = async () => {
-    const res = await at().readCommand('AT+CFUN?');
-    if (res.success && typeof res.data === 'string') {
-      const m = res.data.match(/\+CFUN:\s*(\d+)/);
-      if (m) setAirplaneMode(m[1] === '0');
+    // +CFUN? 的解码在 modules/network（network.radio）。
+    const res = await at().apiCommand<{ airplane?: boolean }>('network.radio');
+    if (res.success && typeof res.data?.airplane === 'boolean') {
+      setAirplaneMode(res.data.airplane);
     }
   };
 
   const handleAirplane = async (checked: boolean) => {
     setAirplaneLoading(true);
     try {
-      const res = await at().sendCommand(`AT+CFUN=${checked ? '0' : '1'}`);
+      const res = await at().apiCommand('network.radio_set', { airplane: checked });
       if (res.success) {
         setAirplaneMode(checked);
         Toast.success(`${checked ? '开启' : '关闭'}飞行模式成功`);
@@ -484,20 +437,14 @@ const SystemInfo: React.FC = () => {
 
   // ---------- 设备控制 ----------
   const fetchDeviceControl = async () => {
-    const nicRes = await at().readCommand('AT^TDPCIELANCFG?');
-    if (nicRes.success && typeof nicRes.data === 'string') {
-      const m = nicRes.data.match(/\^TDPCIELANCFG:\s*(\d+)/);
-      if (m) {
-        const v = parseInt(m[1], 10);
-        if (v === 1 || v === 2) setNicRate(v);
-      }
-    }
-    await sleep(100);
-    const pwrRes = await at().readCommand('AT^TDPMCFG?');
-    if (pwrRes.success && typeof pwrRes.data === 'string') {
-      const m = pwrRes.data.match(/\^TDPMCFG:\s*(\d+)/);
-      if (m) setPowerControl(m[1] === '1');
-    }
+    // 网卡速率与 PCIe 电源开关：两个读都在 modules/system 解码（缺失的字段
+    // 表示这次没读到，控件保持原值）。
+    const res = await at().apiCommand<{ nic_rate?: number; power_control?: boolean }>(
+      'system.device_control',
+    );
+    if (!res.success || !res.data) return;
+    if (typeof res.data.nic_rate === 'number') setNicRate(res.data.nic_rate);
+    if (typeof res.data.power_control === 'boolean') setPowerControl(res.data.power_control);
   };
 
   const handleSetNicRate = (value: number) => {
@@ -510,7 +457,7 @@ const SystemInfo: React.FC = () => {
       onOk: async () => {
         setNicLoading(true);
         try {
-          const res = await at().sendCommand(`AT^TDPCIELANCFG=${value}`);
+          const res = await at().apiCommand('system.nic_rate_set', { rate: value });
           if (res.success) {
             setNicRate(value);
             Toast.success('网卡速率设置成功');
@@ -522,7 +469,7 @@ const SystemInfo: React.FC = () => {
               okButtonProps: { theme: 'solid', type: 'danger' },
               onOk: async () => {
                 setRebootLoading(true);
-                const resetRes = await at().sendCommand('AT^RESET');
+                const resetRes = await at().apiCommand('modem.reset');
                 if (resetRes.success) {
                   Toast.success('重启指令已发送');
                   setTimeout(() => {
@@ -548,7 +495,7 @@ const SystemInfo: React.FC = () => {
   const handleSetPower = async (checked: boolean) => {
     setPowerLoading(true);
     try {
-      const res = await at().sendCommand(`AT^TDPMCFG=${checked ? '1' : '0'}`);
+      const res = await at().apiCommand('system.power_control_set', { enabled: checked });
       if (res.success) {
         setPowerControl(checked);
         Toast.success(`${checked ? '开启' : '关闭'}电源管理成功`);
@@ -570,7 +517,7 @@ const SystemInfo: React.FC = () => {
       onOk: async () => {
         setFactoryLoading(true);
         try {
-          const res = await at().sendCommand('AT&F');
+          const res = await at().apiCommand('system.factory_reset');
           if (res.success) {
             Toast.success('恢复出厂设置指令已发送');
             setTimeout(() => {
@@ -596,7 +543,7 @@ const SystemInfo: React.FC = () => {
       okButtonProps: { theme: 'solid', type: 'danger' },
       onOk: async () => {
         setRebootLoading(true);
-        const res = await at().sendCommand('AT^RESET');
+        const res = await at().apiCommand('modem.reset');
         if (res.success) {
           Toast.success('重启指令已发送');
           setTimeout(() => {
@@ -615,22 +562,19 @@ const SystemInfo: React.FC = () => {
   const fetchNRCapability = async () => {
     setNrLoading(true);
     try {
-      const ca = await at().readCommand('AT^NRRCCAPQRY=3');
-      if (ca.success && typeof ca.data === 'string') {
-        const m = ca.data.match(/\^NRRCCAPQRY:\s*3,(\d+)/);
-        if (m) setNrCa(m[1] === '1');
-      }
-      await sleep(100);
-      const vonr = await at().readCommand('AT^NRRCCAPQRY=2');
-      if (vonr.success && typeof vonr.data === 'string') {
-        const m = vonr.data.match(/\^NRRCCAPQRY:\s*2,(\d+)/);
-        if (m) setNrVonr(parseInt(m[1], 10));
-      }
-      await sleep(100);
-      const dss = await at().readCommand('AT^NRRCCAPQRY=5');
-      if (dss.success && typeof dss.data === 'string') {
-        const m = dss.data.match(/\^NRRCCAPQRY:\s*5,(\d+),(\d+)/);
-        if (m) setNrDss({ rateMatchingLTE: parseInt(m[1], 10), additionalDMRS: parseInt(m[2], 10) });
+      // 三个 ^NRRCCAPQRY 查询（按 kind 匹配应答）在 modules/modem 解码；
+      // 没读到的项不会出现在返回里，卡片保持原值。
+      const res = await at().apiCommand<{
+        ca?: boolean;
+        vonr?: number;
+        dss?: { rateMatchingLTE?: number; additionalDMRS?: number };
+      }>('modem.nr_capability');
+      if (!res.success || !res.data) return;
+      if (typeof res.data.ca === 'boolean') setNrCa(res.data.ca);
+      if (typeof res.data.vonr === 'number') setNrVonr(res.data.vonr);
+      const dss = res.data.dss;
+      if (typeof dss?.rateMatchingLTE === 'number' && typeof dss?.additionalDMRS === 'number') {
+        setNrDss({ rateMatchingLTE: dss.rateMatchingLTE, additionalDMRS: dss.additionalDMRS });
       }
     } finally {
       setNrLoading(false);
@@ -640,7 +584,7 @@ const SystemInfo: React.FC = () => {
   const handleSetCA = async (checked: boolean) => {
     setNrLoading(true);
     try {
-      const res = await at().sendCommand(`AT^NRRCCAPCFG=3,${checked ? 1 : 0}`);
+      const res = await at().apiCommand('modem.nr_capability_set', { ca: checked });
       if (res.success) {
         setNrCa(checked);
         Toast.success(`${checked ? '开启' : '关闭'}载波聚合成功`);
@@ -660,7 +604,7 @@ const SystemInfo: React.FC = () => {
   const handleSetVoNR = async (value: number) => {
     setNrLoading(true);
     try {
-      const res = await at().sendCommand(`AT^NRRCCAPCFG=2,${value}`);
+      const res = await at().apiCommand('modem.nr_capability_set', { vonr: value });
       if (res.success) {
         setNrVonr(value);
         Toast.success(`VoNR 配置成功：${VONR_LABELS[value] || '未知'}`);
@@ -680,7 +624,9 @@ const SystemInfo: React.FC = () => {
   const handleSetDSS = async (rateMatchingLTE: number, additionalDMRS: number) => {
     setNrLoading(true);
     try {
-      const res = await at().sendCommand(`AT^NRRCCAPCFG=5,${rateMatchingLTE},${additionalDMRS}`);
+      const res = await at().apiCommand('modem.nr_capability_set', {
+        dss: { rateMatchingLTE, additionalDMRS },
+      });
       if (res.success) {
         setNrDss({ rateMatchingLTE, additionalDMRS });
         Toast.success('DSS 配置成功');
@@ -701,20 +647,23 @@ const SystemInfo: React.FC = () => {
   const fetchSysCfg = async () => {
     setSysCfgLoading(true);
     try {
-      const res = await at().readCommand('AT^SYSCFGEX?');
-      if (res.success && typeof res.data === 'string') {
-        const m = res.data.match(/\^SYSCFGEX:\s*"([^"]+)",([^,\s]+),(\d+),(\d+),([^,\s]+)/);
-        if (m) {
-          const cfg: SysCfgInfo = {
-            acqorder: m[1],
-            band: m[2].trim(),
-            roam: Number(m[3]),
-            srvdomain: Number(m[4]),
-            lteband: m[5].trim(),
-          };
-          setSysCfg(cfg);
-          setOriginalSysCfg(cfg);
-        }
+      // ^SYSCFGEX 的字段顺序（引号可有可无）在 modules/network 解码。
+      const res = await at().apiCommand<SysCfgInfo>('network.syscfg');
+      if (
+        res.success &&
+        res.data?.acqorder &&
+        typeof res.data.roam === 'number' &&
+        typeof res.data.srvdomain === 'number'
+      ) {
+        const cfg: SysCfgInfo = {
+          acqorder: res.data.acqorder,
+          band: res.data.band ?? '',
+          roam: res.data.roam,
+          srvdomain: res.data.srvdomain,
+          lteband: res.data.lteband ?? '',
+        };
+        setSysCfg(cfg);
+        setOriginalSysCfg(cfg);
       }
     } finally {
       setSysCfgLoading(false);
@@ -730,8 +679,14 @@ const SystemInfo: React.FC = () => {
       onOk: async () => {
         setSysCfgLoading(true);
         try {
-          const command = `AT^SYSCFGEX="${sysCfg.acqorder}",${sysCfg.band},${sysCfg.roam},${sysCfg.srvdomain},${sysCfg.lteband},,`;
-          const res = await at().sendCommand(command);
+          // 七个参数的拼接与取值范围校验都在 modules/network。
+          const res = await at().apiCommand('network.syscfg_set', {
+            acqorder: sysCfg.acqorder,
+            band: sysCfg.band,
+            roam: sysCfg.roam,
+            srvdomain: sysCfg.srvdomain,
+            lteband: sysCfg.lteband,
+          });
           if (res.success) {
             Toast.success('网络系统配置已更新');
             await fetchSysCfg();
@@ -760,24 +715,21 @@ const SystemInfo: React.FC = () => {
   const fetchTxPower = async () => {
     setTxPowerLoading(true);
     try {
-      const res = await at().readCommand('AT^NTXPOWER?');
-      if (res.success && typeof res.data === 'string') {
-        const payload = extractATData(res.data, '^NTXPOWER');
-        const values = (payload || res.data)
-          .split(',')
-          .map((s) => parseInt(s.replace(/[^0-9-]/g, ''), 10))
-          .filter((n) => !Number.isNaN(n));
-        const carriers: TxPowerInfo[] = [];
-        for (let i = 0; i + 4 < values.length; i += 5) {
-          carriers.push({
-            PPusch: values[i],
-            PPucch: values[i + 1],
-            PSrs: values[i + 2],
-            PPrach: values[i + 3],
-            Freq: values[i + 4],
-          });
-        }
-        setTxPower(carriers);
+      // ^NTXPOWER 的分组（每载波 5 个字段）与 999=不适用 的映射都在
+      // modules/modem（modem.nr_txpower），这里只把字段名对到卡片上。
+      const res = await at().apiCommand<{ carriers?: Record<string, unknown>[] }>(
+        'modem.nr_txpower',
+      );
+      if (res.success && Array.isArray(res.data?.carriers)) {
+        setTxPower(
+          res.data.carriers.map((carrier) => ({
+            PPusch: typeof carrier.pusch === 'number' ? carrier.pusch : 999,
+            PPucch: typeof carrier.pucch === 'number' ? carrier.pucch : 999,
+            PSrs: typeof carrier.srs === 'number' ? carrier.srs : 999,
+            PPrach: typeof carrier.prach === 'number' ? carrier.prach : 999,
+            Freq: typeof carrier.freq === 'number' ? carrier.freq : 0,
+          })),
+        );
       }
     } finally {
       setTxPowerLoading(false);
@@ -788,44 +740,33 @@ const SystemInfo: React.FC = () => {
   const fetchThermConfig = async () => {
     setThermLoading(true);
     try {
-      const fun = await at().readCommand('AT^THERMAUTOFUN?');
-      if (fun.success && typeof fun.data === 'string') {
-        const m = fun.data.match(/\^THERMAUTOFUN:\s*(\d+)\s+(\d+)\s+(\d+)/);
-        if (m) {
-          setTherm((p) => ({
-            ...p,
-            enabled: m[1] === '1',
-            caMimoSwitch: m[2] === '1',
-            interval: parseInt(m[3], 10),
-          }));
-        }
-      }
-      await sleep(100);
-      const log = await at().readCommand('AT^THERMLDLOGSW?');
-      if (log.success && typeof log.data === 'string') {
-        const m = log.data.match(/\^THERMLDLOGSW:\s*(\d+)\s+(\d+)/);
-        if (m) {
-          setTherm((p) => ({
-            ...p,
-            logSwitch: { consoleLog: m[1] === '1', fileLog: m[2] === '1' },
-          }));
-        }
-      }
-      await sleep(100);
-      const para = await at().readCommand('AT^THERMLDAUTOPARA?');
-      if (para.success && typeof para.data === 'string') {
-        const m = para.data.match(/\^THERMLDAUTOPARA:\s*([\d,]+)/);
-        if (m) setTherm((p) => ({ ...p, thresholds: m[1].split(',').map(Number) }));
-      }
-      await sleep(100);
-      const status = await at().readCommand('AT^THERMLDAUTOSTATUS?');
-      if (status.success && typeof status.data === 'string') {
-        const m = status.data.match(/\^THERMLDAUTOSTATUS:\s*([\d,]+)/);
-        if (m) {
-          const nums = m[1].split(',').map(Number);
-          if (nums.length >= 6) setTherm((p) => ({ ...p, currentLevel: nums[5] }));
-        }
-      }
+      // 四条温保查询的字段顺序（含 status 第 6 个字段是当前等级）都在
+      // modules/system；返回里没有的字段表示这次没读到，保持原值。
+      const res = await at().apiCommand<{
+        enabled?: boolean;
+        caMimoSwitch?: boolean;
+        interval?: number;
+        logSwitch?: { consoleLog?: boolean; fileLog?: boolean };
+        thresholds?: number[];
+        currentLevel?: number;
+      }>('system.thermal');
+      if (!res.success || !res.data) return;
+      const t = res.data;
+      setTherm((p) => ({
+        enabled: typeof t.enabled === 'boolean' ? t.enabled : p.enabled,
+        caMimoSwitch: typeof t.caMimoSwitch === 'boolean' ? t.caMimoSwitch : p.caMimoSwitch,
+        interval: typeof t.interval === 'number' ? t.interval : p.interval,
+        logSwitch: {
+          consoleLog:
+            typeof t.logSwitch?.consoleLog === 'boolean'
+              ? t.logSwitch.consoleLog
+              : p.logSwitch.consoleLog,
+          fileLog:
+            typeof t.logSwitch?.fileLog === 'boolean' ? t.logSwitch.fileLog : p.logSwitch.fileLog,
+        },
+        thresholds: Array.isArray(t.thresholds) ? t.thresholds : p.thresholds,
+        currentLevel: typeof t.currentLevel === 'number' ? t.currentLevel : p.currentLevel,
+      }));
     } finally {
       setThermLoading(false);
     }
@@ -834,9 +775,11 @@ const SystemInfo: React.FC = () => {
   const handleSetThermEnabled = async (checked: boolean) => {
     setThermLoading(true);
     try {
-      const res = await at().sendCommand(
-        `AT^THERMAUTOFUN=${checked ? 1 : 0},${therm.caMimoSwitch ? 1 : 0},${therm.interval}`,
-      );
+      const res = await at().apiCommand('system.thermal_set', {
+        enabled: checked,
+        caMimoSwitch: therm.caMimoSwitch,
+        interval: therm.interval,
+      });
       if (res.success) {
         setTherm((p) => ({ ...p, enabled: checked }));
         Toast.success(`${checked ? '开启' : '关闭'}温度保护功能成功`);
@@ -851,9 +794,11 @@ const SystemInfo: React.FC = () => {
   const handleSetThermInterval = async (interval: number) => {
     setThermLoading(true);
     try {
-      const res = await at().sendCommand(
-        `AT^THERMAUTOFUN=${therm.enabled ? 1 : 0},${therm.caMimoSwitch ? 1 : 0},${interval}`,
-      );
+      const res = await at().apiCommand('system.thermal_set', {
+        enabled: therm.enabled,
+        caMimoSwitch: therm.caMimoSwitch,
+        interval,
+      });
       if (res.success) {
         setTherm((p) => ({ ...p, interval }));
         Toast.success('温度检测间隔设置成功');
@@ -867,10 +812,6 @@ const SystemInfo: React.FC = () => {
 
   // ---------- IMEI修改 ----------
   const handleModifyImei = () => {
-    if (!/^\d{15}$/.test(newImei)) {
-      Toast.error('IMEI必须是15位数字');
-      return;
-    }
     Modal.confirm({
       title: '高风险操作警告',
       content: `修改IMEI是高风险操作，可能违反相关法律法规并导致设备无法正常使用。您即将把IMEI修改为 ${newImei}，请确认已了解相关风险。`,
@@ -880,13 +821,14 @@ const SystemInfo: React.FC = () => {
       onOk: async () => {
         setImeiLoading(true);
         try {
-          const res = await at().sendCommand(`AT^PHYNUM=IMEI,${newImei.trim()}`);
+          // 15 位数字的规则在后端（modules/modem::set_imei），这里显示它拒绝的原因。
+          const res = await at().apiCommand('modem.imei_set', { imei: newImei.trim() });
           if (res.success) {
             Toast.success('IMEI修改成功');
             setNewImei('');
             fetchDeviceInfo();
           } else {
-            Toast.error('IMEI修改失败');
+            Toast.error(backendMessage(res.error, 'IMEI修改失败'));
           }
         } finally {
           setImeiLoading(false);
@@ -1126,7 +1068,7 @@ const SystemInfo: React.FC = () => {
             <Field label="PIN码管理">
               <div>
                 <Typography.Text type="tertiary">
-                  状态：{simStateOf(pinStatus).label}
+                  状态：{pinLabel(simCard.code)}
                   {simSlotStatus ? ` · ${simSlotStatus.label}` : ''}
                 </Typography.Text>
                 {simSlotStatus?.dead ? (
@@ -1138,28 +1080,28 @@ const SystemInfo: React.FC = () => {
                   />
                 ) : null}
                 <Space style={{ marginTop: 8 }}>
-                  {simStateOf(pinStatus).lock === 'ready' && (
+                  {simCard.lock === 'ready' && (
                     <>
                       <Button
                         size="small"
-                        type={pinEnabled ? 'secondary' : 'primary'}
-                        onClick={() => openPinModal(pinEnabled ? 'disable' : 'enable')}
+                        type={simCard.pinEnabled ? 'secondary' : 'primary'}
+                        onClick={() => openPinModal(simCard.pinEnabled ? 'disable' : 'enable')}
                       >
-                        {pinEnabled ? '关闭PIN码' : '启用PIN码'}
+                        {simCard.pinEnabled ? '关闭PIN码' : '启用PIN码'}
                       </Button>
-                      {pinEnabled && (
+                      {simCard.pinEnabled && (
                         <Button size="small" onClick={() => openPinModal('change')}>
                           修改PIN码
                         </Button>
                       )}
                     </>
                   )}
-                  {['pin', 'pin2', 'network'].includes(simStateOf(pinStatus).lock) && (
+                  {['pin', 'pin2', 'network'].includes(simCard.lock) && (
                     <Button size="small" type="primary" onClick={() => openPinModal('verify')}>
                       验证PIN码
                     </Button>
                   )}
-                  {simStateOf(pinStatus).needsNewPin && (
+                  {simCard.needsNewPin && (
                     <Button size="small" type="danger" onClick={() => openPinModal('unblock')}>
                       解锁PUK
                     </Button>

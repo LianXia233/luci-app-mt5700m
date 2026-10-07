@@ -33,25 +33,6 @@ function pick(text, expression, fallback) {
 	return match ? match[1] : fallback;
 }
 
-// 取以 prefix 开头的首行，剥掉前缀后按逗号拆成数组
-function csvValues(text, prefix) {
-	var line = (text || '').split(/\n/).filter(function(item) { return item.indexOf(prefix) === 0; })[0] || '';
-	return line.substring(prefix.length).replace(/^[ :]+/, '').replace(/"/g, '').split(',').map(function(value) { return value.trim(); });
-}
-
-// 同 csvValues，但允许 "=" 作为分隔符（^NRSSBID= 等私有命令不一致）
-function matchValues(text, prefix) {
-	var line = (text || '').split(/\n/).filter(function(item) { return item.indexOf(prefix) === 0; })[0] || '';
-	return line.substring(prefix.length).replace(/^[ :=]+/, '').replace(/"/g, '').split(',').map(function(value) { return value.trim(); });
-}
-
-// 收集所有以 prefix 开头的行并展平为一个数组（锁频查询会返回多行）
-function collectFreqLock(text, prefix) {
-	return (text || '').split(/\n/).filter(function(item) { return item.indexOf(prefix) === 0; }).reduce(function(out, line) {
-		var fields = line.substring(prefix.length).replace(/^[ :=]+/, '').replace(/"/g, '').split(',').map(function(v) { return v.trim(); });
-		return out.concat(fields);
-	}, []);
-}
 
 // 以 prefix 开头首行的取值（去前导冒号/空格）
 function lineValue(text, prefix) {
@@ -66,12 +47,6 @@ function countLines(text, prefix) {
 
 /* ---------- 数值 / 地址格式化 ---------- */
 
-// 8 位十六进制 → 点分 IPv4
-function hexIPv4(value) {
-	if (!/^[0-9a-f]{8}$/i.test(value || ''))
-		return '';
-	return [ 6, 4, 2, 0 ].map(function(offset) { return parseInt(value.substr(offset, 2), 16); }).join('.');
-}
 
 // 64 位十六进制（模块计数的标准编码）→ 十进制，超出 32 位自动拆分
 function hexNumber(value) {
@@ -112,63 +87,55 @@ function subscriptionRate(value) {
 	return value > 0 ? (value / 1000).toFixed(value % 1000 ? 1 : 0) + ' Mbps' : '--';
 }
 
-/* ---------- 会话（advanced session） ---------- */
+/* ---------- 会话（network.session 路由） ---------- */
 
-// 解析 NDISSTATQRY / DHCP / DHCPV6 / DSFLOWQRY / CGMTU / CGPADDR / IPV6CAP / DCONNSTAT
-function parseSession(raw) {
-	var ndis = csvValues(section(raw, 'Data session'), '^NDISSTATQRY');
-	var dhcp4 = csvValues(section(raw, 'IPv4 lease'), '^DHCP');
-	var dhcp6 = csvValues(section(raw, 'IPv6 lease'), '^DHCPV6');
-	var flow = csvValues(section(raw, 'Data flow'), '^DSFLOWQRY');
-	var mtu = csvValues(section(raw, 'MTU'), '^CGMTU');
-	var pdpAddress = csvValues(section(raw, 'PDP address'), '+CGPADDR');
-	var capability = pick(section(raw, 'IP capability'), /\^IPV6CAP:\s*(\w+)/, '');
-	var capabilityNames = { '1':_('IPv4 only'), '2':_('IPv6 only'), '7':_('IPv4 / IPv6 · same APN'), '0B':_('IPv4 / IPv6 · separate APNs'), '0b':_('IPv4 / IPv6 · separate APNs') };
-	var detailed = (section(raw, 'Detailed sessions') || '').split(/\n/).map(function(line) {
-		var match = line.match(/^\^DCONNSTAT:\s*(\d+)(?:[,，]["“”]?([^,"“”]*)["“”]?[,，](\d+)[,，](\d+)[,，](\d+)(?:[,，](\d+))?)?/);
-		return match ? { cid:match[1], apn:match[2] || '', ipv4:match[3] === '1', ipv6:match[4] === '1', type:match[5] || '', ethernet:match[6] === '1' } : null;
-	}).filter(function(item) { return item && item.apn; });
-
-	var ipv4Address = hexIPv4(dhcp4[0]) || pdpAddress[1] || '';
-	var ipv6Address = dhcp6[0] && dhcp6[0] !== '::' ? dhcp6[0] : '';
-
-	/*
-	 * 连接状态判定。
-	 *
-	 * 首选 NDISSTATQRY（`ndis[0]==='1' && ndis[4]==='IPV4'`）—— 它是模组
-	 * 侧对「这条 cid 的数据面是否真的建起来」的权威回答。
-	 *
-	 * 但实测 MT5700M 在中国移动网络下对 `AT^NDISSTATQRY?` **返回空应答**，
-	 * 于是 ndis 恒为空 → ipv4Connected 恒 false → 概览页 Mobile IP 卡片永远
-	 * 显示 Disconnected，哪怕 IPv4 地址就在 DHCP 租约里（实测
-	 * `AT^DHCP?` 正常返回 `98AC060A` = 10.6.172.152，且与 eth2 实际地址一致）。
-	 * 这就是「luci 经常不显示数据」的一条真实成因。
-	 *
-	 * 兜底：NDIS 不可用时改用「是否真的拿到了地址」判定 —— 有租约地址或
-	 * PDP 地址就算 IPv4 已连接。宁可在极端情况下多显示一次「已连接」，
-	 * 也不要拿着真实地址却告诉用户「未分配」。
-	 */
-	var ndisUsable = ndis.length >= 9;
-	var ipv4Connected = ndisUsable
-		? (ndis[0] === '1' && ndis[4] === 'IPV4')
-		: Boolean(ipv4Address);
-	var ipv6Connected = ndisUsable
-		? (ndis[5] === '1' && ndis[8] === 'IPV6')
-		: Boolean(ipv6Address);
-
+/*
+ * `network.session` 的领域载荷 → 页面用的会话视图字段。
+ *
+ * 字段名沿用旧 `parseSession()`（从 `advanced session` 文本帧里正则出来的那张
+ * 对象）的产物，所以概览页的「移动 IP」卡与连接页的会话面板的渲染代码没动：
+ * 换掉的只是数据来源 —— 八个 AT 命令的解码现在只有后端一份
+ * （modules/network/{parser,state,service}.rs）。
+ *
+ * 三个纯展示的映射留在这里（各自的语言文案）：DSL 能力码 → 文案、MTU 缺省 →
+ * 「Network default」、DNS 列表 → 「 · 」拼接。
+ */
+function sessionInfo(payload) {
+	payload = payload || {};
+	var v4 = payload.ipv4 || {}, v6 = payload.ipv6 || {}, flow = payload.flow || {};
+	var capabilityNames = {
+		1: _('IPv4 only'), 2: _('IPv6 only'), 7: _('IPv4 / IPv6 · same APN'),
+		11: _('IPv4 / IPv6 · separate APNs')
+	};
+	var joinDns = function(list) {
+		return (list || []).filter(function(value) { return value && value !== '::'; }).join(' · ');
+	};
+	var capability = payload.capability;
 	return {
-		ipv4Connected: ipv4Connected,
-		ipv6Connected: ipv6Connected,
-		ipv4Address: ipv4Address,
-		ipv4Gateway:hexIPv4(dhcp4[2]),
-		ipv4Dns:[ hexIPv4(dhcp4[4]), hexIPv4(dhcp4[5]) ].filter(Boolean).join(' · '),
-		ipv6Address: ipv6Address,
-		ipv6Dns:[ dhcp6[4], dhcp6[5] ].filter(function(value) { return value && value !== '::'; }).join(' · '),
-		capability:capabilityNames[capability] || capability,
-		mtu:mtu[1] && mtu[1] !== '0' ? mtu[1] : _('Network default'),
-		currentDuration:hexNumber(flow[0]), currentTx:hexNumber(flow[1]), currentRx:hexNumber(flow[2]),
-		totalDuration:hexNumber(flow[3]), totalTx:hexNumber(flow[4]), totalRx:hexNumber(flow[5]),
-		maximumDown:dhcp4[6] || dhcp6[6], maximumUp:dhcp4[7] || dhcp6[7], detailed:detailed
+		ipv4Connected: v4.connected === true,
+		ipv6Connected: v6.connected === true,
+		ipv4Address: v4.address || '',
+		ipv4Gateway: v4.gateway || '',
+		ipv4Dns: joinDns(v4.dns),
+		ipv6Address: v6.address || '',
+		ipv6Dns: joinDns(v6.dns),
+		capability: capabilityNames[capability] || (capability != null ? String(capability) : ''),
+		mtu: payload.mtu ? String(payload.mtu) : _('Network default'),
+		currentDuration: Number(flow.current_duration) || 0,
+		currentTx: Number(flow.current_tx) || 0,
+		currentRx: Number(flow.current_rx) || 0,
+		totalDuration: Number(flow.total_duration) || 0,
+		totalTx: Number(flow.total_tx) || 0,
+		totalRx: Number(flow.total_rx) || 0,
+		maximumDown: payload.maximum_down || '',
+		maximumUp: payload.maximum_up || '',
+		detailed: (payload.sessions || []).map(function(item) {
+			return {
+				cid: String(item.cid), apn: item.apn || '',
+				ipv4: item.ipv4 === true, ipv6: item.ipv6 === true,
+				type: item.type || '', ethernet: item.ethernet === true
+			};
+		})
 	};
 }
 
@@ -315,117 +282,6 @@ function cleanSignal(value) {
 	return String(value).trim();
 }
 
-// AT^MONSC 服务小区（RAT 不同字段布局不同）
-function parseMonsc(text) {
-	var lines = (text || '').split(/\n/).map(function(l) { return l.trim(); }).filter(function(l) { return l.indexOf('^MONSC:') === 0; });
-	if (!lines.length) return null;
-	var v = lines[0].replace(/^\^MONSC:/, '').replace(/^[ :=]+/, '').replace(/"/g, '').split(',').map(function(x) { return x.trim(); });
-	var rat = String(v[0] || '').toUpperCase();
-	if (!rat || rat === 'NONE') return null;
-	if (rat.indexOf('NR') === 0)
-		return { rat: 'NR', mcc: v[1], mnc: v[2], arfcn: v[3], scs: v[4], cellId: v[5], pci: v[6], tac: v[7],
-			rsrp: cleanSignal(v[8]), rsrq: cleanSignal(v[9]), sinr: cleanSignal(v[10]) };
-	if (rat.indexOf('LTE') === 0)
-		return { rat: 'LTE', mcc: v[1], mnc: v[2], arfcn: v[3], scs: '', cellId: v[4], pci: v[5], tac: v[6],
-			rsrp: cleanSignal(v[7]), rsrq: cleanSignal(v[8]), rssi: cleanSignal(v[9]), sinr: '' };
-	return { rat: rat, mcc: v[1], mnc: v[2], arfcn: v[3], scs: '', cellId: v[5], pci: v[4], tac: v[6],
-		rsrp: cleanSignal(v[7]), rsrq: '', sinr: '' };
-}
-
-// AT^MONNC 邻区（每行一个小区，PCI 在信号值之前）
-function parseMonnc(text) {
-	var lines = (text || '').split(/\n/).map(function(l) { return l.trim(); }).filter(function(l) { return l.indexOf('^MONNC:') === 0; });
-	return lines.map(function(line) {
-		var v = line.replace(/^\^MONNC:/, '').replace(/^[ :=]+/, '').replace(/"/g, '').split(',').map(function(x) { return x.trim(); });
-		var rat = String(v[0] || '').toUpperCase();
-		if (rat.indexOf('NR') === 0)
-			return { rat: 'NR', arfcn: v[1], pci: v[2], rsrp: cleanSignal(v[3]), rsrq: cleanSignal(v[4]), sinr: cleanSignal(v[5]) };
-		if (rat.indexOf('LTE') === 0)
-			return { rat: 'LTE', arfcn: v[1], pci: v[2], rsrp: cleanSignal(v[3]), rsrq: cleanSignal(v[4]), rxlev: cleanSignal(v[5]), sinr: '' };
-		return null;
-	}).filter(function(item) { return item !== null; });
-}
-
-// 服务小区原始值数组 → 结构化对象（不同 RAT 的度量字段不同）
-function parseServingCell(values) {
-	var rat = String(values[0] || '').toUpperCase();
-	var cell = {
-		rat: values[0] || '', mcc: values[1] || '', mnc: values[2] || '',
-		arfcn: '', scs: '', cellId: '', pci: '', tac: '', metrics: []
-	};
-
-	if (rat.indexOf('NR') === 0) {
-		cell.arfcn = values[3] || '';
-		cell.scs = values[4] || '';
-		cell.cellId = values[5] || '';
-		cell.pci = values[6] || '';
-		cell.tac = values[7] || '';
-		cell.metrics = [
-			{ label: 'RSRP', value: values[8] || '', unit: 'dBm' },
-			{ label: 'RSRQ', value: values[9] || '', unit: 'dB' },
-			{ label: 'SINR', value: values[10] || '', unit: 'dB' }
-		];
-	} else if (rat.indexOf('LTE') === 0) {
-		cell.arfcn = values[3] || '';
-		cell.cellId = values[4] || '';
-		cell.pci = values[5] || '';
-		cell.tac = values[6] || '';
-		cell.metrics = [
-			{ label: 'RSRP', value: values[7] || '', unit: 'dBm' },
-			{ label: 'RSRQ', value: values[8] || '', unit: 'dB' },
-			{ label: 'RSSI', value: values[9] || '', unit: 'dBm' }
-		];
-	} else if (rat.indexOf('WCDMA') === 0) {
-		cell.arfcn = values[3] || '';
-		cell.cellId = values[5] || '';
-		cell.tac = values[6] || '';
-		cell.metrics = [
-			{ label: 'RSCP', value: values[7] || '', unit: 'dBm' },
-			{ label: 'RXLEV', value: values[8] || '', unit: 'dBm' },
-			{ label: 'ECIO', value: values[9] || '', unit: 'dB' }
-		];
-	} else {
-		cell.metrics = [
-			{ label: 'RSRP', value: '', unit: 'dBm' },
-			{ label: 'RSRQ', value: '', unit: 'dB' },
-			{ label: 'SINR', value: '', unit: 'dB' }
-		];
-	}
-
-	return cell;
-}
-
-// NR / LTE ARFCN → 频段名（MT5700M-CN Hardware Design Guide Table 5-1）
-function arfcnToBand(arfcn, rat) {
-	var n = parseInt(arfcn, 10);
-	if (isNaN(n) || n < 0) return null;
-	if (rat === '101' || rat === 'NR' || rat === 'nr') {
-		var freqMHz = n * 0.005;
-		if (freqMHz >= 703    && freqMHz <= 803)    return 'n28';
-		if (freqMHz >= 824    && freqMHz <= 894)    return 'n5';
-		if (freqMHz >= 880    && freqMHz <= 960)    return 'n8';
-		if (freqMHz >= 1710   && freqMHz <= 1880)   return 'n3';
-		if (freqMHz >= 1920   && freqMHz <= 2170)   return 'n1';
-		if (freqMHz >= 2496   && freqMHz <= 2690)   return 'n41';
-		if (freqMHz >= 3300   && freqMHz <= 3800)   return 'n78';
-		if (freqMHz >= 4400   && freqMHz <= 5000)   return 'n79';
-		return 'NR';
-	}
-	if (rat === '1' || rat === 'LTE' || rat === 'lte') {
-		if (n >= 0     && n <= 359)     return 'B1';
-		if (n >= 1200  && n <= 1949)    return 'B3';
-		if (n >= 2400  && n <= 2649)    return 'B5';
-		if (n >= 3450  && n <= 3799)    return 'B8';
-		if (n >= 10000 && n <= 10200)   return 'B34';
-		if (n >= 37750 && n <= 38249)   return 'B38';
-		if (n >= 38250 && n <= 38649)   return 'B39';
-		if (n >= 38650 && n <= 39649)   return 'B40';
-		if (n >= 39650 && n <= 41589)   return 'B41';
-		return 'LTE';
-	}
-	return null;
-}
-
 // 频段名 → 后端锁频命令所需的数字（n41→41, B3→3）
 function bandNameToNumber(bandName) {
 	if (!bandName) return '';
@@ -443,45 +299,6 @@ function ssbValue(value, invalid) {
 	if ((invalid || []).some(function(item) { return String(value) === String(item); }))
 		return '';
 	return value;
-}
-
-// 完整 AT^NRSSBID? 应答（manual 13.28）→ 结构化对象（8 服务波束 + 至多 4 邻区）
-function parseNrsSbid(text) {
-	var raw = matchValues(text, '^NRSSBID');
-	if (!raw.length)
-		return null;
-	var info = {
-		arfcn: raw[0], cid: raw[1], pci: raw[2], rsrp: raw[3], sinr: raw[4], ta: raw[5],
-		beams: [], neighbours: []
-	};
-	for (var i = 0; i < 8; i++) {
-		var id = raw[6 + i * 2];
-		var rsrp = raw[7 + i * 2];
-		var idNum = parseInt(id, 10);
-		if (!(idNum >= 0 && idNum <= 7))
-			continue;
-		info.beams.push({ id: id, rsrp: rsrp === '32767' ? '' : rsrp });
-	}
-	// N_NB_CELL 文档位于 index 22，部分固件插入杂散字段使其落在 23，两处探测
-	var nbIdx = 22;
-	var n = parseInt(raw[nbIdx], 10);
-	if (!(n >= 0 && n <= 4)) {
-		nbIdx = 23;
-		n = parseInt(raw[nbIdx], 10);
-		if (!(n >= 0 && n <= 4))
-			n = 0;
-	}
-	if (n > 4)
-		n = 4;
-	var base = nbIdx + 1;
-	for (var j = 0; j < n; j++) {
-		var o = base + j * 12;
-		info.neighbours.push({
-			pci: raw[o], arfcn: raw[o + 1],
-			rsrp: cleanSignal(raw[o + 2]), sinr: cleanSignal(raw[o + 3])
-		});
-	}
-	return info;
 }
 
 // CSV 清洗：去空白、去首尾与重复逗号
@@ -537,148 +354,7 @@ function mcsModulation(mcs, table, rat) {
 }
 
 // 完整 MCS 段 → [{ rat, carriers:[{table, code0, code1}] }]（多载波 / EN-DC 每 RAT 多组）
-function parseMcsSection(text) {
-	var lines = (text || '').split(/\n/).map(function(l) { return l.trim(); })
-		.filter(function(l) { return l.indexOf('^MCS') === 0; });
-	return lines.map(function(line) {
-		var body = line.replace(/^\^MCS/, '').replace(/^[ :=]+/, '').replace(/"/g, '');
-		var v = body.split(',').map(function(x) { return x.trim(); });
-		var rat = v[1];
-		var carriers = [];
-		for (var i = 2; i + 2 < v.length; i += 3) {
-			carriers.push({ table: v[i], code0: v[i + 1], code1: v[i + 2] });
-		}
-		return { rat: rat, carriers: carriers };
-	});
-}
-
-// ^LTEFREQLOCK? / ^NRFREQLOCK? 原始数组 → 结构化锁频信息
-function parseLockData(rawArr, rat) {
-	if (!rawArr || !rawArr.length || rawArr[0] === '' || rawArr[0] === undefined)
-		return { type:'0', bands:'', arfcns:'', scs:'', pcis:'' };
-	var type = String(rawArr[0] || '0');
-	if (type === '0') return { type:'0', bands:'', arfcns:'', scs:'', pcis:'' };
-	var num = Math.min(parseInt(rawArr[2] || '0', 10) || 0, 20);
-	if (num < 1) return { type:type, bands:'', arfcns:'', scs:'', pcis:'' };
-	var bands=[], arfcns=[], scs=[], pcis=[];
-	if (rat === 'nr') {
-		for (var i = 0; i < num; i++) {
-			var base = 3 + i * 4;
-			bands.push(rawArr[base] || '');
-			arfcns.push(rawArr[base + 1] || '');
-			scs.push(rawArr[base + 2] || '');
-			pcis.push(rawArr[base + 3] || '');
-		}
-	} else {
-		for (var j = 0; j < num; j++) {
-			var b2 = 3 + j * 3;
-			bands.push(rawArr[b2] || '');
-			arfcns.push(rawArr[b2 + 1] || '');
-			pcis.push(rawArr[b2 + 2] || '');
-		}
-	}
-	return {
-		type: type,
-		bands: bands.filter(Boolean).join(','),
-		arfcns: arfcns.filter(Boolean).join(','),
-		scs: scs.filter(Boolean).join(','),
-		pcis: pcis.filter(Boolean).join(',')
-	};
-}
-
-/* ---------- 短信 PDU 解码 ---------- */
-
-function swapDigits(value) {
-	var out = '';
-	for (var i = 0; i < value.length; i += 2) out += (value[i + 1] || '') + value[i];
-	return out.replace(/F$/i, '');
-}
-
-function decodeUcs2(hex) {
-	var out = '';
-	for (var i = 0; i + 3 < hex.length; i += 4) out += String.fromCharCode(parseInt(hex.substring(i, i + 4), 16));
-	return out;
-}
-
-function decodeGsm7(hex, septets, skipBits) {
-	var bytes = [];
-	for (var i = 0; i < hex.length; i += 2) bytes.push(parseInt(hex.substring(i, i + 2), 16));
-	var table = '@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞ\u001bÆæßÉ !"#¤%&\'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà';
-	var out = '', escape = false;
-	for (var n = 0; n < septets; n++) {
-		var bit = (skipBits || 0) + n * 7, pos = bit >> 3, shift = bit & 7;
-		var v = (((bytes[pos] || 0) >> shift) & 0x7f) | (((bytes[pos + 1] || 0) << (8 - shift)) & 0x7f);
-		if (escape) { out += ({ 10: '\f', 20: '^', 40: '{', 41: '}', 47: '\\', 60: '[', 61: '~', 62: ']', 64: '|', 101: '€' })[v] || ''; escape = false; }
-		else if (v === 27) escape = true;
-		else out += table[v] || ' ';
-	}
-	return out;
-}
-
-function decodePdu(pdu, index) {
-	try {
-		var p = 0, smscLen = parseInt(pdu.substring(p, p + 2), 16); p += 2 + smscLen * 2;
-		var first = parseInt(pdu.substring(p, p + 2), 16); p += 2;
-		var digits = parseInt(pdu.substring(p, p + 2), 16); p += 2;
-		var toa = parseInt(pdu.substring(p, p + 2), 16); p += 2;
-		var numberHex = pdu.substring(p, p + Math.ceil(digits / 2) * 2); p += Math.ceil(digits / 2) * 2;
-		var number = (toa === 145 ? '+' : '') + swapDigits(numberHex).substring(0, digits);
-		p += 2;
-		var dcs = parseInt(pdu.substring(p, p + 2), 16); p += 2;
-		var stamp = [];
-		for (var s = 0; s < 6; s++, p += 2) stamp.push(swapDigits(pdu.substring(p, p + 2)));
-		p += 2;
-		var date = '20%s-%s-%s %s:%s'.format(stamp[0], stamp[1], stamp[2], stamp[3], stamp[4]);
-		var udl = parseInt(pdu.substring(p, p + 2), 16); p += 2;
-		var ud = pdu.substring(p), headerBytes = 0, concat = null;
-		if (first & 0x40) {
-			headerBytes = parseInt(ud.substring(0, 2), 16) + 1;
-			var h = 2;
-			while (h < headerBytes * 2) {
-				var iei = parseInt(ud.substring(h, h + 2), 16), len = parseInt(ud.substring(h + 2, h + 4), 16), value = ud.substring(h + 4, h + 4 + len * 2); h += 4 + len * 2;
-				if (iei === 0 && len === 3) concat = { ref: parseInt(value.substring(0, 2), 16), total: parseInt(value.substring(2, 4), 16), seq: parseInt(value.substring(4, 6), 16) };
-				if (iei === 8 && len === 4) concat = { ref: parseInt(value.substring(0, 4), 16), total: parseInt(value.substring(4, 6), 16), seq: parseInt(value.substring(6, 8), 16) };
-			}
-		}
-		var text;
-		if ((dcs & 0x0c) === 0x08) text = decodeUcs2(ud.substring(headerBytes * 2, udl * 2));
-		else {
-			var headerSeptets = Math.ceil(headerBytes * 8 / 7), skipBits = headerBytes ? headerSeptets * 7 : 0;
-			text = decodeGsm7(ud, Math.max(0, udl - headerSeptets), skipBits);
-		}
-		return { index: String(index), indexes: [ String(index) ], number: number, date: date, text: text, concat: concat, direction:'in', order:Number(index) || 0 };
-	} catch (e) { return null; }
-}
-
-// +CMGL PDU 列表 → 消息数组（长短信按 ref 合并，倒序）
-function parseMessages(raw) {
-	var lines = (raw || '').replace(/\r/g, '').split('\n'), messages = [], pending = null;
-	lines.forEach(function(line) {
-		line = line.trim();
-		var m = line.match(/^\+CMGL:\s*(\d+),/);
-		if (m) pending = m[1];
-		else if (pending != null && /^[0-9A-F]+$/i.test(line)) { var msg = decodePdu(line, pending); if (msg) messages.push(msg); pending = null; }
-	});
-	var merged = [], groups = {};
-	messages.forEach(function(msg) {
-		if (!msg.concat) { merged.push(msg); return; }
-		var key = msg.number + ':' + msg.concat.ref;
-		(groups[key] || (groups[key] = [])).push(msg);
-	});
-	Object.keys(groups).forEach(function(key) {
-		var parts = groups[key].sort(function(a, b) { return a.concat.seq - b.concat.seq; }), first = parts[0];
-		first.text = parts.map(function(p) { return p.text; }).join(''); first.indexes = parts.map(function(p) { return p.index; }); merged.push(first);
-	});
-	return merged.sort(function(a, b) { return b.indexes[0] - a.indexes[0]; });
-}
-
-function parseInfo(raw) {
-	return {
-		ims: ((raw.match(/\^IMSSWITCH:\s*(\d+)/)||[])[1]||''),
-		smsc: ((raw.match(/\+CSCA:\s*"([^"]+)"/)||[])[1]||''),
-		storage: ((raw.match(/\+CPMS:\s*"([A-Z]+)",(\d+),(\d+)/)||[]).slice(1))
-	};
-}
+/* ---------- 短信会话分组（纯展示聚合，不含任何 AT/PDU 解码） ---------- */
 
 // 按号码分组会话，组内按时间升序、组间按最新消息倒序
 function groupMessages(messages) {
@@ -699,18 +375,14 @@ var FOTA_STATE_NAMES = {
 return baseclass.extend({
 	section: section,
 	pick: pick,
-	csvValues: csvValues,
-	matchValues: matchValues,
-	collectFreqLock: collectFreqLock,
 	lineValue: lineValue,
 	countLines: countLines,
-	hexIPv4: hexIPv4,
 	hexNumber: hexNumber,
 	formatBytes: formatBytes,
 	formatDuration: formatDuration,
 	formatRate: formatRate,
 	subscriptionRate: subscriptionRate,
-	parseSession: parseSession,
+	sessionInfo: sessionInfo,
 	parseContexts: parseContexts,
 	operatorInfo: operatorInfo,
 	parseStatus: parseStatus,
@@ -722,25 +394,12 @@ return baseclass.extend({
 	currentTraffic: currentTraffic,
 	trafficUpdated: trafficUpdated,
 	cleanSignal: cleanSignal,
-	parseMonsc: parseMonsc,
-	parseMonnc: parseMonnc,
-	parseServingCell: parseServingCell,
-	arfcnToBand: arfcnToBand,
 	bandNameToNumber: bandNameToNumber,
 	ssbValue: ssbValue,
-	parseNrsSbid: parseNrsSbid,
 	cleanCsv: cleanCsv,
 	validCsv: validCsv,
 	csvInRange: csvInRange,
 	mcsModulation: mcsModulation,
-	parseMcsSection: parseMcsSection,
-	parseLockData: parseLockData,
-	swapDigits: swapDigits,
-	decodeUcs2: decodeUcs2,
-	decodeGsm7: decodeGsm7,
-	decodePdu: decodePdu,
-	parseMessages: parseMessages,
-	parseInfo: parseInfo,
 	groupMessages: groupMessages,
 	FOTA_STATE_NAMES: FOTA_STATE_NAMES
 });

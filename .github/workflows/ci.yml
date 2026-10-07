@@ -75,11 +75,39 @@ jobs:
           # chunk parses (same guard as build-release.sh, but on the repo tree).
           find mt5700webui-openwrt-server/at-webserver/files/www/5700 -type f -name '*.js' -print0 | xargs -0 -n1 node --check
           test -f mt5700webui-openwrt-server/at-webserver/files/www/5700/index.html
+      - name: Check Rust structure (cargo-free static checks)
+        run: |
+          # Module tree, crate:: paths, call arity, trait-impl completeness and
+          # struct-literal fields — the refactor's own safety net, and a fast
+          # signal that does not depend on a toolchain download.
+          python3 scripts/rs-static-check.py mt5700webui-openwrt-server/at-webserver/src
+          # The other half of E0063: a literal written before a struct gained a
+          # field still compiles in no toolchain. Caught here (and in the local
+          # sandbox) instead of two CI cycles later.
+          python3 scripts/rs-field-lint.py mt5700webui-openwrt-server/at-webserver/src
+          # And the E0412/E0433 pair: a name written from memory whose `use` line
+          # was forgotten. Covers unit-test modules too (they inherit the file's
+          # scope through `use super::*;`).
+          python3 scripts/rs-scope-lint.py mt5700webui-openwrt-server/at-webserver/src
+          # Delimiter-level structure: a scripted edit that leaves a stray brace
+          # (or an unbalanced literal) is reported here with its line number
+          # instead of surfacing as unrelated cargo type errors.
+          python3 scripts/rs-syntax-check.py mt5700webui-openwrt-server/at-webserver/src
       - name: Check Rust backend
         run: |
           # v2.4.0: the Python backend was replaced by the std-only Rust
           # rewrite (at-webserver 4.0). Compile it and run its unit tests.
-          cargo test --locked --manifest-path mt5700webui-openwrt-server/at-webserver/Cargo.toml
+          #
+          # The diagnostics are also re-emitted as annotations: they are
+          # readable through the check-run API even when the job log is not,
+          # which is how maintainers on constrained networks debug a failure.
+          set +e
+          cargo test --locked --manifest-path mt5700webui-openwrt-server/at-webserver/Cargo.toml 2>&1 | tee /tmp/cargo.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            python3 scripts/ci-annotate-cargo.py /tmp/cargo.log
+            exit "$status"
+          fi
       - name: Validate JSON metadata
         run: |
           jq empty luci-app-mt5700m/root/usr/share/luci/menu.d/luci-app-mt5700m.json

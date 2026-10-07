@@ -1,35 +1,35 @@
-//! Single binary, dual frontend:
-//!   - invoked as `at-webserver` (or with no args / `daemon`): WebSocket AT
-//!     daemon on :8765 for the MT5700M WebUI
-//!   - invoked as `mt5700m-at` (symlink) or via `cli`: LuCI shell-backend
-//!     replacement with byte-compatible stdout
+//! Single binary, dual frontend — the ONE backend for LuCI and the WebUI.
 //!
-//! Deployment on OpenWrt:
-//!   /usr/bin/at-webserver        (this binary, real file)
-//!   /usr/sbin/mt5700m-at -> /usr/bin/at-webserver   (symlink, LuCI path)
+//! ```text
+//!                 ┌─────────────┐
+//!                 │    LuCI     │
+//!                 └──────┬──────┘
+//!                        │ API / RPC
+//!                 ┌──────▼──────┐
+//!                 │  Backend    │  api/  modules/  state/  scheduler/  serial/
+//!                 └──────▲──────┘
+//!                        │ API / WebSocket
+//!                 ┌──────┴──────┐
+//!                 │   WebUI     │
+//!                 └─────────────┘
+//! ```
+//!
+//! Entry points:
+//!   - `at-webserver` (or no args / `daemon`): WebSocket + RPC daemon on :8765
+//!     for both frontends (WebUI WebSocket, LuCI ucode TCP RPC).
+//!   - `at-webserver cli …` or argv[0] == `mt5700m-at`: argv-compatible client
+//!     used by the LuCI shell manager. It is a *client* of the daemon — it
+//!     never opens the AT port itself.
+//!   - `atprobe`: field diagnostic that inspects the AT port out-of-band.
 
-mod at;
-mod at_queue;
-mod cli;
+mod api;
+mod core;
 mod daemon;
-mod device_monitor;
-mod dispatcher;
-mod error;
-mod event_bus;
-mod json;
-mod probe;
-mod read_gate;
-mod runtime;
+mod modules;
 mod scheduler;
 mod serial;
-mod sha1;
-mod sms;
-mod snapshot;
-mod sock;
-mod state_cache;
-mod task;
-mod task_manager;
-mod ws;
+mod state;
+mod transport;
 
 use std::path::Path;
 
@@ -46,15 +46,15 @@ fn main() {
     let args: Vec<String> = argv.iter().skip(1).cloned().collect();
 
     let code = match exe.as_str() {
-        "mt5700m-at" => cli::run(&args),
+        "mt5700m-at" => api::cli::run(&args),
         _ => match args.first().map(|s| s.as_str()) {
-            Some("cli") => cli::run(&args[1..]),
+            Some("cli") => api::cli::run(&args[1..]),
             Some("daemon") => daemon::run(&args[1..]),
             // Field diagnostic: drive the AT port directly, bypassing the
             // daemon, the arbiter and the snapshot collectors. Used to tell
             // "the modem is not answering" apart from "our channel is
             // starved" when a page renders empty.
-            Some("atprobe") => probe::run(&args[1..]),
+            Some("atprobe") => serial::probe::run(&args[1..]),
             _ => daemon::run(&args),
         },
     };

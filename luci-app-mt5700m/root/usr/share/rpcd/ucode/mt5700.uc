@@ -610,6 +610,29 @@ return {
 							break;
 						}
 					}
+					// 已迁到统一 API 的写操作：每条给原来 CLI 动词的超时预算
+					// （秒），不再一律 25s —— 发送短信和 IMS 开关原先就是 60s。
+					// 列表按迁移进度增长（写路由 = api.<module>.<name>）。
+					// 超时的代价是前端看不到完成，但写本身已下发 —— 与 CLI 时期
+					// 的语义一致。rpcCall 自身上限 60s。
+					const slowRouteWrites = [
+						['api.network.lock_apply', 25],
+						['api.network.c5goption_set', 25],
+						['api.network.syscfg_set', 25],
+						['api.modem.nr_capability_set', 25],
+						['api.sms.send', 60],
+						['api.sms.delete', 25],
+						['api.sms.clear_all', 60],
+						['api.sms.storage_set', 25],
+						['api.sms.center_set', 25],
+						['api.sms.ims_set', 60]
+					];
+					for (let i = 0; i < length(slowRouteWrites); i++) {
+						if (substr(cmd, 0, length(slowRouteWrites[i][0])) == slowRouteWrites[i][0]) {
+							tmo = slowRouteWrites[i][1];
+							break;
+						}
+					}
 				}
 				return rpcCall('at', params, tmo);
 			}

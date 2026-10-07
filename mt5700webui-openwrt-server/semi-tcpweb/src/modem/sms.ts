@@ -1,10 +1,11 @@
-import * as PDU from 'node-pdu';
+// 短信的 PDU 编解码、+CMGL 解析、长短信合并都在统一后端（modules/sms）：
+// 这个文件只留「本地发送记录缓存」和展示用的格式化函数。
 import { isMockModeEnabled, MOCK_SMS_CACHE_KEY } from '@/services/mockAT';
 
 export const SMS_CACHE_KEY = isMockModeEnabled()
   ? MOCK_SMS_CACHE_KEY
   : 'sms_sent_messages_cache';
-export const MAX_SMS_CACHE = 1000;
+const MAX_SMS_CACHE = 1000;
 
 export interface SMS {
   index: number;
@@ -34,23 +35,6 @@ export function isValidPhoneNumber(number: string): boolean {
   return /^\d{5,19}$/.test(normalizePhoneNumber(number));
 }
 
-export function formatPDUTime(timestamp: Date): string {
-  const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
-  if (Number.isNaN(date.getTime())) return new Date().toLocaleString('zh-CN');
-  const formatted = date.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  });
-  const [datePart, timePart] = formatted.split(' ');
-  const [year, month, day] = datePart.split('/');
-  return `${year.slice(-2)}/${month}/${day},${timePart}`;
-}
-
 export function parseMessageTime(timeStr: string): Date {
   if (!timeStr) return new Date();
   const raw = String(timeStr).trim();
@@ -63,112 +47,44 @@ export function parseMessageTime(timeStr: string): Date {
   return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
 }
 
-function processPDUMessage(current: { index?: string; pdu?: string }, out: SMS[]) {
-  if (!current.index || !current.pdu) return;
-  const messageIndex = parseInt(current.index, 10);
-  if (out.some((m) => m.index === messageIndex)) return;
-  const cleanPdu = current.pdu.replace(/\r/g, '');
-  if (cleanPdu.length < 20) return;
-  try {
-    const pduResult = PDU.parse(cleanPdu);
-    if (!(pduResult instanceof PDU.Deliver)) return;
-    const phoneNumber = pduResult._address?._phone || '';
-    const messageText = pduResult._data?.getText() || '';
-    let isConcatenated = false;
-    let concatenatedInfo: { ref: number; total: number; seq: number } | null = null;
-    const ieData = pduResult._data?._parts?.[0]?.header?.ies?.[0]?.data;
-    if (ieData?.maxMsgNum && ieData?.msgRef && ieData?.msgSeqNo) {
-      concatenatedInfo = { ref: ieData.msgRef, total: ieData.maxMsgNum, seq: ieData.msgSeqNo };
-      isConcatenated = true;
-    }
-    let timestamp: Date | null = null;
-    if (pduResult._serviceCenterTimeStamp?.time) {
-      const utc = pduResult._serviceCenterTimeStamp.time * 1000;
-      const tzOff = pduResult._serviceCenterTimeStamp.tzOff || 0;
-      timestamp = new Date(utc + (tzOff + new Date().getTimezoneOffset()) * 60 * 1000);
-    }
-    if (phoneNumber && messageText) {
-      out.push({
-        index: messageIndex,
-        content: messageText,
-        number: normalizePhoneNumber(phoneNumber),
-        time: formatPDUTime(timestamp || new Date()),
-        type: 'received',
-        isConcatenated,
-        ...(isConcatenated && concatenatedInfo
-          ? {
-              concatenatedRef: concatenatedInfo.ref,
-              concatenatedSeq: concatenatedInfo.seq,
-              concatenatedTotal: concatenatedInfo.total,
-            }
-          : {}),
-      });
-    }
-  } catch {
-    /* ignore malformed PDU */
-  }
+// ------------------------------------------------------------------ 路由数据
+//
+// 页面消费的是后端 modules/sms 的域模型（sms.status / sms.storage / sms.list），
+// 字段名在这里声明一次，两个页面共用。
+
+/** `sms.storage` 的一个存储面（+CPMS? 的 name,used,total）。 */
+interface SmsStoragePlane {
+  name: string;
+  used: number;
+  total: number;
 }
 
-export function parseCMGL(data: string): SMS[] {
-  const smsMessages: SMS[] = [];
-  let parsedData = data;
-  try {
-    const jsonData = JSON.parse(data);
-    if (jsonData.success && jsonData.data) parsedData = jsonData.data;
-  } catch {
-    const match = parsedData.match(/\+CMGL:.*?(?=\+CMGL:|$)/gs);
-    if (match) parsedData = match.join('\n');
-  }
-  const lines = parsedData.split(/\r?\n/).filter((line) => line.trim());
-  let current: { index?: string; status?: string; pdu?: string } | null = null;
-  for (const lineRaw of lines) {
-    const line = lineRaw.trim();
-    if (!line || line === 'OK' || line.startsWith('AT+')) continue;
-    if (line.startsWith('+CMGL:')) {
-      if (current?.index && current.pdu) processPDUMessage(current, smsMessages);
-      const matches = line.match(/\+CMGL: (\d+),(\d+),,(\d+)/);
-      current = matches ? { index: matches[1], status: matches[2] } : null;
-    } else if (current && !current.pdu) {
-      if (/^[0-9A-F]+$/i.test(line)) {
-        current.pdu = line;
-        processPDUMessage(current, smsMessages);
-        current = null;
-      } else {
-        current = null;
-      }
-    }
-  }
-  if (current?.index && current.pdu) processPDUMessage(current, smsMessages);
-  return mergeConcatenated(smsMessages);
+/** `sms.storage`：读取/写入/接收三个存储面。 */
+export interface SmsStorageInfo {
+  read?: SmsStoragePlane;
+  write?: SmsStoragePlane;
+  receive?: SmsStoragePlane;
+  storages?: string[];
 }
 
-function mergeConcatenated(messages: SMS[]): SMS[] {
-  const groups = new Map<string, SMS[]>();
-  const others: SMS[] = [];
-  messages.forEach((msg) => {
-    if (msg.isConcatenated && msg.concatenatedRef != null) {
-      const key = `${msg.number}-${msg.concatenatedRef}-${msg.concatenatedTotal}`;
-      const list = groups.get(key) || [];
-      list.push(msg);
-      groups.set(key, list);
-    } else {
-      others.push(msg);
-    }
-  });
-  groups.forEach((parts) => {
-    const sorted = [...parts].sort((a, b) => (a.concatenatedSeq || 0) - (b.concatenatedSeq || 0));
-    const first = sorted[0];
-    const complete = first.concatenatedTotal ? sorted.length >= first.concatenatedTotal : true;
-    others.push({
-      ...first,
-      content: sorted.map((p) => p.content).join(''),
-      isConcatenated: true,
-    });
-    if (!complete) {
-      /* keep merged even if incomplete so user can still read fragments */
-    }
-  });
-  return others;
+/** `sms.status`：页面加载时的一次性快照（未读到的字段保持原值）。 */
+export interface SmsStatus {
+  enabled?: boolean;
+  imsOn?: boolean;
+  center?: string;
+  storage?: SmsStorageInfo;
+}
+
+/** `sms.list`：后端已解码并合并长短信的消息数组。 */
+export interface SmsList {
+  messages?: SMS[];
+}
+
+/** `sms.analyze` 的返回：分片数/字符集/字数。 */
+export interface SmsStats {
+  encoding: '7bit' | 'UCS2';
+  parts: number;
+  chars: number;
 }
 
 export function getCachedSentMessages(): SMS[] {

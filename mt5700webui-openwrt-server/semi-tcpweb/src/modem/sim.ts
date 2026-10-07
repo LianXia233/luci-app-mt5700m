@@ -1,72 +1,90 @@
-// SIM 卡锁相关：
-//   手册 6.3  AT+CPIN   — 查询是否有密码输入请求，以及校验 PIN / 用 PUK 解锁
-//   手册 6.6  AT^SIMSQ  — SIM 卡状态查询与主动上报（卡不在位/被锁/锁死等）
-//   手册 5.6  AT+CLCK   — "SC" 即 SIM PIN1 的启用/关闭/查询
-//   手册 5.7  AT+CPWD   — 修改 PIN，<fac> 只支持 "SC" 与 "P2"
-//   手册 20.2 CME ERROR 列表
+// SIM 卡状态展示层：后端 `sim.pin_status` / `sim.slot` / `sim.slot_set` /
+// `sim.hotplug_set` / `sim.pin_apply` 负责所有 AT 交互与语义（+CPIN、^SIMSQ、
+// ^SCICHG、^TDSIMHP、+CLCK、+CPWD 的编解码都在 modules/sim），这里只保留：
+//   * 后端返回码 -> 界面文案的映射；
+//   * CME 错误文案的翻译（纯展示）。
 
-export type SimLock = 'ready' | 'pin' | 'puk' | 'pin2' | 'puk2' | 'network' | 'absent' | 'unknown';
+import { backendMessage, isParameterError } from '@/services/backendError';
 
-export interface SimState {
-  /** +CPIN 原始 <code>，例如 "SIM PIN" */
+type SimLock = 'ready' | 'pin' | 'puk' | 'pin2' | 'puk2' | 'network' | 'absent' | 'unknown';
+
+/** 后端 `sim.pin_status` 解码出的卡状态（语义由后端给出，文案由这里补）。 */
+export interface SimCardState {
+  /** +CPIN 原始 <code>，例如 "SIM PIN"；未插卡时为 "ABSENT"。 */
   code: string;
   lock: SimLock;
-  label: string;
-  /** 是否需要用户输入密码才能继续用卡 */
+  /** 是否需要用户输入密码才能继续用卡。 */
   blocked: boolean;
-  /** 需要 PUK 时为 true：此时要同时输入 PUK 和新 PIN */
+  /** 需要 PUK 时为 true：此时要同时输入 PUK 和新 PIN。 */
   needsNewPin: boolean;
+  /** PIN 锁是否启用（+CLCK="SC",2），卡未就绪时为 null。 */
+  pinEnabled: boolean | null;
 }
 
-// 手册 6.3.3 <code> 取值。
-const CPIN_CODES: Record<string, { lock: SimLock; label: string }> = {
-  READY: { lock: 'ready', label: '无需密码，SIM 卡可用' },
-  'SIM PIN': { lock: 'pin', label: '需要输入 PIN 码' },
-  'SIM PUK': { lock: 'puk', label: 'PIN 已被锁定，需要 PUK 解锁' },
-  'SIM PIN2': { lock: 'pin2', label: '需要输入 PIN2 码' },
-  'SIM PUK2': { lock: 'puk2', label: 'PIN2 已被锁定，需要 PUK2 解锁' },
-  'PH-NET PIN': { lock: 'network', label: '需要网络锁 PIN 码' },
-  'PH-NET PUK': { lock: 'network', label: '需要网络锁 PUK 码' },
-  'PH-NETSUB PIN': { lock: 'network', label: '需要子网锁 PIN 码' },
-  'PH-NETSUB PUK': { lock: 'network', label: '需要子网锁 PUK 码' },
-  'PH-SP PIN': { lock: 'network', label: '需要服务提供商锁 PIN 码' },
-  'PH-SP PUK': { lock: 'network', label: '需要服务提供商锁 PUK 码' },
+/** +CPIN 就绪、未取到密码请求时的初始展示状态。 */
+export const READY_CARD: SimCardState = {
+  code: 'READY',
+  lock: 'ready',
+  blocked: false,
+  needsNewPin: false,
+  pinEnabled: false,
 };
 
-export const simStateOf = (code: string): SimState => {
-  const key = code.trim().replace(/"/g, '').toUpperCase();
-  const hit = CPIN_CODES[key];
-  const lock = hit?.lock ?? 'unknown';
+/** 后端 `sim.pin_status` 的原始应答。 */
+export interface SimPinStatusPayload {
+  code?: string;
+  lock?: string;
+  blocked?: boolean;
+  needsNewPin?: boolean;
+  card?: { status?: number; dead?: boolean; present?: boolean };
+  pinEnabled?: boolean | null;
+}
+
+/** 手册 6.3.3 <code> 取值 -> 界面文案。 */
+const CPIN_LABELS: Record<string, string> = {
+  READY: '无需密码，SIM 卡可用',
+  'SIM PIN': '需要输入 PIN 码',
+  'SIM PUK': 'PIN 已被锁定，需要 PUK 解锁',
+  'SIM PIN2': '需要输入 PIN2 码',
+  'SIM PUK2': 'PIN2 已被锁定，需要 PUK2 解锁',
+  'PH-NET PIN': '需要网络锁 PIN 码',
+  'PH-NET PUK': '需要网络锁 PUK 码',
+  'PH-NETSUB PIN': '需要子网锁 PIN 码',
+  'PH-NETSUB PUK': '需要子网锁 PUK 码',
+  'PH-SP PIN': '需要服务提供商锁 PIN 码',
+  'PH-SP PUK': '需要服务提供商锁 PUK 码',
+  ABSENT: '未检测到 SIM 卡',
+};
+
+/** +CPIN 状态码 -> 文案；后端已把大小写和引号规整好。 */
+export const pinLabel = (code: string): string => {
+  const key = String(code || '')
+    .trim()
+    .replace(/"/g, '')
+    .toUpperCase();
+  return CPIN_LABELS[key] ?? `未知状态：${key || '空'}`;
+};
+
+/** 把后端 `sim.pin_status` 应答映射成页面使用的卡状态。 */
+export const cardStateOf = (payload: SimPinStatusPayload): SimCardState => {
+  const code = String(payload.code || '').trim().toUpperCase();
   return {
-    code: key,
-    lock,
-    label: hit?.label ?? `未知状态：${key || '空'}`,
-    blocked: lock !== 'ready' && lock !== 'unknown',
-    needsNewPin: lock === 'puk' || lock === 'puk2',
+    code,
+    lock: (payload.lock as SimLock) ?? 'unknown',
+    blocked: payload.blocked === true,
+    needsNewPin: payload.needsNewPin === true,
+    pinEnabled: typeof payload.pinEnabled === 'boolean' ? payload.pinEnabled : null,
   };
 };
 
-/**
- * 解析 AT+CPIN? 的应答。没插卡时模组回的是 +CME ERROR: 10 而不是 +CPIN，
- * 所以失败分支也要看一眼错误码，不能只当成"查询失败"。
- */
-export const parseCpin = (text: string): SimState | null => {
-  const match = text.match(/\+CPIN:\s*([^\r\n]+)/);
-  if (match) return simStateOf(match[1]);
+/** 手册 6.6.3 <sim_status>；语义（失效/在位）由后端给出。 */
+export interface SimSlotStatus {
+  status: number;
+  label: string;
+  dead: boolean;
+  present: boolean;
+}
 
-  const err = cmeErrorCode(text);
-  if (err === 10) {
-    return { code: 'ABSENT', lock: 'absent', label: '未检测到 SIM 卡', blocked: false, needsNewPin: false };
-  }
-  // 手册 20.2：11/17 需要 PIN，12/18 需要 PUK。有些固件在查询时也用错误码答复。
-  if (err === 11) return simStateOf('SIM PIN');
-  if (err === 12) return simStateOf('SIM PUK');
-  if (err === 17) return simStateOf('SIM PIN2');
-  if (err === 18) return simStateOf('SIM PUK2');
-  return null;
-};
-
-// 手册 6.6.3 <sim_status>
 const SIM_STATUS: Record<number, string> = {
   0: '卡不在位',
   1: '卡已插入',
@@ -80,24 +98,19 @@ const SIM_STATUS: Record<number, string> = {
   100: '卡初始化失败',
 };
 
-export interface SimSlotStatus {
-  status: number;
-  label: string;
-  /** 98 是 PUK 输错次数用尽或卡物理损坏，已经救不回来了 */
-  dead: boolean;
-  present: boolean;
-}
-
-/** 解析 AT^SIMSQ? 的应答或同名主动上报：^SIMSQ: <mode>,<sim_status>。 */
-export const parseSimsq = (text: string): SimSlotStatus | null => {
-  const match = text.match(/\^SIMSQ:\s*(\d+)\s*,\s*(\d+)/);
-  if (!match) return null;
-  const status = Number(match[2]);
+/** ^SIMSQ 状态码 -> 页面展示对象。 */
+export const slotStatusOf = (card: {
+  status?: number;
+  dead?: boolean;
+  present?: boolean;
+}): SimSlotStatus | null => {
+  const status = card.status;
+  if (typeof status !== 'number') return null;
   return {
     status,
     label: SIM_STATUS[status] ?? `状态 ${status}`,
-    dead: status === 98,
-    present: status !== 0 && status !== 99,
+    dead: card.dead === true,
+    present: card.present === true,
   };
 };
 
@@ -131,7 +144,7 @@ const CME_TEXTS: Record<string, number> = {
 };
 
 /** 从应答里取出 CME 错误码；模组回的是描述字符串时反查成编号。 */
-export const cmeErrorCode = (raw: string): number | null => {
+const cmeErrorCode = (raw: string): number | null => {
   const match = String(raw || '').match(/\+CME ERROR:\s*(.+)/i);
   if (!match) return null;
   const body = match[1].trim().replace(/[\r\n].*$/s, '');
@@ -140,7 +153,7 @@ export const cmeErrorCode = (raw: string): number | null => {
 };
 
 /** 把失败应答翻译成给用户看的话。 */
-export const simErrorMessage = (raw: string, fallback: string): string => {
+const simErrorMessage = (raw: string, fallback: string): string => {
   const code = cmeErrorCode(raw);
   if (code !== null && CME_MESSAGES[code]) return CME_MESSAGES[code];
   const match = String(raw || '').match(/\+CME ERROR:\s*(.+)/i);
@@ -148,62 +161,19 @@ export const simErrorMessage = (raw: string, fallback: string): string => {
   return fallback;
 };
 
-export type PinOperation = 'verify' | 'unblock' | 'enable' | 'disable' | 'change';
-
-// 手册 6.3.3：<pin>/<newpin> 长度 4~8；手册 5.7.3：CPWD 密码为 '0'~'9'，最大长度 8。
-const PIN_MIN = 4;
-const PIN_MAX = 8;
-
-const checkDigits = (value: string, label: string): string | null => {
-  if (!/^\d+$/.test(value)) return `${label}只能是数字`;
-  if (value.length < PIN_MIN || value.length > PIN_MAX) return `${label}长度必须为 ${PIN_MIN}-${PIN_MAX} 位`;
-  return null;
-};
-
-export interface PinCommand {
-  command: string;
-  error?: string;
-}
-
 /**
- * 拼 PIN 操作命令。<fac> 只用 "SC"（SIM PIN1）与 "P2"（PIN2），
- * 手册 5.7.3 注明只支持这两种。
+ * PIN 操作的失败文案：后端的参数校验消息包在 "参数无效: …" 里
+ * （`BackendError::InvalidParameter`），这里只取规则本身那句话，
+ * 让弹窗/提示里的措辞和以前一致。
  */
-export const buildPinCommand = (
-  op: PinOperation,
-  input: { pin: string; newPin?: string; pin2?: boolean },
-): PinCommand => {
-  const pin = (input.pin || '').trim();
-  const newPin = (input.newPin || '').trim();
-  const fac = input.pin2 ? 'P2' : 'SC';
-
-  const label = op === 'unblock' ? 'PUK 码' : 'PIN 码';
-  const bad = checkDigits(pin, label);
-  if (bad) return { command: '', error: bad };
-
-  if (op === 'unblock' || op === 'change') {
-    const badNew = checkDigits(newPin, '新 PIN 码');
-    if (badNew) return { command: '', error: badNew };
-    if (op === 'change' && pin === newPin) return { command: '', error: '新 PIN 码不能与原 PIN 码相同' };
-  }
-
-  switch (op) {
-    case 'verify':
-      return { command: `AT+CPIN="${pin}"` };
-    // 手册 6.3.2：PUK 解锁时 <pin> 是 PUK、<newpin> 是新设的 PIN。
-    case 'unblock':
-      return { command: `AT+CPIN="${pin}","${newPin}"` };
-    case 'enable':
-      return { command: `AT+CLCK="${fac}",1,"${pin}"` };
-    case 'disable':
-      return { command: `AT+CLCK="${fac}",0,"${pin}"` };
-    case 'change':
-      return { command: `AT+CPWD="${fac}","${pin}","${newPin}"` };
-  }
+export const pinErrorMessage = (raw: string, fallback: string): string => {
+  const text = String(raw || '').trim();
+  if (!text) return fallback;
+  const code = cmeErrorCode(text);
+  if (code !== null && CME_MESSAGES[code]) return CME_MESSAGES[code];
+  // 参数校验类消息（密码规则、操作名）只取规则本身那句话，措辞和以前一致。
+  if (isParameterError(text)) return backendMessage(text, fallback);
+  return simErrorMessage(text, fallback);
 };
 
-/** 解析 AT+CLCK="SC",2 的应答：+CLCK: <status>，1 表示 PIN 锁已启用。 */
-export const parseClck = (text: string): boolean | null => {
-  const match = text.match(/\+CLCK:\s*(\d+)/);
-  return match ? match[1] === '1' : null;
-};
+export type PinOperation = 'verify' | 'unblock' | 'enable' | 'disable' | 'change';

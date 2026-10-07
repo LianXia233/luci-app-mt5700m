@@ -9,19 +9,18 @@
 //! exclusive serial port through a local Unix control socket. `ubus-at-daemon`
 //! and `sms-tool_q` are no longer used.
 
-use crate::at;
-use crate::at_queue::{AtArbiter, AtRequestSpec, AtResult, AtTransport};
-use crate::device_monitor::DeviceMonitor;
-use crate::dispatcher::Dispatcher;
-use crate::error::BackendError;
-use crate::event_bus::{Event, EventBus, Subscription, DEFAULT_TOPICS};
-use crate::json::{self, Value};
-use crate::scheduler;
-use crate::serial;
-use crate::state_cache::StateCache;
-use crate::task::{Priority, TaskKind};
-use crate::task_manager::{TaskCtx, TaskManager};
-use crate::ws::{self, WsError};
+use crate::transport::client;
+use crate::scheduler::arbiter::{AtArbiter, AtRequestSpec, AtResult, AtTransport};
+use crate::serial::presence::DeviceMonitor;
+use crate::transport::urc::Dispatcher;
+use crate::core::error::BackendError;
+use crate::state::bus::{Event, EventBus, Subscription, DEFAULT_TOPICS};
+use crate::core::json::{self, Value};
+use crate::scheduler::plan;
+use crate::serial::manager;
+use crate::state::cache::StateCache;
+use crate::scheduler::jobs::TaskManager;
+use crate::transport::ws::{self, WsError};
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -78,7 +77,7 @@ fn as_bool(v: &str) -> bool {
 
 pub fn load_config() -> DaemonConfig {
     let mut c = DaemonConfig::default();
-    if !at::uci_available() {
+    if !client::uci_available() {
         return c;
     }
     let g = |k: &str| uci_get(&format!("at-webserver.config.{}", k));
@@ -147,18 +146,22 @@ fn resolve_serial_port(config: &DaemonConfig) -> String {
     if !p.is_empty() && p != "auto" && p != "custom" {
         return p.to_string();
     }
-    at::auto_detect_serial().unwrap_or_else(|| at::PREFERRED_AT_PORT.to_string())
+    client::auto_detect_serial().unwrap_or_else(|| client::PREFERRED_AT_PORT.to_string())
 }
 
 #[cfg_attr(not(unix), allow(dead_code))]
 impl AtClient {
     fn new(config: DaemonConfig) -> Arc<Self> {
         let kind = config.connection_type.clone();
+        // The link kind is a system fact the pages display: record it once here
+        // (the system module's `system.service_mode` route reads it) instead of
+        // letting a frontend ask the modem with `AT+CONNECT?`.
+        crate::core::modem::record(&kind);
         let mut attached_port: Option<String> = None;
         let stream = match kind.as_str() {
             "SERIAL" => {
                 let path = resolve_serial_port(&config);
-                match serial::open_serial_exclusive(&path) {
+                match manager::open_serial_exclusive(&path) {
                     Ok(f) => {
                         eprintln!("at-webserver: attached to serial {}", path);
                         attached_port = Some(path);
@@ -227,20 +230,11 @@ impl AtClient {
         }
     }
 
-    /// Send one AT command and wait for the final result (u64 seconds —
-    /// legacy one-shot paths). Serialized behind the exclusive serial lock
-    /// (acquired inside `stream_command`).
-    pub fn send_blocking(&self, command: &str, timeout: u64) -> Result<String, String> {
-        match self.config.connection_type.as_str() {
-            "SERIAL" | "NETWORK" => self.stream_command(command, timeout),
-            _ => Err("unknown connection type".into()),
-        }
-    }
 
     /// Send one SMS-SUBMIT PDU through the persistent stream (two-phase
-    /// `AT+CMGS`). Used by the control socket so the exclusive serial owner
-    /// performs the whole transaction.
-    fn send_pdu(&self, pdu: &crate::sms::SmsPdu, timeout: u64) -> Result<String, String> {
+    /// `AT+CMGS`). Used by the SMS module's send service through the arbiter, so
+    /// the exclusive serial owner performs the whole transaction.
+    fn send_pdu(&self, length: usize, hex: &str, timeout: u64) -> Result<String, String> {
         self.in_flight.store(true, Ordering::SeqCst);
         let mut guard = self.lock.lock().map_err(|_| "client lock poisoned")?;
         {
@@ -259,7 +253,7 @@ impl AtClient {
         }
         {
             // 2) CMGS length; wait for the '>' prompt (or an error).
-            let cmd = format!("AT+CMGS={}\r", pdu.length);
+            let cmd = format!("AT+CMGS={}\r", length);
             if let Err(e) = self.write_locked(&mut guard, cmd.as_bytes()) {
                 self.in_flight.store(false, Ordering::SeqCst);
                 return Err(e);
@@ -275,7 +269,7 @@ impl AtClient {
         }
         {
             // 3) Payload + CTRL-Z; expect +CMGS/<mr> then OK.
-            let payload = format!("{}\u{1a}", pdu.hex);
+            let payload = format!("{}\u{1a}", hex);
             if let Err(e) = self.write_locked(&mut guard, payload.as_bytes()) {
                 self.in_flight.store(false, Ordering::SeqCst);
                 return Err(e);
@@ -289,15 +283,6 @@ impl AtClient {
         }
     }
 
-    /// Send the whole PDU set for one logical SMS (multipart included).
-    pub fn send_sms(&self, number: &str, text: &str) -> Result<String, String> {
-        let pdus = crate::sms::encode(number, text);
-        let mut last = String::new();
-        for pdu in &pdus {
-            last = self.send_pdu(pdu, self.config.serial_timeout)?;
-        }
-        Ok(last)
-    }
 
     fn write_locked(&self, guard: &mut std::sync::MutexGuard<'_, Stream>, wire: &[u8]) -> Result<(), String> {
         match &mut **guard {
@@ -465,13 +450,24 @@ impl AtTransport for AtClient {
         }
     }
 
-    fn send_sms(&self, number: &str, text: &str) -> Result<String, BackendError> {
-        let pdus = crate::sms::encode(number, text);
+    fn send_sms_pdu(&self, parts: &[crate::core::channel::SmsPart]) -> Result<String, BackendError> {
+        let total = parts.len();
         let mut last = String::new();
-        for pdu in &pdus {
-            last = self
-                .send_pdu(pdu, self.config.serial_timeout)
-                .map_err(BackendError::TransportError)?;
+        for (i, part) in parts.iter().enumerate() {
+            match self.send_pdu(part.length, &part.hex, self.config.serial_timeout) {
+                Ok(text) => last = text,
+                Err(e) => {
+                    // Which part failed is transport knowledge (only this loop
+                    // knows), so the index is added here and the message travels
+                    // up unchanged to the user.
+                    let msg = if total > 1 {
+                        format!("第 {}/{} 条发送失败：{}", i + 1, total, e)
+                    } else {
+                        e
+                    };
+                    return Err(BackendError::TransportError(msg));
+                }
+            }
         }
         Ok(last)
     }
@@ -504,70 +500,6 @@ fn has_result(t: &str) -> bool {
         let l = l.trim();
         l == "OK" || l == "ERROR" || l.starts_with("+CME ERROR:") || l.starts_with("+CMS ERROR:")
     })
-}
-
-// ---------------------------------------------------------------- Cellscan (async path)
-//
-// Scans are exclusive long-running tasks: they own the AT channel, report
-// progress via `task.*` events and publish the protocol-compatible
-// `cellscan` broadcast when done. The WebSocket/HTTP caller only ever gets
-// an immediate `{success:true}` — the actual result arrives asynchronously.
-
-fn handle_cellscan(tasks: &Arc<TaskManager>, command: &str) -> Option<Value> {
-    let cmd = command.trim();
-    if cmd == "AT^CELLSCAN=ABORT" || cmd == "AT^CELLSCAN=ABORTED" {
-        // Cancelling the exclusive task also injects the abort token on the
-        // wire (the request's abort_wire), freeing the AT channel.
-        let cancelled = tasks.cancel_active(&[TaskKind::Exclusive]);
-        if cancelled == 0 {
-            return Some(err_response("no scan in progress"));
-        }
-        return Some(ok_response(""));
-    }
-    if cmd == "AT^CELLSCAN=STATE" {
-        let state = if tasks.has_active(&[TaskKind::Exclusive]) {
-            "scanning"
-        } else {
-            "idle"
-        };
-        return Some(ok_response(&format!("+CELLSCAN: {}", state)));
-    }
-    if cmd == "AT^CELLSCAN" {
-        if tasks.has_active(&[TaskKind::Exclusive]) {
-            return Some(err_response("scan already in progress"));
-        }
-        let spec = AtRequestSpec::long_exclusive(
-            "AT^CELLSCAN",
-            Duration::from_secs(180),
-            b"abcd",
-        );
-        tasks.submit(
-            "scan.cell",
-            TaskKind::Exclusive,
-            Priority::Critical,
-            Some(Duration::from_secs(190)),
-            Box::new(move |ctx: &TaskCtx| {
-                let result = ctx.at_request(spec);
-                let mut obj = std::collections::BTreeMap::new();
-                match &result {
-                    Ok(text) => {
-                        obj.insert("state".to_string(), json::str_val("done"));
-                        obj.insert("result".to_string(), json::str_val(text.trim()));
-                    }
-                    Err(e) => {
-                        obj.insert("state".to_string(), json::str_val("error"));
-                        obj.insert("error".to_string(), json::str_val(&e.message()));
-                    }
-                }
-                // Protocol-compatible `cellscan` broadcast (WebUI parity).
-                ctx.bus
-                    .publish_now(crate::event_bus::TOPIC_SCAN, "cellscan", Value::Obj(obj.clone()));
-                result.map(|_| Value::Obj(obj))
-            }),
-        );
-        return Some(ok_response(""));
-    }
-    None
 }
 
 // ---------------------------------------------------------------- Pseudo commands
@@ -610,84 +542,36 @@ pub fn normalize_syscfgex(command: &str) -> String {
     cleaned
 }
 
+/// The LuCI/CLI pseudo-commands `AT+SCHED?` / `AT+SCHED={json}`: aliases for
+/// the schedule routes, so the one config mapping stays in
+/// `modules::network::schedule` (the previous port answered the flat UCI map,
+/// which no frontend could read, and wrote back top-level keys that UCI never
+/// had).
 fn handle_schedule_command(command: &str) -> Option<Value> {
+    use crate::modules::network::schedule;
     let trimmed = command.trim();
     if trimmed == "AT+SCHED?" {
-        return Some(ok_response(&sched_json()));
+        return Some(ok_response(&schedule::read().dump()));
     }
     if let Some(rest) = trimmed.strip_prefix("AT+SCHED=") {
         let payload = rest.trim();
         if payload.is_empty() {
             return Some(err_response("empty schedule payload"));
         }
-        let parsed = match json::parse(payload) {
-            Some(v) => v,
-            None => return Some(err_response("invalid schedule json")),
-        };
-        let Value::Obj(map) = parsed else {
+        let Some(parsed) = json::parse(payload) else {
             return Some(err_response("invalid schedule json"));
         };
-        for (key, value) in &map {
-            let uci_key = format!("at-webserver.config.{}", key);
-            let text = match value {
-                Value::Str(s) => s.clone(),
-                Value::Bool(b) => b.to_string(),
-                Value::Num(n) => n.clone(),
-                _ => continue,
-            };
-            let _ = std::process::Command::new("uci")
-                .args(["set", &uci_key, &text])
-                .status();
+        if !matches!(parsed, Value::Obj(_)) {
+            return Some(err_response("invalid schedule json"));
         }
-        let _ = std::process::Command::new("uci")
-            .args(["commit", "at-webserver"])
-            .status();
-        return Some(ok_response(""));
+        return Some(match schedule::write(&parsed) {
+            Ok(()) => ok_response(""),
+            Err(e) => err_response(&e.detail()),
+        });
     }
     None
 }
 
-fn sched_json() -> String {
-    // Mirror the Go schedconfig field set.
-    let keys = [
-        "schedule_enabled",
-        "schedule_check_interval",
-        "schedule_timeout",
-        "schedule_unlock_lte",
-        "schedule_unlock_nr",
-        "schedule_toggle_airplane",
-        "schedule_night_enabled",
-        "schedule_night_start",
-        "schedule_night_end",
-        "schedule_night_lte_type",
-        "schedule_night_lte_bands",
-        "schedule_night_lte_arfcns",
-        "schedule_night_lte_scs_types",
-        "schedule_night_lte_pcis",
-        "schedule_night_nr_type",
-        "schedule_night_nr_bands",
-        "schedule_night_nr_arfcns",
-        "schedule_night_nr_scs_types",
-        "schedule_night_nr_pcis",
-        "schedule_day_enabled",
-        "schedule_day_lte_type",
-        "schedule_day_lte_bands",
-        "schedule_day_lte_arfcns",
-        "schedule_day_lte_scs_types",
-        "schedule_day_lte_pcis",
-        "schedule_day_nr_type",
-        "schedule_day_nr_bands",
-        "schedule_day_nr_arfcns",
-        "schedule_day_nr_scs_types",
-        "schedule_day_nr_pcis",
-    ];
-    let mut map = std::collections::BTreeMap::new();
-    for key in keys {
-        let value = uci_get(&format!("at-webserver.config.{}", key)).unwrap_or_default();
-        map.insert(key.to_string(), json::str_val(&value));
-    }
-    Value::Obj(map).dump()
-}
 
 // ---------------------------------------------------------------- Control socket
 //
@@ -715,6 +599,32 @@ fn handle_control_request(
         .unwrap_or("");
     let mut ok = std::collections::BTreeMap::new();
     match cmd {
+        // Unified API over the control socket: the CLI (and therefore the LuCI
+        // dial manager) consumes exactly the same registry as the frontends.
+        "api" => {
+            let path = parsed
+                .as_ref()
+                .and_then(|v| v.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if path.is_empty() {
+                return err_response("缺少参数 path").dump();
+            }
+            let params = parsed
+                .as_ref()
+                .and_then(|v| v.get("params"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            let resp = crate::api::rpc::control_response(
+                arbiter,
+                cache,
+                tasks.bus(),
+                Some(tasks),
+                path,
+                &params,
+            );
+            return resp.dump();
+        }
         "send" => {
             let command = parsed
                 .as_ref()
@@ -736,23 +646,22 @@ fn handle_control_request(
                 // `ui_query` so a slow command is not retried against the
                 // shared channel (see AtRequestSpec::ui_query).
                 // 读命令闸门。**LuCI 的全部读命令都走这条 control
-                // socket**（mt5700m-at command -> auto_cascade ->
-                // daemon_transport -> 这里），不在 run_command 里；漏了
-                // 这里闸门等于没装 —— 实测表现为cached 里始终没有
-                // raw: topic。
-                match crate::read_gate::gate(&command, cache, tasks) {
-                    crate::read_gate::Gate::Cached(text) => {
+                // socket**（mt5700m-at -> client::at_cmd ->
+                // 这里），不在 run_command 里；漏了这里闸门等于没装 ——
+                // 实测表现为 cached 里始终没有 raw: topic。
+                match crate::scheduler::gate::gate(&command, cache, tasks) {
+                    crate::scheduler::gate::Gate::Cached(text) => {
                         ok.insert("ok".to_string(), Value::Bool(true));
                         ok.insert("response".to_string(), json::str_val(text.trim()));
                         return Value::Obj(ok).dump();
                     }
-                    crate::read_gate::Gate::Pending => {
+                    crate::scheduler::gate::Gate::Pending => {
                         ok.insert("ok".to_string(), Value::Bool(true));
                         ok.insert("pending".to_string(), Value::Bool(true));
                         ok.insert("response".to_string(), json::str_val(""));
                         return Value::Obj(ok).dump();
                     }
-                    crate::read_gate::Gate::Passthrough => {}
+                    crate::scheduler::gate::Gate::Passthrough => {}
                 }
                 let mut spec = if command.ends_with('?') {
                     AtRequestSpec::ui_query(&command)
@@ -763,46 +672,16 @@ fn handle_control_request(
                 spec.queued_timeout = spec
                     .queued_timeout
                     .max(Duration::from_secs(timeout + 2));
-                let is_write = !crate::read_gate::is_read_command(&command);
+                let is_write = !crate::scheduler::gate::is_read_command(&command);
                 match await_request(arbiter, spec) {
                     Ok(text) => {
                         // 写操作改了模组状态，读缓存必须立刻作废
                         // （改 APN 后旧的 DHCP 地址不能继续显示）。
                         if is_write {
-                            crate::read_gate::invalidate_related(cache, &command);
+                            crate::scheduler::gate::invalidate_related(cache, &command);
                         }
                         ok.insert("ok".to_string(), Value::Bool(true));
                         ok.insert("response".to_string(), json::str_val(text.trim()));
-                    }
-                    Err(e) => {
-                        ok.insert("ok".to_string(), Value::Bool(false));
-                        ok.insert("error".to_string(), json::str_val(&e.message()));
-                    }
-                }
-            }
-        }
-        "sms" => {
-            let number = parsed
-                .as_ref()
-                .and_then(|v| v.get("number"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let text = parsed
-                .as_ref()
-                .and_then(|v| v.get("text"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            if number.is_empty() || text.is_empty() {
-                ok.insert("ok".to_string(), Value::Bool(false));
-                ok.insert("error".to_string(), json::str_val("empty number or text"));
-            } else {
-                let spec = AtRequestSpec::sms_send(&number, &text);
-                match await_request(arbiter, spec) {
-                    Ok(resp) => {
-                        ok.insert("ok".to_string(), Value::Bool(true));
-                        ok.insert("response".to_string(), json::str_val(resp.trim()));
                     }
                     Err(e) => {
                         ok.insert("ok".to_string(), Value::Bool(false));
@@ -818,7 +697,7 @@ fn handle_control_request(
             ok.insert("snapshot".to_string(), cache.snapshot());
         }
         "scan" => {
-            let ports: Vec<Value> = at::scan_serial_ports()
+            let ports: Vec<Value> = client::scan_serial_ports()
                 .iter()
                 .map(|p| {
                     let mut m = std::collections::BTreeMap::new();
@@ -862,18 +741,17 @@ fn spawn_control_socket(
 ) {
     #[cfg(unix)]
     {
-        use std::io::BufRead;
-        use std::os::unix::net::{UnixListener, UnixStream};
-        let _ = std::fs::remove_file(crate::sock::CONTROL_SOCKET);
-        if let Some(parent) = std::path::Path::new(crate::sock::CONTROL_SOCKET).parent() {
+        use std::os::unix::net::UnixListener;
+        let _ = std::fs::remove_file(crate::transport::control::CONTROL_SOCKET);
+        if let Some(parent) = std::path::Path::new(crate::transport::control::CONTROL_SOCKET).parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let listener = match UnixListener::bind(crate::sock::CONTROL_SOCKET) {
+        let listener = match UnixListener::bind(crate::transport::control::CONTROL_SOCKET) {
             Ok(l) => l,
             Err(e) => {
                 eprintln!(
                     "at-webserver: could not bind control socket {}: {}",
-                    crate::sock::CONTROL_SOCKET,
+                    crate::transport::control::CONTROL_SOCKET,
                     e
                 );
                 return;
@@ -881,7 +759,7 @@ fn spawn_control_socket(
         };
         eprintln!(
             "at-webserver: control socket {} ready",
-            crate::sock::CONTROL_SOCKET
+            crate::transport::control::CONTROL_SOCKET
         );
         thread::spawn(move || {
             for incoming in listener.incoming() {
@@ -983,6 +861,17 @@ fn handle_rpc_request(
                 handle_at_command(client, arbiter, tasks, bus, cache, cmd, args)
             }
         }
+        // Unified API: {"method":"api","params":{"path":"signal.get"}}.
+        // LuCI calls this through the ucode bridge, the WebUI through the
+        // WebSocket envelope below; both reach the same module code.
+        "api" => {
+            let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if path.is_empty() {
+                err_response("缺少参数 path")
+            } else {
+                crate::api::rpc::control_response(arbiter, cache, bus, Some(tasks), path, &params)
+            }
+        }
         // 缓存快照：零 AT 流量，LuCI 首屏立即拿到后台采集器状态。
         "cached" => {
             let mut m = std::collections::BTreeMap::new();
@@ -1009,7 +898,7 @@ fn handle_rpc_request(
             Value::Obj(m)
         }
         "scan" => {
-            let ports: Vec<Value> = at::scan_serial_ports()
+            let ports: Vec<Value> = client::scan_serial_ports()
                 .iter()
                 .map(|p| {
                     let mut m = std::collections::BTreeMap::new();
@@ -1249,10 +1138,13 @@ fn spawn_urc_monitor(client: Arc<AtClient>, bus: Arc<EventBus>) {
                 }
                 for (msg_type, data) in dispatcher.handle_line(&line) {
                     let topic = match msg_type {
-                        "new_sms" | "memory_full" => crate::event_bus::TOPIC_SMS,
-                        "signal" => crate::event_bus::TOPIC_SIGNAL,
-                        "pdcp_data" => crate::event_bus::TOPIC_TRAFFIC,
-                        _ => crate::event_bus::TOPIC_MODEM,
+                        "new_sms" | "memory_full" | "sms.ussd" => crate::state::bus::TOPIC_SMS,
+                        "qos.ambr" => crate::state::bus::TOPIC_QOS,
+                        "sim.changed" => crate::state::bus::TOPIC_SIM,
+                        "network.reject" => crate::state::bus::TOPIC_NETWORK,
+                        "signal" => crate::state::bus::TOPIC_SIGNAL,
+                        "pdcp_data" => crate::state::bus::TOPIC_TRAFFIC,
+                        _ => crate::state::bus::TOPIC_MODEM,
                     };
                     bus.publish_now(topic, msg_type, data);
                 }
@@ -1299,8 +1191,8 @@ pub fn run(args: &[String]) -> i32 {
     // Background collectors (signal/network/registration/temperature/traffic/
     // cell/sim/modem_info) + the day/night band-lock scheduler run as periodic
     // tasks, so the cache is warm before the first page load.
-    crate::snapshot::spawn_all(&tasks);
-    scheduler::register(&tasks);
+    crate::modules::spawn_all(&tasks);
+    plan::register(&tasks);
 
     // USB hotplug: presence transitions invalidate the cache, cancel modem
     // tasks and push `usb.*` / `modem.*` events.
@@ -1507,6 +1399,16 @@ fn run_command(
     cache: &Arc<StateCache>,
     command: &str,
 ) -> Value {
+    // Unified API over the WebSocket/LuCI command path: a command that reads
+    // `api.<module>.<verb>` is dispatched to the module registry, so frontends
+    // ask for domain data instead of building AT strings and parsing replies.
+    if crate::api::rpc::is_api_method(command) {
+        // `api.<route>` or `api.<route> {<json params>}` — see
+        // `api::rpc::split_api_command`; the registry strips nothing here, it
+        // just never sees an AT string.
+        let (method, params) = crate::api::rpc::split_api_command(command);
+        return crate::api::rpc::ws_response(arbiter, cache, bus, Some(tasks), &method, &params);
+    }
     if command.trim() == "AT+CONNECT?" {
         let kind = if client.describe() == "SERIAL" { "1" } else { "0" };
         return ok_response(&format!("+CONNECT: {}\r\nOK", kind));
@@ -1514,7 +1416,10 @@ fn run_command(
     if let Some(resp) = handle_schedule_command(command) {
         return resp;
     }
-    if let Some(resp) = handle_cellscan(tasks, command) {
+    // `AT^CELLSCAN*` is the cell module's: it has the command builder, the
+    // line parser and the exclusive task, so the raw-AT form funnels into the
+    // same scan instead of a second implementation living in the daemon.
+    if let Some(resp) = crate::modules::cell::scan::pseudo_command(tasks, command) {
         return resp;
     }
     let command = normalize_syscfgex(command);
@@ -1524,19 +1429,19 @@ fn run_command(
     // 写操作（拨号/设值/短信/清流量/升级/SIM PIN/终端）走Passthrough，
     // 行为与改造前完全一致。
     if let Some(cache) = Some(cache) {
-        match crate::read_gate::gate(&command, cache, tasks) {
-            crate::read_gate::Gate::Cached(text) => {
-                if at::response_ok(&text) {
+        match crate::scheduler::gate::gate(&command, cache, tasks) {
+            crate::scheduler::gate::Gate::Cached(text) => {
+                if client::response_ok(&text) {
                     return ok_response(text.trim());
                 }
                 return err_response(text.trim());
             }
-            crate::read_gate::Gate::Pending => {
+            crate::scheduler::gate::Gate::Pending => {
                 // 无缓存可返：告知前端正在采集。前端据此显示「采集中」
                 // 占位而不是空值，采集完成后由 EventBus 推真实值。
                 return pending_response(&command);
             }
-            crate::read_gate::Gate::Passthrough => {}
+            crate::scheduler::gate::Gate::Passthrough => {}
         }
     }
     // Reads deduplicate with the snapshot collectors; writes are serialised
@@ -1548,7 +1453,7 @@ fn run_command(
     // commands' real latency, so a read would fail, retry while holding the
     // channel, and starve the other frontend — the two sides fighting over the
     // AT port rather than over-reading it.
-    let is_write = !crate::read_gate::is_read_command(&command);
+    let is_write = !crate::scheduler::gate::is_read_command(&command);
     let spec = if command.ends_with('?') {
         AtRequestSpec::ui_query(&command)
     } else {
@@ -1556,13 +1461,13 @@ fn run_command(
     };
     match await_request(arbiter, spec) {
         Ok(text) => {
-            if at::response_ok(&text) {
+            if client::response_ok(&text) {
                 // 写操作改变了模组状态，之前采集的 raw 读缓存已经过期
                 // （例如改 APN 后 AT^CGPADDR/AT^DHCP? 的旧地址必须丢掉）。
                 // 保守作废全部 raw：条目数 < 100，且写是低频用户行为，
                 // 代价（下次读重新采一次）远小于漏作废导致页面显示旧值。
                 if is_write {
-                    crate::read_gate::invalidate_related(cache, &command);
+                    crate::scheduler::gate::invalidate_related(cache, &command);
                 }
                 ok_response(text.trim())
             } else {
@@ -1890,7 +1795,7 @@ mod tests {
         assert_eq!(resolve_serial_port(&c), "/dev/ttyUSB3");
         // "auto" falls back to system scan (host: none -> default path).
         c.serial_port = "auto".into();
-        assert_eq!(resolve_serial_port(&c), at::PREFERRED_AT_PORT);
+        assert_eq!(resolve_serial_port(&c), client::PREFERRED_AT_PORT);
     }
 
     #[test]
@@ -1904,7 +1809,7 @@ mod tests {
     fn event_envelope_is_nested_data() {
         // The frontend consumes msg.data.xxx (Python ws.broadcast parity);
         // the event bridge adds a timestamp without breaking that shape.
-        let data = crate::dispatcher::handle_pdcp(
+        let data = crate::transport::urc::handle_pdcp(
             "^PDCPDATAINFO: 1,5,65535,0,0,0,0,0,0,0,0,512,0,0,1,2",
         )
         .unwrap();

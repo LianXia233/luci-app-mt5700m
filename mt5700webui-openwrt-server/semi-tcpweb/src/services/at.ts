@@ -1,23 +1,18 @@
 import { Toast } from '@douyinfe/semi-ui';
-import {
-  extractPDCP,
-  extractURCs,
-  isUnsolicitedText,
-  type PDCPData,
-  type URCData,
-} from '@/modem/urc';
-import type { ScanPush } from '@/modem/cellscan';
+import { isUnsolicitedText, type PDCPData } from '@/modem/urc';
+import type { ScanCell, ScanPush } from '@/services/scan';
+import type { MockCommandResponse } from './mockAT';
 import {
   createMockModemState,
   createMockPDCPData,
   isMockModeEnabled,
-  MOCK_SCAN_CELLS,
+  MOCK_SCAN_RESULTS,
   resolveMockATCommand,
   seedMockSentMessages,
   type MockModemState,
 } from './mockAT';
 
-export type { PDCPData, URCData } from '@/modem/urc';
+export type { PDCPData } from '@/modem/urc';
 
 // AT指令响应接口
 interface PushEventData {
@@ -32,6 +27,19 @@ interface PushEventData {
 interface BaseATResponse {
   success: boolean;
   error?: string;
+}
+
+/**
+ * 统一后端 API 的应答：`api.<route>` 命令由后端注册表分发，
+ * `data` 是路由返回的域对象（不是 AT 文本）。
+ *
+ * 页面用它读取/刷新数据，而不是自己拼 AT 命令再解析应答 —— 解析只有
+ * 后端模块一份，页面拿到的值必然与事件推送同源。
+ */
+export interface ApiResponse<T = unknown> extends BaseATResponse {
+  data?: T;
+  code?: string;
+  retryable?: boolean;
 }
 
 interface CommandATResponse extends BaseATResponse {
@@ -72,7 +80,6 @@ export type PushEventType =
   | 'pdcp_data'
   | 'memory_full'
   | 'signal_data'
-  | 'urc_data'
   | 'cellscan'
   | 'signal'
   | 'signal.updated'
@@ -92,11 +99,16 @@ export type PushEventType =
   | `task.${string}`
   | `scan.${string}`
   | `beam.${string}`
-  | `sms.${string}`;
+  | `sms.${string}`
+  | `fota.${string}`
+  // 后端解析后推送的上报事件（详见 services/events.ts）。
+  | 'network.reject'
+  | 'qos.ambr'
+  | 'sim.changed';
 
 interface PushATResponse extends BaseATResponse {
   type: PushEventType;
-  data: PushEventData | PDCPData | SignalData | URCData | ScanPush | Record<string, unknown>;
+  data: PushEventData | PDCPData | SignalData | ScanPush | Record<string, unknown>;
 }
 
 // 服务端推送的类型，data 已经是结构化对象，直接转发给订阅者。
@@ -130,11 +142,18 @@ const STATE_EVENT_TYPES = [
   'nr_txpower.updated',
   'sim.updated',
   'modem.info',
+  // 载波聚合与 QoS 主题：ca.get / qos.get 刷新后由后端推更新。
+  'ca.updated',
+  'qos.updated',
 ] as const;
 
 const isStateEventType = (type: string): boolean =>
   (STATE_EVENT_TYPES as readonly string[]).includes(type) ||
-  /^(usb|modem|task|scan|beam|sms)\./.test(type);
+  /^(usb|modem|task|scan|beam|sms|fota)\./.test(type) ||
+  // 上报事件：负载已经是后端解好的对象。
+  type === 'network.reject' ||
+  type === 'qos.ambr' ||
+  type === 'sim.changed';
 
 // 服务端拒绝未认证连接时的固定应答，命令应答不会长这样。
 const AUTH_REJECTIONS = ['Authentication failed', 'Authentication timeout', 'Invalid authentication'];
@@ -177,7 +196,8 @@ const wsScheme = (): string =>
 
 // AT指令适配器接口
 export interface ATAdapter {
-  sendCommand(command: string): Promise<ATResponse>;
+  /** `timeoutMs` 覆盖默认的 6s 命令超时（慢路由：短信发送、清空、IMS 序列）。 */
+  sendCommand(command: string, timeoutMs?: number): Promise<ATResponse>;
   connect(): Promise<boolean>;
   disconnect(): Promise<void>;
   subscribeSMS?(callback: (response: ATResponse) => void): void;
@@ -211,10 +231,6 @@ export class WebSocketATAdapter implements ATAdapter {
     }
   > = new Map();
   private smsCallbacks: ((response: ATResponse) => void)[] = [];
-  private smsCollecting: boolean = false; // 是否正在收集短信大数据
-  private smsBuffer: string[] = []; // 短信数据缓存
-  private smsResolve: ((value: ATResponse) => void) | null = null; // 短信命令的resolve
-  private smsTimer: NodeJS.Timeout | null = null; // 短信命令的超时定时器
   private authenticated: boolean = false; // 是否已认证
   private requireAuth: boolean = false; // 是否需要认证
   private authKey: string = ''; // 认证密钥
@@ -576,10 +592,6 @@ export class WebSocketATAdapter implements ATAdapter {
     }
   }
 
-  private isErrorResponse(data: string): boolean {
-    return data.includes('ERROR');
-  }
-
   async connect(authKey?: string): Promise<boolean> {
     if (this.isReady()) {
       console.log('WebSocket 已连接，复用现有连接');
@@ -789,7 +801,7 @@ export class WebSocketATAdapter implements ATAdapter {
     return p;
   }
 
-  async sendCommand(command: string): Promise<ATResponse> {
+  async sendCommand(command: string, timeoutMs?: number): Promise<ATResponse> {
     // 🔒 使用队列确保命令串行执行，避免 PDCP 等主动上报数据干扰
     return this.commandQueue = this.commandQueue
       .then(async () => {
@@ -798,20 +810,6 @@ export class WebSocketATAdapter implements ATAdapter {
             success: false,
             error: '未连接到调制解调器',
           };
-        }
-
-        // 短信列表可能被拆成多条消息返回，单独收集
-        if (command.trim() === 'AT+CMGL=4') {
-          this.smsCollecting = true;
-          this.smsBuffer = [];
-          return new Promise<ATResponse>((resolve) => {
-            this.smsResolve = resolve;
-            this.smsTimer = setTimeout(() => {
-              this.finishSMSCollect({ success: false, error: '短信数据收集超时' });
-            }, 10000);
-            const formattedCommand = command.endsWith('\r') ? command : command + '\r';
-            this.ws?.send(formattedCommand);
-          });
         }
 
         try {
@@ -826,7 +824,7 @@ export class WebSocketATAdapter implements ATAdapter {
                 success: false,
                 error: '命令执行超时',
               });
-            }, this.commandTimeout);
+            }, timeoutMs ?? this.commandTimeout);
 
             this.pendingCommands.set(commandId, { resolve, timer });
 
@@ -936,15 +934,6 @@ export class WebSocketATAdapter implements ATAdapter {
       return;
     }
 
-    if (this.smsCollecting) {
-      if (parsedData.success === false) {
-        this.finishSMSCollect({ success: false, error: parsedData.error || '读取短信失败' });
-      } else {
-        this.collectSMSChunk(typeof parsedData.data === 'string' ? parsedData.data : data);
-      }
-      return;
-    }
-
     // 读命令闸门的「采集中」应答：{success, pending:true, data:'', message}
     //
     // 必须**先于** matchesLastCommand 判定。pending 的 data 是空串，
@@ -976,11 +965,6 @@ export class WebSocketATAdapter implements ATAdapter {
   // handleTextMessage 处理非 JSON 消息。服务端只会发 ping/pong，
   // 其余裸文本按旧实现当作命令应答，但主动上报要挡掉。
   private handleTextMessage(data: string): void {
-    if (this.smsCollecting) {
-      this.collectSMSChunk(data);
-      return;
-    }
-
     if (isUnsolicitedText(data)) {
       console.log('忽略非 JSON 的主动上报数据:', data.substring(0, 50));
       return;
@@ -1010,10 +994,11 @@ export class WebSocketATAdapter implements ATAdapter {
     });
   }
 
+  // raw_data 只是诊断用的原文：后端已经把可识别的内容解成结构化事件推过来
+  // （`pdcp_data` / `signal.updated` / `sms.ussd` / `network.reject` …），
+  // 前端不再留第二套上报解析器。
   private dispatchRawData(text: string): void {
-    const { entries, rest } = extractPDCP(text);
-    entries.forEach((entry) => this.emitPush({ success: true, type: 'pdcp_data', data: entry }));
-    extractURCs(rest).forEach((urc) => this.emitPush({ success: true, type: 'urc_data', data: urc }));
+    console.debug('上报原文（已由后端结构化推送）:', text.substring(0, 120));
   }
 
   private handleAuthHandshake(parsedData: any): boolean {
@@ -1052,103 +1037,7 @@ export class WebSocketATAdapter implements ATAdapter {
     this.ws?.close();
   }
 
-  // AT+CMGL=4 的应答可能被拆成多条消息，见到 OK/ERROR 才算读完。
-  private collectSMSChunk(content: string): void {
-    if (!content.includes('OK') && !content.includes('ERROR')) {
-      this.smsBuffer.push(content);
-      return;
-    }
 
-    const allData = [...this.smsBuffer, content].join('\n');
-    this.finishSMSCollect({ success: !allData.includes('ERROR'), data: allData });
-  }
-
-  private finishSMSCollect(response: ATResponse): void {
-    if (this.smsTimer) clearTimeout(this.smsTimer);
-    this.smsTimer = null;
-    this.smsCollecting = false;
-    this.smsBuffer = [];
-    const resolve = this.smsResolve;
-    this.smsResolve = null;
-    resolve?.(response);
-  }
-
-  // PDU解析辅助方法
-  private parsePDU(pdu: string): {
-    sender: string;
-    timestamp: string;
-    content: string;
-  } | null {
-    try {
-      if (!pdu || pdu.length < 20) return null;
-
-      // 解析PDU长度
-      const pduLength = parseInt(pdu.substring(0, 2), 16);
-      if (pduLength <= 0 || pduLength > pdu.length) return null;
-
-      // 解析发送者号码
-      const senderLength = parseInt(pdu.substring(2, 4), 16);
-      if (senderLength <= 0 || senderLength > pdu.length - 6) return null;
-
-      const senderType = pdu.substring(4, 6);
-      let sender = '';
-      if (senderType === '91') {
-        // 国际格式
-        const senderNumber = pdu.substring(6, 6 + senderLength);
-        sender = '+' + senderNumber.split('').reduce((acc, curr, idx) => {
-          if (idx % 2 === 0) {
-            return acc + curr;
-          }
-          return acc + curr + (idx < senderLength - 1 ? '' : '');
-        }, '');
-      } else {
-        // 本地格式
-        sender = pdu.substring(6, 6 + senderLength);
-      }
-
-      // 解析时间戳
-      const timestampStart = 6 + senderLength + 2; // +2 for protocol identifier and data coding scheme
-      if (timestampStart + 14 > pdu.length) return null;
-      const timestamp = pdu.substring(timestampStart, timestampStart + 14);
-      const year = '20' + timestamp.substring(0, 2);
-      const month = timestamp.substring(2, 4);
-      const day = timestamp.substring(4, 6);
-      const hour = timestamp.substring(6, 8);
-      const minute = timestamp.substring(8, 10);
-      const second = timestamp.substring(10, 12);
-      const formattedTimestamp = `${year}-${month}-${day} ${hour}:${minute}:${second}`;
-
-      // 解析内容
-      const contentStart = timestampStart + 14;
-      if (contentStart >= pdu.length) return null;
-      const content = this.decodePDUContent(pdu.substring(contentStart));
-
-      return {
-        sender,
-        timestamp: formattedTimestamp,
-        content
-      };
-    } catch (error) {
-      console.error('PDU解析失败:', error);
-      return null;
-    }
-  }
-
-  // PDU内容解码
-  private decodePDUContent(pduContent: string): string {
-    try {
-      let result = '';
-      for (let i = 0; i < pduContent.length; i += 2) {
-        const byte = parseInt(pduContent.substring(i, i + 2), 16);
-        if (byte === 0) break;
-        result += String.fromCharCode(byte);
-      }
-      return result;
-    } catch (error) {
-      console.error('PDU内容解码失败:', error);
-      return '';
-    }
-  }
 }
 
 class MockWebSocketATAdapter extends WebSocketATAdapter {
@@ -1169,7 +1058,7 @@ class MockWebSocketATAdapter extends WebSocketATAdapter {
   private mockScanTimer: ReturnType<typeof setInterval> | null = null;
   private mockSignalTimer: ReturnType<typeof setInterval> | null = null;
   private mockSignalRsrp = -82;
-  private mockScanFound: string[] = [];
+  private mockScanFound: ScanCell[] = [];
   private mockCommandQueue: Promise<void> = Promise.resolve();
 
   constructor() {
@@ -1218,20 +1107,17 @@ class MockWebSocketATAdapter extends WebSocketATAdapter {
         Math.min(-70, this.mockSignalRsrp + (Math.random() - 0.5) * 6),
       );
       const sinr = Math.max(0, Math.min(30, 13 + (Math.random() - 0.5) * 8));
-      // ^HCSQ 上报的是档位原值，这里按 convertRsrp/convertSinr 的换算反推：
-      // RSRP 档位 = dBm + 140，SINR 档位 = (dB + 20) / 0.2
+      // 真机由后端把 ^HCSQ 的档位换算成 dBm/dB 后推 `signal.updated`，
+      // 演示模式直接推同一形状的帧，页面两条路径共用一套渲染。
       this.emitMockResponse({
         success: true,
-        type: 'urc_data',
+        type: 'signal.updated',
         data: {
-          type: 'HCSQ',
-          raw: '^HCSQ mock',
-          parsed: {
-            networkMode: 'NR',
-            rsrp: Math.round(this.mockSignalRsrp + 140),
-            sinr: Math.round((sinr + 20) / 0.2),
-            rsrq: Math.round((-11 + 20) / 0.5),
-          },
+          sysmode: 'NR',
+          rsrp: Math.round(this.mockSignalRsrp),
+          rsrq: -11,
+          sinr: Math.round(sinr),
+          rssi: -70,
         },
       });
     };
@@ -1260,28 +1146,30 @@ class MockWebSocketATAdapter extends WebSocketATAdapter {
     this.mockPDCPTimer = null;
   }
 
-  // handleMockScan 模拟 ^CELLSCAN：立刻受理，然后按节奏推送扫到的小区，
-  // 命中扫频相关命令时返回应答，否则返回 null 交回普通命令表。
-  private handleMockScan(commandLine: string): ATResponse | null {
-    const upper = commandLine.toUpperCase();
-    if (!upper.startsWith('AT^CELLSCAN')) return null;
+  // 演示模式下的扫频：走与真实后端相同的 cell.scan_* 路由，立刻受理，再按
+  // 节奏推送解码后的小区（cellscan 推送的 cells[]）。面板因此只有一种数据
+  // 来源——真实后端和演示模式的推送形状完全一致。
+  private handleMockScanApi(commandLine: string): MockCommandResponse | null {
+    const space = commandLine.indexOf(' ');
+    const route = space < 0 ? commandLine : commandLine.slice(0, space);
+    if (!route.startsWith('api.cell.scan_')) return null;
 
-    if (upper === 'AT^CELLSCAN=STATE') {
-      const state = this.mockScanTimer ? `RUNNING,${this.mockScanFound.length}` : 'IDLE';
-      return { success: true, data: `^CELLSCAN: ${state}\r\nOK` };
+    if (route === 'api.cell.scan_state') {
+      return { success: true, data: { running: this.mockScanTimer !== null } };
     }
-
-    if (upper === 'AT^CELLSCAN=ABORT') {
-      if (!this.mockScanTimer) return { success: false, error: '当前没有正在进行的扫频' };
+    if (route === 'api.cell.scan_abort') {
+      if (!this.mockScanTimer) return { success: true, data: { aborted: false } };
       this.finishMockScan('aborted');
-      return { success: true, data: 'OK' };
+      return { success: true, data: { aborted: true } };
     }
+    if (route !== 'api.cell.scan_start') return null;
+    if (this.mockScanTimer) return { success: false, error: '扫描已经进行中' };
 
-    if (this.mockScanTimer) return { success: false, error: '扫频正在进行中，请先取消' };
-
+    // 筛选参数只用于演示：手册 5.35 的那几条约束由后端 modules/cell/scan.rs
+    // 校验，演示模式不复制一份。
     this.mockScanFound = [];
     this.mockScanTimer = setInterval(() => {
-      const next = MOCK_SCAN_CELLS[this.mockScanFound.length];
+      const next = MOCK_SCAN_RESULTS[this.mockScanFound.length];
       if (!next) {
         this.finishMockScan('done');
         return;
@@ -1290,11 +1178,11 @@ class MockWebSocketATAdapter extends WebSocketATAdapter {
       this.emitMockResponse({
         success: true,
         type: 'cellscan',
-        data: { state: 'running', cell: next, count: this.mockScanFound.length },
+        data: { state: 'running', cells: [...this.mockScanFound], count: this.mockScanFound.length },
       });
     }, 900);
 
-    return { success: true, data: '^CELLSCAN: STARTED\r\nOK' };
+    return { success: true, data: { started: true } };
   }
 
   private finishMockScan(state: 'done' | 'aborted'): void {
@@ -1305,7 +1193,7 @@ class MockWebSocketATAdapter extends WebSocketATAdapter {
     this.emitMockResponse({
       success: true,
       type: 'cellscan',
-      data: { state, lines: [...this.mockScanFound], count: this.mockScanFound.length },
+      data: { state, cells: [...this.mockScanFound], count: this.mockScanFound.length },
     });
   }
 
@@ -1388,19 +1276,19 @@ class MockWebSocketATAdapter extends WebSocketATAdapter {
     };
   }
 
-  public async sendCommand(command: string): Promise<ATResponse> {
+  public async sendCommand(command: string, _timeoutMs?: number): Promise<ATResponse> {
     const execution = this.mockCommandQueue.then(async () => {
       if (!this.mockConnected) {
-        return { success: false, error: 'Mock 调制解调器未连接' } as ATResponse;
+        return { success: false, error: 'Mock 调制解调器未连接' };
       }
 
       await new Promise((resolve) => setTimeout(resolve, 35));
       const commandLine = command.trim().split(/[\r\n]/)[0];
 
       // 扫频在真实环境里由服务端异步执行、结果分批推送，演示模式照同样的
-      // 节奏模拟，否则面板会一直停在"扫描中"。
-      const scan = this.handleMockScan(commandLine);
-      if (scan) return scan;
+      // 节奏模拟（同一条 cell.scan_* 路由），否则面板会一直停在"扫描中"。
+      const scan = this.handleMockScanApi(commandLine);
+      if (scan) return scan as ATResponse;
 
       const response = resolveMockATCommand(command, this.mockState) as ATResponse;
 
@@ -1581,6 +1469,30 @@ export class ATService {
   }
 
   /**
+   * 调用后端注册的 API 路由：`api.signal.get`、`api.modem.endc`、
+   * `api.network.pdp` …… 走既有命令通道，服务端把它分发给模块注册表。
+   * `params` 会作为行尾 JSON 附在命令后（后端 split_api_command 解析）。
+   */
+  /** `timeoutMs` 用于慢路由：发送/清空/IMS 序列可能远超默认 6s 命令超时。 */
+  public async apiCommand<T = unknown>(
+    path: string,
+    params?: Record<string, unknown>,
+    timeoutMs?: number,
+  ): Promise<ApiResponse<T>> {
+    const line =
+      params && Object.keys(params).length ? `api.${path} ${JSON.stringify(params)}` : `api.${path}`;
+    const response = await this.sendCommand(line, timeoutMs);
+    const raw = response as unknown as ApiResponse<T>;
+    return {
+      success: raw.success,
+      error: raw.error,
+      code: raw.code,
+      retryable: raw.retryable,
+      data: raw.data,
+    };
+  }
+
+  /**
    * Read-only query path for view initialization / refresh actions. The Rust
    * backend may return { pending: true } while a shared raw-cache acquisition is
    * running; retry a few times with bounded delay and coalesce identical reads
@@ -1620,9 +1532,9 @@ export class ATService {
     return coalesced;
   }
 
-  public async sendCommand(command: string): Promise<ATResponse> {
+  public async sendCommand(command: string, timeoutMs?: number): Promise<ATResponse> {
     try {
-      const response = await this.adapter.sendCommand(command);
+      const response = await this.adapter.sendCommand(command, timeoutMs);
 
       return response;
     } catch (error) {
@@ -1635,148 +1547,17 @@ export class ATService {
   }
 
   // 网络相关AT指令
-  public async getSignalStrength(): Promise<ATResponse> {
-    return this.sendCommand('AT+CSQ');
-  }
-
-  public async getNetworkRegistration(): Promise<ATResponse> {
-    await this.sendCommand('AT+CREG=2'); // 先设置为详细信息模式
-    return this.sendCommand('AT+CREG?'); // 然后查询状态
-  }
-
   // 短信相关AT指令
-  public async sendSMS(number: string, message: string): Promise<ATResponse> {
-    await this.sendCommand('AT+CMGF=0'); // 设置文本模式
-    return this.sendCommand(`AT+CMGS="${number}"\r${message}\x1A`);
-  }
-
-  public async readSMS(index: number): Promise<ATResponse> {
-    try {
-      // 设置PDU模式
-      const cmgfResponse = await this.sendCommand('AT+CMGF=0');
-      if (!cmgfResponse.success) {
-        console.warn('设置PDU模式失败，但继续执行:', cmgfResponse.error);
-      }
-
-      // 等待一段时间确保命令执行完成
-      await new Promise((resolve) => setTimeout(resolve, 500));
-
-      // 读取指定索引的短信
-      console.log(`读取短信索引 ${index}`);
-      const response = await this.sendCommand(`AT+CMGR=${index}`);
-
-      return response;
-    } catch (error) {
-      console.error(`读取短信索引 ${index} 失败:`, error);
-      return {
-        success: false,
-        error: `读取短信失败: ${error}`,
-      };
-    }
-  }
-
   // 设置短信服务中心号码
-  public async setSMSCenter(number: string): Promise<ATResponse> {
-    return this.sendCommand(`AT+CSCA="${number}"`);
-  }
-
   // 获取短信服务中心号码
-  public async getSMSCenter(): Promise<ATResponse> {
-    return this.sendCommand('AT+CSCA?');
-  }
-
   // 设置短信服务类型
-  public async setSMSService(service: number): Promise<ATResponse> {
-    return this.sendCommand(`AT+CSMS=${service}`);
-  }
-
   // 获取短信服务类型
-  public async getSMSService(): Promise<ATResponse> {
-    return this.sendCommand('AT+CSMS?');
-  }
-
   // 设置短信文本模式参数
-  public async setSMSTextParameters(
-    fo: number,
-    vp: number,
-    pid: number,
-    dcs: number,
-  ): Promise<ATResponse> {
-    return this.sendCommand(`AT+CSMP=${fo},${vp},${pid},${dcs}`);
-  }
-
   // 获取短信文本模式参数
-  public async getSMSTextParameters(): Promise<ATResponse> {
-    return this.sendCommand('AT+CSMP?');
-  }
-
-  // 按状态读取短信
-  public async listSMSByStatus(status: number): Promise<ATResponse> {
-    return this.sendCommand(`AT+CMGL=${status}`);
-  }
-
-  // 获取所有短信，先检查模式再设置
-  public async listAllSMS(): Promise<ATResponse> {
-    try {
-      console.log('开始执行listAllSMS');
-
-      // 先检查当前模式
-      const modeResponse = await this.readCommand('AT+CMGF?');
-      if (modeResponse.success && 'data' in modeResponse && typeof modeResponse.data === 'string' && !modeResponse.data.includes('+CMGF: 0')) {
-        // 只有不是PDU模式时才设置
-        console.log('当前不是PDU模式，设置为PDU模式');
-        await this.sendCommand('AT+CMGF=0');
-      }
-
-      // 获取所有短信
-      console.log('发送AT+CMGL=4命令获取所有短信');
-      const response = await this.sendCommand('AT+CMGL=4');
-
-      return response;
-    } catch (error) {
-      console.error('获取所有短信失败:', error);
-      return {
-        success: false,
-        error: `获取所有短信失败: ${error}`
-      };
-    }
-  }
-
-  // 存储短信
-  public async storeSMS(number: string, message: string): Promise<ATResponse> {
-    await this.sendCommand('AT+CMGF=1'); // 设置文本模式
-    return this.sendCommand(`AT+CMGW="${number}"\r${message}\x1A`);
-  }
-
-  // 从存储器发送短信
-  public async sendStoredSMS(index: number): Promise<ATResponse> {
-    return this.sendCommand(`AT+CMSS=${index}`);
-  }
-
-  // 设置短信存储器
-  public async setSMSStorage(mem1?: string, mem2?: string, mem3?: string): Promise<ATResponse> {
-    const command = `AT+CPMS=${mem1 ? `"${mem1}"` : ''}${mem2 ? `,"${mem2}"` : ''}${
-      mem3 ? `,"${mem3}"` : ''
-    }`;
-    return this.sendCommand(command);
-  }
-
-  // 查询短信存储器状态
-  public async getSMSStorage(): Promise<ATResponse> {
-    return this.readCommand('AT+CPMS?');
-  }
-
+  // 短信不再走 AT：列表/发送/删除/存储/IMS 都是 modules/sms 的 API 路由
+  // （sms.list、sms.send、sms.delete、sms.storage、sms.ims_set）。
   // 设置短信格式（PDU/Text）
-  public async setSMSFormat(mode: 0 | 1): Promise<ATResponse> {
-    return this.sendCommand(`AT+CMGF=${mode}`);
-  }
-
   // 删除短信
-  public async deleteSMS(index: number, delflag?: number): Promise<ATResponse> {
-    const command = `AT+CMGD=${index}${delflag !== undefined ? `,${delflag}` : ''}`;
-    return this.sendCommand(command);
-  }
-
   // 获取IMEI
   public async getIMEI(): Promise<ATResponse> {
     const response = await this.sendCommand('AT+CGSN');
@@ -1829,96 +1610,12 @@ export class ATService {
     return this.sendCommand(command);
   }
 
-  // 添加到 ATService 类中
-  public async getCSRegStatus(): Promise<ATResponse> {
-    await this.sendCommand('AT+CREG=2'); // 设置详细信息模式
-    return this.sendCommand('AT+CREG?');
-  }
-
-  public async getPSRegStatus(): Promise<ATResponse> {
-    try {
-      // 先设置为支持详细信息的模式
-      await this.sendCommand('AT+CGREG=2');
-
-      // 查询PS域注册状态。华为 MT5700 固件对 5G 注册的应答前缀是 +C5GREG，
-      // 且可能只回单个状态值（如 "+C5GREG: 2"），没有 <n>,<stat> 两段，
-      // 这里两种前缀、两种长度都要兼容，否则匹配失败会原样返回纯文本，
-      // 调用方再 JSON.parse 就会抛 SyntaxError。
-      const response = await this.sendCommand('AT+CGREG?');
-      if (response.success && typeof response.data === 'string') {
-        console.log('PS域注册状态响应:', response.data);
-        const matches = response.data.match(
-          /\+C5?GREG:\s*(?:(\d+),)?(\d+)(?:,([^,]*),([^,]*)(?:,(\d+))?)?/,
-        );
-        if (matches) {
-          const [, n, stat, lac, ci, act] = matches;
-          const status = parseInt(stat);
-
-          // 返回PS域注册状态数据
-          return {
-            success: true,
-            data: JSON.stringify({
-              stat: status,
-              lac: lac?.replace(/"/g, '') || '',
-              ci: ci?.replace(/"/g, '') || '',
-              act: act ? parseInt(act) : -1,
-            }),
-          };
-        }
-      }
-      return response;
-    } catch (error) {
-      console.error('获取PS域注册状态失败:', error);
-      return {
-        success: false,
-        error: `获取PS域注册状态失败: ${error}`,
-      };
-    }
-  }
-
-  // 发起呼叫
-  public async makeCall(phoneNumber: string): Promise<ATResponse> {
-    return this.sendCommand(`ATD${phoneNumber};`);
-  }
-
   // 接听来电
-  public async answerCall(): Promise<ATResponse> {
-    return this.sendCommand('ATA');
-  }
-
   // 挂断电话
-  public async hangupCall(): Promise<ATResponse> {
-    return this.sendCommand('ATH');
-  }
-
   // 发送DTMF音
-  public async sendDTMF(dtmf: string, duration?: number): Promise<ATResponse> {
-    const command = duration ? `AT+VTS=${dtmf},${duration}` : `AT+VTS=${dtmf}`;
-    return this.sendCommand(command);
-  }
-
   // 挂断所有呼叫
-  public async hangupAllCalls(): Promise<ATResponse> {
-    return this.sendCommand('AT+CHUP');
-  }
-
   // 设置来电指示扩展上报格式
-  public async setCallRingExtendedFormat(enable: boolean): Promise<ATResponse> {
-    return this.sendCommand(`AT+CRC=${enable ? 1 : 0}`);
-  }
-
   // 设置IMS业务能力开关
-  public async setIMSSwitch(enable: boolean): Promise<ATResponse> {
-    return this.sendCommand(`AT^IMSSWITCH=${enable ? 1 : 0}`);
-  }
-
   // 查询IMS业务能力开关状态
-  public async queryIMSSwitch(): Promise<ATResponse> {
-    return this.readCommand('AT^IMSSWITCH?');
-  }
-
   // 查询当前呼叫状态
-  public async queryCallState(): Promise<ATResponse> {
-    return this.sendCommand('AT+CLCC');
-  }
 }

@@ -4,21 +4,13 @@ import { ATService, type ATResponse } from '@/services/at';
 import { useATReady } from '@/hooks/useATReady';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { QUERY_MOBILE } from '@/styles/breakpoints';
-import {
-  buildScanCommand,
-  isScanRunning,
-  parseScanLine,
-  parseScanLines,
-  SCAN_ABORT_COMMAND,
-  SCAN_STATE_COMMAND,
-  type ScanCell,
-  type ScanFilter,
-  type ScanPush,
-} from '@/modem/cellscan';
+import { scanAbort, scanStart, scanState, type ScanCell, type ScanFilter, type ScanPush } from '@/services/scan';
 import { LTE_BANDS, NR_BANDS, SCS_TYPES } from '@/modem/lock';
 import { Field, PageCard, TwoCol } from '@/ui/widgets';
 import { SvgRadarScanner } from '@/ui/svgVisuals';
 
+// 只有订阅 cellscan 推送（以及退订）还用到 transport 单例：扫频本身的
+// 启停与状态查询都走 services/scan.ts 的路由。
 const at = () => ATService.getInstance();
 
 export interface ScanLockTarget {
@@ -69,17 +61,15 @@ export const ScanPanel: React.FC<Props> = ({ onLock, onScanningChange, disabled 
       if (!('type' in response) || response.type !== 'cellscan') return;
       const push = response.data as ScanPush;
 
-      if (push.state === 'running') {
-        const cell = push.cell ? parseScanLine(push.cell) : null;
-        if (cell) setCells((prev) => [...prev, cell]);
-        return;
-      }
+      // 后端推的是解码后的小区（services/scan.ts 的类型即后端 cells[] 的形状），
+      // 页面不再解析 ^CELLSCAN 行。
+      if (push.cells) setCells(push.cells);
+
+      if (push.state === 'running') return;
 
       setScanning(false);
       startedRef.current = false;
       onScanningChangeRef.current?.(false);
-      // 结束推送带的是完整结果，用它覆盖，免得中途丢包导致列表和 count 对不上。
-      if (push.lines) setCells(parseScanLines(push.lines));
 
       if (push.state === 'error') {
         setNote('');
@@ -98,8 +88,8 @@ export const ScanPanel: React.FC<Props> = ({ onLock, onScanningChange, disabled 
   // 否则用户只会看到所有操作都失败却找不到取消入口。
   useATReady(() => {
     void (async () => {
-      const res = await at().sendCommand(SCAN_STATE_COMMAND);
-      if (res.success && isScanRunning(String(res.data || ''))) {
+      const res = await scanState();
+      if (res.success && res.data?.running) {
         setScanning(true);
         onScanningChangeRef.current?.(true);
         setNote('检测到后台仍在扫描，可取消或等待结果');
@@ -112,8 +102,8 @@ export const ScanPanel: React.FC<Props> = ({ onLock, onScanningChange, disabled 
   useEffect(() => {
     if (!scanning) return undefined;
     const timer = window.setInterval(async () => {
-      const res = await at().sendCommand(SCAN_STATE_COMMAND);
-      if (res.success && !isScanRunning(String(res.data || ''))) {
+      const res = await scanState();
+      if (res.success && !res.data?.running) {
         setScanning(false);
         startedRef.current = false;
         onScanningChangeRef.current?.(false);
@@ -126,26 +116,21 @@ export const ScanPanel: React.FC<Props> = ({ onLock, onScanningChange, disabled 
   // 离开页面时结果已经没人看了，留着扫频只会一直占着模组，主动收掉。
   useEffect(
     () => () => {
-      if (startedRef.current) void at().sendCommand(SCAN_ABORT_COMMAND);
+      if (startedRef.current) void scanAbort();
     },
     [],
   );
 
   const start = async () => {
-    const { command, error } = buildScanCommand(filter);
-    if (error) {
-      Toast.error(error);
-      return;
-    }
-
     setCells([]);
     setNote('');
     setScanning(true);
     startedRef.current = true;
     onScanningChangeRef.current?.(true);
     try {
-      const res = await at().sendCommand(command);
-      if (!res.success) throw new Error(('error' in res && res.error) || '模组拒绝了扫频命令');
+      // 参数校验在后端（与 AT 手册的约束同一处），错误文案由它给出。
+      const res = await scanStart(filter);
+      if (!res.success) throw new Error(res.error || '模组拒绝了扫频命令');
       setNote('扫描中，全频段扫描可能需要几分钟');
     } catch (err) {
       setScanning(false);
@@ -160,8 +145,8 @@ export const ScanPanel: React.FC<Props> = ({ onLock, onScanningChange, disabled 
     // 等应答回来再设提示会把"已取消"的最终状态又盖回去。
     setNote('已下发取消，等待模组收尾');
     try {
-      const res = await at().sendCommand(SCAN_ABORT_COMMAND);
-      if (!res.success) throw new Error(('error' in res && res.error) || '取消失败');
+      const res = await scanAbort();
+      if (!res.success) throw new Error(res.error || '取消失败');
     } catch (err) {
       Toast.error(err instanceof Error ? err.message : '取消扫频失败');
     }

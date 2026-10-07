@@ -10,20 +10,23 @@ import {
   Toast,
   Typography,
 } from '@douyinfe/semi-ui';
-import { ATService, type ATResponse, type URCData } from '@/services/at';
+import { ATService, type ATResponse } from '@/services/at';
 import { useATReady } from '@/hooks/useATReady';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { QUERY_MOBILE } from '@/styles/breakpoints';
-import { getBandFromArfcn, getDefaultScsType } from '@/modem/parse';
 import {
-  buildLockCommand,
   checkArfcn,
   checkPci,
   emptyLockItem,
+  lockFormFromPayload,
+  type LockApplyPayload,
   type LockItem,
+  type LockRequest,
+  type LockStatePayload,
 } from '@/modem/lock';
-import { atErrorText, setFlightMode, sleep } from '@/modem/atx';
-import { type RejectInfo } from '@/modem/reject';
+import { atErrorText, sleep } from '@/modem/atx';
+import type { C5gOptionPayload, NeighborsPayload, SsbPayload } from '@/modem/status';
+import { NETWORK_REJECT_EVENT, type RejectInfo } from '@/services/events';
 import { AutoRefresh, Field, PageCard, Panel, SectionHeader, TwoCol } from '@/ui/widgets';
 import { LockEditor } from '@/ui/LockEditor';
 import { SchedulePanel } from './SchedulePanel';
@@ -31,7 +34,7 @@ import { ScanPanel } from './ScanPanel';
 
 const at = () => ATService.getInstance();
 
-type Neighbor = { type: string; arfcn: string; pci: number; rsrp: string | number; rsrq?: string | number; sinr?: string | number; rxlev?: string; band?: number };
+type Neighbor = { type: string; arfcn: string | number; pci: number; rsrp: string | number; rsrq?: string | number; sinr?: string | number; rxlev?: string; band?: number };
 
 const emptyItem = emptyLockItem;
 
@@ -100,56 +103,26 @@ const NetworkSettings: React.FC = () => {
   } | null>(null);
   const scanTimer = useRef<number>();
 
-  const parseLockResponse = (raw: string, prefix: '^LTEFREQLOCK' | '^NRFREQLOCK') => {
-    const lines = raw
-      .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => l && !l.includes('OK') && !l.startsWith('AT'));
-    const head = lines.findIndex((l) => l.startsWith(prefix));
-    const typeMatch = lines[head]?.match(new RegExp(`${prefix.replace('^', '\\^')}:\\s*(\\d+)`));
-    if (!typeMatch) return null;
-    const lockType = Number(typeMatch[1]);
-    if (lockType === 0) return { lockType, mobility: 0, items: [emptyItem()] };
-    const [mobility, num] = (lines[head + 1] || '0,0').split(',').map(Number);
-    const items: LockItem[] = [];
-    for (let i = 0; i < num; i += 1) {
-      const parts = (lines[head + i + 2] || '').split(',').map((v) => (v ? Number(v) : undefined));
-      if (prefix === '^LTEFREQLOCK') {
-        items.push({ band: parts[0], arfcn: parts[1] != null ? String(parts[1]) : undefined, pci: parts[2] != null ? String(parts[2]) : undefined });
-      } else {
-        items.push({
-          band: parts[0],
-          arfcn: parts[1] != null ? String(parts[1]) : undefined,
-          scs: parts[2],
-          pci: parts[3] != null ? String(parts[3]) : undefined,
-        });
-      }
-    }
-    return { lockType, mobility, items: items.length ? items : [emptyItem()] };
-  };
-
+  // 锁频读数来自统一 API：后端 modules/network 解析 ^LTEFREQLOCK?/^NRFREQLOCK?
+  // （行布局、十六进制 PCI 都在后端），页面只填表单。
   const fetchCurrent = async () => {
     setLoading(true);
     try {
-      const lte = await at().readCommand('AT^LTEFREQLOCK?');
+      const lte = await at().apiCommand<LockStatePayload>('network.lock_get', { rat: 'lte' });
       if (lte.success && lte.data) {
-        const parsed = parseLockResponse(String(lte.data), '^LTEFREQLOCK');
-        if (parsed) {
-          setLteLockType(parsed.lockType);
-          setLteMobility(parsed.mobility);
-          setLteItems(parsed.items);
-          if (parsed.lockType !== 0) setActiveKeys((prev) => Array.from(new Set([...prev, 'lteLock'])));
-        }
+        const parsed = lockFormFromPayload('lte', lte.data);
+        setLteLockType(parsed.lockType);
+        setLteMobility(parsed.mobility);
+        setLteItems(parsed.items);
+        if (parsed.lockType !== 0) setActiveKeys((prev) => Array.from(new Set([...prev, 'lteLock'])));
       }
-      const nr = await at().readCommand('AT^NRFREQLOCK?');
+      const nr = await at().apiCommand<LockStatePayload>('network.lock_get', { rat: 'nr' });
       if (nr.success && nr.data) {
-        const parsed = parseLockResponse(String(nr.data), '^NRFREQLOCK');
-        if (parsed) {
-          setNrLockType(parsed.lockType);
-          setNrMobility(parsed.mobility);
-          setNrItems(parsed.items);
-          if (parsed.lockType !== 0) setActiveKeys((prev) => Array.from(new Set([...prev, 'nrLock'])));
-        }
+        const parsed = lockFormFromPayload('nr', nr.data);
+        setNrLockType(parsed.lockType);
+        setNrMobility(parsed.mobility);
+        setNrItems(parsed.items);
+        if (parsed.lockType !== 0) setActiveKeys((prev) => Array.from(new Set([...prev, 'nrLock'])));
       }
       await query5G();
     } catch {
@@ -161,47 +134,44 @@ const NetworkSettings: React.FC = () => {
 
   useATReady(fetchCurrent);
 
+  // 5G 接入模式同样来自后端（modules/network 解析 ^C5GOPTION?），页面只保留
+  // "仅 SA / 仅 NSA / SA+NSA / 其他" 的文案映射。
   const query5G = async () => {
     await sleep(200);
-    const res = await at().readCommand('AT^C5GOPTION?');
-    if (res.success && res.data) {
-      const match = String(res.data).match(/\^C5GOPTION:\s*(\d+),(\d+),(\d+)/);
-      if (match) {
-        setOption5g({
-          nr_sa_support_flag: Number(match[1]),
-          nr_dc_mode: Number(match[2]),
-          gc_access_mode: Number(match[3]),
-        });
-      }
+    const res = await at().apiCommand<C5gOptionPayload>('network.c5goption');
+    if (res.success && res.data && typeof res.data.nr_sa_support_flag === 'number') {
+      setOption5g({
+        nr_sa_support_flag: res.data.nr_sa_support_flag,
+        nr_dc_mode: res.data.nr_dc_mode ?? 0,
+        gc_access_mode: res.data.gc_access_mode ?? 0,
+      });
     }
   };
 
-  const buildLteCmd = () => buildLockCommand('lte', lteLockType, lteMobility, lteItems);
-  const buildNrCmd = () => buildLockCommand('nr', nrLockType, nrMobility, nrItems);
-
+  // 锁频写入交给后端：AT 字符串、取值校验、飞行模式循环与两个制式的独立性
+  // 都在 modules/network（network.lock_apply）。页面把两个方向放在一次调用里，
+  // 后端只循环一次飞行模式——与页面原先的步骤一致。
   const applyLock = async () => {
     if (busy) return;
     setBusy(true);
     setLoading(true);
-    let radioOff = false;
     try {
-      const lteCmd = buildLteCmd();
-      const nrCmd = buildNrCmd();
-      radioOff = true;
-      const ok = await setFlightMode(true);
-      if (!ok) throw new Error('开启飞行模式失败');
-      // LTE 与 NR 互不依赖: LTE 锁受 NV2141 使能控制, NR 锁需单板支持 NR,
-      // 任一被模组拒绝时另一条仍要下发
-      const lteRes = await at().sendCommand(lteCmd);
-      await sleep(1000);
-      const nrRes = await at().sendCommand(nrCmd);
-      await sleep(1000);
-      const off = await setFlightMode(false);
-      if (!off) throw new Error('关闭飞行模式失败');
-      await sleep(2000);
+      const requests: LockRequest[] = [
+        { rat: 'lte', lock_type: lteLockType, mobility: lteMobility, items: lteItems },
+        { rat: 'nr', lock_type: nrLockType, mobility: nrMobility, items: nrItems },
+      ];
+      const res = await at().apiCommand<LockApplyPayload>('network.lock_apply', { locks: requests });
+      if (!res.success || !res.data) {
+        throw new Error(atErrorText(res as { success: boolean; error?: unknown }, '锁频设置失败'));
+      }
+      const byRat = new Map((res.data.results || []).map((r) => [r.rat, r]));
       const failed = [
-        !lteRes.success && atErrorText(lteRes, 'LTE 锁频设置失败'),
-        !nrRes.success && atErrorText(nrRes, 'NR 锁频设置失败'),
+        byRat.get('lte')?.applied === false
+          ? `LTE 锁频设置失败${byRat.get('lte')?.error ? `：${byRat.get('lte')?.error}` : ''}`
+          : null,
+        byRat.get('nr')?.applied === false
+          ? `NR 锁频设置失败${byRat.get('nr')?.error ? `：${byRat.get('nr')?.error}` : ''}`
+          : null,
       ].filter(Boolean) as string[];
       if (failed.length === 2) throw new Error(failed.join('；'));
       if (failed.length === 1) Toast.warning(`${failed[0]}，另一制式已生效`);
@@ -209,61 +179,25 @@ const NetworkSettings: React.FC = () => {
       await fetchCurrent();
     } catch (error) {
       Toast.error(error instanceof Error ? error.message : '锁频设置失败');
-      if (radioOff) await setFlightMode(false);
     } finally {
       setBusy(false);
       setLoading(false);
     }
   };
 
+  // 邻区扫描：AT^MONNC 的行布局、十六进制 PCI、NR 的 1/8 倍率还原和
+  // ARFCN->频段表都在后端 modules/cell（cell.neighbors），页面只渲染表格。
   const scanNeighbors = async () => {
     if (busy) return;
     setBusy(true);
     setScanLoading(true);
     try {
-      const res = await at().sendCommand('AT^MONNC');
-      const cells: Neighbor[] = [];
-      if (res.success && res.data) {
-        String(res.data)
-          .split('\n')
-          .forEach((line) => {
-            if (!line.startsWith('^MONNC:')) return;
-            const matched = line.match(/\^MONNC:\s*(\w+)(?:,(.+))?/);
-            if (!matched || matched[1] === 'NONE') return;
-            const type = matched[1];
-            const values = (matched[2] || '').split(',').map((v) => v.trim().replace(/"/g, ''));
-            if (type === 'LTE') {
-              const arfcn = values[0];
-              cells.push({
-                type,
-                arfcn,
-                pci: parseInt(values[1], 16),
-                rsrp: values[2],
-                rsrq: values[3],
-                rxlev: values[4],
-                band: getBandFromArfcn('LTE', parseInt(arfcn, 10)),
-              });
-            } else if (type === 'NR') {
-              const arfcn = values[0];
-              // 有的固件按 1/8 dB 上报。阈值取各指标的合法量程边界（手册 13.27.3：
-              // RSRP -156~-31、RSRQ -43~20、SINR -23~40），超出即视为 8 倍值还原。
-              const scale = (raw: string, big: number) => {
-                const n = parseInt(raw, 10);
-                return Math.abs(n) > big ? (n / 8).toFixed(1) : n;
-              };
-              cells.push({
-                type,
-                arfcn,
-                pci: parseInt(values[1], 16),
-                rsrp: scale(values[2], 157),
-                rsrq: scale(values[3], 43.5),
-                sinr: scale(values[4], 40),
-                band: getBandFromArfcn('NR', parseInt(arfcn, 10)),
-              });
-            }
-          });
+      const res = await at().apiCommand<NeighborsPayload>('cell.neighbors');
+      if (!res.success || !res.data) {
+        Toast.error(atErrorText(res as { success: boolean; error?: unknown }, '扫描邻区失败'));
+        return;
       }
-      setNeighbors(cells);
+      setNeighbors((res.data.cells || []) as Neighbor[]);
     } catch {
       Toast.error('扫描邻区失败');
     } finally {
@@ -273,11 +207,11 @@ const NetworkSettings: React.FC = () => {
   };
 
   // 手册 13.14：注册/业务请求被网络拒绝时模组会主动上报原因值。
+  // 释义表在后端 modules/network/reject.rs，页面只收解好的对象。
   useEffect(() => {
     const handle = (response: ATResponse) => {
-      if (!('type' in response) || response.type !== 'urc_data') return;
-      const urc = response.data as URCData;
-      if (urc.type === 'REJINFO') setReject(urc.parsed as RejectInfo);
+      if (!('type' in response) || response.type !== NETWORK_REJECT_EVENT) return;
+      setReject(response.data as RejectInfo);
     };
     at().subscribe(handle);
     return () => at().unsubscribe(handle);
@@ -302,26 +236,25 @@ const NetworkSettings: React.FC = () => {
     try {
       const kind = cell.type === 'LTE' ? 'lte' : 'nr';
       if (cell.band == null) throw new Error(`无法由频点 ${cell.arfcn} 判断频段，请在上方锁频表单中手动选择`);
+      // 前端仍先做一次即时校验（输入框级别的提示），AT 侧的取值范围由后端再验一次。
       const arfcn = checkArfcn(cell.type, String(cell.arfcn).trim());
       const pci = checkPci(kind, String(cell.pci).trim());
-      // 扫频结果里带模组实测的子载波间隔，比按频段推断准，优先用它。
-      const scs = cell.scs ?? getDefaultScsType(cell.band);
-      const cmd =
-        kind === 'lte'
-          ? `AT^LTEFREQLOCK=2,0,1,"${cell.band}","${arfcn}","${pci}"`
-          : `AT^NRFREQLOCK=2,0,1,"${cell.band}","${arfcn}","${scs}","${pci}"`;
-      radioOff = true;
-      const ok = await setFlightMode(true);
-      if (!ok) throw new Error('开启飞行模式失败');
-      await sleep(1000);
-      const res = await at().sendCommand(cmd);
-      if (!res.success) throw new Error(atErrorText(res, '锁定失败'));
-      await setFlightMode(false);
+      const res = await at().apiCommand<LockApplyPayload>('network.lock_apply', {
+        rat: kind,
+        lock_type: 2,
+        mobility: 0,
+        // 扫频结果里带模组实测的子载波间隔时优先用它，缺省由后端按频段补。
+        items: [{ band: cell.band, arfcn, pci, scs: cell.scs }],
+      });
+      const applied = res.data?.results?.every((r) => r.applied) ?? false;
+      if (!res.success || !applied) {
+        const reason = res.data?.results?.find((r) => r.applied === false)?.error;
+        throw new Error(reason || atErrorText(res as { success: boolean; error?: unknown }, '锁定失败'));
+      }
       Toast.success(`已锁定 ${cell.type} PCI ${cell.pci}`);
       await fetchCurrent();
     } catch (error) {
       Toast.error(error instanceof Error ? error.message : '锁定失败');
-      if (radioOff) await setFlightMode(false);
     } finally {
       setBusy(false);
     }
@@ -329,64 +262,48 @@ const NetworkSettings: React.FC = () => {
 
   lockCellRef.current = lockCell;
 
+  // 写入也在后端：AT^C5GOPTION=… 与必要的飞行模式循环由
+  // modules/network（network.c5goption_set）完成，页面只负责提示与刷新。
   const set5G = async (option: { nr_sa_support_flag: number; nr_dc_mode: number; gc_access_mode: number }) => {
     if (busy) return;
     setBusy(true);
     try {
-      const ok = await setFlightMode(true);
-      if (!ok) throw new Error('开启飞行模式失败');
-      const res = await at().sendCommand(`AT^C5GOPTION=${option.nr_sa_support_flag},${option.nr_dc_mode},${option.gc_access_mode}`);
-      if (!res.success) throw new Error('设置 5G 接入模式失败');
+      const res = await at().apiCommand('network.c5goption_set', option);
+      if (!res.success) throw new Error(atErrorText(res as { success: boolean; error?: unknown }, '设置 5G 接入模式失败'));
       Toast.success('设置成功');
       await query5G();
     } catch (error) {
       Toast.error(error instanceof Error ? error.message : '设置失败');
     } finally {
-      await setFlightMode(false);
       setBusy(false);
     }
   };
 
+  // SSB 波束报告来自后端 modules/beam（beam.ssb，解析 AT^NRSSBID? 的固定偏移），
+  // 页面只把领域数据放进两组卡片。
   const querySSB = async () => {
     if (busy) return;
     setBusy(true);
     try {
-      const res = await at().readCommand('AT^NRSSBID?');
-      if (!res.success || !res.data) return;
-      const dataLine = String(res.data)
-        .split('\n')
-        .find((l) => l.startsWith('^NRSSBID:'));
-      if (!dataLine) return;
-      const data = dataLine.replace('^NRSSBID:', '').trim().split(',');
-      const [arfcn, cid, pci, rsrp, sinr, ta] = data;
-      const servingSSBs = [];
-      for (let i = 0; i < 8; i += 1) {
-        const ssbId = Number(data[6 + i * 2]);
-        const ssbRsrp = Number(data[7 + i * 2]);
-        if (ssbId !== 255 && ssbRsrp !== 32767) servingSSBs.push({ ssbId, rsrp: ssbRsrp });
-      }
-      const neighborCount = Number(data[22]);
-      const neighborCells = [];
-      let offset = 23;
-      for (let i = 0; i < neighborCount; i += 1) {
-        const nbSSBs = [];
-        for (let j = 0; j < 4; j += 1) {
-          const ssbId = Number(data[offset + 4 + j * 2]);
-          const ssbRsrp = Number(data[offset + 5 + j * 2]);
-          if (ssbId !== 255 && ssbRsrp !== 32767) nbSSBs.push({ ssbId, rsrp: ssbRsrp });
-        }
-        neighborCells.push({
-          pci: data[offset],
-          arfcn: data[offset + 1],
-          rsrp: Number(data[offset + 2]),
-          sinr: Number(data[offset + 3]),
-          ssbs: nbSSBs,
-        });
-        offset += 12;
-      }
+      const res = await at().apiCommand<SsbPayload>('beam.ssb');
+      if (!res.success || !res.data || !res.data.servingCell) return;
       setSsb({
-        servingCell: { arfcn, cid, pci, rsrp: Number(rsrp), sinr: Number(sinr), ta: Number(ta), ssbs: servingSSBs },
-        neighborCells,
+        servingCell: {
+          arfcn: res.data.servingCell.arfcn ?? '',
+          cid: res.data.servingCell.cid ?? '',
+          pci: res.data.servingCell.pci ?? '',
+          rsrp: res.data.servingCell.rsrp ?? 0,
+          sinr: res.data.servingCell.sinr ?? 0,
+          ta: res.data.servingCell.ta ?? 0,
+          ssbs: res.data.servingCell.ssbs ?? [],
+        },
+        neighborCells: (res.data.neighborCells ?? []).map((n) => ({
+          pci: n.pci ?? '',
+          arfcn: n.arfcn ?? '',
+          rsrp: n.rsrp ?? 0,
+          sinr: n.sinr ?? 0,
+          ssbs: n.ssbs ?? [],
+        })),
       });
     } catch {
       Toast.error('查询 SSB 失败');

@@ -123,6 +123,51 @@ function atSafe(args) {
 }
 
 /*
+ * route —— 统一 API 路由（LuCI 侧的唯一结构化入口）。
+ *
+ * 单后端（2026-10-05）：命令形如 `api.beam.ssb`（可选尾随 JSON 参数），
+ * daemon 把它派发到模块注册表 —— 与 WebUI 的 at().apiCommand 是同一个
+ * 注册表、同一份解码代码。前端拿到的是领域数据，不再拿到 AT 原文，
+ * 也就不再需要「按标签切段 + 正则取值」的文本解析。
+ *
+ * 应答形状 { success:true, data }；这里只把 data 交回页面。
+ * 永不 reject：后端未运行、路由报错或载荷不是对象都返回 null，
+ * 页面按「该卡片暂无数据」处理，与旧版拿不到文本帧时一致。
+ */
+function route(name, params) {
+	var cmd = params ? 'api.' + name + ' ' + JSON.stringify(params) : 'api.' + name;
+	return atSafe([ cmd ]).then(function(res) {
+		var data = res.stdout;
+		if (typeof data === 'string') {
+			try { data = JSON.parse(data); } catch (e) { data = null; }
+		}
+		return (data && typeof data === 'object') ? data : null;
+	});
+}
+
+/*
+ * routeCall —— route() 的**写操作**版本：同一条 `api.<route>` 命令，但失败
+ * 必须 reject，调用方才能显示错误并停在那里。
+ *
+ * route() 的「永不 reject」是为只读行设计的（拿不到就留空，不打断渲染）；
+ * 写操作不能这样：后端没起来、路由报错、应答不成形，都绝不能当成「成功」。
+ * 后端返回 success:false 时 at() 已经 reject（携带后端 message），这里只补
+ * 上「应答不是对象」这一种。
+ */
+function routeCall(name, params) {
+	var cmd = params ? 'api.' + name + ' ' + JSON.stringify(params) : 'api.' + name;
+	return at([ cmd ]).then(function(res) {
+		var data = res.stdout;
+		if (typeof data === 'string') {
+			try { data = JSON.parse(data); } catch (e) { data = null; }
+		}
+		if (!data || typeof data !== 'object')
+			throw new Error(_('Invalid response from the backend.'));
+		return data;
+	});
+}
+
+/*
  * cachedSnapshot —— Async Architecture 缓存优先（SWR）快照。
  * 走 ucode mt5700.cached（nc → daemon StateCache）：零 AT 流量、毫秒级返回，
  * 即使模组离线 / AT 卡住也能立即拿到最近一次后台采集器写入的状态。
@@ -162,18 +207,10 @@ function cachedSnapshot() {
 
 /* ---------- AT 子命令速记 ---------- */
 
-function atStatus()            { return atSafe([ 'status' ]); }
-function atSession()           { return atSafe([ 'advanced', 'session' ]); }
-function atNetwork()           { return atSafe([ 'network' ]); }
-function atRadio()             { return atSafe([ 'advanced', 'radio' ]); }
-function atRadioDiagnostics()  { return at([ 'advanced', 'radio-diagnostics' ]); }
 function atHardware()          { return atSafe([ 'advanced', 'hardware' ]); }
 function atSystem()            { return atSafe([ 'system' ]); }
 function atConnectionSettings(){ return atSafe([ 'advanced', 'connection-settings' ]); }
 function atCommand(cmd)        { return at([ 'command', cmd ]); }
-function atSmsList()           { return at([ 'sms-list' ]); }
-function atSmsInfo()           { return at([ 'sms-info' ]); }
-function atCellscan()          { return at([ 'cellscan' ]); }
 
 /* ---------- 累计流量 / 实时速率（单后端） ---------- */
 
@@ -253,16 +290,10 @@ return baseclass.extend({
 	at: at,
 	atSafe: atSafe,
 	cachedSnapshot: cachedSnapshot,
-	atStatus: atStatus,
-	atSession: atSession,
-	atNetwork: atNetwork,
-	atRadio: atRadio,
-	atRadioDiagnostics: atRadioDiagnostics,
+	route: route,
+	routeCall: routeCall,
 	atHardware: atHardware,
 	atSystem: atSystem,
 	atConnectionSettings: atConnectionSettings,
 	atCommand: atCommand,
-	atSmsList: atSmsList,
-	atSmsInfo: atSmsInfo,
-	atCellscan: atCellscan
 });

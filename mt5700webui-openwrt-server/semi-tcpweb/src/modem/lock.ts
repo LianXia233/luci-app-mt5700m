@@ -3,7 +3,7 @@ import { getDefaultScsType } from './parse';
 // 锁频参数的取值范围来自 AT 手册 13.12.3 / 13.13.3：
 // 锁的个数 1~20，band 0~65535，频点 0~4294967295，LTE PCI 0~503，NR PCI 0~1007。
 export const MAX_LOCK_ITEMS = 20;
-export const MAX_ARFCN = 4294967295;
+const MAX_ARFCN = 4294967295;
 export const MAX_PCI = { lte: 503, nr: 1007 } as const;
 
 export type LockKind = 'lte' | 'nr';
@@ -94,23 +94,56 @@ export function toLockLists(kind: LockKind, type: number, items: LockItem[]): Lo
   return { type, bands, arfcns, scs_types, pcis };
 }
 
-/** 按手册 13.12.1 / 13.13.1 拼出锁频命令。NR 比 LTE 多一个 scstype 参数。 */
-export function buildLockCommand(kind: LockKind, type: number, mobility: number, items: LockItem[]): string {
-  const cmd = kind === 'lte' ? 'AT^LTEFREQLOCK' : 'AT^NRFREQLOCK';
-  if (type === 0) return `${cmd}=0`;
+/**
+ * `api.network.lock_get` / `api.network.lock_apply` 的领域模型。
+ *
+ * 单一后端（2026-10-05）：`^LTEFREQLOCK?` / `^NRFREQLOCK?` 的行布局、PCI 的
+ * 十六进制、分组 CSV 的拼写与取值范围都在 modules/network；页面只把领域数据
+ * 填进表单、把表单发回去，不再自己拼 AT、也不再自己解析应答。
+ */
+export interface LockStatePayload {
+  lock_type: number;
+  mobility: number;
+  items: Array<{ band?: number; arfcn?: number; pci?: number; scs?: number }>;
+}
 
-  const l = toLockLists(kind, type, items);
-  const num = l.bands.split(',').length;
-  const head = `${cmd}=${type},${mobility},${num}`;
-  if (type === 3) return `${head},"${l.bands}"`;
-  if (kind === 'lte') {
-    return type === 1
-      ? `${head},"${l.bands}","${l.arfcns}"`
-      : `${head},"${l.bands}","${l.arfcns}","${l.pcis}"`;
-  }
-  return type === 1
-    ? `${head},"${l.bands}","${l.arfcns}","${l.scs_types}"`
-    : `${head},"${l.bands}","${l.arfcns}","${l.scs_types}","${l.pcis}"`;
+/** 一个方向（LTE/NR）的应用结果。 */
+interface LockApplyResult {
+  rat: LockKind;
+  applied: boolean;
+  error?: string;
+  code?: string;
+}
+
+export interface LockApplyPayload {
+  cycled_radio: boolean;
+  results: LockApplyResult[];
+}
+
+/** 一次 `network.lock_apply` 请求里的一个方向。 */
+export interface LockRequest {
+  rat: LockKind;
+  lock_type: number;
+  mobility: number;
+  items: LockItem[];
+}
+
+/** 领域模型 -> 表单（频点/PCI 继续以字符串喂给输入框，渲染保持不变）。 */
+export function lockFormFromPayload(
+  kind: LockKind,
+  st: LockStatePayload,
+): { lockType: number; mobility: number; items: LockItem[] } {
+  const items: LockItem[] = (st.items || []).map((row) => ({
+    band: row.band,
+    arfcn: row.arfcn != null ? String(row.arfcn) : undefined,
+    pci: row.pci != null ? String(row.pci) : undefined,
+    scs: kind === 'nr' && row.scs != null ? row.scs : undefined,
+  }));
+  return {
+    lockType: st.lock_type ?? 0,
+    mobility: st.mobility ?? 0,
+    items: items.length ? items : [emptyLockItem()],
+  };
 }
 
 /** 把后端存的分组字符串还原成界面用的逐行结构。 */
