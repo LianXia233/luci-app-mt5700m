@@ -213,8 +213,6 @@ function atHardware()          { return atSafe([ 'advanced', 'hardware' ]); }
 function atSystem()            { return atSafe([ 'system' ]); }
 function atConnectionSettings(){ return atSafe([ 'advanced', 'connection-settings' ]); }
 function atCommand(cmd)        { return at([ 'command', cmd ]); }
-function atSmsList()           { return at([ 'sms-list' ]); }
-function atSmsInfo()           { return at([ 'sms-info' ]); }
 
 /* ---------- 累计流量 / 实时速率（单后端） ---------- */
 
@@ -302,6 +300,4 @@ return baseclass.extend({
 	atSystem: atSystem,
 	atConnectionSettings: atConnectionSettings,
 	atCommand: atCommand,
-	atSmsList: atSmsList,
-	atSmsInfo: atSmsInfo
 });

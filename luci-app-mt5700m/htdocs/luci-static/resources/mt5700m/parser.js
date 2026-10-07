@@ -373,99 +373,7 @@ function mcsModulation(mcs, table, rat) {
 }
 
 // 完整 MCS 段 → [{ rat, carriers:[{table, code0, code1}] }]（多载波 / EN-DC 每 RAT 多组）
-/* ---------- 短信 PDU 解码 ---------- */
-
-function swapDigits(value) {
-	var out = '';
-	for (var i = 0; i < value.length; i += 2) out += (value[i + 1] || '') + value[i];
-	return out.replace(/F$/i, '');
-}
-
-function decodeUcs2(hex) {
-	var out = '';
-	for (var i = 0; i + 3 < hex.length; i += 4) out += String.fromCharCode(parseInt(hex.substring(i, i + 4), 16));
-	return out;
-}
-
-function decodeGsm7(hex, septets, skipBits) {
-	var bytes = [];
-	for (var i = 0; i < hex.length; i += 2) bytes.push(parseInt(hex.substring(i, i + 2), 16));
-	var table = '@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞ\u001bÆæßÉ !"#¤%&\'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà';
-	var out = '', escape = false;
-	for (var n = 0; n < septets; n++) {
-		var bit = (skipBits || 0) + n * 7, pos = bit >> 3, shift = bit & 7;
-		var v = (((bytes[pos] || 0) >> shift) & 0x7f) | (((bytes[pos + 1] || 0) << (8 - shift)) & 0x7f);
-		if (escape) { out += ({ 10: '\f', 20: '^', 40: '{', 41: '}', 47: '\\', 60: '[', 61: '~', 62: ']', 64: '|', 101: '€' })[v] || ''; escape = false; }
-		else if (v === 27) escape = true;
-		else out += table[v] || ' ';
-	}
-	return out;
-}
-
-function decodePdu(pdu, index) {
-	try {
-		var p = 0, smscLen = parseInt(pdu.substring(p, p + 2), 16); p += 2 + smscLen * 2;
-		var first = parseInt(pdu.substring(p, p + 2), 16); p += 2;
-		var digits = parseInt(pdu.substring(p, p + 2), 16); p += 2;
-		var toa = parseInt(pdu.substring(p, p + 2), 16); p += 2;
-		var numberHex = pdu.substring(p, p + Math.ceil(digits / 2) * 2); p += Math.ceil(digits / 2) * 2;
-		var number = (toa === 145 ? '+' : '') + swapDigits(numberHex).substring(0, digits);
-		p += 2;
-		var dcs = parseInt(pdu.substring(p, p + 2), 16); p += 2;
-		var stamp = [];
-		for (var s = 0; s < 6; s++, p += 2) stamp.push(swapDigits(pdu.substring(p, p + 2)));
-		p += 2;
-		var date = '20%s-%s-%s %s:%s'.format(stamp[0], stamp[1], stamp[2], stamp[3], stamp[4]);
-		var udl = parseInt(pdu.substring(p, p + 2), 16); p += 2;
-		var ud = pdu.substring(p), headerBytes = 0, concat = null;
-		if (first & 0x40) {
-			headerBytes = parseInt(ud.substring(0, 2), 16) + 1;
-			var h = 2;
-			while (h < headerBytes * 2) {
-				var iei = parseInt(ud.substring(h, h + 2), 16), len = parseInt(ud.substring(h + 2, h + 4), 16), value = ud.substring(h + 4, h + 4 + len * 2); h += 4 + len * 2;
-				if (iei === 0 && len === 3) concat = { ref: parseInt(value.substring(0, 2), 16), total: parseInt(value.substring(2, 4), 16), seq: parseInt(value.substring(4, 6), 16) };
-				if (iei === 8 && len === 4) concat = { ref: parseInt(value.substring(0, 4), 16), total: parseInt(value.substring(4, 6), 16), seq: parseInt(value.substring(6, 8), 16) };
-			}
-		}
-		var text;
-		if ((dcs & 0x0c) === 0x08) text = decodeUcs2(ud.substring(headerBytes * 2, udl * 2));
-		else {
-			var headerSeptets = Math.ceil(headerBytes * 8 / 7), skipBits = headerBytes ? headerSeptets * 7 : 0;
-			text = decodeGsm7(ud, Math.max(0, udl - headerSeptets), skipBits);
-		}
-		return { index: String(index), indexes: [ String(index) ], number: number, date: date, text: text, concat: concat, direction:'in', order:Number(index) || 0 };
-	} catch (e) { return null; }
-}
-
-// +CMGL PDU 列表 → 消息数组（长短信按 ref 合并，倒序）
-function parseMessages(raw) {
-	var lines = (raw || '').replace(/\r/g, '').split('\n'), messages = [], pending = null;
-	lines.forEach(function(line) {
-		line = line.trim();
-		var m = line.match(/^\+CMGL:\s*(\d+),/);
-		if (m) pending = m[1];
-		else if (pending != null && /^[0-9A-F]+$/i.test(line)) { var msg = decodePdu(line, pending); if (msg) messages.push(msg); pending = null; }
-	});
-	var merged = [], groups = {};
-	messages.forEach(function(msg) {
-		if (!msg.concat) { merged.push(msg); return; }
-		var key = msg.number + ':' + msg.concat.ref;
-		(groups[key] || (groups[key] = [])).push(msg);
-	});
-	Object.keys(groups).forEach(function(key) {
-		var parts = groups[key].sort(function(a, b) { return a.concat.seq - b.concat.seq; }), first = parts[0];
-		first.text = parts.map(function(p) { return p.text; }).join(''); first.indexes = parts.map(function(p) { return p.index; }); merged.push(first);
-	});
-	return merged.sort(function(a, b) { return b.indexes[0] - a.indexes[0]; });
-}
-
-function parseInfo(raw) {
-	return {
-		ims: ((raw.match(/\^IMSSWITCH:\s*(\d+)/)||[])[1]||''),
-		smsc: ((raw.match(/\+CSCA:\s*"([^"]+)"/)||[])[1]||''),
-		storage: ((raw.match(/\+CPMS:\s*"([A-Z]+)",(\d+),(\d+)/)||[]).slice(1))
-	};
-}
+/* ---------- 短信会话分组（纯展示聚合，不含任何 AT/PDU 解码） ---------- */
 
 // 按号码分组会话，组内按时间升序、组间按最新消息倒序
 function groupMessages(messages) {
@@ -513,12 +421,6 @@ return baseclass.extend({
 	validCsv: validCsv,
 	csvInRange: csvInRange,
 	mcsModulation: mcsModulation,
-	swapDigits: swapDigits,
-	decodeUcs2: decodeUcs2,
-	decodeGsm7: decodeGsm7,
-	decodePdu: decodePdu,
-	parseMessages: parseMessages,
-	parseInfo: parseInfo,
 	groupMessages: groupMessages,
 	FOTA_STATE_NAMES: FOTA_STATE_NAMES
 });

@@ -80,9 +80,26 @@ aliases, so the move itself changed no behaviour.
 * The sent-message cache stayed in the frontend **on purpose**: the UI calls it
   本地缓存 and ships export/import buttons for it, so it is browser-local data,
   not modem state. Everything derived from the modem is backend state.
-* LuCI's own SMS view still reads the CLI's `sms-list`/`sms-info` text and
-  decodes it in `parser.js`; unifying that view is the LuCI batch, which is also
-  where `parser.js`'s SMS half gets deleted.
+* LuCI's own SMS view no longer reads the CLI: it asks `sms.list`/`sms.status`
+  (the same routes the WebUI's two SMS pages call) and writes through
+  `sms.send`/`sms.delete`/`sms.clear_all`/`sms.center_set`/`sms.storage_set`/
+  `sms.ims_set`. `parser.js`'s SMS half (`parseMessages`, `parseInfo`,
+  `decodePdu`, `decodeGsm7`, `decodeUcs2`, `swapDigits`) is deleted with it, so
+  the PDU/GSM-7/UCS-2 codec exists once in the tree: `modules/sms::pdu`. Only
+  `groupMessages` stays (a pure display grouping over the page's view model).
+
+  Two consequences worth recording:
+
+  * the decoded sender/recipient number is now the backend's domain value
+    (digits, no `+` prefix). The old JS decoder prepended `+` when the PDU's TOA
+    said "international": the digits are identical, the `+` is gone, and this is
+    what the WebUI renders from the same field. `prove-sms-parity.js` pins that
+    as the *only* value difference and counts the `+`s per shape, so the allowed
+    difference cannot quietly grow.
+  * the settings dialog's storage select and the slot badge both read the
+    `+CPMS` **read** plane — what the old `parseInfo` regex picked up (its first
+    match). The parity proof uses a fixture whose three planes differ, so an
+    off-by-one plane cannot pass unnoticed.
 
 ## 2. Verification performed
 
@@ -94,7 +111,8 @@ aliases, so the move itself changed no behaviour.
 | `cargo test --locked` (CI) | see the run on the head commit |
 | Shell/JS/JSON/PO checks (CI `static-checks`) | see the run on the head commit |
 | UI files touched by this refactor | none (by design) |
-| LuCI migration parity (`scripts/prove-neighbors-parity.js`, `prove-lock-parity.js`, `prove-network-parity.js`, `prove-cellscan-parity.js`, `prove-radio-parity.js`) | each renders the baseline view and the new one in one stubbed DOM from the same modem replies and diffs the DOM: structure/labels byte-identical, only the listed value corrections differ. Migration-time tools, not CI checks — each takes its pre-slice commit as an argument (`663f989`, `dfb4810`, `24ed5ef`, `fceb6ea`, `4474436`) and exits 2 when handed a revision that already contains its slice. The AT-side fixtures they share live in `scripts/lib/at-fixtures.js` (`decodeSyscfg`/`decodeC5gOption`/`decodeNrCapability` cover the radio-preference replies the same way the other decoders cover their modules), each script pinning them against the matching Rust unit tests |
+| LuCI migration parity (`scripts/prove-neighbors-parity.js`, `prove-lock-parity.js`, `prove-network-parity.js`, `prove-cellscan-parity.js`, `prove-radio-parity.js`, `prove-sms-parity.js`) | each renders the baseline view and the new one in one stubbed DOM from the same modem replies and diffs the DOM: structure/labels byte-identical, only the listed value corrections differ. Migration-time tools, not CI checks — each takes its pre-slice commit as an argument (`663f989`, `dfb4810`, `24ed5ef`, `fceb6ea`, `4474436`, `812ba41`) and exits 2 when handed a revision that already contains its slice. The AT-side fixtures they share live in `scripts/lib/at-fixtures.js` (`decodeSyscfg`/`decodeC5gOption`/`decodeNrCapability` cover the radio-preference replies the same way the other decoders cover their modules), each script pinning them against the matching Rust unit tests; the SMS proof's message vectors come from the WebUI demo data and from `modules/sms::pdu`'s own septet test |
+| Minified-tree smoke (`scripts/smoke-minified-luci.js`, after `scripts/minify-luci-frontend.sh`) | loads the *minified* wireless and SMS pages and drives them: expected route calls, no CLI call, the readings/dropdowns/sidebar the user actually sees, and one write path. Post-minify grepping is meaningless (esbuild renames and inlines), so the only honest check of the shipped artifact is rendering it |
 
 ## 3. What remains (in order)
 
@@ -107,9 +125,11 @@ aliases, so the move itself changed no behaviour.
    command at all, `modem/smsEncode.ts` and the `node-pdu` dependency are
    deleted, `modem/sms.ts` keeps only the browser-local sent-message cache and
    display formatters, and the CLI's `sms-send`/`sms-delete`/`sms-clear`/
-   `sms-set`/`sms-ims` verbs run the same routes (its `sms-list`/`sms-info`
-   verbs still print the raw text the LuCI view parses — that view and
-   `parser.js`'s SMS half move in the LuCI batch). (`ca`, `qos` and the
+   `sms-set`/`sms-ims` verbs run the same routes. The LuCI SMS view moved onto
+   those routes as well (see the slice note below), which leaves the CLI's
+   `sms-list`/`sms-info` verbs without a caller — they belong to the same
+   "raw text for whoever wants to look" category as `advanced radio`, and are
+   folded together in the remaining-work list. (`ca`, `qos` and the
    Info page's data-call fields landed already: carrier aggregation lives in
    `modules/ca` — the CLI's `append_hfreqinfo_line`/`CaTotals` are gone and the
    frozen `carrier_*`/`ca_*` text comes from `CaState::to_text()` —
@@ -406,11 +426,44 @@ aliases, so the move itself changed no behaviour.
        typed params carry the same values, the same notification text and the
        same 900 ms reload. The wireless page now makes no CLI call at all —
        asserted on the call surface, not by grepping the source.
+     * the SMS page followed, and with it the frontend's last PDU decoder. The
+       page now reads `sms.list` (PDU decode, GSM-7/UCS-2, UDH concatenation and
+       part merging all happen in `modules/sms`) and `sms.status`
+       (`+CPMS`/`+CSCA`/`^IMSSWITCH`), and writes `sms.send`/`sms.delete`/
+       `sms.clear_all`/`sms.center_set`/`sms.storage_set`/`sms.ims_set`. Both
+       reads go through `api.routeCall` rather than `api.route`, deliberately:
+       the message list *is* the page, so a failed read has to be reported —
+       rendering "No messages yet." for a modem that never answered would claim
+       an empty inbox. That keeps the page's two `alert-message warning` banners
+       (their copy is unchanged; the text is the backend's message, as it was
+       when the same banner showed the CLI frame's stderr). Deleted with the
+       frames: `api.js`'s `atSmsList`/`atSmsInfo` and `parser.js`'s
+       `parseMessages`/`parseInfo`/`decodePdu`/`decodeGsm7`/`decodeUcs2`/
+       `swapDigits`; the `groupMessages` that stays is a pure display grouping.
+       ucode's migrated-write budget list became `[route, seconds]` pairs so
+       every write keeps the budget its CLI verb had (`sms.send`/`clear_all`/
+       `ims_set` 60 s, the rest 25 s). One pre-existing dead path is left in
+       place and flagged rather than deleted: `renderPage`'s `deleteMessage`
+       dialog has no button wired to it, so the page cannot reach it — its one
+       line moved onto `sms.delete` with the rest, and deciding whether a
+       per-message delete button should exist is a UI decision.
+       Parity: `scripts/prove-sms-parity.js 812ba41` renders both revisions from
+       one set of modem replies — seven shapes (five received messages over
+       three differing `+CPMS` planes, the WebUI demo data's same-plane storage,
+       IMS off, a status read that fails, an empty inbox, and single-conversation
+       UCS-2 and GSM-7 inboxes), the settings dialog (prefill + the three writes
+       + the 1500 ms reload), the send flow with its local sent-history write,
+       the clear flow, and both failure paths. The message fixtures are the
+       WebUI's demo vectors (`mockAT.ts` RECEIVED_SMS) and the GSM-7 one is built
+       from `modules/sms::pdu`'s own `pack_septets(["hello"])` test vector, so the
+       proof compares the backend's decode against the old JS decode rather than
+       against a fixture copied from either side.
      * Still on text frames, to be migrated next: `parser.section`/`pick` for
-       the settings-page and dial-page rows, and the `status`/`sms`/`system`
-       pages, which still call the CLI verbs. `parser.js` (`section`, `pick`)
-       is deleted when the last of them moves. The dashboard already reads the
-       daemon cache via `api.cachedSnapshot()`.
+       the settings-page and dial-page rows, and the `status`/`system` pages,
+       which still call the CLI verbs (`status` also feeds the dashboard's
+       `parser.signalQuality`/`operatorInfo` rows). `parser.js` (`section`,
+       `pick`) is deleted when the last of them moves. The dashboard already
+       reads the daemon cache via `api.cachedSnapshot()`.
      * Defect found while proving the above, **not** changed (it is a UI
        change, so it needs a decision): the scan modal's "Frequency scan" card
        never renders, on HEAD or now. `parser.section()` matches a prefix
@@ -447,5 +500,8 @@ aliases, so the move itself changed no behaviour.
    success, and a module/daemon failure exits 1 instead of the AT error code.
    Rust-only change → CI is the only compiler, so it wants its own slice with
    unit tests over the argv → params mapping.
+   `sms-list`/`sms-info` are in the same state (no frontend caller left after
+   the SMS slice) and can be dropped outright or reformatted as one
+   `render_text` from `modules/sms` — either way they belong to this batch.
    The read side stays: `advanced radio` / `radio-diagnostics` are the CLI's
    raw-AT diagnostic views (the same reason `radio-diagnostics` was kept).

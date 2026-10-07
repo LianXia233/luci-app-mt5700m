@@ -122,6 +122,8 @@ function makeScope(api) {
 		createElementNS: (ns, tag) => new El(tag, {}, []),
 		getElementById: () => null,
 		importNode: node => node,
+		// 文本节点就是节点树里的字符串（textOf/walk 都接受字符串子节点）
+		createTextNode: text => String(text),
 	};
 	// LuCI 给 String.prototype 挂了 format()（页面里到处是 `_('%s / %s').format(a, b)`
 	// 和 `'…'.format(x)`），桩必须同样挂上；`_()` 就返回普通字符串，与 LuCI 一致
@@ -161,11 +163,21 @@ function makeScope(api) {
 		hideModal: () => {},
 		addNotification: (node, message, level) => { notifications.push({ level: level || '', text: textOf(message) }); }
 	};
+	// 页面能用的最小 localStorage：短信页的本地发送历史（含旧键迁移）要用它，
+	// 老/新两侧各自持有一份独立存储，比较才不会被对方写入污染。
+	const store = new Map();
+	window.localStorage = {
+		getItem: k => (store.has(String(k)) ? store.get(String(k)) : null),
+		setItem: (k, v) => { store.set(String(k), String(v)); },
+		removeItem: k => { store.delete(String(k)); },
+		clear: () => store.clear()
+	};
 	const dom = { content: (host, child) => host.replaceChildren(child), append: () => {}, parse: () => null };
 	// components.js 在模块求值时注入 <style>，需要 L.resource
 	const L = { resource: p => p };
 	return {
 		E, document, window, ui, dom, L, modals, notifications,
+		localStorage: window.localStorage,
 		// components.js / view 里的 `api` 就是要装在作用域里的数据层
 		api: api || makeApi({}),
 		HTMLElement: El, Event: StubEvent, _: t,
@@ -184,13 +196,13 @@ function loadModule(source, scope) {
  * 与 LuCI 一样的装载顺序：parser → components（拿到 parser）→ view
  * （拿到 api/parser/components/dom/ui）。`read(rel)` 读一份源码。
  */
-function loadSide(read, api) {
+function loadSide(read, api, viewRel) {
 	const RES = 'luci-app-mt5700m/htdocs/luci-static/resources';
 	const scope = makeScope(api);
 	const parser = loadModule(read(RES + '/mt5700m/parser.js'), scope);
 	scope.parser = parser;
 	scope.c = loadModule(read(RES + '/mt5700m/components.js'), scope);
-	const view = loadModule(read(RES + '/view/mt5700m/network.js'), scope);
+	const view = loadModule(read(viewRel || RES + '/view/mt5700m/network.js'), scope);
 	return { parser, c: scope.c, view, scope, api: scope.api };
 }
 
