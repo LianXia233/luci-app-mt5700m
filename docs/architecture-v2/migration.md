@@ -505,3 +505,33 @@ aliases, so the move itself changed no behaviour.
    `render_text` from `modules/sms` — either way they belong to this batch.
    The read side stays: `advanced radio` / `radio-diagnostics` are the CLI's
    raw-AT diagnostic views (the same reason `radio-diagnostics` was kept).
+
+### Inventory of the remaining LuCI pages (recon 2026-10-07)
+
+Checked against the route table (`modules/*/api.rs`) and the state structs, so
+this is what the next slices start from rather than a guess:
+
+| Page | Read it still slices | Write verbs it still uses | Covered by existing routes |
+| ---- | -------------------- | ------------------------- | -------------------------- |
+| `status.js` | `status`, `advanced session` | — | `signal.get`, `cell.get`, `registration.get`, `network.get`, `modem.get`, `traffic.get`, `network.pdp` (`+CGPADDR`), `network.dhcp`, `qos.get`, `ca.get`, `modem.txpower`/`nr_txpower`/`endc`; the dashboard already reads the daemon cache for its topics |
+| `system.js` | `system` | `sim-pin`, `advanced-set thermal-thresholds`/`thermal-log`, `factory-reset` | reads: `modem.get` (manufacturer/model/revision/imei), `sim.get` (status/iccid/imsi/number/slot/hotplug), `system.temperature`, `system.thermal`, `system.fota`; writes: `sim.pin_apply`, `system.thermal_set`, `system.factory_reset`, `modem.imei_set`, `system.fota_start`/`fota_abort` |
+| `connection.js` | `advanced connection-settings`, `advanced session` | `pdp-set`, `advanced-set autodial`/`direct-ip`/`postroute`/`dmz`/`pdp-state`/`pdp-remove` | reads: `network.autodial`, `network.interface_cfg`, `network.pdp_contexts`, `traffic.*`, `network.dhcp` |
+| `advanced.js` | `advanced hardware` | `advanced-set usb-mode`/`pcie-controller`/`nic-speed`/`interface-mode`/`sim-hotplug`/`thermal` | reads: `network.usb_mode`, `network.interface_cfg`, `system.device_control` (nic_rate/power_control), `sim.get` (hotplug), `sim.slot`, `system.thermal`; writes: `system.nic_rate_set`, `system.power_control_set`, `sim.hotplug_set`, `sim.slot_set`, `system.thermal_set` |
+| `terminal.js` | `command` | — | **kept deliberately**: the terminal *is* a raw AT console; it is the one place a user types AT on purpose |
+
+Gaps that need a **new backend route** before those pages can move (each is one
+`service` function + one `Route` + a JSON shape, following `module-guide.md`):
+
+* `system.js`: the `^VERSION` fields (build date / software / hardware), network
+  time (`^NWTIME`), the LED switch (`^LEDSWITCH` — `system.device_control`
+  currently carries only `nic_rate`/`power_control`) and the SIM activation
+  power (`^HVSST`).
+* `connection.js`: `^SETAUTODIAL` write, the forwarding trio
+  (`direct-ip`/`postroute`/`dmz`), and the PDP writes (`pdp-set`/`pdp-state`/
+  `pdp-remove`). `network.pdp` today is only the `+CGPADDR` read.
+* `advanced.js`: the `usb-mode` and `interface-mode` writes (`^SETMODE` /
+  `^TDCFG`).
+
+Those are Rust slices (CI is the only compiler), which is why the LuCI batch
+splits page-by-page behind them; the two pages whose fields are already covered
+(`status.js`, and `system.js`'s SIM/thermal/FOTA half) can move first.
