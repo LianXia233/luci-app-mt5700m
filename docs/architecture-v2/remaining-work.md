@@ -91,8 +91,8 @@ FOTA 下载 / 续传 / 安装 —— 模块是「任务 + 观察 + 中止」形�
 | # | 能力 | AT 命令 | 现状 |
 |---|---|---|---|
 | 1 | LED 读/写 | `AT^LEDSWITCH?` / `=` | ✅ 已落地：`system.led` / `system.led_set` |
-| 2 | SIM 激活读 | `AT^HVSST?` | 只有写常量 |
-| 3 | SIM 激活写（独立） | `AT^HVSST=1,<0/1>` | 仅 `switch_slot` 内部 |
+| 2 | SIM 激活读 | `AT^HVSST?` | ✅ 已落地：`sim.activation` |
+| 3 | SIM 激活写（独立） | `AT^HVSST=1,<0/1>` | ✅ 已落地：`sim.activation_set`（`switch_slot` 的启停括号与 CLI 写统一由 `commands::hvsst_power` 构造） |
 | 4 | 网络时间读 | `AT^NWTIME?` | ✅ 已落地：`system.network_time` |
 | 5 | 温控阈值写 | `AT^THERMLDAUTOPARA=` | ✅ 已落地：`system.thermal_thresholds_set`（校验规则从 `cli.rs` 上移到 `system::commands`，CLI 改为复用，仅剩一份实现） |
 | 6 | 温控日志写 | `AT^THERMLDLOGSW=` | ✅ 已落地：`system.thermal_log_set` |

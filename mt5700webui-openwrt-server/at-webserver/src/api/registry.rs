@@ -236,6 +236,7 @@ mod tests {
                 ("gc_access_mode", json::num_val(1)),
             ]),
             "sim.slot_set" => pairs(&[("slot", json::num_val(0))]),
+            "sim.activation_set" => pairs(&[("active", Value::Bool(true))]),
             "sim.hotplug_set" => pairs(&[("hotplug", Value::Bool(true))]),
             "sim.pin_apply" => pairs(&[
                 ("operation", json::str_val("verify")),

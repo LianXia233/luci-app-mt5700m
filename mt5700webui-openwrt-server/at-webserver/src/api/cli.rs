@@ -13,6 +13,7 @@ use crate::transport::client::{self, AtError, AtOutcome, Mode, Settings};
 // historical local names so call sites and their tests stay readable.
 use crate::modules::ca::{commands as ca_commands, parser as ca_parser};
 use crate::modules::qos::{commands as qos_commands, parser as qos_parser, state::QosState};
+use crate::modules::sim::commands as sim_commands;
 use crate::modules::system::commands as system_commands;
 use crate::modules::system::parser::parse_chiptemp;
 use crate::modules::system::state::TemperatureState;
@@ -1361,7 +1362,7 @@ fn cmd_advanced_set(settings: &Settings, args: &[String]) -> i32 {
             _ => EXIT_USAGE,
         },
         "sim-activation" => match get(0) {
-            "0" | "1" => run_at(settings, &format!("AT^HVSST=1,{}", get(0))),
+            "0" | "1" => run_at(settings, &sim_commands::hvsst_power(get(0) == "1")),
             _ => EXIT_USAGE,
         },
         "sim-slot" => match get(0) {

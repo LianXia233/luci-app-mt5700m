@@ -81,6 +81,22 @@ pub fn parse_tdsimhp(raw: &str) -> Option<bool> {
     body.split(',').next()?.trim().parse::<i64>().ok().map(|n| n == 1)
 }
 
+/// `^HVSST: <mode>,<active>,<slot>` -> whether the SIM power path is active,
+/// plus the third field the system page falls back to when `^SCICHG` did not
+/// answer (its "active SIM slot" row). Only these two fields were ever read;
+/// the leading mode field answers nothing either frontend asks for.
+pub fn parse_hvsst(raw: &str) -> Option<(bool, Option<i64>)> {
+    let body = raw
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("^HVSST:"))?
+        .trim();
+    let mut fields = body.split(',').map(|f| f.trim());
+    fields.next()?;
+    let active = fields.next()?.parse::<i64>().ok().map(|n| n == 1)?;
+    let slot = fields.next().and_then(|s| s.parse::<i64>().ok());
+    Some((active, slot))
+}
+
 /// `+CLCK: <status>` -> whether the lock is enabled.
 pub fn parse_clck(raw: &str) -> Option<bool> {
     let body = raw
@@ -276,6 +292,21 @@ mod tests {
         assert_eq!(cnum_number_state("+CME ERROR: 10"), None);
         assert_eq!(cnum_number_state("ERROR"), None);
         assert_eq!(cnum_number_state("+CNUM: \"\",\"+8613800138000\",145\r\nOK"), None);
+    }
+
+    #[test]
+    fn hvsst_reads_the_two_fields_the_page_used() {
+        // The frame shape both frontends parse: a mode field, then whether the
+        // SIM power path is active, then the slot the page falls back to.
+        assert_eq!(parse_hvsst("^HVSST: 1,1,0\r\nOK"), Some((true, Some(0))));
+        assert_eq!(parse_hvsst("^HVSST: 1,0,1\r\nOK"), Some((false, Some(1))));
+        // Missing trailing field: still an answer to the power-path question.
+        assert_eq!(parse_hvsst("^HVSST: 1,1\r\nOK"), Some((true, None)));
+        // No answer line / too short / unparsable numbers -> not an answer.
+        assert_eq!(parse_hvsst("OK"), None);
+        assert_eq!(parse_hvsst("^HVSST: \r\nOK"), None);
+        assert_eq!(parse_hvsst("^HVSST: 1\r\nOK"), None);
+        assert_eq!(parse_hvsst("^HVSST: 1,x,0\r\nOK"), None);
     }
 
     #[test]

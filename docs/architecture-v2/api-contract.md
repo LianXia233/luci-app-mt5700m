@@ -19,7 +19,7 @@ Two kinds of route, declared in the table itself (`Route::display` /
   `traffic.clear`, `network.registration_urc`, `network.lock_get`,
   `network.lock_apply`, `network.c5goption`, `network.c5goption_set`,
   `cell.neighbors`, `cell.scan_start`, `cell.scan_abort`, `beam.ssb`,
-  `sim.slot_set`, `sim.hotplug_set`,
+  `sim.slot_set`, `sim.hotplug_set`, `sim.activation_set`,
   `sim.pin_status`, `sim.pin_apply`, `system.nic_rate_set`,
   `system.power_control_set`, `system.factory_reset`, `modem.reset`,
   `modem.imei_set`, `network.radio_set`, `network.syscfg_set`,
@@ -69,6 +69,8 @@ Two kinds of route, declared in the table itself (`Route::display` /
 | `sim.slot` | `{slot, hotplug}` — display route over the `sim` topic (0 = external, 1 = internal) |
 | `sim.slot_set` | `{switched: true, slot}` — `{slot: 0\|1}`; the vendor sequence (`^HVSST` deactivate/activate around `^SCICHG`, radio off/on) is performed here, once |
 | `sim.hotplug_set` | `{applied: true, hotplug}` — `{hotplug: bool}` → `^TDSIMHP` |
+| `sim.activation` | `{active?: bool, slot?: int}` — `^HVSST?`, the SIM power path the system page shows as "SIM power path"; `slot` is the third field, which LuCI also used as its fallback active slot. `{}` when the query did not answer |
+| `sim.activation_set` | `{applied: true, active}` — `{active: bool}` → `^HVSST=1,<0\|1>`; built by the same constructor that brackets a slot switch, so there is one spelling of the verb |
 | `sim.pin_status` | `{code, lock, blocked, needsNewPin, card: {status, dead, present}, pinEnabled}` — `+CPIN?` with the CME-error branch (10 → `ABSENT`, 11/12/17/18 → the matching lock), `^SIMSQ?` for the dead/present refinement and `+CLCK="SC",2` when the card is ready |
 | `sim.pin_apply` | `{applied: true}` — `{operation: verify\|unblock\|enable\|disable\|change, pin, newPin?, pin2?}`; the operation picks CPIN/CLCK/CPWD, and the 4–8 digit rules are validated here |
 | `modem.get` / `modem.cached` | `{manufacturer, model, revision, imei}` |
