@@ -2,7 +2,29 @@
 
 ## [Unreleased]
 
+### Added
+
+- **前端活动闸门：无人观看时后端停止采集，前端接入时按优先级补齐**
+  （新增 `state/activity.rs`，改动 `scheduler/jobs.rs`、`scheduler/channel.rs`、
+  `state/refresh.rs`、`core/task.rs`、`daemon.rs` 及模块 `service.rs`）：
+  - 新增 `ActivityGate`，以 WS 连接数（`reader_enter`/`reader_leave`）与
+    8765 RPC 请求时间戳（`touch`）共同判定前端是否在用（20 s 宽限）。
+    控制套接字（`mt5700m-at`/`mt5700m-manager`）有意不计入，否则常驻
+    拨号守护会让后端永不休眠。
+  - `TaskManager` 增加三种周期任务注册：`add_periodic`（空闲即整体暂停，
+    信号/小区/网络/流量等大多数采集）、`add_periodic_keepalive`（空闲降为
+    `IDLE_KEEPALIVE` 慢心跳，温度与注册，供其他守护直接读缓存）、
+    `add_periodic_always`（始终全速，锁频调度器等系统功能）。
+  - 任务优先级贯通到 AT 请求：`run_in_task` 把 `TaskCtx.priority` 写入
+    `RefreshCtx`，`slow()` 经 `query_prio` 提交到仲裁器优先级队列。前端
+    重新接入时，`last_run` 早于 interval 的积压任务立即触发，信号/注册
+    （`High`）先于低价值遥测被服务，首帧更快成形。
+
 ### Docs
+
+- **补充前端活动闸门文档**：在 `docs/architecture-v2/data-flow.md` §4 任务
+  生命周期补三种周期任务注册与闸门时序，`architecture.md` §5 并发模型补
+  「前端活动闸门」说明，与本次代码改动对齐。
 
 - **修正文档与代码的模块路径漂移**：架构 v2 把后端重组为
   `core/` / `scheduler/` / `state/` / `serial/` / `transport/` / `modules/`

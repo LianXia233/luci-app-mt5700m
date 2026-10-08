@@ -82,6 +82,10 @@ pub struct RefreshCtx<'a> {
     pub bus: &'a Arc<EventBus>,
     /// Cache provenance tag (`snapshot` for collectors, `api` for on-demand).
     pub source: &'static str,
+    /// Priority for `slow()` queries. Periodic collectors set this from their
+    /// task priority (`run_in_task`), so a UI-critical refresh is served first;
+    /// on-demand API reads keep the default `Low`.
+    pub priority: Priority,
 }
 
 impl<'a> RefreshCtx<'a> {
@@ -95,12 +99,19 @@ impl<'a> RefreshCtx<'a> {
             cache,
             bus,
             source: "snapshot",
+            priority: Priority::Low,
         }
     }
 
     /// Tag the cache entries this context writes.
     pub fn with_source(mut self, source: &'static str) -> Self {
         self.source = source;
+        self
+    }
+
+    /// Set the priority used by `slow()` queries.
+    pub fn with_priority(mut self, priority: Priority) -> Self {
+        self.priority = priority;
         self
     }
 
@@ -148,7 +159,7 @@ impl<'a> RefreshCtx<'a> {
         }
         match self
             .channel
-            .query_prio(command, at_timeout, queued_timeout, Priority::Low)
+            .query_prio(command, at_timeout, queued_timeout, self.priority)
         {
             Ok(text) if !text.trim().is_empty() => Some(text.trim().to_string()),
             _ => {

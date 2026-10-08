@@ -87,10 +87,17 @@ CLI 既不拥有 PDU 编解码器，也不拥有发送序列。
 ## 4. 任务生命周期
 
 ```text
-TaskManager::add_periodic(name, period, priority, timeout, f)
+TaskManager::add_periodic / add_periodic_keepalive / add_periodic_always
    │
    ├── spawns at daemon start (modules::spawn_all → <module>::service::spawn)
    ├── each tick: run_in_task(ctx, f) builds TaskChannel + RefreshCtx
+   │      └── RefreshCtx.priority = 任务优先级 → AT 仲裁器优先级队列
+   ├── 前端活动闸门（state::activity::ActivityGate）
+   │      ├── 活跃源：WS 连接（reader_enter/leave）+ 8765 RPC 请求时间戳（touch）
+   │      ├── 控制套接字（mt5700m-at）不计入，否则常驻拨号守护会永久唤醒后端
+   │      ├── 空闲时：add_periodic 暂停；keepalive 降为 idle_interval；
+   │      │            always 保持全速（锁频调度器等系统功能）
+   │      └── 恢复时：last_run 早于 interval 的任务立即触发 → 首帧按优先级刷新
    ├── deadline: queue timeout + AT timeout; on overrun the tick is abandoned
    ├── cancel: task flag checked by the arbiter before/while writing
    ├── errors: mapped to BackendError (never a panic); stale fallback keeps UI

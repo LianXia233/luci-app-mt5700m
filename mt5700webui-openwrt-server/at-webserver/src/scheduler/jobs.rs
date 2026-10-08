@@ -29,6 +29,7 @@
 
 use crate::scheduler::arbiter::{AtArbiter, AtRequestSpec, AtResult};
 use crate::core::error::BackendError;
+use crate::state::activity::ActivityGate;
 use crate::state::bus::{EventBus, TOPIC_TASK};
 use crate::core::json::{self, Value};
 use crate::core::runtime::{next_id, now_ms, spawn_thread};
@@ -36,7 +37,7 @@ use crate::state::cache::StateCache;
 use crate::core::task::{PeriodicJob, Priority, TaskId, TaskKind, TaskRecord, TaskStatus};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 /// Upper bound on retained task records (old terminal records are pruned).
@@ -62,6 +63,10 @@ pub struct TaskCtx {
     pub cache: Arc<StateCache>,
     pub bus: Arc<EventBus>,
     pub task_id: TaskId,
+    /// Priority this task was registered with. Collectors forward it to their
+    /// AT requests so a UI-critical refresh (signal/registration) is served
+    /// before low-value telemetry when both become due on frontend resume.
+    pub priority: Priority,
     cancel: Arc<AtomicBool>,
     progress_slot: Arc<Mutex<(u8, String)>>,
     /// Overall task deadline (None = no watchdog timeout).
@@ -131,6 +136,10 @@ pub struct TaskManager {
     arbiter: Arc<AtArbiter>,
     cache: Arc<StateCache>,
     bus: Arc<EventBus>,
+    /// Frontend activity gate. When installed and idle, periodic collectors
+    /// with no `idle_interval` are paused and the rest run at `idle_interval`.
+    /// `None` disables gating (always-on), which is what unit tests want.
+    activity: RwLock<Option<Arc<ActivityGate>>>,
     inner: Mutex<Inner>,
 }
 
@@ -141,6 +150,7 @@ impl TaskManager {
             arbiter,
             cache,
             bus,
+            activity: RwLock::new(None),
             inner: Mutex::new(Inner {
                 records: HashMap::new(),
                 cancels: HashMap::new(),
@@ -154,6 +164,21 @@ impl TaskManager {
         let wd = m.clone();
         spawn_thread("task-watchdog", move || wd.watchdog_loop());
         m
+    }
+
+    /// Install the frontend activity gate. Call once, right after `new`, before
+    /// module jobs are registered. Without it, every job runs unconditionally.
+    pub fn set_activity(&self, gate: Arc<ActivityGate>) {
+        *self.activity.write().unwrap() = Some(gate);
+    }
+
+    /// True when collectors should run at their full cadence: either no gate
+    /// is installed, or a frontend is currently active.
+    fn activity_active(&self) -> bool {
+        match self.activity.read().unwrap().as_ref() {
+            None => true,
+            Some(gate) => gate.is_active(),
+        }
     }
 
     pub fn stop(&self) {
@@ -194,6 +219,9 @@ impl TaskManager {
 
     /// Register a periodic job. Runs immediately on the next job tick, then
     /// every `interval`. Never overlaps (a long run delays the next run).
+    ///
+    /// With an `ActivityGate` installed this job **pauses entirely** while no
+    /// frontend is active (see `add_periodic_keepalive` to keep a heartbeat).
     pub fn add_periodic(
         &self,
         name: &str,
@@ -202,7 +230,48 @@ impl TaskManager {
         timeout: Option<Duration>,
         f: PeriodicFn,
     ) {
-        let job = PeriodicJob::new(name, interval, priority);
+        self.register_periodic(PeriodicJob::new(name, interval, priority), timeout, f);
+    }
+
+    /// Register a periodic job that keeps a slow `idle_interval` heartbeat
+    /// while no frontend is active instead of pausing. Used for topics other
+    /// daemons depend on (temperature, registration) so they stay warm even
+    /// when nobody is looking at a page.
+    pub fn add_periodic_keepalive(
+        &self,
+        name: &str,
+        interval: Duration,
+        idle_interval: Duration,
+        priority: Priority,
+        timeout: Option<Duration>,
+        f: PeriodicFn,
+    ) {
+        self.register_periodic(
+            PeriodicJob::new(name, interval, priority).with_idle_interval(idle_interval),
+            timeout,
+            f,
+        );
+    }
+
+    /// Register a periodic job that keeps its full cadence even while no
+    /// frontend is connected. Used for system functions (the band-lock
+    /// scheduler) that must not depend on someone having a page open.
+    pub fn add_periodic_always(
+        &self,
+        name: &str,
+        interval: Duration,
+        priority: Priority,
+        timeout: Option<Duration>,
+        f: PeriodicFn,
+    ) {
+        self.register_periodic(
+            PeriodicJob::new(name, interval, priority).with_idle_interval(interval),
+            timeout,
+            f,
+        );
+    }
+
+    fn register_periodic(&self, job: PeriodicJob, timeout: Option<Duration>, f: PeriodicFn) {
         let pt = Arc::new(PeriodicTask { job, f, timeout });
         self.inner.lock().unwrap().jobs.push(pt);
     }
@@ -306,11 +375,13 @@ impl TaskManager {
     ) {
         let cancel = self.inner.lock().unwrap().cancels.get(&id).cloned();
         let Some(cancel) = cancel else { return };
+        let mut task_priority = Priority::Normal;
         {
             let mut inner = self.inner.lock().unwrap();
             if let Some(r) = inner.records.get_mut(&id) {
                 r.status = TaskStatus::Running;
                 r.started_at_ms = Some(now_ms());
+                task_priority = r.priority;
             }
         }
         self.emit(id, "task.started", None);
@@ -322,6 +393,7 @@ impl TaskManager {
             cache: self.cache.clone(),
             bus: self.bus.clone(),
             task_id: id,
+            priority: task_priority,
             cancel: cancel.clone(),
             progress_slot: progress_slot.clone(),
             deadline,
@@ -421,8 +493,21 @@ impl TaskManager {
             }
             let jobs: Vec<Arc<PeriodicTask>> = self.inner.lock().unwrap().jobs.clone();
             let now = Instant::now();
+            // Frontend gating: while idle, jobs without a heartbeat cadence are
+            // paused and the rest slow down. A job whose last run predates its
+            // (re-computed) interval fires immediately on resume, so the first
+            // frame after a frontend opens is refreshed right away.
+            let active = self.activity_active();
             for pt in &jobs {
-                if pt.job.due(now) {
+                let interval = if active {
+                    pt.job.interval
+                } else {
+                    match pt.job.idle_interval {
+                        Some(idle) => idle,
+                        None => continue,
+                    }
+                };
+                if pt.job.due_after(now, interval) {
                     pt.job.mark_started(now);
                     let id = next_id();
                     {

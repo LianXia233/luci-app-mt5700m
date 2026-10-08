@@ -315,9 +315,13 @@ pub fn set_thermal_log(
 
 /// Register the periodic refresh job.
 pub fn spawn(tasks: &TaskManager) {
-    tasks.add_periodic(
+    // Temperature keeps a slow heartbeat while no frontend is connected:
+    // `mt5700m-manager` reads the temperature cache directly and must not fall
+    // back to a live (slow, exclusive) AT query.
+    tasks.add_periodic_keepalive(
         "system.temperature",
         PERIOD,
+        crate::modules::IDLE_KEEPALIVE,
         Priority::Low,
         Some(Duration::from_secs(15)),
         Box::new(|ctx| run_in_task(ctx, |r| refresh(r).map(|st| st.to_json()))),

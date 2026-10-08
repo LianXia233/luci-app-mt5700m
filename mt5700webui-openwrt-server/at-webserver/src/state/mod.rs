@@ -5,6 +5,7 @@
 //! LuCI polling, CLI), and `collectors` is the legacy name of the periodic
 //! refresh driver that modules now own.
 
+pub mod activity;
 pub mod bus;
 pub mod cache;
 pub mod refresh;

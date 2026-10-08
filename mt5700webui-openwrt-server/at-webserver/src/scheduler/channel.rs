@@ -115,13 +115,15 @@ impl AtChannel for TaskChannel<'_> {
 ///
 /// Every module service looks the same at the edges — build the task channel,
 /// wrap it in a `RefreshCtx`, call one `refresh()` — so that adapter lives here
-/// once instead of in each `service.rs`.
+/// once instead of in each `service.rs`. The task's priority is forwarded so
+/// `slow()` queries are scheduled accordingly (UI-critical refresh first).
 pub fn run_in_task<F>(ctx: &TaskCtx, f: F) -> Result<crate::core::json::Value, BackendError>
 where
     F: FnOnce(&crate::state::refresh::RefreshCtx) -> Result<crate::core::json::Value, BackendError>,
 {
     let channel = TaskChannel::new(ctx);
-    let refresh = crate::state::refresh::RefreshCtx::new(&channel, &ctx.cache, &ctx.bus);
+    let refresh = crate::state::refresh::RefreshCtx::new(&channel, &ctx.cache, &ctx.bus)
+        .with_priority(ctx.priority);
     f(&refresh)
 }
 

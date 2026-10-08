@@ -195,6 +195,10 @@ pub struct PeriodicJob {
     pub kind: TaskKind,
     pub priority: Priority,
     pub interval: std::time::Duration,
+    /// Cadence used while no frontend is watching (`ActivityGate` idle):
+    /// `Some(d)` keeps a slow heartbeat (temperature / registration),
+    /// `None` pauses the job entirely until a frontend shows up.
+    pub idle_interval: Option<std::time::Duration>,
     pub last_run: std::sync::Mutex<Option<Instant>>,
     pub running: std::sync::atomic::AtomicBool,
 }
@@ -206,20 +210,34 @@ impl PeriodicJob {
             kind: TaskKind::Periodic,
             priority,
             interval,
+            idle_interval: None,
             last_run: std::sync::Mutex::new(None),
             running: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
+    /// Keep running slowly while idle instead of pausing.
+    pub fn with_idle_interval(mut self, idle: std::time::Duration) -> Self {
+        self.idle_interval = Some(idle);
+        self
+    }
+
     /// Should this job fire now? (interval elapsed, not already running)
     pub fn due(&self, now: Instant) -> bool {
+        self.due_after(now, self.interval)
+    }
+
+    /// Is the job due at `now` given an effective interval? Used by the
+    /// manager to shorten/lengthen a job's cadence with frontend activity
+    /// without re-registering it.
+    pub fn due_after(&self, now: Instant, interval: std::time::Duration) -> bool {
         if self.running.load(std::sync::atomic::Ordering::Relaxed) {
             return false;
         }
         let last = self.last_run.lock().unwrap_or_else(|p| p.into_inner());
         match *last {
             None => true,
-            Some(t) => now.duration_since(t) >= self.interval,
+            Some(t) => now.duration_since(t) >= interval,
         }
     }
 

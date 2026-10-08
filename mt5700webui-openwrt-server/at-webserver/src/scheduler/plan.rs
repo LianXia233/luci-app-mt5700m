@@ -311,7 +311,9 @@ fn next_boundary(cfg: &SchedCfg) -> String {
 /// snapshot collectors for the channel. When scheduling is disabled the task
 /// body returns immediately without touching the modem.
 pub fn register(tasks: &TaskManager) {
-    tasks.add_periodic(
+    // `always`: the band-lock schedule is a system function, not UI data, so
+    // it must keep running even when no frontend is connected.
+    tasks.add_periodic_always(
         "sched.bandlock",
         Duration::from_secs(15),
         Priority::Background,

@@ -14,6 +14,7 @@ use crate::scheduler::arbiter::{AtArbiter, AtRequestSpec, AtResult, AtTransport}
 use crate::serial::presence::DeviceMonitor;
 use crate::transport::urc::Dispatcher;
 use crate::core::error::BackendError;
+use crate::state::activity::ActivityGate;
 use crate::state::bus::{Event, EventBus, Subscription, DEFAULT_TOPICS};
 use crate::core::json::{self, Value};
 use crate::scheduler::plan;
@@ -1026,6 +1027,7 @@ fn handle_rpc_conn(
     tasks: &Arc<TaskManager>,
     bus: &Arc<EventBus>,
     cache: &Arc<StateCache>,
+    activity: &Arc<ActivityGate>,
 ) {
     use std::io::{BufRead, Write};
     let write_stream = match stream.try_clone() {
@@ -1046,6 +1048,9 @@ fn handle_rpc_conn(
         if line.is_empty() {
             continue;
         }
+        // LuCI opens one nc connection per request, so a touch here marks the
+        // frontend as active and keeps the periodic collectors running.
+        activity.touch();
         let resp = handle_rpc_request(client, arbiter, tasks, bus, cache, line);
         let mut out = resp.dump();
         out.push('\n');
@@ -1188,6 +1193,12 @@ pub fn run(args: &[String]) -> i32 {
     let arbiter = AtArbiter::new(client.clone());
     let tasks = TaskManager::new(arbiter.clone(), cache.clone(), bus.clone());
 
+    // Frontend activity gate: while no page is open the periodic collectors
+    // pause (temperature/registration keep a slow heartbeat); as soon as a
+    // WebSocket or LuCI RPC shows up they resume and reload by priority.
+    let activity = ActivityGate::new();
+    tasks.set_activity(activity.clone());
+
     // Background collectors (signal/network/registration/temperature/traffic/
     // cell/sim/modem_info) + the day/night band-lock scheduler run as periodic
     // tasks, so the cache is warm before the first page load.
@@ -1231,11 +1242,12 @@ pub fn run(args: &[String]) -> i32 {
         let tasks = tasks.clone();
         let bus = bus.clone();
         let cache = cache.clone();
+        let activity = activity.clone();
         thread::spawn(move || {
             if is_rpc {
-                handle_rpc_conn(&mut stream, &client, &arbiter, &tasks, &bus, &cache);
+                handle_rpc_conn(&mut stream, &client, &arbiter, &tasks, &bus, &cache, &activity);
             } else {
-                handle_ws_conn(&mut stream, &client, &arbiter, &tasks, &bus, &cache);
+                handle_ws_conn(&mut stream, &client, &arbiter, &tasks, &bus, &cache, &activity);
             }
         });
     }
@@ -1254,6 +1266,7 @@ fn handle_ws_conn(
     tasks: &Arc<TaskManager>,
     bus: &Arc<EventBus>,
     cache: &Arc<StateCache>,
+    activity: &Arc<ActivityGate>,
 ) {
     if ws::handshake(stream).is_err() {
         return;
@@ -1277,6 +1290,10 @@ fn handle_ws_conn(
     }
     let ok_msg = r#"{"success":true,"message":"认证成功"}"#;
     let _ = ws::write_frame(stream, ws::OP_TEXT, ok_msg.as_bytes());
+
+    // A live frontend is now connected: keep the periodic collectors running
+    // for as long as this session (or the LuCI polling grace window) lasts.
+    activity.reader_enter();
 
     let conn = Arc::new(ClientConn {
         out: Mutex::new(VecDeque::new()),
@@ -1345,6 +1362,7 @@ fn handle_ws_conn(
     conn.alive.store(false, Ordering::SeqCst);
     conn.cond.notify_all();
     bus.unsubscribe(&sub);
+    activity.reader_leave();
 }
 
 /// Handle `subscribe` / `unsubscribe` / `snapshot` control frames. Returns

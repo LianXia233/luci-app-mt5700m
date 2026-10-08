@@ -414,10 +414,14 @@ pub fn verify_lock(
 
 /// Register both periodic jobs on the shared task manager.
 pub fn spawn(tasks: &TaskManager) {
-    tasks.add_periodic(
+    // Registration is a UI-critical first-paint value, so it runs at High
+    // priority and keeps a slow heartbeat while no frontend is connected
+    // (the dial manager reads it too).
+    tasks.add_periodic_keepalive(
         "network.registration",
         REG_PERIOD,
-        Priority::Normal,
+        crate::modules::IDLE_KEEPALIVE,
+        Priority::High,
         Some(REG_PERIOD),
         Box::new(|ctx| {
             run_in_task(ctx, |r| {

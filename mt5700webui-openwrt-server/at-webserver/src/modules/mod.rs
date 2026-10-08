@@ -13,6 +13,7 @@
 //! scheduler (AT), the state cache/bus (data) and the API registry (actions).
 
 use crate::scheduler::jobs::TaskManager;
+use std::time::Duration;
 
 pub mod beam;
 pub mod ca;
@@ -25,6 +26,12 @@ pub mod sim;
 pub mod sms;
 pub mod system;
 pub mod traffic;
+
+/// Slow heartbeat cadence for the collectors that must keep running even when
+/// no frontend is connected (temperature, registration). Everything else is
+/// paused by the activity gate; these two stay warm for other daemons
+/// (`mt5700m-manager` reads the temperature/registration cache directly).
+pub const IDLE_KEEPALIVE: Duration = Duration::from_secs(60);
 
 /// Register every module's periodic refresh jobs on the shared task manager.
 ///

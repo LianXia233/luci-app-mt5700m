@@ -24,7 +24,16 @@ use std::time::Duration;
 const AT_TIMEOUT: Duration = Duration::from_secs(12);
 const QUEUED_TIMEOUT: Duration = Duration::from_secs(8);
 const BACKOFF: Duration = Duration::from_secs(120);
-const PERIOD: Duration = Duration::from_secs(15);
+/// RSRP/RSRQ/SINR/SIGNAL are the "live" metrics, so the collector runs as fast
+/// as the modem allows. `^HCSQ?` costs ~4 s, so a 3 s period means back-to-back
+/// collection while a frontend is watching (a job never overlaps itself).
+/// With the activity gate installed this only happens while a page is open;
+/// otherwise the job is paused entirely.
+const PERIOD: Duration = Duration::from_secs(3);
+/// Watchdog budget, decoupled from the (short) cadence: it must cover one
+/// queued + in-flight query (`QUEUED_TIMEOUT + AT_TIMEOUT`) so a slow but
+/// healthy collection is never mis-flagged as a task timeout.
+const WATCHDOG_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Refresh the signal topic. Never fails on a slow/absent modem: on timeout it
 /// re-publishes the last known value instead of clearing the card.
@@ -73,11 +82,12 @@ pub fn spawn(tasks: &TaskManager) {
     tasks.add_periodic(
         "signal.refresh",
         PERIOD,
-        Priority::Normal,
-        Some(PERIOD),
+        Priority::High,
+        Some(WATCHDOG_TIMEOUT),
         Box::new(|ctx| {
             let channel = TaskChannel::new(ctx);
-            let refresh = RefreshCtx::new(&channel, &ctx.cache, &ctx.bus);
+            let refresh = RefreshCtx::new(&channel, &ctx.cache, &ctx.bus)
+                .with_priority(ctx.priority);
             match refresh_signal(&refresh) {
                 Ok(()) => Ok(Value::Null),
                 Err(e) => Err(e),
