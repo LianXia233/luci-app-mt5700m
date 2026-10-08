@@ -273,15 +273,31 @@ shell contract 举例更正为实际映射（2/1/124）；顺带删除死代码
 
 源码**在库内**（此前误认为只有 bundle）。
 
-### 3.1 原始 AT 写（1 处，属验收缺口）
+### 3.1 原始 AT 写（✅ 已清零，2026-10-08，第七批）
 
-`pages/network/Info.tsx` → `at().setPDCPDataReport()` → `AT^PDCPDATAINFO=1[,<ms>]` / `=0`。
-后端 `traffic` 模块**已有**该 URC 的解析与分发，只缺写路由。
-建议新增 `traffic.pdcp_report_set {enabled, interval}` 后删除该方法。
+`pages/network/Info.tsx` 的 `at().setPDCPDataReport()` 原直发
+`AT^PDCPDATAINFO=1[,<ms>]` / `=0`。后端新增
+`traffic.pdcp_report_set {enabled, interval}` 写路由
+（`traffic::commands::pdcp_report` 构造器：关=0 不带 interval；
+开=1 + interval 白名单 200–65535 ms，对齐页面 InputNumber 界限；
+URC 流本身继续由 `pdcp_data` 事件推送，与本开关解耦）。
+WebUI `setPDCPDataReport` 改走 `apiCommand`（签名不变，5 个调用点零改动），
+mock 演示模式的本地 URC 模拟触发点同步迁到 api 帧。
+**至此「前端不得访问 AT」验收达成** —— pages 下唯一的原始 AT 通道只剩
+终端页（产品功能本身，有意保留）。
 
-### 3.2 `services/at.ts` 死方法（8 个，外部零引用）
+### 3.2 `services/at.ts` 死方法（✅ 已删除，2026-10-08，第七批）
 
-`getConnectionState`、`isAuthRequired`、`subscribeSMS`、`unsubscribeSMS`（三个适配器中重复出现）、`readCommand`、`getIMEI`（纯残留）。
+按方法定义处计 8 处：`getConnectionState`（适配器 ×2 + 门面 ×1）、
+`isAuthRequired`（同 ×3）、`readCommand`（连带 `pendingReads` 合并机制）、
+`getIMEI`（`AT+CGSN` 纯残留，IMEI 由 `modem.get` 路由提供）。
+**更正**：旧清单把 `subscribeSMS`/`unsubscribeSMS` 也列为死方法 ——
+两者是 `ATService.subscribe/unsubscribe` 的适配器层活转发，**保留**。
+连带确认存活：`getConnectionSnapshot` / `isReady` /
+`onConnectionStateChange` / `ATConnectionState` 类型（均有外部引用）。
+bundle 已重建并同步 `at-webserver/files/www/5700/`
+（`index-BbP5KO1B.js` → `index-BRUXWNeG.js`，legacy 跳转页重建），
+`tsc --noEmit` + `vite build` 通过。
 
 ### 3.3 其他
 
@@ -307,12 +323,13 @@ shell contract 举例更正为实际映射（2/1/124）；顺带删除死代码
 
 ---
 
-## 五、尚未达成的 2 条验收标准
+## 五、尚未达成的 2 条验收标准 → ✅ 全部达成
 
-1. **前端不得访问 AT** —— WebUI 的 PDCP 上报开关仍是原始 AT 写
-   （LuCI/WebUI 的终端页为有意保留，不计入）；
-2. **无重复实现** —— LuCI 侧 9 个死导出已全部清零（见 1.4，第六批），
-   剩 WebUI 8 个死方法（见 3.2）。
+1. ~~**前端不得访问 AT**~~ ✅ **已达成**（第七批，2026-10-08）：WebUI 的
+   PDCP 上报开关已切 `traffic.pdcp_report_set` 路由，pages 下唯一的原始
+   AT 通道是终端页（LuCI/WebUI 的终端页为有意保留，不计入）；
+2. ~~**无重复实现**~~ ✅ **已达成**（第六 + 第七批，2026-10-08）：
+   LuCI 9 个死导出（见 1.4）+ WebUI 8 处死方法（见 3.2）全部清零。
 
 ---
 
@@ -360,7 +377,7 @@ GITHUB_TOKEN=<token> python3 tools/ghgit.py pushall --since <已推送的本地 
    ✅ 已完成（含 4 条写入 + FOTA 形态对齐，系统页零 CLI）；
 3. **连接页**（PDP 3 写 + 拨号写 + PostRoute/DMZ）— 校验规则须逐字保留；
 4. **高级页**（4 条直接迁移 + 读帧 + USB/接口模式写）；
-5. **WebUI**（PDCP 路由 + 删死方法 + 重建 bundle）；
-6. ~~**清理**（7 个死导出、CLI 无调用动词、`client.rs` 文档漂移、10 条路由归属）~~
+5. ~~**WebUI**（PDCP 路由 + 删死方法 + 重建 bundle）~~ ✅ 已完成（第七批）；
+6. ~~**清理**（死导出、CLI 无调用动词、`client.rs` 文档漂移、10 条路由归属）~~
    死导出与 `client.rs` 文档漂移已完成（第六批）；CLI 无调用动词与 10 条路由归属待做；
 7. **工具链**（证明基线全部改为 tag + CI 前端 job + `--unshallow` 跑全量）。

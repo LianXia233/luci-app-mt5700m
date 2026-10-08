@@ -244,6 +244,10 @@ mod tests {
             ]),
             "system.nic_rate_set" => pairs(&[("rate", json::num_val(1))]),
             "system.led_set" => pairs(&[("enabled", Value::Bool(true))]),
+            "traffic.pdcp_report_set" => pairs(&[
+                ("enabled", Value::Bool(true)),
+                ("interval", json::num_val(500)),
+            ]),
             "system.thermal_thresholds_set" => pairs(&[(
                 "thresholds",
                 Value::Arr(vec![

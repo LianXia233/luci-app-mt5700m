@@ -728,3 +728,38 @@ shared 互相调用、测试脚本 stub），逐项核实后执行：
   `cli.rs` 的 `status` 输出使用，保留（遗留语义留给 WebUI 批次统一评估）。
 
 `cargo test` **291 passed**（编译器对枚举变体删除强制检查全部 match 位置）。
+
+## WebUI 收官：PDCP 写路由 + 8 处死方法 + bundle 重建（切片，2026-10-08）
+
+### 后端：`traffic.pdcp_report_set`（+1 测试，cargo 291 → 292）
+
+WebUI 信息页的实时网速开关是最后一个业务原始 AT 写
+（`setPDCPDataReport` 直发 `AT^PDCPDATAINFO=…`）。本批补上写路由：
+
+- `traffic::commands::pdcp_report(enabled, interval)`：关 =
+  `AT^PDCPDATAINFO=0`（不带 interval）；开 = `AT^PDCPDATAINFO=1,<ms>`，
+  interval 白名单 200–65535（对齐页面 InputNumber 的 min/max，默认 500）；
+- `Route::on_demand("traffic.pdcp_report_set", …)`：`refresh.action` 下发，
+  应答 `applied/enabled/interval`；`registry.rs` 的样例参数表补条目
+  （保证 sweep 测试打到 modem call 而非停在参数校验）；
+- URC 流本身不动：`^PDCPDATAINFO:` 仍由 `transport/urc.rs` 解码、
+  `daemon.rs` 以 `pdcp_data` → `TOPIC_TRAFFIC` 推送，开关与数据面解耦。
+
+### WebUI：开关切路由 + 死方法清零 + bundle 同步
+
+- `at.ts` 的 `setPDCPDataReport(enable, interval?)` **签名不变**，内部改
+  `apiCommand('traffic.pdcp_report_set', …)`，Info.tsx 的 5 个调用点零改动；
+- 删除 8 处死方法（外部零引用）：`getConnectionState` ×3、
+  `isAuthRequired` ×3、`readCommand`（连带 `pendingReads` 合并机制）、
+  `getIMEI`（`AT+CGSN` 纯残留，IMEI 走 `modem.get`）。旧清单把
+  `subscribeSMS`/`unsubscribeSMS` 一并列为死方法系误报 —— 两者是
+  `ATService.subscribe/unsubscribe` 的适配器层活转发，保留；
+- mock 演示模式：本地 pdcp_data 模拟的触发点从旧 AT 正则迁到
+  `api.traffic.pdcp_report_set` 帧解析（`MOCK_API_ROUTES` 补静态应答，
+  旧 `AT^PDCPDATAINFO=` 容忍分支移除）；
+- `tsc --noEmit` + `vite build` 通过，`sync-www.sh` 同步
+  `at-webserver/files/www/5700/`（JS 哈希 `BbP5KO1B` → `BRUXWNeG`，
+  CSS 未变，legacy 跳转页重建）。
+
+**验收状态**：原始 20 条验收标准全部达成 —— pages 下唯一的原始 AT
+通道只剩终端页（产品功能本身，有意保留）。
