@@ -404,6 +404,132 @@ pub const CGACT_QUERY: &str = "AT+CGACT?";
 /// always-on context, 21+ is firmware-internal).
 pub const PDP_CID_RANGE: std::ops::Range<u32> = 1..21;
 
+/// Direct-IP passthrough (`^SETDIRECTIP?` / `^SETDIRECTIP=<0|1>`).
+pub const SETDIRECTIP_QUERY: &str = "AT^SETDIRECTIP?";
+/// Inbound filter toggle forced off when PostRoute is enabled
+/// (`postroute` CLI verb appends it to the TDCFG write).
+pub const IPFILTERSWITCH_OFF: &str = "AT^IPFILTERSWITCH=0";
+
+/// AT-field guard shared with the CLI: no quotes, commas or line breaks may
+/// reach a command argument (the historical `safe_at_field` in cli.rs — moved
+/// here so the write routes validate with the same rule).
+pub fn safe_at_field(v: &str) -> bool {
+    !v.contains('"') && !v.contains(',') && !v.contains('\r') && !v.contains('\n')
+}
+
+/// The dial page renders/edits cids 1..=11 only; the CLI verb whitelist said
+/// the same. (Reading accepts the wider `PDP_CID_RANGE`.)
+pub fn valid_cid(cid: u32) -> bool {
+    (1..=11).contains(&cid)
+}
+
+pub fn valid_pdp_type(t: &str) -> bool {
+    matches!(t, "IP" | "IPV6" | "IPV4V6")
+}
+
+/// DMZ host: `0` disables, otherwise a strict dotted-quad IPv4 (all four
+/// octets non-empty, numeric, <= 255) — the CLI verb's rule, word for word.
+pub fn valid_dmz_host(v: &str) -> bool {
+    if v == "0" {
+        return true;
+    }
+    let parts: Vec<&str> = v.split('.').collect();
+    parts.len() == 4
+        && parts.iter().all(|p| {
+            !p.is_empty()
+                && p.bytes().all(|b| b.is_ascii_digit())
+                && p.parse::<u32>().map(|n| n <= 255).unwrap_or(false)
+        })
+}
+
+/// `AT+CGDCONT=<cid>,"<type>","<apn>"` — define/overwrite a PDP profile.
+/// `None` when the tuple would not pass the CLI's validation.
+pub fn cgdcont_set(cid: u32, pdp_type: &str, apn: &str) -> Option<String> {
+    if !valid_cid(cid) || !valid_pdp_type(pdp_type) || !safe_at_field(apn) || apn.len() > 99 {
+        return None;
+    }
+    Some(format!("AT+CGDCONT={cid},\"{pdp_type}\",\"{apn}\""))
+}
+
+/// `AT+CGDCONT=<cid>` — deleting the profile is the same command minus the
+/// trailing fields (the modem restores the carrier default).
+pub fn cgdcont_remove(cid: u32) -> Option<String> {
+    if !valid_cid(cid) {
+        return None;
+    }
+    Some(format!("AT+CGDCONT={cid}"))
+}
+
+/// `AT+CGACT=<state>,<cid>` — activate (`true`) / deactivate (`false`).
+pub fn cgact(active: bool, cid: u32) -> Option<String> {
+    if !valid_cid(cid) {
+        return None;
+    }
+    Some(format!("AT+CGACT={},{}", if active { 1 } else { 0 }, cid))
+}
+
+/// `AT^SETAUTODIAL=…` with the CLI's trailing-empty-field rule: MT5700M
+/// rejects trailing empty fields, so every omitted optional field shrinks the
+/// command — otherwise `dial_mode` would not actually be applied.
+///
+/// Validation mirrors the `autodial` CLI verb: `enable=false` short-circuits
+/// to `AT^SETAUTODIAL=0` (the other arguments stay unchecked, exactly like
+/// the shell did); `None` means the tuple is invalid.
+pub fn setautodial(
+    enable: bool,
+    dial_mode: i64,
+    protocol: &str,
+    apn: &str,
+    username: &str,
+    password: &str,
+    auth: i64,
+) -> Option<String> {
+    if !enable {
+        return Some("AT^SETAUTODIAL=0".to_string());
+    }
+    if !(0..=2).contains(&dial_mode) || !valid_pdp_type(protocol) || !(0..=2).contains(&auth) {
+        return None;
+    }
+    if !safe_at_field(apn) || !safe_at_field(username) || !safe_at_field(password) {
+        return None;
+    }
+    if apn.len() > 99 || username.len() > 31 || password.len() > 31 {
+        return None;
+    }
+    // MT5700M rejects trailing empty fields; omit every optional
+    // field when empty so dial_mode is actually applied.
+    Some(if apn.is_empty() {
+        format!("AT^SETAUTODIAL=1,{dial_mode},\"{protocol}\"")
+    } else if username.is_empty() && password.is_empty() {
+        format!("AT^SETAUTODIAL=1,{dial_mode},\"{protocol}\",\"{apn}\"")
+    } else {
+        format!(
+            "AT^SETAUTODIAL=1,{dial_mode},\"{protocol}\",\"{apn}\",\"{username}\",\"{password}\",{auth}"
+        )
+    })
+}
+
+/// `AT^SETDIRECTIP=<0|1>` — IP passthrough.
+pub fn setdirectip(enabled: bool) -> String {
+    format!("AT^SETDIRECTIP={}", if enabled { 1 } else { 0 })
+}
+
+/// `AT^TDCFG="infcfg","PostRoute",<mode>` — mode 2 = off, 1 = on.
+pub fn tdcfg_postroute(mode: i64) -> Option<String> {
+    match mode {
+        1 | 2 => Some(format!("AT^TDCFG=\"infcfg\",\"PostRoute\",{mode}")),
+        _ => None,
+    }
+}
+
+/// `AT^TDCFG="infcfg","dmz","<host>"` — host `0` disables, same command.
+pub fn tdcfg_dmz(host: &str) -> Option<String> {
+    if !valid_dmz_host(host) {
+        return None;
+    }
+    Some(format!("AT^TDCFG=\"infcfg\",\"dmz\",\"{host}\""))
+}
+
 /// True when the modem's own NDIS data session is up (`^NDISSTATQRY: 1,…`) —
 /// the page's fallback for telling "the modem dials itself" from "the host
 /// dials", used when the autodial reply omits the mode.
@@ -426,6 +552,66 @@ pub fn ndis_is_active(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setautodial_keeps_the_cli_trailing_field_rule() {
+        // disabled short-circuits, nothing else is validated
+        assert_eq!(setautodial(false, 9, "XX", "a,b", "x", "y", 9).as_deref(), Some("AT^SETAUTODIAL=0"));
+        // bare mode+protocol
+        assert_eq!(setautodial(true, 1, "IPV4V6", "", "", "", 0).as_deref(),
+            Some("AT^SETAUTODIAL=1,1,\"IPV4V6\""));
+        // apn only
+        assert_eq!(setautodial(true, 2, "IP", "cmnet", "", "", 0).as_deref(),
+            Some("AT^SETAUTODIAL=1,2,\"IP\",\"cmnet\""));
+        // full form
+        assert_eq!(setautodial(true, 0, "IPV4V6", "apn", "user", "pass", 2).as_deref(),
+            Some("AT^SETAUTODIAL=1,0,\"IPV4V6\",\"apn\",\"user\",\"pass\",2"));
+        // validation: dial_mode / protocol / auth / field rules
+        assert!(setautodial(true, 3, "IP", "", "", "", 0).is_none());
+        assert!(setautodial(true, 1, "IPv4", "", "", "", 0).is_none());
+        assert!(setautodial(true, 1, "IP", "", "", "", 3).is_none());
+        assert!(setautodial(true, 1, "IP", "a,b", "", "", 0).is_none());
+        assert!(setautodial(true, 1, "IP", "a\"b", "", "", 0).is_none());
+        let long_apn = "a".repeat(100);
+        assert!(setautodial(true, 1, "IP", &long_apn, "", "", 0).is_none());
+        let long_user = "u".repeat(32);
+        assert!(setautodial(true, 1, "IP", "apn", &long_user, "", 0).is_none());
+    }
+
+    #[test]
+    fn pdp_writers_follow_the_cli_whitelist() {
+        assert_eq!(cgdcont_set(3, "IPV4V6", "cmnet").as_deref(),
+            Some("AT+CGDCONT=3,\"IPV4V6\",\"cmnet\""));
+        assert_eq!(cgdcont_set(3, "IPV4V6", "").as_deref(),
+            Some("AT+CGDCONT=3,\"IPV4V6\",\"\""));
+        assert!(cgdcont_set(0, "IP", "apn").is_none());
+        assert!(cgdcont_set(12, "IP", "apn").is_none());
+        assert!(cgdcont_set(3, "IPv6", "apn").is_none());
+        assert!(cgdcont_set(3, "IP", "a,b").is_none());
+        assert_eq!(cgdcont_remove(11).as_deref(), Some("AT+CGDCONT=11"));
+        assert!(cgdcont_remove(12).is_none());
+        assert_eq!(cgact(true, 4).as_deref(), Some("AT+CGACT=1,4"));
+        assert_eq!(cgact(false, 4).as_deref(), Some("AT+CGACT=0,4"));
+        assert!(cgact(true, 0).is_none());
+    }
+
+    #[test]
+    fn tdcfg_and_directip_writers_match_the_cli() {
+        assert_eq!(setdirectip(true), "AT^SETDIRECTIP=1");
+        assert_eq!(setdirectip(false), "AT^SETDIRECTIP=0");
+        assert_eq!(tdcfg_postroute(2).as_deref(),
+            Some("AT^TDCFG=\"infcfg\",\"PostRoute\",2"));
+        assert!(tdcfg_postroute(0).is_none());
+        assert!(tdcfg_postroute(3).is_none());
+        assert_eq!(tdcfg_dmz("0").as_deref(), Some("AT^TDCFG=\"infcfg\",\"dmz\",\"0\""));
+        assert_eq!(tdcfg_dmz("192.168.8.100").as_deref(),
+            Some("AT^TDCFG=\"infcfg\",\"dmz\",\"192.168.8.100\""));
+        // the dotted-quad rule rejects everything else the CLI refused
+        assert!(tdcfg_dmz("1.2.3").is_none());
+        assert!(tdcfg_dmz("1.2.3.256").is_none());
+        assert!(tdcfg_dmz("1..3.4").is_none());
+        assert!(tdcfg_dmz("a.b.c.d").is_none());
+    }
 
     fn item(band: Option<i64>, arfcn: Option<i64>, pci: Option<i64>, scs: Option<i64>) -> LockItem {
         LockItem {

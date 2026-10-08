@@ -267,6 +267,28 @@ mod tests {
             "sms.ussd_send" => pairs(&[("code", json::str_val("*133#"))]),
             "network.schedule_set" => pairs(&[("check_interval", json::num_val(60))]),
             "network.radio_set" => pairs(&[("airplane", Value::Bool(true))]),
+            "network.pdp_set" => pairs(&[
+                ("cid", json::num_val(2)),
+                ("type", json::str_val("IPV4V6")),
+                ("apn", json::str_val("cmnet")),
+            ]),
+            "network.pdp_remove" => pairs(&[("cid", json::num_val(2))]),
+            "network.pdp_state" => pairs(&[
+                ("cid", json::num_val(2)),
+                ("active", Value::Bool(true)),
+            ]),
+            "network.autodial_set" => pairs(&[
+                ("enabled", Value::Bool(true)),
+                ("dialMode", json::num_val(1)),
+                ("protocol", json::str_val("IPV4V6")),
+                ("apn", json::str_val("cmnet")),
+                ("username", json::str_val("")),
+                ("password", json::str_val("")),
+                ("auth", json::num_val(0)),
+            ]),
+            "network.direct_ip_set" => pairs(&[("enabled", Value::Bool(true))]),
+            "network.postroute_set" => pairs(&[("mode", json::num_val(2))]),
+            "network.dmz_set" => pairs(&[("host", json::str_val("0"))]),
             "network.syscfg_set" => pairs(&[
                 ("acqorder", json::str_val("080302")),
                 ("band", json::str_val("3FFFFFFF")),

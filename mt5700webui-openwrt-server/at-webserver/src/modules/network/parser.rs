@@ -795,6 +795,23 @@ pub fn parse_interface_cfg(raw: &str) -> InterfaceCfgState {
     st
 }
 
+/// `^SETDIRECTIP: <0|1>` -> the IP-passthrough flag. `None` when the modem
+/// answered something else — the dial page then disables the control, the
+/// same rule it applied to the frame's `Direct IP` section.
+pub fn parse_directip(raw: &str) -> Option<bool> {
+    for line in raw.replace('\r', "").lines().map(str::trim) {
+        let Some(body) = line.strip_prefix("^SETDIRECTIP:") else {
+            continue;
+        };
+        return match body.trim() {
+            "0" => Some(false),
+            "1" => Some(true),
+            _ => None,
+        };
+    }
+    None
+}
+
 /// `+CGDCONT?` + `+CGACT?` -> the PDP context table.
 ///
 /// The definition line carries cid/type/apn/address; activation comes from the
@@ -945,6 +962,15 @@ pub fn parse_cireg(raw: &str) -> ImsState {
     }
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn directip_flag_is_zero_or_one() {
+        assert_eq!(parse_directip("^SETDIRECTIP: 0"), Some(false));
+        assert_eq!(parse_directip("^SETDIRECTIP: 1"), Some(true));
+        assert_eq!(parse_directip("^SETDIRECTIP: 7"), None);
+        assert_eq!(parse_directip("ERROR"), None);
+        assert_eq!(parse_directip(""), None);
+    }
     use super::*;
 
     #[test]

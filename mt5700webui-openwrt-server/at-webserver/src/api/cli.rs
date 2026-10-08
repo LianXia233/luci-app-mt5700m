@@ -17,6 +17,7 @@ use crate::modules::sim::commands as sim_commands;
 use crate::modules::system::commands as system_commands;
 use crate::modules::system::parser::parse_chiptemp;
 use crate::modules::system::state::TemperatureState;
+use crate::modules::network::commands as network_commands;
 use crate::modules::network::parser::{
     parse_cops_operator as extract_cops_operator,
     parse_cops_rat as extract_cops_rat, parse_sysinfo_mode as extract_sysinfo_mode,
@@ -622,10 +623,6 @@ pub fn print_sms_info(settings: &Settings) -> String {
 }
 
 // ---------------------------------------------------------------- Setters
-
-fn safe_at_field(v: &str) -> bool {
-    !v.contains('"') && !v.contains(',') && !v.contains('\r') && !v.contains('\n')
-}
 
 fn valid_pin(v: &str) -> bool {
     let n = v.len();
@@ -1257,49 +1254,40 @@ fn cmd_advanced_set(settings: &Settings, args: &[String]) -> i32 {
         "5g-access" => set_5g_access_mode(settings, get(0)),
         "autodial" => {
             let enable = get(0);
-            let dial_mode = get(1);
-            let protocol = get(2);
-            let apn = get(3);
-            let username = get(4);
-            let password = get(5);
-            let auth_type = get(6);
             if !matches!(enable, "0" | "1") {
                 return EXIT_USAGE;
             }
-            if enable == "0" {
-                return run_at(settings, "AT^SETAUTODIAL=0");
-            }
-            if !matches!(dial_mode, "0" | "1" | "2") {
-                return EXIT_USAGE;
-            }
-            if !matches!(protocol, "IP" | "IPV6" | "IPV4V6") {
-                return EXIT_USAGE;
-            }
-            if !matches!(auth_type, "0" | "1" | "2") {
-                return EXIT_USAGE;
-            }
-            if !safe_at_field(apn) || !safe_at_field(username) || !safe_at_field(password) {
-                return EXIT_USAGE;
-            }
-            if apn.len() > 99 || username.len() > 31 || password.len() > 31 {
-                return EXIT_USAGE;
-            }
-            // MT5700M rejects trailing empty fields; omit every optional
-            // field when empty so dial_mode is actually applied.
-            let cmd = if apn.is_empty() {
-                format!("AT^SETAUTODIAL={},{},\"{}\"", enable, dial_mode, protocol)
-            } else if username.is_empty() && password.is_empty() {
-                format!(
-                    "AT^SETAUTODIAL={},{},\"{}\",\"{}\"",
-                    enable, dial_mode, protocol, apn
-                )
+            // The module's setautodial() reproduces the historical validation
+            // order: disabled short-circuits to AT^SETAUTODIAL=0 with the
+            // remaining arguments unchecked; numeric fields must parse.
+            let dial_mode = if enable == "1" {
+                match get(1).parse::<i64>() {
+                    Ok(v) => v,
+                    Err(_) => return EXIT_USAGE,
+                }
             } else {
-                format!(
-                    "AT^SETAUTODIAL={},{},\"{}\",\"{}\",\"{}\",\"{}\",{}",
-                    enable, dial_mode, protocol, apn, username, password, auth_type
-                )
+                1
             };
-            run_at(settings, &cmd)
+            let auth_type = if enable == "1" {
+                match get(6).parse::<i64>() {
+                    Ok(v) => v,
+                    Err(_) => return EXIT_USAGE,
+                }
+            } else {
+                0
+            };
+            match network_commands::setautodial(
+                enable == "1",
+                dial_mode,
+                get(2),
+                get(3),
+                get(4),
+                get(5),
+                auth_type,
+            ) {
+                Some(cmd) => run_at(settings, &cmd),
+                None => EXIT_USAGE,
+            }
         }
         "nic-speed" => match get(0) {
             "1" | "2" => run_at(settings, &format!("AT^TDPCIELANCFG={}", get(0))),
@@ -1329,34 +1317,27 @@ fn cmd_advanced_set(settings: &Settings, args: &[String]) -> i32 {
             ),
             _ => EXIT_USAGE,
         },
-        "postroute" => match get(0) {
-            "2" => run_at(settings, "AT^TDCFG=\"infcfg\",\"PostRoute\",2"),
-            "1" => {
-                let rc = run_at(settings, "AT^TDCFG=\"infcfg\",\"PostRoute\",1");
-                if rc != 0 {
-                    return rc;
-                }
-                run_at(settings, "AT^IPFILTERSWITCH=0")
-            }
-            _ => EXIT_USAGE,
-        },
-        "dmz" => {
-            let dmz = get(0);
-            if dmz == "0" {
-                return run_at(settings, "AT^TDCFG=\"infcfg\",\"dmz\",\"0\"");
-            }
-            let parts: Vec<&str> = dmz.split('.').collect();
-            let ok = parts.len() == 4
-                && parts.iter().all(|p| {
-                    !p.is_empty()
-                        && p.bytes().all(|b| b.is_ascii_digit())
-                        && p.parse::<u32>().map(|n| n <= 255).unwrap_or(false)
-                });
-            if !ok {
+        "postroute" => {
+            let Ok(mode) = get(0).parse::<i64>() else {
                 return EXIT_USAGE;
+            };
+            let Some(first) = network_commands::tdcfg_postroute(mode) else {
+                return EXIT_USAGE;
+            };
+            let rc = run_at(settings, &first);
+            if rc != 0 {
+                return rc;
             }
-            run_at(settings, &format!("AT^TDCFG=\"infcfg\",\"dmz\",\"{}\"", dmz))
+            // Enabling post-routing must also clear the inbound filter.
+            if mode == 1 {
+                return run_at(settings, network_commands::IPFILTERSWITCH_OFF);
+            }
+            rc
         }
+        "dmz" => match network_commands::tdcfg_dmz(get(0)) {
+            Some(cmd) => run_at(settings, &cmd),
+            None => EXIT_USAGE,
+        },
         "sim-hotplug" => match get(0) {
             "0" | "1" => run_at(settings, &format!("AT^TDSIMHP={}", get(0))),
             _ => EXIT_USAGE,
@@ -1416,7 +1397,7 @@ fn cmd_advanced_set(settings: &Settings, args: &[String]) -> i32 {
             run_at(settings, &format!("AT^NRRCCAPCFG=5,{},{}", rate, dmrs))
         }
         "direct-ip" => match get(0) {
-            "0" | "1" => run_at(settings, &format!("AT^SETDIRECTIP={}", get(0))),
+            "0" | "1" => run_at(settings, &network_commands::setdirectip(get(0) == "1")),
             _ => EXIT_USAGE,
         },
         _ => EXIT_USAGE,
@@ -1740,42 +1721,48 @@ pub fn run(args: &[String]) -> i32 {
             let cid = rest.first().map(|s| s.as_str()).unwrap_or("");
             let pdp_type = rest.get(1).map(|s| s.as_str()).unwrap_or("");
             let apn = rest.get(2).map(|s| s.as_str()).unwrap_or("");
-            if !matches!(
-                cid,
-                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11"
-            ) {
+            // The historical whitelist only accepted canonical "1".."11":
+            // parse, then require the round-trip so "01" is still refused.
+            let Ok(cid_num) = cid.parse::<u32>() else {
+                return EXIT_USAGE;
+            };
+            if cid_num.to_string() != cid {
                 return EXIT_USAGE;
             }
-            if !matches!(pdp_type, "IP" | "IPV6" | "IPV4V6") {
-                return EXIT_USAGE;
+            match network_commands::cgdcont_set(cid_num, pdp_type, apn) {
+                Some(cmd) => run_at(&settings, &cmd),
+                None => EXIT_USAGE,
             }
-            if !safe_at_field(apn) || apn.len() > 99 {
-                return EXIT_USAGE;
-            }
-            run_at(
-                &settings,
-                &format!("AT+CGDCONT={},\"{}\",\"{}\"", cid, pdp_type, apn),
-            )
         }
-        "pdp-remove" => match rest.first().map(|s| s.as_str()) {
-            Some(cid @ ("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11")) => {
-                run_at(&settings, &format!("AT+CGDCONT={}", cid))
+        "pdp-remove" => {
+            let cid = rest.first().map(|s| s.as_str()).unwrap_or("");
+            let Ok(cid_num) = cid.parse::<u32>() else {
+                return EXIT_USAGE;
+            };
+            if cid_num.to_string() != cid {
+                return EXIT_USAGE;
             }
-            _ => EXIT_USAGE,
-        },
+            match network_commands::cgdcont_remove(cid_num) {
+                Some(cmd) => run_at(&settings, &cmd),
+                None => EXIT_USAGE,
+            }
+        }
         "pdp-state" => {
             let state = rest.first().map(|s| s.as_str()).unwrap_or("");
             let cid = rest.get(1).map(|s| s.as_str()).unwrap_or("");
             if !matches!(state, "0" | "1") {
                 return EXIT_USAGE;
             }
-            if !matches!(
-                cid,
-                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11"
-            ) {
+            let Ok(cid_num) = cid.parse::<u32>() else {
+                return EXIT_USAGE;
+            };
+            if cid_num.to_string() != cid {
                 return EXIT_USAGE;
             }
-            run_at(&settings, &format!("AT+CGACT={},{}", state, cid))
+            match network_commands::cgact(state == "1", cid_num) {
+                Some(cmd) => run_at(&settings, &cmd),
+                None => EXIT_USAGE,
+            }
         }
         "flow-clear" => run_at(&settings, "AT^DSFLOWCLR"),
         "airplane" => match rest.first().map(|s| s.as_str()) {
