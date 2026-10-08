@@ -13,12 +13,13 @@
  *   bash scripts/minify-luci-frontend.sh /tmp/htdocs-min     # 先压缩一份
  *   node scripts/smoke-minified-luci.js [/tmp/htdocs-min]
  *
- * 覆盖已迁完详情帧的三个页面：
+ * 覆盖已迁完详情帧的四个页面：
  *   - 无线页（零 CLI）、短信页（零 CLI）；
  *   - 概览页：零 CLI，详情读 qos.get / sim.number / network.pdp_contexts /
  *     network.session；
- *   - 连接页：拨号设置仍走 CLI 动词（未迁移），会话面板读 network.session，
- *     「清空计数」走 network.flow_clear 路由；
+ *   - 连接页：零 CLI —— 会话面板读 network.session，连接设置五段读帧已切成
+ *     network.autodial / interface_cfg / pdp_contexts / direct_ip 四条读路由，
+ *     七条写入（PDP 3 + 拨号 + 直通 + 后路由 + DMZ）走写路由；
  *   - 系统页：零 CLI —— 22 段读帧已切成 15 条 display / on-demand 路由
  *     （modem.get … system.fota），10 条写入走 network.radio_set / sim.slot_set /
  *     modem.reset / system.factory_reset / sim.pin_apply / modem.imei_set /
@@ -26,7 +27,7 @@
  *     system.thermal_log_set，仅保留 FOTA 三步动词。
  * 断言路由调用面、页面上的关键文字（盘面读数、无线偏好下拉、会话侧栏、概览页的
  * APN/QCI/速率/号码、系统页的身份/温度/运营商）与写路径（短信发送、清空计数、
- * 系统页四条写入）。退出码 0 = 通过。
+ * 连接页三条写入抽样、系统页四条写入）。退出码 0 = 通过。
  */
 
 const fs = require('fs');
@@ -188,11 +189,12 @@ async function statusPage() {
 
 /* ------------------------------------------------------------ 连接页 */
 async function connectionPage() {
-	const api = lib.makeApi({
-		'route:network.session': fixtures.sessionPayload({}),
-		'at:advanced connection-settings': { stdout: '', stderr: '' }
-	});
-	api.atConnectionSettings = () => api.at([ 'advanced', 'connection-settings' ]);
+	// 不挂 atConnectionSettings、不喂设置帧：连接设置五段读帧已切成 4 条读路由，
+	// 任何残留的 CLI 读帧调用都会在这里直接崩掉（这本身就是断言）。
+	const api = lib.makeApi(Object.assign(
+		{ 'route:network.session': fixtures.sessionPayload({}) },
+		fixtures.settingsRouteAnswers(fixtures.SETTINGS_FACTS)
+	));
 	api.managerStatus = () => Promise.resolve({ connected: true, network: 'eth2', at_port: '/dev/ttyUSB3' });
 	api.deviceStatus = () => Promise.resolve({ up: true, carrier: true });
 	api.dialLog = () => Promise.resolve({ log: '' });
@@ -217,15 +219,51 @@ async function connectionPage() {
 	const at = api.calls.filter(c => c.kind === 'at').map(c => c.args.join(' '));
 	const routes = api.calls.filter(c => c.kind === 'route').map(c => c.name);
 	const text = lib.textOf(holder);
-	check('连接页：CLI 只剩拨号设置一条（会话面板已走路由）',
-		sameJson(at, [ 'advanced connection-settings' ]), JSON.stringify(at));
-	check('连接页：会话面板读 network.session', sameJson(routes, [ 'network.session' ]), JSON.stringify(routes));
+	check('连接页：零 CLI（连接设置五段帧已切成路由）', sameJson(at, []), JSON.stringify(at));
+	check('连接页：按 load() 顺序读 5 条路由（4 条设置 + session）',
+		sameJson(routes, [ 'network.autodial', 'network.interface_cfg', 'network.pdp_contexts', 'network.direct_ip', 'network.session' ]),
+		JSON.stringify(routes));
 	check('连接页：地址 / 网关 / DNS / MTU / 会话行来自路由载荷',
 		text.indexOf('10.6.172.152') !== -1 && text.indexOf('223.5.5.5') !== -1
 		&& text.indexOf('2408:8207::1') !== -1 && text.indexOf('IPv4 / IPv6 · same APN') !== -1
 		&& text.indexOf('1500') !== -1 && text.indexOf('CID 1 · cmnet') !== -1);
 	check('连接页：固件计数（十六进制→十进制后由页面按 1024 进制显示）',
 		text.indexOf('303.7 KiB') !== -1 && text.indexOf('143.1 MiB') !== -1 && text.indexOf('1min') !== -1);
+	/* 连接设置控件取值来自路由载荷（SETTINGS_FACTS 的解析产物） */
+	const selects = lib.collect(holder, n => n.tagName === 'SELECT').map(n => String(n.value));
+	check('连接页：设置控件取值来自载荷（拨号 1/2/IPV4V6/1 + 直通 0 + 后路由 1）',
+		sameJson(selects, [ '1', '2', 'IPV4V6', '1', '0', '1' ]), JSON.stringify(selects));
+	const dmzInput = lib.collect(holder, n => n.tagName === 'INPUT'
+		&& String(n.attrs['placeholder'] || '') === '192.168.8.100')[0];
+	check('连接页：DMZ 输入框取值来自载荷（192.168.8.100）',
+		!!dmzInput && String(dmzInput.value) === '192.168.8.100');
+	/* 写路径抽样三条：拨号写 / PDP 弹窗 / DMZ —— 全走路由、零 CLI */
+	const fire = async function (buttonText, applyText, prepare) {
+		api.calls.length = 0;
+		lib.pressButton(holder, buttonText);
+		if (prepare) prepare(lib.lastModal(side.scope).children);
+		lib.modalButton(side.scope, applyText);
+		for (let i = 0; i < 4; i++) await lib.tick();
+		const calls = api.calls.filter(c => c.kind === 'routeCall');
+		return { name: calls.length === 1 ? calls[0].name : null, params: calls[0] && calls[0].params,
+			pure: api.calls.length > 0 && api.calls.every(c => c.kind === 'routeCall'), calls: api.calls };
+	};
+	let r = await fire('Apply module dialing', 'Apply');
+	check('连接页：模块拨号写走 network.autodial_set（params 与 SETTINGS_FACTS 同源）',
+		r.name === 'network.autodial_set' && sameJson(r.params, { enabled: true, dialMode: 2, protocol: 'IPV4V6', apn: 'cmnet', username: '', password: '', auth: 1 }) && r.pure,
+		JSON.stringify(r.calls));
+	r = await fire('Add profile', 'Save', (nodes) => {
+		const inputs = lib.inputsIn(nodes); // [CID, APN]（中间的 IP protocol 是 select）
+		inputs[0].value = '3';
+		inputs[1].value = 'iot.apn';
+	});
+	check('连接页：PDP 新建弹窗走 network.pdp_set（参数取弹窗输入）',
+		r.name === 'network.pdp_set' && sameJson(r.params, { cid: 3, type: 'IPV4V6', apn: 'iot.apn' }) && r.pure,
+		JSON.stringify(r.calls));
+	r = await fire('Apply DMZ', 'Apply');
+	check('连接页：DMZ 写走 network.dmz_set（host 取输入框）',
+		r.name === 'network.dmz_set' && sameJson(r.params, { host: '192.168.8.100' }) && r.pure,
+		JSON.stringify(r.calls));
 	/* 写路径：「清空计数」确认后走 network.flow_clear */
 	api.calls.length = 0;
 	lib.pressButton(holder, 'Clear counters');

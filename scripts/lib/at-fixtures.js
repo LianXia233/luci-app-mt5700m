@@ -296,6 +296,112 @@ function sessionPayload(facts) {
 	return payload;
 }
 
+/* ------------------------------------------------------- 连接页设置（connection settings）
+ *
+ * `mt5700m-at advanced connection-settings` 的 5 段读帧（Auto dial /
+ * Interface mode / PDP contexts / PDP activation / Direct IP）与 4 条路由
+ * （network.autodial / network.interface_cfg / network.pdp_contexts /
+ * network.direct_ip）。同一份 SETTINGS_FACTS 生成两个形态 —— 帧里正则解出
+ * 的值与路由给的值不可能漂移。
+ *
+ * autodial 的解析规则照 modules/network/parser.rs::parse_autodial：
+ * ^SETAUTODIAL: 后按位置切分（引号内逗号不分隔），auth 字段缺席时
+ * authType 不出现 —— 页面的 autoKnown 判据依赖这一点（旧正则对缩短应答
+ * 整行不识别、控件回落默认值）。
+ */
+const SETTINGS_FACTS = {
+	autodial: '1,2,"IPV4V6","cmnet","","",1',
+	// TDCFG 应答有两种实测形态（modules/network/parser.rs 单测各钉一份）：
+	// `PostRoute: 1`（冒号紧跟）与真实抓包的 `PostRoute : 0`（冒号前有空格，
+	// 见 parse_interface_cfg 的 doc 注释；姊妹项目 luci-app-mt5700 的 dial.js
+	// 用 /PostRoute\s*:\s*(\d+)/ 两种都认）。mt5700m 旧前端的正则漏了 `\s*`，
+	// 带空格形态整行不识别 —— prove-connection-parity 的「真实抓包形态」组
+	// 把这个盲区钉成有意差异。Dmz 在两种固件形态里都是冒号紧跟。
+	tdcfg: 'Mode : 1\nPostRoute: 1\nDmz: 192.168.8.100',
+	cgdcont: '+CGDCONT: 1,"IPV4V6","cmnet","10.6.172.152"\n+CGDCONT: 2,"IP","",""',
+	cgact: '+CGACT: 1,1\n+CGACT: 2,0',
+	directip: '0'
+};
+const settingsFacts = (over) => Object.assign({}, SETTINGS_FACTS, over || {});
+
+function connectionSettingsFrame(f) {
+	return textFrame([
+		[ 'Auto dial', 'AT^SETAUTODIAL?', '^SETAUTODIAL: ' + f.autodial ],
+		[ 'Interface mode', 'AT^TDCFG?', f.tdcfg ],
+		[ 'PDP contexts', 'AT+CGDCONT?', f.cgdcont ],
+		[ 'PDP activation', 'AT+CGACT?', f.cgact ],
+		[ 'Direct IP', 'AT^SETDIRECTIP?', '^SETDIRECTIP: ' + f.directip ]
+	]);
+}
+
+/* 引号感知的字段切分（modules/network/parser.rs 的 split_at_args 简版） */
+function splitAtArgs(body) {
+	const fields = [];
+	let cur = '', inQuotes = false;
+	for (const ch of String(body)) {
+		if (ch === '"') { inQuotes = !inQuotes; continue; }
+		if (ch === ',' && !inQuotes) { fields.push(cur); cur = ''; continue; }
+		cur += ch;
+	}
+	fields.push(cur);
+	return fields.map((v) => v.trim());
+}
+const digits = (v) => /^\d+$/.test(v || '');
+
+function settingsRouteResults(f) {
+	const autoFields = splitAtArgs(f.autodial);
+	const autodial = {};
+	if (autoFields.length && digits(autoFields[0])) {
+		autodial.enable = Number(autoFields[0]);
+		if (digits(autoFields[1])) autodial.dialMode = Number(autoFields[1]);
+		autodial.protocol = autoFields[2] || '';
+		autodial.apn = autoFields[3] || '';
+		autodial.username = autoFields[4] || '';
+		autodial.password = autoFields[5] || '';
+		if (digits(autoFields[6])) autodial.authType = Number(autoFields[6]);
+	}
+	const cfg = {};
+	String(f.tdcfg).split('\n').forEach(function (line) {
+		const i = line.indexOf(':');
+		if (i < 0) return;
+		const key = line.slice(0, i).trim().toLowerCase();
+		const value = line.slice(i + 1).trim();
+		if (key === 'mode' && digits(value)) cfg.mode = Number(value);
+		else if (key === 'postroute' && digits(value)) cfg.postRoute = Number(value);
+		else if (key === 'dmz') {
+			const on = value !== 'not cfg' && value !== '';
+			cfg.dmz = { enabled: on, host: on ? value : '' };
+		}
+	});
+	const contexts = [];
+	String(f.cgdcont).split('\n').forEach(function (line) {
+		const body = line.trim();
+		if (body.indexOf('+CGDCONT:') !== 0) return;
+		const fields = splitAtArgs(body.slice('+CGDCONT:'.length));
+		if (!fields.length || !digits(fields[0])) return;
+		contexts.push({ cid: Number(fields[0]), type: fields[1] || '', apn: fields[2] || '',
+			pdp_addr: fields[3] || '', active: false });
+	});
+	String(f.cgact).split('\n').forEach(function (line) {
+		const m = line.trim().match(/^\+CGACT:\s*(\d+),(\d+)/);
+		if (m) contexts.forEach(function (c) { if (String(c.cid) === m[1]) c.active = m[2] === '1'; });
+	});
+	const directIp = {};
+	if (f.directip === '0') directIp.enabled = false;
+	else if (f.directip === '1') directIp.enabled = true;
+	return { autodial: autodial, interface_cfg: cfg, pdp_contexts: { contexts: contexts }, direct_ip: directIp };
+}
+
+function settingsRouteAnswers(f) {
+	const r = settingsRouteResults(f);
+	return {
+		'route:network.autodial': r.autodial,
+		'route:network.interface_cfg': r.interface_cfg,
+		'route:network.pdp_contexts': r.pdp_contexts,
+		'route:network.direct_ip': r.direct_ip
+	};
+}
+
 /* ------------------------------------------------------- 系统页（system）
  *
  * `mt5700m-at system` 的 22 段读帧。与 sessionFacts 同一套模式：事实对象 →
@@ -455,6 +561,7 @@ module.exports = {
 	temperatureText, textFrame,
 	SENSORS, SENSOR_KEYS,
 	sessionFacts, advancedSessionFrame, sessionPayload,
+	SETTINGS_FACTS, settingsFacts, connectionSettingsFrame, settingsRouteResults, settingsRouteAnswers,
 	SYSTEM_FACTS, systemFacts, systemCliFrame,
 	SYSTEM_ROUTES, systemRouteResults, systemRouteAnswers,
 };

@@ -11,8 +11,9 @@
 /*
  * MT5700M LuCI — 移动数据（connection）
  * ---------------------------------------------
- * 数据：manager status + network.device status + advanced connection-settings +
- * network.session（会话面板；八个 AT 命令的解码在后端）
+ * 数据：manager status + network.device status + 四条设置路由（autodial /
+ * interface_cfg / pdp_contexts / direct_ip）+ network.session（会话面板；
+ * AT 命令的解码全部在后端）。设置区七条写入也走统一路由。
  * 结构：英雄区 → 事实卡 → 会话面板 → 连接操作 → 拨号配置（LuCI form）→ 高级工具（PDP / 模块数据通道）→ 拨号日志
  * 无内联样式；表单框架（form.Map）保留 LuCI 原生能力。
  */
@@ -24,7 +25,15 @@ return view.extend({
 		var self = this;
 		var previousManager = this.manager || {};
 		this.managerError = '';
-		var settings = api.atConnectionSettings();
+		// 模块设置区块读统一路由（Auto dial / Interface+DMZ / PDP 表 / 直通），
+		// `advanced connection-settings` 的五段文本帧与前端那份第二份解析随本刀
+		// 消失。单条路由取不到时按旧行为降级（控件回落默认值 / 禁用）。
+		var settings = Promise.all([
+			api.route('network.autodial'),
+			api.route('network.interface_cfg'),
+			api.route('network.pdp_contexts'),
+			api.route('network.direct_ip')
+		]);
 		// 会话面板读统一路由（与概览页的「移动 IP」卡同一条）。route() 失败返回
 		// null，面板按空值渲染 —— 与旧版 CLI 帧读不到时完全一样的观感（那时
 		// `advanced session` 的 stderr 也只在帧里，页面同样是空卡）。
@@ -111,7 +120,7 @@ return view.extend({
 				if (!/^(?:[1-9]|1[01])$/.test(cidValue) || /[",\r\n]/.test(apn.value || ''))
 					return ui.addNotification(null, E('p', {}, _('Enter a CID from 1 to 11 and a valid APN.')), 'warning');
 				ui.hideModal();
-				api.at([ 'pdp-set', cidValue, type.value, apn.value.trim() ]).then(function() { window.location.reload(); }, function(err) { ui.addNotification(null, E('p', {}, err.message || String(err)), 'danger'); });
+				api.routeCall('network.pdp_set', { cid: Number(cidValue), type: type.value, apn: apn.value.trim() }).then(function() { window.location.reload(); }, function(err) { ui.addNotification(null, E('p', {}, err.message || String(err)), 'danger'); });
 			} }, _('Save')) ])
 		]);
 	},
@@ -178,9 +187,8 @@ return view.extend({
 
 		var dial = results[0] || {};
 		var device = results[1] || {};
-		var moduleSettings = results[2] || {};
+		var moduleSettings = results[2] || [];
 		var session = parser.sessionInfo(results[3]);
-		var moduleRaw = moduleSettings.stdout || '';
 		var managerError = this.managerError || '';
 		var online = dial.connected === true && device.up === true && device.carrier !== false;
 		var configuredApn = uci.get('mt5700m', 'connection', 'apn') || _('Automatic');
@@ -241,31 +249,46 @@ return view.extend({
 		o.datatype = 'ipaddr';
 		o.description = _('Leave empty to use DNS supplied by the mobile network.');
 
-		var autoRaw = parser.section(moduleRaw, 'Auto dial');
-		var interfaceRaw = parser.section(moduleRaw, 'Interface mode');
-		var autoMatch = autoRaw.match(/\^SETAUTODIAL:\s*(\d+),(\d+),"([^"]*)",?"?([^",]*)"?,?"?([^",]*)"?,?"?([^",]*)"?,(\d+)/);
-		var enabled = c.select([['1',_('Enabled')],['0',_('Disabled')]], autoMatch ? autoMatch[1] : '1');
-		var dialMode = c.select([['0',_('Module internal dialing')],['1',_('Host dialing over USB')],['2',_('Host dialing over Ethernet')]], autoMatch ? autoMatch[2] : '1');
-		var protocol = c.select([['IPV4V6','IPv4 / IPv6'],['IP','IPv4'],['IPV6','IPv6']], autoMatch ? autoMatch[3] : 'IPV4V6');
-		var moduleApn = E('input', { 'class': 'cbi-input-text', 'placeholder': _('Leave empty to use carrier default'), 'value': autoMatch ? autoMatch[4] : '' });
-		var moduleUsername = E('input', { 'class': 'cbi-input-text', 'autocomplete': 'off', 'value': autoMatch ? autoMatch[5] : '' });
-		var modulePassword = E('input', { 'class': 'cbi-input-text', 'type': 'password', 'autocomplete': 'new-password', 'value': autoMatch ? autoMatch[6] : '' });
-		var moduleAuth = c.select([['0',_('None')],['1','PAP'],['2','CHAP']], autoMatch ? autoMatch[7] : '0');
-		var postRouteValue = parser.pick(interfaceRaw, /PostRoute:\s*(\d+)/, '');
-		var dmzValue = parser.pick(interfaceRaw, /Dmz:\s*([^\n]+)/, '').trim();
+		/*
+		 * 模块设置：四条路由载荷 → 页面取值。变量名与旧版文本解析的产物同名
+		 * 同型，下面的控件构造一行没动。
+		 *
+		 * 两处照旧仿出来的怪癖（与 docs/architecture-v2/migration.md 一致）：
+		 * 1. autoKnown 对齐旧正则——旧 `autoMatch` 要求 ^SETAUTODIAL 应答里
+		 *    auth 字段存在，模块只答 `1,0,"IPV4V6"`（关拨号的缩短形态）时整行
+		 *    不识别、控件全部回落默认值。载荷层 auth 缺席即同一个分支。
+		 * 2. postRouteValue / directIp 沿用「值不是 1|2 / 0|1 就禁用控件」，
+		 *    载荷缺席（undefined）与旧帧解析失败（''）同一条路。
+		 */
+		var autodialPayload = moduleSettings[0] || {};
+		var cfgPayload = moduleSettings[1] || {};
+		var pdpPayload = moduleSettings[2] || {};
+		var directIpPayload = moduleSettings[3] || {};
+		var autoKnown = autodialPayload.enable !== undefined && autodialPayload.enable !== null
+			&& autodialPayload.authType !== undefined && autodialPayload.authType !== null;
+		var enabled = c.select([['1',_('Enabled')],['0',_('Disabled')]], autoKnown ? String(autodialPayload.enable) : '1');
+		var dialMode = c.select([['0',_('Module internal dialing')],['1',_('Host dialing over USB')],['2',_('Host dialing over Ethernet')]], autoKnown ? String(autodialPayload.dialMode) : '1');
+		var protocol = c.select([['IPV4V6','IPv4 / IPv6'],['IP','IPv4'],['IPV6','IPv6']], autoKnown ? autodialPayload.protocol : 'IPV4V6');
+		var moduleApn = E('input', { 'class': 'cbi-input-text', 'placeholder': _('Leave empty to use carrier default'), 'value': autoKnown ? autodialPayload.apn : '' });
+		var moduleUsername = E('input', { 'class': 'cbi-input-text', 'autocomplete': 'off', 'value': autoKnown ? autodialPayload.username : '' });
+		var modulePassword = E('input', { 'class': 'cbi-input-text', 'type': 'password', 'autocomplete': 'new-password', 'value': autoKnown ? autodialPayload.password : '' });
+		var moduleAuth = c.select([['0',_('None')],['1','PAP'],['2','CHAP']], autoKnown ? String(autodialPayload.authType) : '0');
+		var postRouteValue = (cfgPayload.postRoute === undefined || cfgPayload.postRoute === null) ? '' : String(cfgPayload.postRoute);
+		var dmzValue = (cfgPayload.dmz && cfgPayload.dmz.enabled) ? String(cfgPayload.dmz.host || '') : '';
 		var postRouteKnown = postRouteValue === '1' || postRouteValue === '2';
 		var postRouteOptions = [['2',_('Disabled')],['1',_('Enabled')]];
 		if (!postRouteKnown)
 			postRouteOptions.unshift(['', postRouteValue ? _('Unsupported value: %s').format(postRouteValue) : _('Unavailable')]);
 		var postRoute = c.select(postRouteOptions, postRouteKnown ? postRouteValue : '');
 		postRoute.disabled = !postRouteKnown;
-		var dmz = E('input', { 'class': 'cbi-input-text', 'placeholder': '192.168.8.100', 'value': dmzValue.indexOf('not cfg') < 0 ? dmzValue : '' });
-		var directIpValue = parser.pick(parser.section(moduleRaw, 'Direct IP'), /\^SETDIRECTIP:\s*(\d+)/, '');
-		var directIpKnown = directIpValue === '0' || directIpValue === '1';
+		var dmz = E('input', { 'class': 'cbi-input-text', 'placeholder': '192.168.8.100', 'value': dmzValue });
+		var directIpKnown = directIpPayload.enabled === true || directIpPayload.enabled === false;
 		var directIpOptions = directIpKnown ? [['0',_('Disabled')],['1',_('Enabled')]] : [['',_('Unavailable')]];
-		var directIp = c.select(directIpOptions, directIpKnown ? directIpValue : '');
+		var directIp = c.select(directIpOptions, directIpKnown ? (directIpPayload.enabled ? '1' : '0') : '');
 		directIp.disabled = !directIpKnown;
-		var contexts = parser.parseContexts(parser.section(moduleRaw, 'PDP contexts'), parser.section(moduleRaw, 'PDP activation'));
+		var contexts = (pdpPayload.contexts || []).map(function(entry) {
+			return { cid: String(entry.cid), type: entry.type || '', apn: entry.apn || '', active: entry.active === true };
+		});
 		var pdpPanel = E('section', { 'class': 'mt-card', 'style': 'margin-top:16px' }, [
 			E('div', { 'class': 'mt-gauge-head', 'style': 'align-items:flex-start' }, [
 				E('div', {}, [ E('h3', { 'class': 'mt-card-title', 'style': 'margin:0 0 4px' }, _('Module PDP contexts')), E('p', { 'class': 'mt-card-desc', 'style': 'margin:0' }, _('Advanced module-native profiles. IMS contexts are protected from editing; normal OpenWrt users should configure APN in the dialing profile above.')) ]),
@@ -278,8 +301,8 @@ return view.extend({
 				E('span', { 'class': 'mt-pdp-state' + (context.active ? ' on' : '') }, context.active ? _('Active') : _('Inactive')),
 				E('div', { 'class': 'mt-pdp-actions' }, reserved ? E('span', {}, String(context.apn || '').toLowerCase() === 'ims' ? _('IMS reserved') : _('System reserved')) : [
 					E('button', { 'class': 'btn', 'click': function() { self.editPdp(context); } }, _('Edit')),
-					E('button', { 'class': 'btn', 'click': function() { c.confirmRun(context.active ? _('Deactivate PDP context') : _('Activate PDP context'), _('Changing a module PDP context can interrupt mobile service.'), [ 'pdp-state', context.active ? '0' : '1', context.cid ]); } }, context.active ? _('Deactivate') : _('Activate')),
-					E('button', { 'class': 'btn cbi-button-negative', 'click': function() { c.confirmRun(_('Remove PDP context'), _('Remove CID %s from the module?').format(context.cid), [ 'pdp-remove', context.cid ]); } }, _('Remove'))
+					E('button', { 'class': 'btn', 'click': function() { c.confirmRoute(context.active ? _('Deactivate PDP context') : _('Activate PDP context'), _('Changing a module PDP context can interrupt mobile service.'), 'network.pdp_state', { cid: Number(context.cid), active: !context.active }); } }, context.active ? _('Deactivate') : _('Activate')),
+					E('button', { 'class': 'btn cbi-button-negative', 'click': function() { c.confirmRoute(_('Remove PDP context'), _('Remove CID %s from the module?').format(context.cid), 'network.pdp_remove', { cid: Number(context.cid) }); } }, _('Remove'))
 				])
 			]);
 		}) : [ E('div', { 'class': 'alert-message notice' }, _('No PDP contexts were reported.')) ]));
@@ -288,7 +311,9 @@ return view.extend({
 				E('h3', { 'class': 'mt-card-title' }, _('MT5700M data path')),
 				E('p', { 'class': 'mt-card-desc' }, _('Module-side dialing and inbound-routing controls. Most OpenWrt installations should keep host dialing selected.'))
 			]),
-			moduleSettings.stderr ? E('div', { 'class': 'alert-message warning' }, moduleSettings.stderr) : null,
+			// 旧版这里有一行 `moduleSettings.stderr` 告警条。路由世界里没有
+			// stderr：单条路由失败按各自降级（控件禁用 / 回落默认值），
+			// Promise.all 整体失败才由 render() 的失败分支画整页 error。
 			E('div', { 'class': 'mt-grid' }, [
 				c.card(_('Module dialing policy'), _('Select how the MT5700M firmware exposes its mobile data session.'), [
 					E('div', { 'class': 'mt-scan-note' }, _('Use one dialing owner for each data path. With the integrated OpenWrt service, keep host dialing over USB selected to avoid repeated reconnects.')),
@@ -300,23 +325,23 @@ return view.extend({
 					c.formRow(_('Password'), modulePassword),
 					c.formRow(_('Authentication'), moduleAuth),
 					c.actionBar(c.btn(_('Apply module dialing'), function() {
-						c.confirmRun(_('Apply MT5700M dialing settings'), _('The mobile data session may disconnect and reconnect.'), [ 'advanced-set', 'autodial', enabled.value, dialMode.value, protocol.value, moduleApn.value, moduleUsername.value, modulePassword.value, moduleAuth.value ]);
+						c.confirmRoute(_('Apply MT5700M dialing settings'), _('The mobile data session may disconnect and reconnect.'), 'network.autodial_set', { enabled: enabled.value === '1', dialMode: Number(dialMode.value), protocol: protocol.value, apn: moduleApn.value, username: moduleUsername.value, password: modulePassword.value, auth: Number(moduleAuth.value) });
 					}))
 				]),
 				c.card(_('Inbound routing'), _('Optional module-side forwarding for devices connected behind the MT5700M data path.'), [
 					c.formRow(_('IP passthrough'), directIp),
 					E('div', { 'class': 'mt-scan-note' }, directIpKnown ? _('IP passthrough is an original-manager compatibility feature. Keep it disabled when OpenWrt owns the mobile connection.') : _('This MT5700M firmware does not expose a readable IP passthrough setting. The control is disabled to prevent false success reports.')),
 					directIpKnown ? c.actionBar(c.btn(_('Apply IP passthrough'), function() {
-						c.confirmRun(_('Change IP passthrough'), _('Changing passthrough can remove the module management address and interrupt connectivity.'), [ 'advanced-set', 'direct-ip', directIp.value ], true);
+						c.confirmRoute(_('Change IP passthrough'), _('Changing passthrough can remove the module management address and interrupt connectivity.'), 'network.direct_ip_set', { enabled: directIp.value === '1' }, true);
 					})) : null,
 					c.formRow(_('Post-routing'), postRoute),
 					E('div', { 'class': 'mt-scan-note' }, _('Post-routing and DMZ are mutually exclusive. Leave both disabled unless the module itself is providing the downstream LAN.')),
 					postRouteKnown ? c.actionBar(c.btn(_('Apply post-routing'), function() {
-						c.confirmRun(_('Change post-routing'), _('The module must restart or cycle airplane mode before the new routing path is used.'), [ 'advanced-set', 'postroute', postRoute.value ], true);
+						c.confirmRoute(_('Change post-routing'), _('The module must restart or cycle airplane mode before the new routing path is used.'), 'network.postroute_set', { mode: Number(postRoute.value) }, true);
 					})) : E('div', { 'class': 'mt-scan-note' }, _('The modem reported a post-routing value that this firmware cannot safely change.')),
 					c.formRow(_('DMZ address'), dmz),
 					c.actionBar(c.btn(_('Apply DMZ'), function() {
-						c.confirmRun(_('Change DMZ host'), _('The selected IPv4 host may be exposed to unsolicited traffic from the mobile network.'), [ 'advanced-set', 'dmz', dmz.value.trim() || '0' ]);
+						c.confirmRoute(_('Change DMZ host'), _('The selected IPv4 host may be exposed to unsolicited traffic from the mobile network.'), 'network.dmz_set', { host: dmz.value.trim() || '0' });
 					}))
 				])
 			])
