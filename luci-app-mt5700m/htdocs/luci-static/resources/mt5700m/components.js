@@ -959,7 +959,6 @@ return baseclass.extend({
 	details: details,
 	raw: raw,
 	signalColorClass: signalColorClass,
-	signalPercent: signalPercent,
 	signalBar: signalBar,
 	signalBars: signalBars,
 	gauge: gauge,

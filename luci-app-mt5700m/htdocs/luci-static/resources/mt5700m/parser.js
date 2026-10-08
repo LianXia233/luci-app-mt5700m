@@ -11,52 +11,13 @@
 
 /* ---------- 文本抽取 ---------- */
 
-// 取出 "===== label:" 标记段内的全部非空行（不含 OK 行）
-function section(raw, label) {
-	var marker = '===== ' + label + ':';
-	var active = false;
-	var output = [];
-	(raw || '').split(/\n/).forEach(function(line) {
-		if (line.indexOf('===== ') === 0) {
-			active = line.indexOf(marker) === 0;
-			return;
-		}
-		if (active && line.trim() && line.trim() !== 'OK')
-			output.push(line.trim());
-	});
-	return output.join('\n');
-}
-
-// 取首个匹配组，无匹配返回 fallback
-function pick(text, expression, fallback) {
-	var match = (text || '').match(expression);
-	return match ? match[1] : fallback;
-}
-
-
 // 以 prefix 开头首行的取值（去前导冒号/空格）
 function lineValue(text, prefix) {
 	var line = (text || '').split(/\n/).filter(function(item) { return item.indexOf(prefix) === 0; })[0] || '';
 	return line.substring(prefix.length).replace(/^[ :]+/, '').trim();
 }
 
-// 统计以 prefix 开头的行数
-function countLines(text, prefix) {
-	return (text || '').split(/\n/).filter(function(line) { return line.indexOf(prefix) === 0; }).length;
-}
-
 /* ---------- 数值 / 地址格式化 ---------- */
-
-
-// 64 位十六进制（模块计数的标准编码）→ 十进制，超出 32 位自动拆分
-function hexNumber(value) {
-	value = String(value || '').replace(/^0x/i, '');
-	if (!/^[0-9a-f]+$/i.test(value))
-		return 0;
-	if (value.length <= 8)
-		return parseInt(value, 16);
-	return parseInt(value.slice(0, -8), 16) * 4294967296 + parseInt(value.slice(-8), 16);
-}
 
 // 1024 进制字节数 → B / KiB / MiB / GiB / TiB
 function formatBytes(value) {
@@ -137,19 +98,6 @@ function sessionInfo(payload) {
 			};
 		})
 	};
-}
-
-// ^CGDCONT + ^CGACT → PDP context 列表
-function parseContexts(raw, activationRaw) {
-	var active = {};
-	(activationRaw || '').split(/\n/).forEach(function(line) {
-		var match = line.match(/^\+CGACT:\s*(\d+),(\d+)/);
-		if (match) active[match[1]] = match[2] === '1';
-	});
-	return (raw || '').split(/\n/).map(function(line) {
-		var match = line.match(/^\+CGDCONT:\s*(\d+),"([^"]*)","([^"]*)"/);
-		return match ? { cid: match[1], type: match[2], apn: match[3], active: active[match[1]] === true } : null;
-	}).filter(Boolean);
 }
 
 /* ---------- 运营商标识 ---------- */
@@ -373,17 +321,12 @@ var FOTA_STATE_NAMES = {
 };
 
 return baseclass.extend({
-	section: section,
-	pick: pick,
 	lineValue: lineValue,
-	countLines: countLines,
-	hexNumber: hexNumber,
 	formatBytes: formatBytes,
 	formatDuration: formatDuration,
 	formatRate: formatRate,
 	subscriptionRate: subscriptionRate,
 	sessionInfo: sessionInfo,
-	parseContexts: parseContexts,
 	operatorInfo: operatorInfo,
 	parseStatus: parseStatus,
 	signalQuality: signalQuality,

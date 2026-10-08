@@ -45,7 +45,6 @@ var callDeviceStatus = rpc.declare({ object: 'network.device', method: 'status',
 
 var callAt = rpc.declare({ object: 'mt5700', method: 'at', params: [ 'cmd', 'args', '_rid' ], expect: { } });
 var callCached = rpc.declare({ object: 'mt5700', method: 'cached', expect: { } });
-var callNetrate = rpc.declare({ object: 'mt5700', method: 'netrate', params: [ 'device', '_rid' ], expect: { } });
 var callBackendTraffic = rpc.declare({ object: 'mt5700', method: 'traffic', params: [ '_rid' ], expect: { } });
 
 /*
@@ -255,18 +254,6 @@ function trafficReport() {
 	return shared;
 }
 
-/*
- * netrate —— 网络接口累计字节数（与 WebUI 实时速率同源）。
- * 同样优先读后端 netrate topic；后端不可用时返回 null，**不**回落本地直读
- * sysfs —— 那正是本次要消灭的第二条采集路径。
- */
-function netrate(device) {
-	return deadline(callNetrate({ device: device || '', _rid: nextRid() }), AT_TIMEOUT_MS, 'mt5700.netrate')
-		.then(function(res) {
-			return (res && res.success === true) ? res : null;
-		}, function() { return null; });
-}
-
 return baseclass.extend({
 	/* rpcd */
 	managerStatus: function() { return rpcDeadline(callManagerStatus(), 'mt5700m.status'); },
@@ -277,15 +264,8 @@ return baseclass.extend({
 	trafficSummary: trafficReport,
 	deviceStatus: function(name) { return rpcDeadline(callDeviceStatus(name), 'network.device.status'); },
 
-	/* 后端 netrate（单后端数据源） */
-	netrate: netrate,
-
-	/* 超时配置（供页面展示/调试） */
-	atTimeoutMs: AT_TIMEOUT_MS,
-
 	/* ucode（共享后端 AT 通道） */
 	at: at,
-	atSafe: atSafe,
 	cachedSnapshot: cachedSnapshot,
 	route: route,
 	routeCall: routeCall,
