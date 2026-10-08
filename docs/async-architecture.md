@@ -159,7 +159,8 @@ connect → 可选 { action: subscribe, topics:[...] } → 服务端只推订阅
 
 改造已部署到实机（192.168.10.1），后端二进制
 `aarch64-unknown-linux-musl` 818,328 B / md5 `077bff7191b9455265b66c60fbaac361`，
-`cargo test` 104 passed / 0 failed。
+`cargo test` 104 passed / 0 failed（2026-10-05 时点数字；架构 v2 收官后
+用例已增长到 **292**，见 `docs/architecture-v2/migration.md`）。
 
 ### 11.1 闸门生效证据
 

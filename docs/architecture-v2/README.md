@@ -21,6 +21,12 @@ WebUI ──WebSocket─┘
 | [api-contract.md](api-contract.md) | 路由表、各传输层的信封、兼容性保证（CLI/ucode/WebSocket） |
 | [module-guide.md](module-guide.md) | 配方：把一个功能作为模块加入（State/Commands/Parser/Service/API） |
 | [migration.md](migration.md) | 本次重构迁走了什么、什么已被验证、还剩什么 |
+| [remaining-work.md](remaining-work.md) | 剩余工作清单（收官后只余少量清理项，逐批就地更新） |
+
+> **状态（2026-10-08）**：架构 v2 已收官。原始 20 条验收标准全部达成
+> （PR #7 + PR #8 已合并进 main），CI 的 `frontend-proofs` job 每次 push
+> 都会把 10 项 UI 逐字比对加 smoke 再跑一遍。真正还剩的活儿只有
+> remaining-work.md 里点名的那几条清理项。
 
 ## 五条规则
 

@@ -1,10 +1,34 @@
 # MT5700M 架构 v2 重构 — 剩余工作清单
 
-> 基线：`main` = `6a4eabd`（PR #7 已合并）
-> 当前分支：`arena/d1c7aed1-luci-app-mt5700m`，头 = `a7ab0a3d`
-> 原始 20 条验收标准：**18 条已达成**，剩余 2 条见第五节
+> 状态（2026-10-08）：**收官**。PR #7（主体路由化）与 PR #8（死代码清零 +
+> WebUI 收尾 + CI 证明链）都已合并进 main（merge commit `da87664e`），
+> 原始 20 条验收标准 **20/20 全部达成**，CI 的 `frontend-proofs` +
+> `static-checks` 双 job 全绿（run `37711744420`）。
+> 真正还剩的活儿只有下面第七节点名的那几条，都不阻塞发版。
 
 本文件每完成一批都应就地更新，避免重复盘点。
+
+---
+
+## 收官批（2026-10-08，PR #8 合并前后）
+
+1. **验收两条全部达成**：「前端不得访问 AT」（WebUI PDCP 开关切
+   `traffic.pdcp_report_set`，pages 下只剩终端页有意保留）与
+   「无重复实现」（LuCI 9 个死导出 + WebUI 8 处死方法清零）——详见第五节。
+2. **CI 证明链落地**：`frontend-proofs` job 三跑收敛全绿——首次跑暴露
+   neighbors 断言直接调已删的 `section` 导出，断言拆两半修掉；第二次跑
+   暴露 smoke 缺 minify 前置，ci.yml 补上；第三跑全绿。10 个 prove
+   （3 个走 tag 基线，脚本内置默认；7 个显式传远端原生 sha）+ smoke
+   每次 push 都跑。
+3. **提交消息黑话清零**：发现 5 笔提交 body 里还留着「第几刀」式说法
+   （之前的 sed 只替换了 subject 里的固定短语），本地 `filter-branch`
+   重写 20 笔后，远端从原生锚点 `460fe4ab` 整链重建 24 笔——旧重建链
+   和上一轮叠加的 11 笔一并推出可达集，远端历史收敛为「原生 + 24」。
+   保留两种不算黑话的写法：改动描述里的引号引用（「本刀」改「本批」）
+   和术语映射行；历史批次记录里的章节名引用（§）也原样保留。
+   终验：远端树 = 本地树 + 6 个历史遗留保护文件，0 缺失 0 内容差。
+4. **文档同步**：README 增架构 v2 章节、CHANGELOG 增 `[Unreleased]`
+   条目、api-contract 补登 `traffic.pdcp_report_set`、本文档就地收官化。
 
 ---
 
@@ -240,7 +264,7 @@ components 别名是 `c`）、shared 互相调用、测试脚本 stub。
 
 ---
 
-## 二、Rust 后端：12 组能力缺口
+## 二、Rust 后端：12 组能力缺口 → 11 组已落地
 
 | # | 能力 | AT 命令 | 现状 |
 |---|---|---|---|
@@ -250,12 +274,12 @@ components 别名是 `c`）、shared 互相调用、测试脚本 stub。
 | 4 | 网络时间读 | `AT^NWTIME?` | ✅ 已落地：`system.network_time` |
 | 5 | 温控阈值写 | `AT^THERMLDAUTOPARA=` | ✅ 已落地：`system.thermal_thresholds_set`（校验规则从 `cli.rs` 上移到 `system::commands`，CLI 改为复用，仅剩一份实现） |
 | 6 | 温控日志写 | `AT^THERMLDLOGSW=` | ✅ 已落地：`system.thermal_log_set` |
-| 7 | 拨号设置写 | `AT^SETAUTODIAL=…` | 只有 QUERY + 解析 |
-| 8 | 接口模式写 | `AT^TDCFG="infcfg","mode",` | 只有读 |
-| 9 | PostRoute / DMZ / 直通写 | `TDCFG` + `AT^IPFILTERSWITCH=0` | 仅 `cli.rs` |
-| 10 | PDP 上下文写 | `AT+CGDCONT=` / `AT+CGACT=` | 只有读 + 解析 |
-| 11 | USB 模式写 | `AT^SETMODE=` | 只有读 |
-| 12 | 自定义 DNS / 路由 metric | （UCI 侧） | 不涉及 AT（`form.Map` 保留决策） |
+| 7 | 拨号设置写 | `AT^SETAUTODIAL=…` | ✅ 已落地：`network.autodial_set`（连接页批，尾部空字段省略规则在后端） |
+| 8 | 接口模式写 | `AT^TDCFG="infcfg","mode",` | ✅ 已落地：`network.interface_mode_set`（构造器 `tdcfg_mode`） |
+| 9 | PostRoute / DMZ / 直通写 | `TDCFG` + `AT^IPFILTERSWITCH=0` | ✅ 已落地：`network.postroute_set` / `network.dmz_set` / `network.direct_ip_set` |
+| 10 | PDP 上下文写 | `AT+CGDCONT=` / `AT+CGACT=` | ✅ 已落地：`network.pdp_set` / `network.pdp_remove` / `network.pdp_state` |
+| 11 | USB 模式写 | `AT^SETMODE=` | ✅ 已落地：`network.usb_mode_set`（7 = MBIM 维持拒绝） |
+| 12 | 自定义 DNS / 路由 metric | （UCI 侧） | 不涉及 AT（`form.Map` 保留决策），不在本次范围 |
 
 **另有三处清理**：
 ① 两端都未引用的 10 条路由（`*.cached` 7 条 + `sim.get`、`traffic.get`、`traffic.netrate`）需明确归属或删除；
@@ -358,10 +382,13 @@ GITHUB_TOKEN=<token> python3 tools/ghgit.py pushall --since <已推送的本地 
 
 ### 6.2 两个必须记得的坑
 
-1. **删除保护**：远端存在 5 个被 `.gitignore` 排除的文件
-   （`htdocs/5700/`、`htdocs/cgi-bin/`、`root/usr/bin/`、`root/etc/init.d/at-webserver`），
-   系历史遗留误提交。`ghgit.py` 默认**不删除**，需显式 `--allow-delete`。
-   本批推送验证了这一点：本地 302 文件 vs 远端 306，「删除 5」是预期且被拦截的。
+1. **删除保护**：远端存在 6 个本地没有的文件——5 个被 `.gitignore`
+   排除的历史遗留误提交（`htdocs/5700/`、`htdocs/cgi-bin/`、
+   `root/usr/bin/`、`root/etc/init.d/at-webserver`），外加 1 个旧 bundle
+   （`index-BbP5KO1B.js`，本地已改名 `index-BRUXWNeG.js`，整链重建时按
+   保护清单跳过删除）。`ghgit.py` 默认**不删除**，需显式 `--allow-delete`。
+   收官整链重建的终验就是按这份保护清单对账的：远端树 = 本地树 +
+   6 个保护文件，0 缺失 0 内容差。
 2. **LF 换行**：所有提交文件强 LF，写盘通过 Python 转换后校验。
 
 ### 6.3 其它
@@ -373,15 +400,25 @@ GITHUB_TOKEN=<token> python3 tools/ghgit.py pushall --since <已推送的本地 
 
 ---
 
-## 七、建议下一步顺序（按依赖）
+## 七、收官后的真实剩余（都不阻塞发版）
 
-1. ~~**后端补 4 组命令**（LED 读写、SIM 激活读写、网络时间读、温控表写）~~
-   ✅ 已完成（`13e7b8f` / `61c4ad3` / `662c2c3` 三笔）；
-2. ~~**系统页读帧切路由**（22 段 → 现有 + 新路由）~~
-   ✅ 已完成（含 4 条写入 + FOTA 形态对齐，系统页零 CLI）；
-3. **连接页**（PDP 3 写 + 拨号写 + PostRoute/DMZ）— 校验规则须逐字保留；
-4. **高级页**（4 条直接迁移 + 读帧 + USB/接口模式写）；
-5. ~~**WebUI**（PDCP 路由 + 删死方法 + 重建 bundle）~~ ✅ 已完成（第七批）；
-6. ~~**清理**（死导出、CLI 无调用动词、`client.rs` 文档漂移、10 条路由归属）~~
-   死导出与 `client.rs` 文档漂移已完成（第六批）；CLI 无调用动词与 10 条路由归属待做；
-7. **工具链**（证明基线全部改为 tag + CI 前端 job + `--unshallow` 跑全量）。
+迁移期的七步施工顺序（后端补能力 → 系统页 → 连接页 → 高级页 → WebUI →
+清理 → 工具链）已全部走完。现在真正剩下的就这几条：
+
+1. **FOTA 三条保留写**（下载 / 续传 / 安装，见 1.3）—— 模块是
+   「任务 + 观察 + 中止」形态，直接搬会改变页面交互，需要产品决策后再动；
+2. **10 条路由归属**（见二节清理 ①）—— 两端都没人用的 `*.cached` 7 条 +
+   `sim.get` / `traffic.get` / `traffic.netrate`，明确删掉或认领；
+3. **CLI 无调用动词**（`sms-list` / `sms-info`，以及 `advanced radio` 这类
+   「给想看的人看原始文本」的诊断动词）—— 留作诊断工具或删除，二选一；
+4. **WebUI 自动化测试**（见四节 #4）—— 至少补一个「路由调用面」静态
+   检查，LuCI 侧的 smoke 已带同款思路；
+5. **WebUI Info.tsx 的 IMEI 写入隐藏入口**（README 安全声明点名的红线
+   隐患）—— 待移除；移除方案只动前端入口，不碰后端 `modem.imei_set`
+   路由本身（CLI 侧保留）；
+6. **系统辅助收编**（data-flow.md 第 6 节）—— `mt5700m-traffic` 的计数
+   循环折进 `modules/traffic`、`mt5700m-manager` 的胶水折进
+   `modules/network` 动作，移除最后两个非 Rust 业务进程。
+
+> 前五批的迁移记录保留在下方「〇」节，历史施工过程见 migration.md
+> 的逐批切片。
