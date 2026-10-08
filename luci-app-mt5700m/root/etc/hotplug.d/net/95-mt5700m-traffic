@@ -1,0 +1,10 @@
+#!/bin/sh
+
+case "${INTERFACE:-${DEVICE:-}}:${ACTION:-}" in
+	eth2:add|eth2:register|eth2:ifup)
+		[ -x /etc/init.d/mt5700m-traffic ] || exit 0
+		/etc/init.d/mt5700m-traffic running >/dev/null 2>&1 || /etc/init.d/mt5700m-traffic start >/dev/null 2>&1
+		;;
+esac
+
+exit 0

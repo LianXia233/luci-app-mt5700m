@@ -1,0 +1,729 @@
+'use strict';
+'require view';
+'require dom';
+'require ui';
+'require mt5700m.api as api';
+'require mt5700m.parser as parser';
+'require mt5700m.components as c';
+
+/*
+ * MT5700M LuCI — 无线与小区（network）
+ * ---------------------------------------------
+ * 数据：fs.exec network（信号/小区/注册/锁频/MCS）+ advanced radio（频段/接入架构）
+ *       + 后端路由（诊断区块/邻区：cell.neighbors、beam.ssb 等）+ cellscan（模态）
+ * 分块：A) 渲染与英雄指标  B) 无线诊断（radioDiagnostics / SSB / 邻区）
+ *       C) 频段勾选与锁频面板（bandChecklist / lockPanel）
+ * 全部解析在 parser.js，全部 UI 原语在 components.js；本文件仅保留页面级组装。
+ */
+
+// 表格行（技术细节用）
+function tr(label, value) {
+	return E('tr', {}, [ E('td', {}, label), E('td', {}, value || '--') ]);
+}
+
+// SSB 波束卡片（design system .mt-beam-*）
+function beamCard(beam) {
+	var rsrp = parseFloat(beam.rsrp);
+	var cls = isNaN(rsrp) ? 'unknown' : c.signalColorClass(beam.rsrp, 'rsrp');
+	return E('div', { 'class': 'mt-beam-card ' + cls }, [
+		E('div', { 'class': 'mt-beam-card-name' }, _('SSB-%s').format(beam.id)),
+		E('div', { 'class': 'mt-beam-card-freq' }, beam.rsrp ? beam.rsrp + ' dBm' : '--')
+	]);
+}
+
+/*
+ * 频段号 → 页面标签（'B3' / 'n78'）。
+ *
+ * 频段知识（ARFCN → 频段号）在后端 modules/cell 与 modules/beam 共用的
+ * core::radio 表里；前端只负责加前缀。取不到频段号时沿用旧版
+ * arfcnToBand 的回退：显示 RAT 名（'LTE' / 'NR'）。
+ */
+function bandLabel(band, rat) {
+	if (band === undefined || band === null || band === '')
+		return rat || '';
+	return (rat === 'NR' ? 'n' : 'B') + band;
+}
+
+/*
+ * `api.signal.get` 载荷 → 仪表卡片的三条读数。
+ *
+ * 指标集合与旧版 parseServingCell 完全一致（NR: RSRP/RSRQ/SINR，LTE:
+ * RSRP/RSRQ/RSSI，WCDMA: RSCP/RXLEV/ECIO，其他 RAT: RSRP/RSRQ/SINR），缺读数
+ * 仍留空串由 svgCircularGauge 显示 `--`；数值改由 modules::signal 解码
+ * `^HCSQ` 得到（索引 → dBm/dB 的换算只在后端一处），页面不再切 `^MONSC` 的
+ * 第 8..10 个字段——那是同一批测量值的第二份 JS 解码。
+ */
+function signalMetrics(signal, rat) {
+	var sig = signal || {};
+	var pick = function(label, value, unit) {
+		var v = (value === undefined || value === null) ? '' : String(value);
+		return { label: label, value: v, unit: unit };
+	};
+	var mode = String(rat || sig.sysmode || '').toUpperCase();
+	if (mode.indexOf('NR') === 0)
+		return [ pick('RSRP', sig.rsrp, 'dBm'), pick('RSRQ', sig.rsrq, 'dB'), pick('SINR', sig.sinr, 'dB') ];
+	if (mode.indexOf('LTE') === 0)
+		return [ pick('RSRP', sig.rsrp, 'dBm'), pick('RSRQ', sig.rsrq, 'dB'), pick('RSSI', sig.rssi, 'dBm') ];
+	if (mode.indexOf('WCDMA') === 0)
+		return [ pick('RSCP', sig.rscp, 'dBm'), pick('RXLEV', sig.rssi, 'dBm'), pick('ECIO', sig.ecio, 'dB') ];
+	return [ pick('RSRP', sig.rsrp, 'dBm'), pick('RSRQ', sig.rsrq, 'dB'), pick('SINR', sig.sinr, 'dB') ];
+}
+
+/*
+ * 页面预设 → `network.c5goption_set` 的三元组（`^C5GOPTION=` 的三个标志）。
+ *
+ * 与上面读取方向的映射成对：'1,0,1' = Option 2、'0,1,0' = Option 3、'1,1,1' =
+ * Option 2+3。这三个值就是旧版 `advanced-set 5g-access <preset>` 动词写下去的
+ * 值 —— modules/network 只负责下发与飞行模式循环，页面负责预设语义。
+ */
+function c5gFlags(preset) {
+	if (preset === 'option2')
+		return { nr_sa_support_flag: 1, nr_dc_mode: 0, gc_access_mode: 1 };
+	if (preset === 'option3')
+		return { nr_sa_support_flag: 0, nr_dc_mode: 1, gc_access_mode: 0 };
+	return { nr_sa_support_flag: 1, nr_dc_mode: 1, gc_access_mode: 1 };
+}
+
+/*
+ * `api.cell.neighbors` 的一行 → cellLockCard 的既有形状。
+ *
+ * 后端给的是领域值：PCI 十进制（十六进制解码在 modules/cell）、频段号、
+ * 越界读数的 1/8 换算、空读数直接缺字段；这里只做「缺字段 → 空串」和
+ * 「频段号 → 标签」，交给卡片的字段与旧版 parseMonnc 同名同型。
+ */
+function neighborCard(cell) {
+	var rat = (cell.type === 'NR' || cell.rat === 'NR') ? 'NR' : 'LTE';
+	function str(value) { return (value === undefined || value === null) ? '' : String(value); }
+	return {
+		rat: rat,
+		arfcn: str(cell.arfcn),
+		pci: str(cell.pci),
+		rsrp: str(cell.rsrp),
+		rsrq: str(cell.rsrq),
+		sinr: str(cell.sinr),
+		rxlev: str(cell.rxlev),
+		band: bandLabel(cell.band, rat)
+	};
+}
+
+/*
+ * `api.beam.ssb`（modules/beam 的 Rust 解码）→ ssbPanel 的既有形状。
+ *
+ * 前端只做改名与展示清洗：`^NRSSBID` 的字段偏移、255/32767 空槽过滤、
+ * 邻区计数探测都只在后端一处实现。signalBar/beamCard 拿到的仍是旧版
+ * 同名字段（同名同型），所以面板 DOM 与迁移前逐字节一致。
+ */
+function ssbStateFromPayload(payload) {
+	if (!payload || typeof payload !== 'object' || !payload.servingCell)
+		return null;
+	var cell = payload.servingCell;
+	function str(value) { return (value === undefined || value === null) ? '' : String(value); }
+	return {
+		arfcn: str(cell.arfcn), cid: str(cell.cid), pci: str(cell.pci),
+		rsrp: str(cell.rsrp), sinr: str(cell.sinr), ta: str(cell.ta),
+		band: bandLabel(cell.band, 'NR'),
+		beams: (cell.ssbs || []).map(function(b) {
+			return { id: str(b.ssbId), rsrp: str(b.rsrp) };
+		}),
+		neighbours: (payload.neighborCells || []).map(function(nb) {
+			return {
+				pci: str(nb.pci), arfcn: str(nb.arfcn),
+				rsrp: parser.cleanSignal(nb.rsrp), sinr: parser.cleanSignal(nb.sinr),
+				band: bandLabel(nb.band, 'NR')
+			};
+		})
+	};
+}
+
+// 小区扫描结果（模态）——服务小区 / 邻区。
+//
+// 服务小区卡片的数据来自两条路由：`cell.get`（modules/cell 解码 ^MONSC /
+// ^HFREQINFO，PCI/CID/LAC 已是十进制、频段是模块的频段号）与 `signal.get`
+// （modules/signal 解码 ^HCSQ —— 与整页仪表同一份读数）。旧版这里切
+// `mt5700m-at cellscan` 帧里的 ^MONSC 文本，用 parser.arfcnToBand 猜频段，
+// 再自己把十六进制字段当字符串显示。
+//
+// 频段标签沿用 bandLabel()：有频段号是 'n78'/'B3'，取不到时回退 RAT 名 ——
+// 与旧版 arfcnToBand 在表外回退 'NR'/'LTE' 的形状一致。
+function renderCellScan(cell, signal, neighbors) {
+	var sections = [];
+	cell = cell || {};
+	signal = signal || {};
+	if (cell.sysmode) {
+		// SCS 是编码值，0（15 kHz）也是有效值，所以按「字段在不在」判断。
+		var scsKhz = (cell.scs === undefined || cell.scs === null)
+			? '' : ({ '0':'15', '1':'30', '2':'60', '3':'120', '4':'240' }[cell.scs] || '?');
+		var scRatLabel = cell.sysmode;
+		var scBand = bandLabel(cell.band, scRatLabel);
+		// 读数与旧版同形：NR 是 RSRP/RSRQ/SINR，LTE 是 RSRP/RSRQ/RSSI，
+		// 其余 RAT 仍是 RSRP/RSRQ/SINR（取不到就 '--'，由 signalBar 负责）。
+		var scBars = [ c.signalBar(signal.rsrp, 'rsrp', 'RSRP'), c.signalBar(signal.rsrq, 'rsrq', 'RSRQ') ];
+		if (scRatLabel === 'LTE')
+			scBars.push(c.signalBar(signal.rssi, 'rsrp', 'RSSI'));
+		else
+			scBars.push(c.signalBar(signal.sinr, 'sinr', 'SINR'));
+		var hasPci = cell.pci !== undefined && cell.pci !== null;
+		var hasArfcn = cell.channel !== undefined && cell.channel !== null && cell.channel !== '';
+		sections.push(E('section', { 'class': 'mt-card' }, [
+			E('h4', { 'class': 'mt-card-title', 'style': 'margin:0 0 12px' }, _('Serving cell')),
+			E('div', { 'class': 'mt-ssb-serving' }, [
+				E('div', { 'class': 'mt-ssb-serving-head' }, [
+					E('span', { 'class': 'mt-ssb-serving-title' }, scRatLabel + (scBand ? ' · ' + scBand : '') + (hasPci ? ' · PCI:' + cell.pci : '') + (hasArfcn ? ' · ARFCN:' + cell.channel : '')),
+					E('span', { 'class': 'mt-ssb-serving-meta' }, (cell.cid || '') + (scsKhz ? ' · SCS:' + scsKhz + 'kHz' : ''))
+				])
+			].concat(scBars))
+		]));
+	}
+	var monnc = (((neighbors || {}).cells) || []).map(neighborCard);
+	if (monnc.length) {
+		var nrNbs = monnc.filter(function(nb) { return nb.rat === 'NR'; });
+		var lteNbs = monnc.filter(function(nb) { return nb.rat === 'LTE'; });
+		var activeNbs, activeLabel, otherNbs = [], otherLabel = '';
+		if (nrNbs.length) {
+			activeNbs = nrNbs;
+			activeLabel = _('NR neighbour cells (%d)');
+			if (lteNbs.length) { otherNbs = lteNbs; otherLabel = _('LTE neighbour cells (%d)'); }
+		} else if (lteNbs.length) {
+			activeNbs = lteNbs;
+			activeLabel = _('LTE neighbour cells (%d)');
+		} else {
+			activeNbs = monnc;
+			activeLabel = _('Neighbour cells (%d)');
+		}
+		if (activeNbs.length) {
+			var nbCards = activeNbs.map(function(nb, i) {
+				var ratType = nb.rat === 'NR' ? 'nr' : nb.rat === 'LTE' ? 'lte' : '';
+				return c.cellLockCard(nb, i, ratType, nb.band);
+			});
+			sections.push(E('section', { 'class': 'mt-card' }, [
+				E('h4', { 'class': 'mt-card-title', 'style': 'margin:0 0 12px' }, activeLabel.format(activeNbs.length)),
+				E('div', { 'class': 'mt-lock-cell-grid' }, nbCards)
+			]));
+		}
+		if (otherNbs.length && otherLabel) {
+			var otherCards = otherNbs.map(function(nb, i) {
+				var ratType = nb.rat === 'NR' ? 'nr' : nb.rat === 'LTE' ? 'lte' : '';
+				return c.cellLockCard(nb, i, ratType, nb.band);
+			});
+			sections.push(E('section', { 'class': 'mt-card' }, [
+				E('h4', { 'class': 'mt-card-title', 'style': 'margin:0 0 12px' }, otherLabel.format(otherNbs.length)),
+				E('div', { 'class': 'mt-lock-cell-grid' }, otherCards)
+			]));
+		}
+	}
+	// 频段扫描卡片在旧实现里从未渲染过（`parser.section()` 找
+	// `===== Frequency scan: AT^CELLSCAN:`，而 CLI 打印
+	// `===== Frequency scan: AT^CELLSCAN =====`，前缀永远不匹配 —— 发布版
+	// 起就是这样），所以随文本路径一起删除，弹窗的可见内容不变。扫描结果
+	// （`cell.scan_result` 的 `cells` / `raw`）随时可用，要恢复这张卡片是
+	// 一个独立决定，见 docs/architecture-v2/migration.md。
+	if (!sections.length)
+		return E('div', {}, E('div', { 'class': 'alert-message warning' }, _('No scan data received.')));
+	return E('div', { 'class': 'mt-scan-results' }, sections);
+}
+
+return view.extend({
+	load: function() {
+		// 请求发起即返回，不阻塞首屏；render() 等 pending 填充。
+		//
+		// 全页走统一路由：后端 modules/* 解码 AT 应答，页面只做展示映射。
+		// 旧版这里切两个 CLI 文本帧 —— `network`（^HCSQ/^MONSC/+CEREG/+COPS/
+		// ^RRCSTAT/temperature=）与 `advanced radio`（^SYSCFGEX/^C5GOPTION/
+		// ^NRRCCAPQRY 的 3/2/5 三种查询），那是同一批 AT 应答的第二份 JS 解码。
+		// 读路由都取不到时该行留空/回落默认值，写操作走 confirmRoute。
+		this.pending = Promise.all([
+			api.route('signal.get'),
+			api.route('cell.get'),
+			api.route('registration.get'),
+			api.route('network.get'),
+			api.route('network.rrc'),
+			api.route('system.temperature'),
+			api.route('network.syscfg'),
+			api.route('network.c5goption'),
+			api.route('modem.nr_capability'),
+			api.route('network.lock_get', { rat: 'lte' }),
+			api.route('network.lock_get', { rat: 'nr' })
+		]);
+		return Promise.resolve();
+	},
+
+	/* ---------- C) 频段勾选 / 锁频面板（组件已封装，页面仅做布局） ---------- */
+
+	lockPanel: c.lockPanel,
+
+	/* `network.rrc` 载荷 -> 既有文案（0..3 的名称 + 98/99 的驻留后缀）。 */
+	rrcText: function(rrc) {
+		if (!rrc)
+			return '';
+		var labels = [ _('Idle'), _('Connected'), _('Inactive'), _('Invalid') ];
+		var text = (rrc.state === undefined || rrc.state === null)
+			? '' : (labels[Number(rrc.state)] !== undefined ? labels[Number(rrc.state)] : String(rrc.state));
+		if (rrc.camped === 98)
+			text += ' · ' + _('Camped');
+		else if (rrc.camped === 99)
+			text += ' · ' + _('Not camped');
+		return text;
+	},
+
+	/* `network.lock_get` 载荷 -> 锁状态文案（0 = 未锁；取不到保持旧的 '--'）。 */
+	lockStateText: function(lock) {
+		if (!lock)
+			return '--';
+		return lock.lock_type === 0 ? _('Not locked') : _('Locked');
+	},
+
+	/* ---------- B) 无线诊断 ---------- */
+
+	/*
+	 * 诊断区块全部走统一 API 路由（modules/* 的后端解码），页面只做展示映射，
+	 * 不再按标签切 CLI 文本帧、也不再用正则取字段。每个 route() 都不会 reject，
+	 * 失败返回 null，对应那一行显示空值 —— 与迁移前「取不到就留空」一致。
+	 */
+	fetchDiagnostics: function() {
+		return Promise.all([
+			api.route('cell.neighbors'),
+			api.route('beam.ssb'),
+			api.route('modem.mcs'),
+			api.route('modem.nr_txpower'),
+			api.route('qos.get'),
+			api.route('modem.endc'),
+			api.route('ca.get'),
+			api.route('registration.get'),
+			api.route('network.ims')
+		]);
+	},
+
+	/* 后端 4 位登网状态 -> 页面文案（1/5 = 已注册，与旧版一致）。 */
+	registrationText: function(payload) {
+		if (!payload)
+			return '';
+		return (payload.state === 1 || payload.state === 5) ? _('Registered') : _('Not registered');
+	},
+
+	/* `modem.nr_txpower` 第一个载波的读数：999/-0 视为无读数（后端已置空）。 */
+	nrTxPowerRows: function(payload) {
+		var carrier = (payload && payload.carriers && payload.carriers[0]) || {};
+		var dbm = function(value) {
+			return (value === undefined || value === null) ? '' : value + ' dBm';
+		};
+		return {
+			pusch: dbm(carrier.pusch),
+			pucch: dbm(carrier.pucch),
+			freq: (carrier.freq === undefined || carrier.freq === null || carrier.freq === 0)
+				? '' : (Number(carrier.freq) / 1000).toFixed(1) + ' MHz'
+		};
+	},
+
+	/* ---------- 行渲染 ---------- */
+
+	radioDiagnostics: function(payloads) {
+		var ssbInfo = ssbStateFromPayload(payloads.ssb);
+		var mcs = payloads.mcs || {};
+		var txPowerRows = this.nrTxPowerRows(payloads.txPower);
+		var qos = payloads.qos || {};
+		var endc = payloads.endc || {};
+		var ca = payloads.ca || {};
+		var monnc = ((payloads.neighbors || {}).cells || []).map(neighborCard);
+		var nrMonnc = monnc.filter(function(nb) { return nb.rat === 'NR'; });
+		var lteMonnc = monnc.filter(function(nb) { return nb.rat === 'LTE'; });
+		var diagNb = nrMonnc.length ? nrMonnc : lteMonnc;
+		var extra = [ this.ssbPanel(ssbInfo) ];
+		if (diagNb.length)
+			extra.push(this.lockNeighbourSection(
+				(nrMonnc.length ? _('NR neighbour cells (%d)') : _('LTE neighbour cells (%d)')).format(diagNb.length),
+				diagNb));
+		return E('div', {}, [
+			E('div', { 'class': 'mt-grid', 'style': 'margin-top:12px' }, [
+				E('section', { 'class': 'mt-card' }, [
+					E('h3', { 'class': 'mt-card-title' }, _('Radio link details')),
+					this.row(_('Uplink modulation'), c.mcsDetailNode(mcs.uplink)), this.row(_('Downlink modulation'), c.mcsDetailNode(mcs.downlink)),
+					this.row(_('QoS class'), qos.qci ? 'QCI ' + qos.qci : ''), this.row(_('NR PUSCH power'), txPowerRows.pusch),
+					this.row(_('NR PUCCH power'), txPowerRows.pucch), this.row(_('NR transmit frequency'), txPowerRows.freq)
+				]),
+				E('section', { 'class': 'mt-card' }, [
+					E('h3', { 'class': 'mt-card-title' }, _('5G beam and service')),
+					this.row(_('LTE secondary carriers'), payloads.ca ? String(ca.lte_secondary_count) : ''), this.row(_('NSA secondary connections'), payloads.ca ? String(ca.secondary_connection_count) : ''),
+					this.row(_('NR neighbour cells'), ssbInfo ? String(ssbInfo.neighbours.length) : ''),
+					this.row(_('Data registration'), this.registrationText(payloads.registration)),
+					this.row(_('IMS registration'), payloads.ims ? (payloads.ims.registered === 1 ? _('Registered') : payloads.ims.registered !== undefined ? _('Not registered') : '') : ''),
+					this.row(_('LTE-NR dual connectivity'), payloads.endc ? (endc.available === 1 ? _('Enabled') : endc.available !== undefined ? _('Disabled') : '') : '')
+				])
+			])
+		].concat(extra));
+	},
+
+	/* 扫频弹窗的渲染入口（导出以便测试脚本直接驱动，与 radioDiagnostics 同级） */
+	renderCellScan: renderCellScan,
+
+	lockNeighbourSection: function(title, list) {
+		var cards = list.map(function(nb, i) {
+			return c.cellLockCard(nb, i, nb.rat === 'NR' ? 'nr' : 'lte', nb.band, nb.rat === 'NR');
+		});
+		return E('section', { 'class': 'mt-card', 'style': 'margin-top:12px' }, [
+			E('h3', { 'class': 'mt-card-title' }, title),
+			cards.length ? E('div', { 'class': 'mt-lock-cell-grid' }, cards)
+				: E('div', { 'class': 'mt-row' }, [ E('span', { 'class': 'mt-muted' }, ''), E('strong', {}, _('None reported')) ])
+		]);
+	},
+
+	ssbPanel: function(info) {
+		if (!info) {
+			return E('section', { 'class': 'mt-card', 'style': 'margin-top:12px' }, [
+				E('h3', { 'class': 'mt-card-title' }, _('SSB information')),
+				E('div', { 'class': 'mt-row' }, [ E('span', { 'class': 'mt-muted' }, _('NR SSB measurement')), E('strong', {}, _('Not available')) ])
+			]);
+		}
+		var scBand = info.band;
+		var serving = E('div', { 'class': 'mt-ssb-serving' }, [
+			E('div', { 'class': 'mt-ssb-serving-head' }, [
+				E('span', { 'class': 'mt-ssb-serving-title' }, _('Serving cell') + (scBand ? ' · ' + scBand : '')),
+				E('span', { 'class': 'mt-ssb-serving-meta' },
+					(info.pci && info.pci !== '65535' ? 'PCI:' + info.pci : '') +
+					(info.arfcn && info.arfcn !== '4294967295' ? ' · ARFCN:' + info.arfcn : '')
+				)
+			]),
+			c.signalBar(parser.ssbValue(info.rsrp, [ '32767' ]), 'rsrp', 'RSRP'),
+			c.signalBar(parser.ssbValue(info.sinr, [ '32767' ]), 'sinr', 'SINR')
+		]);
+		var beamGrid;
+		if (info.beams.length) {
+			beamGrid = E('div', { 'class': 'mt-beam-grid' }, info.beams.map(function(b) { return beamCard(b); }));
+		} else {
+			beamGrid = E('div', { 'class': 'mt-row' }, [ E('span', { 'class': 'mt-muted' }, _('Serving beams')), E('strong', {}, _('No measurement')) ]);
+		}
+		var nbSection;
+		if (info.neighbours.length) {
+			nbSection = E('div', {}, [
+				E('h4', { 'style': 'margin:14px 0 8px;font-size:13px' }, _('NR neighbour cells (%d)').format(info.neighbours.length)),
+				E('div', { 'class': 'mt-lock-cell-grid' }, info.neighbours.map(function(nb, i) {
+					return c.cellLockCard(nb, i, 'nr', nb.band, true);
+				}))
+			]);
+		} else {
+			nbSection = E('div', { 'style': 'margin-top:10px' }, [ E('h4', { 'style': 'font-size:13px;margin:0 0 6px' }, _('NR neighbour cells')), E('div', { 'class': 'mt-row' }, [ E('span', { 'class': 'mt-muted' }, ''), E('strong', {}, _('None reported')) ]) ]);
+		}
+		return E('section', { 'class': 'mt-card', 'style': 'margin-top:12px' }, [
+			E('h3', { 'class': 'mt-card-title' }, _('SSB information')),
+			serving,
+			E('h4', { 'style': 'margin:12px 0 8px;font-size:13px' }, _('Serving SSB beams (%d)').format(info.beams.length)),
+			beamGrid,
+			nbSection
+		]);
+	},
+
+	/* ---------- A) 渲染 ---------- */
+
+	row: function(label, value) {
+		// value 可能为富 DOM 节点（mcsDetailNode / signalBar），直接渲染；标量才包 <strong>
+		var valueNode = c.isNode(value) ? value : E('strong', {}, (value == null || value === '') ? '--' : String(value));
+		return E('div', { 'class': 'mt-row' }, [ E('span', { 'class': 'mt-muted' }, label), valueNode ]);
+	},
+
+	// 渐进渲染：骨架屏立即显示，数据到达后整体替换（后端慢不挡前端）
+	render: function() {
+		var self = this;
+		var holder = E('div', { 'class': 'mt-view' });
+		holder.appendChild(c.skeletonPage(5));
+		this.contentReady = this.pending.then(function(data) {
+			holder.replaceChildren(self.renderPage(data));
+			return data;
+		}, function(err) {
+			holder.replaceChildren(E('div', { 'class': 'mt-page' }, [
+				E('div', { 'class': 'alert-message error' }, String(err && err.message || err))
+			]));
+		});
+		return holder;
+	},
+
+	renderPage: function(results) {
+		var signal = results[0] || {}, cell = results[1] || {}, registration = results[2] || {};
+		var network = results[3] || {}, rrc = results[4] || {}, temperaturePayload = results[5] || {};
+		var syscfg = results[6] || {}, c5g = results[7] || {}, nrCap = results[8] || {};
+		var lteLock = results[9], nrLock = results[10];
+		var rrcState = this.rrcText(rrc);
+		var registered = registration.state === 1 || registration.state === 5;
+		var opInfo = parser.operatorInfo(network.operator);
+		var operatorName = opInfo.name;
+		var temperature = (temperaturePayload.peak === undefined || temperaturePayload.peak === null)
+			? '' : String(temperaturePayload.peak);
+		// 「Technical details」折叠块：这里以前直接倾倒整段 `mt5700m-at network`
+		// 文本帧（^HCSQ/^MONSC/^RRCSTAT/+CEREG/+COPS 加温度行）。文本帧已不再
+		// 经过前端，改为倾倒本页消费的路由载荷——同一批读数，领域模型形态。
+		var technical = [
+			[ 'signal.get', signal ], [ 'cell.get', cell ], [ 'registration.get', registration ],
+			[ 'network.get', network ], [ 'network.rrc', rrc ], [ 'system.temperature', temperaturePayload ],
+			[ 'network.lock_get (lte)', lteLock ], [ 'network.lock_get (nr)', nrLock ]
+		].map(function(pair) {
+			return '===== api.' + pair[0] + ' =====' + '\n' +
+				JSON.stringify(pair[1] === undefined ? null : pair[1], null, 2);
+		}).join('\n' + '\n');
+		// 仪表量程按 label 取（见下）。RAT 以服务小区为准（旧版 cell.rat），
+		// 读数来自 signal 载荷。
+		cell.metrics = signalMetrics(signal, cell.sysmode);
+		// 仪表量程表：按 label 查表，而不是按下标硬编码。上面 signalMetrics
+		// 给出的读数随 RAT 变化（NR: RSRP/RSRQ/SINR，LTE: RSRP/RSRQ/RSSI，
+		// WCDMA: RSCP/RXLEV/ECIO），下标固定会在 LTE/WCDMA 下量程错配、
+		// 指针顶到刻度外。量程取自 MT5700M 手册的典型取值区间。
+		var gaugeScale = [
+			{ label: 'RSRP', unit: 'dBm', min: -120, max: -70, cls: 'accent' },
+			{ label: 'RSRQ', unit: 'dB',  min: -25,  max: -3,  cls: 'accent' },
+			{ label: 'SINR', unit: 'dB',  min: -10,  max: 30,  cls: 'accent' },
+			{ label: 'RSSI', unit: 'dBm', min: -120, max: -60, cls: 'accent' },
+			{ label: 'RSCP', unit: 'dBm', min: -120, max: -25, cls: 'accent' },
+			{ label: 'RXLEV', unit: 'dBm', min: -120, max: -60, cls: 'accent' },
+			{ label: 'ECIO', unit: 'dB',  min: -25,  max: 10,  cls: 'accent' }
+		];
+		var lteLockState = this.lockStateText(lteLock);
+		var nrLockState = this.lockStateText(nrLock);
+		// `network.syscfg`（modules/network 解码 ^SYSCFGEX?）：字段缺失时的回退值
+		// 与旧版 `|| 默认` 逐条相同，所以取不到配置时下拉仍落在手册默认档。
+		var radioCode = syscfg.acqorder || '';
+		var wcdmaMask = syscfg.band || '3FFFFFFF';
+		var roamValue = (syscfg.roam === undefined || syscfg.roam === null) ? '1' : String(syscfg.roam);
+		var serviceDomain = (syscfg.srvdomain === undefined || syscfg.srvdomain === null) ? '2' : String(syscfg.srvdomain);
+		var lteMask = syscfg.lteband || '7FFFFFFFFFFFFFFF';
+		var radioLabels = {
+			'00': _('Automatic'), '01': 'GSM', '02': 'WCDMA', '03': 'LTE', '08': '5G NR',
+			'0302': 'LTE / WCDMA', '030201': 'LTE / WCDMA / GSM',
+			'0803': '5G NR / LTE', '080302': '5G NR / LTE / WCDMA'
+		};
+		var radioMode = radioLabels[radioCode] ? radioLabels[radioCode] + ' · ' + radioCode : radioCode;
+		var radioModeSelect = c.select([
+			['080302',_('5G NR / LTE / WCDMA (recommended)')],['0803',_('5G NR / LTE')],['08',_('5G NR only')],
+			['03',_('LTE only')],['0302',_('LTE / WCDMA')],['02','WCDMA']
+		], radioCode || '080302');
+		var roaming = c.select([['0',_('Home network only')],['1',_('Allow roaming')]], roamValue);
+		var service = c.select([['1',_('Data service only')],['2',_('Voice and data service')]], serviceDomain);
+		var wcdmaBands = c.bandChecklist([['400000','B1 · 2100 MHz'],['2000000000000','B8 · 900 MHz']], wcdmaMask, '3FFFFFFF');
+		var lteBands = c.bandChecklist([
+			['1','B1'],['4','B3'],['10','B5'],['80','B8'],['200000000','B34'],
+			['2000000000','B38'],['4000000000','B39'],['8000000000','B40'],['10000000000','B41']
+		], lteMask, '7FFFFFFFFFFFFFFF');
+		// `network.c5goption`（^C5GOPTION? 三元组）→ 页面预设：与旧版 join 前三个
+		// 字段后的判断逐字相同（'1,0,1' = Option 2，'0,1,0' = Option 3，其余 = 2+3）；
+		// 三元组不完整（或路由取不到）时按旧版同样落到 Option 2 + 3。
+		var accessCode = (c5g.nr_sa_support_flag === undefined || c5g.nr_dc_mode === undefined || c5g.gc_access_mode === undefined)
+			? '' : [ c5g.nr_sa_support_flag, c5g.nr_dc_mode, c5g.gc_access_mode ].join(',');
+		var accessPreset = c.select([
+			['option23',_('SA + NSA (Option 2 + 3)')],['option2',_('SA only (Option 2)')],['option3',_('NSA only (Option 3)')]
+		], accessCode === '1,0,1' ? 'option2' : accessCode === '0,1,0' ? 'option3' : 'option23');
+		// `modem.nr_capability`（^NRRCCAPQRY 3/2/5）：CA 是布尔、VoNR 是 0..3、DSS 是
+		// 两个 0/1；缺失时与旧版一样留空/落 '0'，下拉不会凭空变成 Enabled。
+		var ca = nrCap.ca === true ? '1' : nrCap.ca === false ? '0' : '';
+		var vonr = (nrCap.vonr === undefined || nrCap.vonr === null) ? '' : String(nrCap.vonr);
+		var dss = nrCap.dss || null;
+		var caEnabled = c.select([['1',_('Enabled')],['0',_('Disabled')]], ca);
+		var vonrMode = c.select([['0',_('Disabled')],['1','FR1 VoNR'],['2','FR2 VoNR'],['3','FR1 + FR2 VoNR']], vonr);
+		var dssRate = c.select([['0',_('Keep factory capability')],['1',_('Force capability off')]], dss ? String(dss.rateMatchingLTE) : '0');
+		var dssDmrs = c.select([['0',_('Keep factory capability')],['1',_('Force capability off')]], dss ? String(dss.additionalDMRS) : '0');
+		var diagnosticHost = E('div', { 'class': 'mt-diag-host' }, E('div', { 'class': 'alert-message notice' }, _('Loading detailed radio diagnostics…')));
+		var self = this;
+		window.setTimeout(function() {
+			if (!document.body.contains(diagnosticHost)) return;
+			self.fetchDiagnostics().then(function(results) {
+				var payloads = {
+					neighbors: results[0], ssb: results[1], mcs: results[2], txPower: results[3], qos: results[4],
+					endc: results[5], ca: results[6], registration: results[7], ims: results[8]
+				};
+				if (document.body.contains(diagnosticHost))
+					dom.content(diagnosticHost, self.radioDiagnostics(payloads));
+			}, function(err) {
+				if (document.body.contains(diagnosticHost))
+					dom.content(diagnosticHost, E('div', { 'class': 'alert-message warning' }, err.message || String(err)));
+			});
+		}, 0);
+		var radioControls = E('section', { 'class': 'mt-card', 'style': 'margin-top:20px' }, [
+			E('div', { 'class': 'mt-card-head' }, [
+				E('h3', { 'class': 'mt-card-title' }, _('Radio preferences')),
+				E('p', { 'class': 'mt-card-desc' }, _('5G service capabilities reported by the MT5700M. Keep the carrier defaults unless compatibility troubleshooting requires a change.'))
+			]),
+			E('div', { 'class': 'mt-grid' }, [
+				c.card(_('Network access policy'), _('Select radio priority, roaming and the service domain. These values are applied together as required by the MT5700M manual.'), [
+					c.formRow(_('Radio access order'), radioModeSelect),
+					c.formRow(_('Roaming policy'), roaming),
+					c.formRow(_('Service domain'), service)
+				]),
+				c.bandPanel(_('WCDMA bands'), _('Select the WCDMA bands the module may use.'), wcdmaBands),
+				c.bandPanel(_('LTE bands'), _('Select the LTE bands the module may use.'), lteBands),
+				E('section', { 'class': 'mt-card' }, [
+				/*
+				 * mt-advanced-actions--stacked：说明文字在上、主按钮在下的竖排。
+				 *
+				 * 原先这里是内联 `style: 'flex-direction:column;align-items:stretch'`。
+				 * 移动端 style.css 有一条 `.mt-advanced-actions > * { flex: 1 1 140px }`
+				 * （本意是让 row 方向的按钮组「至少 140px 宽」），它同样命中了这个
+				 * 竖排容器 —— 主轴变成纵向，flex-basis 就作用在**高度**上，
+				 * 结果「应用网络与频段设置」这个单行按钮在手机上被撑成
+				 * 264×140 的方块（实测 rect）。
+				 *
+				 * 现在竖排语义收进 class，CSS 里对 --stacked 单独声明
+				 * `flex: 0 0 auto`，高度回到内容高度，横向仍铺满。
+				 */
+				E('div', { 'class': 'mt-advanced-actions mt-advanced-actions--stacked' }, [
+					E('p', { 'class': 'mt-scan-note' }, _('Keep all bands selected for normal use. Restricting bands can prevent registration when travelling.')),
+					E('button', { 'type': 'button', 'class': 'btn cbi-button-apply', 'click': function() {
+						var selectedWcdma = c.selectedBandMask(wcdmaBands, '3FFFFFFF');
+						var selectedLte = c.selectedBandMask(lteBands, '7FFFFFFFFFFFFFFF');
+						if (!selectedWcdma || !selectedLte)
+							return ui.addNotification(null, E('p', {}, _('Select at least one WCDMA band and one LTE band.')), 'warning');
+						c.confirmRoute(_('Change network policy'), _('The module may lose service if the selected radio technology or bands are unavailable.'), 'network.syscfg_set', {
+							acqorder: radioModeSelect.value, band: selectedWcdma,
+							roam: Number(roaming.value), srvdomain: Number(service.value), lteband: selectedLte
+						}, true);
+					} }, _('Apply network and band settings'))
+				])
+			]),
+				c.card(_('5G access architecture'), _('Choose whether the module may use standalone 5G, non-standalone 5G, or both.'), [
+					c.formRow(_('5G access mode'), accessPreset),
+					E('div', { 'class': 'mt-scan-note' }, _('The MT5700M manual requires an airplane-mode cycle before this setting and a module restart afterwards. The cycle is handled automatically; restart when ready.')),
+					c.actionBar(c.btn(_('Apply 5G access mode'), function() {
+						c.confirmRoute(_('Change 5G access mode'), _('Mobile service will disconnect briefly while the module enters airplane mode.'), 'network.c5goption_set', c5gFlags(accessPreset.value), true);
+					}))
+				]),
+				c.card(_('5G service capabilities'), _('Carrier aggregation and voice capability advertised by the module.'), [
+					c.stateRow(_('Current radio mode'), radioMode),
+					c.formRow(_('NR carrier aggregation capability'), caEnabled),
+					c.actionBar(c.btn(_('Apply carrier aggregation'), function() {
+						c.confirmRoute(_('NR carrier aggregation capability'), _('Apply the selected carrier aggregation capability?'), 'modem.nr_capability_set', { ca: caEnabled.value === '1' }, true);
+					})),
+					c.formRow(_('VoNR mode'), vonrMode),
+					c.actionBar(c.btn(_('Apply VoNR mode'), function() {
+						c.confirmRoute(_('VoNR mode'), _('Apply the selected VoNR capability?'), 'modem.nr_capability_set', { vonr: Number(vonrMode.value) }, true);
+					}))
+				]),
+				c.card(_('DSS compatibility'), _('Restrict optional DSS capabilities only when required by the mobile network.'), [
+					c.formRow(_('DSS rate matching capability'), dssRate),
+					c.formRow(_('Additional DMRS capability'), dssDmrs),
+					E('div', { 'class': 'mt-scan-note' }, _('Force capability off is a compatibility override. Keep the factory capability for normal operation.')),
+					c.actionBar(c.btn(_('Apply DSS settings'), function() {
+						c.confirmRoute('DSS', _('Apply the selected DSS capability restrictions?'), 'modem.nr_capability_set', {
+							dss: { rateMatchingLTE: Number(dssRate.value), additionalDMRS: Number(dssDmrs.value) }
+						}, true);
+					}))
+				])
+			])
+		]);
+
+		return E('div', { 'class': 'mt-page' }, [
+			c.cssLink(),
+			// 页面顶部原有的 `alert-message warning`（报 CLI 帧的 stderr）随两处
+			// 文本帧一起删除：本页已无 CLI 调用，取不到数据就是对应控件留空/
+			// 回落默认档，与其它路由消费方一致（见 migration.md 的失败路径说明）。
+			c.hero(_('NETWORK AND CELL'), operatorName, _('Serving-cell and registration information reported by the modem.'), [
+				E('div', { 'class': 'mt-conn-state' }, [
+					c.svgStatusPulse(registered ? 'ok' : 'bad', 18),
+					c.badge(registered ? _('Registered') : _('Not registered'), registered ? 'ok' : 'warn')
+				])
+			], null, c.svgTower({ active: registered, status: registered ? 'ok' : 'bad' })),
+			// 仪表量程按 label 取，而不是按下标硬编码：cell.metrics
+			// 随 RAT 变化（NR 是 RSRP/RSRQ/SINR，LTE 是 RSRP/RSRQ/RSSI，
+			// WCDMA 是 RSCP/RXLEV/ECIO），下标固定会在 LTE/WCDMA 下把量程配错，
+			// 指针会顶到刻度外。unit 同样由 parser 提供，不在此硬编码。
+			// 原实现调用的是 c.circularGaugeCard()，该函数在组件库中根本不存在
+			// （导出名是 svgCircularGauge），抛 TypeError 中断整个页面渲染。
+			E('div', { 'class': 'mt-circular-gauges-grid', 'style': 'margin-bottom:18px' },
+				gaugeScale
+					.filter(function(g) {
+						return cell.metrics.some(function(m) { return m.label === g.label; });
+					})
+					.map(function(g) {
+						var m = cell.metrics.filter(function(x) { return x.label === g.label; })[0];
+						return c.svgCircularGauge(
+							parseFloat(m.value), g.min, g.max,
+							' ' + (m.unit || g.unit),
+							_(g.label === 'Temperature' ? 'Temperature' : g.label),
+							g.cls
+						);
+					})
+					.concat([
+						c.svgCircularGauge(parseFloat(temperature), 20, 80, '°C',
+							_('Temperature'), 'accent')
+					])
+			),
+			E('div', { 'class': 'mt-grid' }, [
+				E('section', { 'class': 'mt-card' }, [
+					E('h3', { 'class': 'mt-card-title' }, _('Serving cell')),
+					this.row(_('Radio access'), cell.sysmode || signal.sysmode),
+					this.row('MCC / MNC', cell.mcc && cell.mnc ? '%s / %s'.format(cell.mcc, cell.mnc) : ''),
+					this.row('ARFCN', cell.channel),
+					this.row('PCI', cell.pci),
+					this.row(_('Cell ID'), cell.cid),
+					this.row('TAC / LAC', cell.lac),
+					cell.scs !== undefined ? this.row(_('SCS type'), cell.scs + ' · ' + ([ '15', '30', '60', '120', '240' ][Number(cell.scs)] || '?') + ' kHz') : null,
+					this.row(_('Registration'), registered ? (registration.state === 5 ? _('Roaming') : _('Home network')) : _('Not registered'))
+				]),
+				E('section', { 'class': 'mt-card' }, [
+					E('h3', { 'class': 'mt-card-title' }, _('Radio status')),
+					this.row(_('Operator'), operatorName),
+					this.row(_('RRC state'), rrcState),
+					this.row(_('LTE Lock'), lteLockState),
+					this.row(_('NR Lock'), nrLockState)
+				])
+			]),
+			diagnosticHost,
+			E('div', { 'class': 'mt-advanced-actions' }, [
+				E('button', { 'class': 'btn cbi-button-action', 'click': function() { window.location.reload(); } }, _('Refresh status')),
+				E('button', { 'class': 'btn cbi-button', 'click': function() {
+					return ui.showModal(_('Confirm Action'), [
+						E('p', {}, _('Cell scan may take some time and can briefly increase modem load.')),
+						E('div', { 'class': 'right' }, [ E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')), ' ', E('button', { 'class': 'btn cbi-button-apply', 'click': function() {
+							ui.hideModal();
+							/*
+							 * 扫频是后端的长任务（几分钟）。弹窗的取数全部走统一路由：
+							 * 服务小区 cell.get、读数 signal.get、邻区 cell.neighbors、
+							 * 扫描状态 cell.scan_result；没有结果时顺带 cell.scan_start
+							 * （旧版由 `mt5700m-at cellscan` 动词做同一件事：有 raw 就只
+							 * 呈现，不再扫）。扫完重取一次服务小区并重绘，邻区沿用首屏
+							 * 那一份 —— 与旧版重取一次 CLI 帧、复用 neighbors 相同。
+							 *
+							 * `api.route()` 不 reject（取不到返回 null），所以「后端完全
+							 * 不可达」按旧版的失败路径处理：danger 通知，不弹窗。
+							 */
+							Promise.all([ api.route('cell.get'), api.route('signal.get'), api.route('cell.neighbors'), api.route('cell.scan_result') ]).then(function(all) {
+								var cell = all[0], signal = all[1], neighbors = all[2], scan = all[3];
+								if (!cell && !signal && !neighbors && !scan) {
+									ui.addNotification(null, E('p', {}, _('Cell scan failed.')), 'danger');
+									return;
+								}
+								var showScan = function(cell, signal) {
+									ui.showModal(_('Cell Scan'), [ renderCellScan(cell, signal, neighbors), E('div', { 'class': 'right', 'style': 'margin-top:14px' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close'))) ]);
+								};
+								if (scan && !scan.running && !scan.raw)
+									api.route('cell.scan_start');
+								showScan(cell, signal);
+								var waited = 0;
+								var poll = window.setInterval(function() {
+									waited += 3000;
+									api.route('cell.scan_result').then(function(next) {
+										// 取不到结果说明后端不可达，别再空转。
+										if (!next || !next.running || waited > 600000) {
+											window.clearInterval(poll);
+											if (next && !next.running)
+												Promise.all([ api.route('cell.get'), api.route('signal.get') ]).then(function(both) {
+													// 重取失败就保持弹窗原内容（旧版失败分支同样什么都不做）。
+													if (both[0] || both[1]) showScan(both[0], both[1]);
+												});
+										}
+									});
+								}, 3000);
+							});
+						} }, _('Continue')) ])
+					]);
+				} }, _('Cell Scan'))
+			]),
+			c.details(_('Technical details'), null, E('pre', { 'class': 'mt-raw' }, technical || _('No response.'))),
+			radioControls,
+			E('section', { 'class': 'mt-card', 'style': 'margin-top:20px' }, [
+				E('div', { 'class': 'mt-card-head' }, [
+					E('h3', { 'class': 'mt-card-title' }, _('Frequency and cell selection')),
+					E('p', { 'class': 'mt-card-desc' }, _('Advanced controls for limiting LTE or 5G NR bands, frequencies and cells. Leave these unlocked for normal automatic network selection.'))
+				])
+			]),
+			E('div', { 'class': 'mt-grid' }, [ this.lockPanel(_('LTE network'), 'lte', lteLock), this.lockPanel(_('5G NR network'), 'nr', nrLock) ])
+		]);
+	},
+
+	handleSave: null,
+	handleSaveApply: null,
+	handleReset: null
+});

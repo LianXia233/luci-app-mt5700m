@@ -1,0 +1,28 @@
+# 强制 shell/python/配置脚本使用 LF，避免 CRLF 导致 BusyBox ash / procd 启动失败
+* text=auto
+*.sh text eol=lf
+*.py text eol=lf
+luci-app-mt5700m/root/** text eol=lf
+# Compiled daemon executable must not pass through text newline conversion.
+luci-app-mt5700m/root/usr/bin/at-webserver binary
+mt5700webui-openwrt-server/at-webserver/files-py/** text eol=lf
+*.js text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.json text eol=lf
+*.png binary
+*.gz binary
+*.woff binary
+*.woff2 binary
+*.ico binary
+*.rs text eol=lf
+
+# Build-system files: OpenWrt's kbuild parses Makefiles line-wise; a stray
+# CR makes it silently drop variables (e.g. PKG_VERSION) and the package
+# ships with the wrong version.
+Makefile text eol=lf
+*.mk text eol=lf
+Cargo.toml text eol=lf
+Cargo.lock text eol=lf
