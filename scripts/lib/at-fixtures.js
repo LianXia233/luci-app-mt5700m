@@ -296,6 +296,59 @@ function sessionPayload(facts) {
 	return payload;
 }
 
+/* ------------------------------------------------------- 系统页（system）
+ *
+ * `mt5700m-at system` 的 22 段读帧。与 sessionFacts 同一套模式：事实对象 →
+ * CLI 文本帧。prove-system-parity.js（渲染逐字比对）与 smoke-minified-luci.js
+ * （压缩后冒烟）都从这里取帧，两处用到的读数不可能漂移。
+ *
+ * 这一刀只迁 6 条**写入**，读帧仍是 CLI（`api.atSystem()`），因此 FRAME 是**
+ * 两侧共有的输入** —— 它同时也是「渲染结果必须逐字不变」的自变量。
+ */
+const SYSTEM_FACTS = {
+	imei: '862853030012345', revision: 'MT5700M-2.5.0',
+	buildDate: 'Aug 15 2025 10:20:30', software: 'MT5700M-2.5.0', hardware: 'MT5700M-HW-1.0',
+	sim: 'READY', iccid: '89860312345678901234', imsi: '460011234567890',
+	number: '+8613800138000',
+	dsambr: '1,1000000,200000', cops: '0,0,"CHN-UNICOM",7',
+	nwtime: '2025/08/15 12:00:00', cfun: '1', led: '1',
+	hvsst: '1,1,0', scichg: '0,0', chiptemp: '451,443',
+	fotamode: '0,1,0,1', fotastate: '30', fotadlq: '"update.bin",100,50',
+	thermalStatus: '1,2,3,4,5,2,7',
+	thermalPara: '60,70,65,80,75,90,85,100,95',
+	thermalLogSw: '1,0'
+};
+const systemFacts = (over) => Object.assign({}, SYSTEM_FACTS, over || {});
+
+function systemCliFrame(f) {
+	return textFrame([
+		[ 'Identity', 'ATI', (function () {
+			return [ 'Manufacturer: Quectel', 'Model: MT5700M',
+				'Revision: ' + f.revision, 'IMEI: ' + f.imei ].join('\n');
+		})() ],
+		[ 'Version', 'AT^VERSION?', [ '^VERSION:BDT: ' + f.buildDate,
+			'^VERSION:EXTS: ' + f.software, '^VERSION:EXTH: ' + f.hardware ].join('\n') ],
+		[ 'SIM', 'AT+CPIN?', '+CPIN: ' + f.sim ],
+		[ 'ICCID', 'AT^ICCID?', '^ICCID: ' + f.iccid ],
+		[ 'IMSI', 'AT+CIMI', f.imsi ],
+		[ 'Subscriber number', 'AT+CNUM', f.number ? '+CNUM: "' + f.number + '",145' : '+CME ERROR: 22' ],
+		[ 'Subscription rate', 'AT^DSAMBR?', '^DSAMBR: ' + f.dsambr ],
+		[ 'Operator', 'AT+COPS?', '+COPS: ' + f.cops ],
+		[ 'Network time', 'AT^NWTIME?', '^NWTIME: ' + f.nwtime ],
+		[ 'Function level', 'AT+CFUN?', '+CFUN: ' + f.cfun ],
+		[ 'LED', 'AT^LEDSWITCH?', '^LEDSWITCH: ' + f.led ],
+		[ 'SIM activation', 'AT^HVSST?', '^HVSST: ' + f.hvsst ],
+		[ 'SIM slot', 'AT^SCICHG?', '^SCICHG: ' + f.scichg ],
+		[ 'Temperature', 'AT^CHIPTEMP?', '^CHIPTEMP: ' + f.chiptemp ],
+		[ 'FOTA mode', 'AT^FOTAMODE?', '^FOTAMODE: ' + f.fotamode ],
+		[ 'FOTA state', 'AT^FOTASTATE?', '^FOTASTATE: ' + f.fotastate ],
+		[ 'FOTA progress', 'AT^FOTADLQ', '^FOTADLQ: ' + f.fotadlq ],
+		[ 'Thermal status', 'AT^THERMLDAUTOSTATUS?', '^THERMLDAUTOSTATUS: ' + f.thermalStatus ],
+		[ 'Thermal thresholds', 'AT^THERMLDAUTOPARA?', '^THERMLDAUTOPARA: ' + f.thermalPara ],
+		[ 'Thermal log', 'AT^THERMLDLOGSW?', '^THERMLDLOGSW: ' + f.thermalLogSw ]
+	]);
+}
+
 module.exports = {
 	round1, ord,
 	decodeSignal, decodeCell, decodeRegistration, decodeRrc, decodeOperator, decodeTemps,
@@ -304,4 +357,5 @@ module.exports = {
 	temperatureText, textFrame,
 	SENSORS, SENSOR_KEYS,
 	sessionFacts, advancedSessionFrame, sessionPayload,
+	SYSTEM_FACTS, systemFacts, systemCliFrame,
 };

@@ -357,6 +357,15 @@ function collect(node, pred, out) {
 	return out;
 }
 function buttons(node) { return collect(node, n => n.tagName === 'BUTTON'); }
+/* modal.children 是数组；collect 已支持数组入参，这里只补语义名 */
+function selectsIn(nodes) { return collect(nodes, n => n.tagName === 'SELECT'); }
+function inputsIn(nodes) { return collect(nodes, n => n.tagName === 'INPUT'); }
+/* 最近一次 showModal：弹窗里的控件、标题、按钮都从这里取 */
+function lastModal(scope) {
+	const modal = scope.ui.modals[scope.ui.modals.length - 1];
+	if (!modal) throw new Error('no modal open');
+	return modal;
+}
 /* 按可见文字找按钮（LuCI 里按钮文字就是 E(...) 的子文本） */
 function findButton(node, text) {
 	return buttons(node).filter(b => textOf(b) === String(text))[0] || null;
@@ -388,6 +397,7 @@ module.exports = {
 	El, StubEvent, makeApi, makeScope, loadModule, loadSide,
 	serialize, lines, countTag, textOf,
 	slotEntries, slotValues, slotsOf,
-	collect, buttons, findButton, pressButton, modalButton, modalTitle,
-	tick
+	collect, buttons, findButton, pressButton,
+	selectsIn, inputsIn, lastModal,
+	modalButton, modalTitle, tick
 };

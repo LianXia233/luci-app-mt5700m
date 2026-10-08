@@ -18,9 +18,14 @@
  *   - 概览页：零 CLI，详情读 qos.get / sim.number / network.pdp_contexts /
  *     network.session；
  *   - 连接页：拨号设置仍走 CLI 动词（未迁移），会话面板读 network.session，
- *     「清空计数」走 network.flow_clear 路由。
+ *     「清空计数」走 network.flow_clear 路由；
+ *   - 系统页：22 段读帧仍是 `mt5700m-at system`（下一刀才切），6 条**写入**
+ *     已走 network.radio_set / sim.slot_set / modem.reset / system.factory_reset /
+ *     sim.pin_apply / modem.imei_set，保留的 7 条（LED / SIM 激活 / 温控表 /
+ *     FOTA 三步）仍走动词。
  * 断言路由调用面、页面上的关键文字（盘面读数、无线偏好下拉、会话侧栏、概览页的
- * APN/QCI/速率/号码）与一条写路径（短信发送）。退出码 0 = 通过。
+ * APN/QCI/速率/号码、系统页的身份/温度/运营商）与写路径（短信发送、清空计数、
+ * 系统页四条写入）。退出码 0 = 通过。
  */
 
 const fs = require('fs');
@@ -231,6 +236,58 @@ async function connectionPage() {
 	check('连接页：确认后 900 ms 重载页面', side.scope.window.pending.some(p => p.delay === 900));
 }
 
+/* ------------------------------------------------------------ 系统页 */
+async function systemPage() {
+	const api = lib.makeApi({
+		'at:system': { stdout: fixtures.systemCliFrame(fixtures.systemFacts({})), stderr: '' }
+	});
+	api.atSystem = () => api.at([ 'system' ]);
+	const side = lib.loadSide(read, api, RES + '/view/mt5700m/system.js');
+	side.view.load();
+	const holder = side.view.render();
+	await side.view.contentReady;
+	for (let i = 0; i < 20; i++) await lib.tick();
+	const text = lib.textOf(holder);
+	const at = api.calls.filter((c) => c.kind === 'at').map((c) => c.args.join(' '));
+	check('系统页：22 段读帧仍是 mt5700m-at system（下一刀才切）',
+		sameJson(at, [ 'system' ]), JSON.stringify(at));
+	/*
+	 * 不断言 `_('%d%% complete')` 的字面形式：luci-stub 的 format 是
+	 * `replace(/%[sd]/g)`，不处理 `%%` 转义，会得到 `50%% complete`。
+	 * 真实 LuCI 是否转义待核（与本次迁移无关），因此这里只钉住不依赖该
+	 * 转义的读数。
+	 */
+	check('系统页：盘面读数来自读帧（IMEI / ICCID / 峰值温度 / 运营商 / 固件版本）',
+		text.indexOf('862853030012345') !== -1 && text.indexOf('89860312345678901234') !== -1
+		&& text.indexOf('45.1') !== -1 && text.indexOf('CHN-UNICOM') !== -1
+		&& text.indexOf('MT5700M-2.5.0') !== -1);
+	/* 四条已迁完成功的写入：按按钮 → 确认 → 只应发出一条 routeCall */
+	const fire = async function (buttonText, applyText, prepare) {
+		api.calls.length = 0;
+		lib.pressButton(holder, buttonText);
+		if (prepare) prepare(lib.lastModal(side.scope).children);
+		lib.modalButton(side.scope, applyText);
+		for (let i = 0; i < 4; i++) await lib.tick();
+		const calls = api.calls.filter((c) => c.kind === 'routeCall');
+		return { name: calls.length === 1 ? calls[0].name : null,
+			pure: api.calls.length > 0 && api.calls.every((c) => c.kind === 'routeCall'),
+			calls: api.calls };
+	};
+	const cases = [
+		[ 'Enter airplane mode', 'Continue', null, 'network.radio_set', '飞行模式切换' ],
+		[ 'Switch SIM slot', 'Apply', null, 'sim.slot_set', '切换卡槽' ],
+		[ 'Restart Module', 'Continue', null, 'modem.reset', '重启模块' ],
+		[ 'Restore factory settings', 'Restore factory settings',
+			(nodes) => { lib.inputsIn(nodes)[0].value = 'RESET'; },
+			'system.factory_reset', '工厂复位' ]
+	];
+	for (const c of cases) {
+		const r = await fire(c[0], c[1], c[2]);
+		check('系统页：' + c[4] + '走 ' + c[3] + '（零 CLI）',
+			r.name === c[3] && r.pure, JSON.stringify(r.calls));
+	}
+}
+
 (async function () {
 	if (!fs.existsSync(path.join(ROOT, RES))) {
 		console.error('压缩树不存在：' + ROOT + '\n先跑 bash scripts/minify-luci-frontend.sh ' + ROOT);
@@ -241,7 +298,8 @@ async function connectionPage() {
 	await smsPage();
 	await statusPage();
 	await connectionPage();
-	console.log(failures === 0 ? '\nSMOKE OK：压缩后的无线页 / 短信页 / 概览页 / 连接页照常读路由、照常发送' : '\nSMOKE FAIL：' + failures + ' 项');
+	await systemPage();
+	console.log(failures === 0 ? '\nSMOKE OK：压缩后的无线页 / 短信页 / 概览页 / 连接页 / 系统页照常读路由、照常发送' : '\nSMOKE FAIL：' + failures + ' 项');
 	process.exit(failures === 0 ? 0 : 1);
 })().catch(function (err) {
 	console.error('渲染失败：' + (err && err.stack || err));
