@@ -81,18 +81,31 @@ system.fota`；api.js 的 `atSystem` 速记一并删除。渲染逐字未变：
 | SIM 热插拔写 | `sim.hotplug_set` 已存在 | ✅ 可直接迁移 |
 | 温控写 `AT^THERMAUTOFUN=` | `system.thermal_set` 已存在 | ✅ 可直接迁移 |
 
-### 1.2 `connection.js` — 8 处（1 读 + 7 写）
+### 1.2 `connection.js` — 8 处（1 读 + 7 写，施工图已核实 2026-10-08）
 
-| 位置 | 缺口 |
-|---|---|
-| 设置读帧 `advanced connection-settings` | 读侧基本已覆盖 |
-| 新增 PDP `AT+CGDCONT=` | **无写路由** |
-| PDP 激活/去激活 `AT+CGACT=` | **无写路由** |
-| 删除 PDP `AT+CGDCONT=<cid>` | **无写路由** |
-| 拨号设置写 `AT^SETAUTODIAL=` | 只有 QUERY |
-| 直通写（TDCFG 系列） | 待确认命令 |
-| PostRoute `TDCFG PostRoute` + `AT^IPFILTERSWITCH=0` | **无写路由**；`IPFILTERSWITCH` 仅存在于 `cli.rs` |
-| DMZ `TDCFG dmz "<ip>"`（含 IPv4 校验） | **无写路由**；校验需从 `cli.rs` 搬进模块 |
+读侧现状：`network.autodial` / `network.pdp_contexts` / `network.session` /
+`TDCFG_QUERY` / `CGDCONT_QUERY` / `CGACT_QUERY` 均已在 modules/network；
+`network.flow_clear` 前端已接（连接页第 8 处已消）。写侧缺口与
+`cli.rs` 实发 AT 串（逐条核实）：
+
+| # | CLI 动词 → 目标路由 | AT 串（cli.rs 原样） | 校验规则（须搬进模块） |
+|---|---|---|---|
+| 1 | `pdp-set` → `network.pdp_set {cid,type,apn}` | `AT+CGDCONT=<cid>,"<type>","<apn>"` | cid 1–11；type ∈ IP/IPV6/IPV4V6；`safe_at_field(apn)` 且 ≤99 |
+| 2 | `pdp-remove` → `network.pdp_remove {cid}` | `AT+CGDCONT=<cid>` | cid 1–11 |
+| 3 | `pdp-state` → `network.pdp_state {state,cid}` | `AT+CGACT=<state>,<cid>` | state/cid 同上 |
+| 4 | `autodial` → `network.autodial_set {...}` | `AT^SETAUTODIAL=0`；开启时 `AT^SETAUTODIAL=<1>,<mode>,"<proto>"[,"<apn>"[,"<user>"[,"<pass>",<auth>]]]`（**尾部空字段必须省略**，MT5700M 拒绝） | enable 0/1；mode 0–2；proto 同 PDP；auth 0–2；apn≤99 / user≤31 / pass≤31，均 `safe_at_field` |
+| 5 | `direct-ip` → `network.direct_ip_set {enabled}` | `AT^SETDIRECTIP=<0\|1>`（不是 TDCFG 系列） | 0/1 |
+| 6 | `postroute` → `network.postroute_set {mode}` | mode=2：`AT^TDCFG="infcfg","PostRoute",2`；mode=1：同串 `,1` 后追加 `AT^IPFILTERSWITCH=0`（两笔，首笔失败即止） | mode ∈ 1/2 |
+| 7 | `dmz` → `network.dmz_set {host}` | `AT^TDCFG="infcfg","dmz","<v>"`（`0` 即关闭，同一串） | `0` 或 4 段 IPv4（每段数字 ≤255，禁止空段）；前端另有「选中主机暴露告警」文案，保留 |
+
+注意：`IPFILTERSWITCH` / `SETDIRECTIP` 动词目前仅存在于 `cli.rs`，
+commands.rs 需新增常量与构造器；`SETAUTODIAL_QUERY` 已有，写构造器需新增。
+可复用 `qos`/`system` 刀的模式：命令串一律由 commands.rs 构造器产出，
+cli.rs 改为薄转发（参照 `valid_thermal_thresholds` 上移先例）。
+
+前端读帧 `api.atConnectionSettings()`（`advanced connection-settings`）
+在 7 条写齐后最后一并切换（settings 区块照 system.js 模式改
+`Promise.all([network.autodial, network.pdp_contexts, …])`）。
 
 ### 1.3 `system.js` — 剩 3 处（3 条保留写，读帧已切完）
 
