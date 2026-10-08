@@ -4,7 +4,7 @@
 
 **面向移远 Quectel MT5700M-CN 5G 模组的高性能 OpenWrt LuCI 管理器与 Web 控制中心**
 
-[![Version](https://img.shields.io/badge/Version-v3.1.0--r1-blue.svg?style=flat-square)](https://github.com/LianXia233/luci-app-mt5700m/releases)
+[![Version](https://img.shields.io/badge/Version-v3.1.2-blue.svg?style=flat-square)](https://github.com/LianXia233/luci-app-mt5700m/releases)
 [![OpenWrt](https://img.shields.io/badge/OpenWrt-Filogic%20%7C%20ImmortalWrt-00C49F.svg?style=flat-square&logo=openwrt)](https://openwrt.org/)
 [![Backend](https://img.shields.io/badge/Backend-Rust%20(std--only)-DEA584.svg?style=flat-square&logo=rust)](mt5700webui-openwrt-server/at-webserver/)
 [![WebUI](https://img.shields.io/badge/WebUI-React%20%2B%20Semi%20Design-61DAFB.svg?style=flat-square&logo=react)](mt5700webui-openwrt-server/semi-tcpweb/)
@@ -26,6 +26,38 @@
 | **数据面拨号** | NCM 协议（基于 `kmod-usb-net-cdc-ncm`） |
 | **控制面通讯** | Rust 后端独占 AT 串口（`TIOCEXCL`），LuCI 走本地控制套接字、WebUI 走 WebSocket |
 | **访问入口** | LuCI：`调制解调器` → `MT5700M 管理` · WebUI：`http://<路由器IP>/5700/` |
+
+---
+
+## 架构 v2：单后端双前端（当前）
+
+本版把「前端直连 AT」与「解析逻辑双份维护」两个历史包袱清零，确立**单一
+AT 持有者**：Rust 后端 `at-webserver` 是唯一能下发 AT 命令的组件，LuCI 与
+WebUI 的全部读写都走后端统一路由（路由清单见
+[`docs/architecture-v2/api-contract.md`](docs/architecture-v2/api-contract.md)）。
+
+### 两条机制性保证
+
+| 验收标准 | 保证机制 |
+|:--|:--|
+| **前端不得访问 AT** | CI `frontend-proofs` job：10 个 `prove-*-parity.js` 在固定基线上逐字比对 UI 渲染产物 + `smoke-minified-luci.js` 确认压缩产物零 CLI 调用 |
+| **无重复实现** | 死代码清零：LuCI shared 模块 9 个死导出（parser 29→24 / api 15→12 / components 45→44）、WebUI `at.ts` 8 个死方法；LuCI 模块按 `'require baseclass'` 协议盘点 |
+
+UI 渲染不可变：任何影响渲染产物的改动会被 prove 逐字比对立刻报警——前端
+重构（路由化、死代码清理）在 CI 层面被证明「用户看到的界面一个字节都没变」。
+
+> 终端页是唯一保留原始 AT 通道的前端入口（有意保留，供调试）。
+
+### 读写分离与 URC 解耦
+
+写操作走 verbs 路由，后端做参数白名单校验（如 `traffic.pdcp_report_set` 的
+interval 200–65535 ms）；URC 主动上报流（如 `^PDCPDATAINFO:`）由后端
+`transport/urc.rs` 统一解析后经 `TOPIC_TRAFFIC` 推送——**前端开关只管 modem
+侧使能，不碰数据流**。
+
+详细设计见 [`docs/architecture-v2/`](docs/architecture-v2/)
+（architecture / api-contract / data-flow / module-guide / migration /
+remaining-work）。
 
 ---
 
@@ -113,6 +145,8 @@ mt5700webui-openwrt-server/
     task_manager.rs          任务生命周期与周期调度
   semi-tcpweb/               WebUI 前端（React + Semi Design）
 docs/async-architecture.md   异步化架构设计
+docs/architecture-v2/        架构 v2 设计（api-contract / data-flow / migration）
+scripts/                     prove-*-parity.js（前端等价证明）+ CI 静态检查
 ```
 
 ---
@@ -202,11 +236,14 @@ MT5700M_READ_GATE=0 mt5700m-at command 'AT^DHCP?'
 ## 开发
 
 ```sh
-# 后端测试（104 个用例）
+# 后端测试（292 个用例）
 cd mt5700webui-openwrt-server/at-webserver && cargo test
 
 # WebUI 构建
 cd mt5700webui-openwrt-server/semi-tcpweb && npm install && npm run build
+
+# 前端等价证明（UI 渲染逐字比对；CI 每次 push 自动跑全部 10 项）
+node scripts/prove-connection-parity.js
 ```
 
 **交叉编译**（本机 Windows 无 aarch64 链接器时借云端）：

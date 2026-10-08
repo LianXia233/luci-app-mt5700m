@@ -15,9 +15,9 @@ WebUI  WebSocket ─────────▶ daemon WS RPC                  �
 
 不存在第二个后端。历史上的 `mt5700m-manager` shell 脚本与
 `mt5700m-traffic` 计费守护进程保留为*系统辅助*，由 init/rpcd 胶水层调用；
-它们对 AT 可见的行为都经由守护进程转发（见
-[data-flow.md]（data-flow.md 第 6 节）。`mt5700m-traffic` 是流量历史文件的
-唯一写入者，后端与 LuCI 都通过同一个 JSON 接口读取它。
+它们碰 AT 的行为一律经守护进程转发（见
+[data-flow.md](data-flow.md) 第 6 节）。`mt5700m-traffic` 是流量历史文件的
+唯一写入者，后端与 LuCI 都通过同一个 JSON 接口读它。
 
 ## 2. 后端分层（自底向上）
 
@@ -50,8 +50,8 @@ src/modules/<name>/
 └── api.rs        routes() -> Vec<Route> + text renderers for the CLI
 ```
 
-以下规则由评审以及 [migration.md](migration.md) 中描述的
-`scripts/` 旁静态检查工具强制：
+以下规则靠两道闸把关：人工评审，加上 `scripts/` 下的一组静态检查工具
+（工具与检查项见 [migration.md](migration.md)）：
 
 * `service.rs` 只能看到 `RefreshCtx`（AT + 缓存 + 总线）—— 绝不能看到
   `AtArbiter`、tty，或其他模块状态结构体的内部。
@@ -66,15 +66,15 @@ src/modules/<name>/
 | 模块 | 主题 | 路由 | 拥有 |
 | ------ | ------ | ------ | ---- |
 | `signal` | `signal` | `signal.get`, `signal.cached` | `^HCSQ?` math |
-| `network` | `network`, `registration` | `network.get`, `network.cached`, `registration.get`, `network.pdp`, `network.dhcp`, `network.registration_urc`, `network.lock_get`, `network.lock_apply`, `network.c5goption`, `network.c5goption_set`, `network.radio`, `network.radio_set`, `network.syscfg`, `network.syscfg_set`, `network.autodial`, `network.usb_mode`, `network.interface_cfg`, `network.pdp_contexts`, `network.schedule_get`, `network.schedule_set` | `+COPS?`, `^SYSINFOEX`, `+C5GREG/+CEREG/+CREG`, `^LTEFREQLOCK?`/`^NRFREQLOCK?` (inc. the grouped-CSV write and the radio-cycle apply), `^C5GOPTION`, `^DHCP?`/`^DHCPV6?`/`^IPV6CAP?` |
-| `cell` | `cell` | `cell.get`, `cell.cached`, `cell.neighbors`, `cell.scan_start`, `cell.scan_state`, `cell.scan_abort` | `^HFREQINFO?`, `^MONSC` (per-RAT offsets), `^MONNC` (neighbours + ARFCN→band table), `^CELLSCAN` (scan command builder + line parser + exclusive task, published on `scan`) |
+| `network` | `network`, `registration` | `network.get`, `network.cached`, `registration.get`, `network.pdp`, `network.dhcp`, `network.ims`, `network.rrc`, `network.registration_urc`, `network.session`, `network.flow_clear`, `network.direct_ip`, `network.direct_ip_set`, `network.lock_get`, `network.lock_apply`, `network.c5goption`, `network.c5goption_set`, `network.radio`, `network.radio_set`, `network.syscfg`, `network.syscfg_set`, `network.autodial`, `network.autodial_set`, `network.pdp_contexts`, `network.pdp_set`, `network.pdp_remove`, `network.pdp_state`, `network.postroute_set`, `network.dmz_set`, `network.usb_mode`, `network.usb_mode_set`, `network.interface_cfg`, `network.interface_mode_set`, `network.schedule_get`, `network.schedule_set` | `+COPS?`, `^SYSINFOEX`, `+C5GREG/+CEREG/+CREG`, `^LTEFREQLOCK?`/`^NRFREQLOCK?`（含分组 CSV 写与射频周期应用）, `^C5GOPTION`, `^DHCP?`/`^DHCPV6?`/`^IPV6CAP?`, `^NDISSTATQRY`/`^DSFLOWQRY`/`^CGMTU`/`^DCONNSTAT` 聚合（session）, `+CGDCONT`/`+CGACT` 写, `^SETAUTODIAL` 写, `^SETDIRECTIP`/`^IPFILTERSWITCH`, `TDCFG` 写（mode/PostRoute/dmz）, `^RRCSTAT?`, `+CIREG?` |
+| `cell` | `cell` | `cell.get`, `cell.cached`, `cell.neighbors`, `cell.scan_start`, `cell.scan_result`, `cell.scan_state`, `cell.scan_abort` | `^HFREQINFO?`, `^MONSC` (per-RAT offsets), `^MONNC` (neighbours + ARFCN→band table), `^CELLSCAN` (scan command builder + line parser + exclusive task, published on `scan`) |
 | `beam` | `beam` | `beam.ssb` | `^NRSSBID?` (SSB ids per serving/neighbour cell) |
 | `ca` | `ca` | `ca.get`, `ca.cached` | `^HFREQINFO?` groups, `^CASCELLINFO?`, `^MONSSC` (carrier aggregation) |
 | `qos` | `qos` | `qos.get`, `qos.cached` | `+CGACT?` active context, `^DSAMBR` AMBR/APN, `+CGEQOSRDP` QCI |
-| `sim` | `sim` | `sim.get`, `sim.cached`, `sim.number`, `sim.slot`, `sim.slot_set`, `sim.hotplug_set`, `sim.pin_status`, `sim.pin_apply` | `+CPIN?` (inc. the CME-error branch), `^ICCID?`, `+CIMI`, `+CNUM`, `^SIMSQ?`, `^SCICHG`/`^TDSIMHP`/`^HVSST` (slot switch), `+CLCK`/`+CPWD` (PIN enable/change) |
+| `sim` | `sim` | `sim.get`, `sim.cached`, `sim.number`, `sim.slot`, `sim.slot_set`, `sim.hotplug_set`, `sim.activation`, `sim.activation_set`, `sim.pin_status`, `sim.pin_apply` | `+CPIN?`（含 CME 错误分支）, `^ICCID?`, `+CIMI`, `+CNUM`, `^SIMSQ?`, `^SCICHG`/`^TDSIMHP`/`^HVSST`/`^HVSST?`（卡槽切换与供电路径）, `+CLCK`/`+CPWD`（PIN 启停改） |
 | `modem` | `modem`, `txpower`, `nr_txpower`, `endc` | `modem.get`, `modem.cached`, `modem.txpower`, `modem.endc`, `modem.nr_txpower`, `modem.mcs`, `modem.reset`, `modem.imei_set`, `modem.nr_capability`, `modem.nr_capability_set` | `ATI`, `+CGSN`, `^TXPOWER?`, `^NTXPOWER?`, `^LENDC?`, `^MCS`, `AT^RESET`, `^PHYNUM=IMEI`, `^NRRCCAPQRY`/`^NRRCCAPCFG` (CA / VoNR / DSS) |
-| `traffic` | `traffic`, `netrate` | `traffic.get`, `traffic.cached`, `traffic.netrate`, `traffic.clear` | `^PDCPDATAINFO?`, `^DSFLOWCLR`, interface counters, accounting report |
-| `system` | `temperature` | `system.temperature`, `system.temperature.cached`, `system.device_control`, `system.nic_rate_set`, `system.power_control_set`, `system.factory_reset`, `system.service_mode`, `system.thermal`, `system.thermal_set`, `system.fota`, `system.fota_start`, `system.fota_abort` | `^CHIPTEMP?`, `^TDPCIELANCFG`, `^TDPMCFG`, `AT&F`, `^THERMAUTOFUN`/`^THERMLDLOGSW`/`^THERMLDAUTOPARA`/`^THERMLDAUTOSTATUS`, the FOTA set (`^FOTASTATE?`/`^FOTADLQ`/`^FOTAMODE`/`^FOTAOEMDL`/`^FOTADL`/`^FWUP`) in `fota.rs` |
+| `traffic` | `traffic`, `netrate` | `traffic.get`, `traffic.cached`, `traffic.netrate`, `traffic.clear`, `traffic.pdcp_report_set` | `^PDCPDATAINFO?`（读 + 写开关）, `^DSFLOWCLR`, interface counters, accounting report |
+| `system` | `temperature` | `system.temperature`, `system.temperature.cached`, `system.device_control`, `system.nic_rate_set`, `system.power_control_set`, `system.factory_reset`, `system.service_mode`, `system.version`, `system.led`, `system.led_set`, `system.network_time`, `system.thermal`, `system.thermal_set`, `system.thermal_thresholds_set`, `system.thermal_log_set`, `system.fota_mode`, `system.fota`, `system.fota_start`, `system.fota_abort` | `^CHIPTEMP?`, `^TDPCIELANCFG`, `^TDPMCFG`, `AT&F`, `^VERSION?`, `^NWTIME?`, `^LEDSWITCH?`, `^THERMAUTOFUN`/`^THERMLDLOGSW`/`^THERMLDAUTOPARA`/`^THERMLDAUTOSTATUS`, `^FOTAMODE?` + FOTA 流程集（`^FOTASTATE?`/`^FOTADLQ`/`^FOTAMODE`/`^FOTAOEMDL`/`^FOTADL`/`^FWUP`，见 `fota.rs`） |
 | `sms` | `sms` | `sms.status`, `sms.storage`, `sms.list`, `sms.send`, `sms.delete`, `sms.clear_all`, `sms.storage_set`, `sms.center_set`, `sms.ims_set`, `sms.analyze`, `sms.ussd_send`, `sms.ussd_cancel` | `+CMGF`/`+CMGL`/`+CMGD`/`+CPMS`/`+CSCA`/`^IMSSWITCH`/`+CUSD` (plus the IMS profile sequence's `+CGDCONT`/`+CEUS`/`+CFUN`) — SMS-SUBMIT PDU encoder and SMS-DELIVER decoder, multipart split/merge, send transaction, USSD codec (`ussd.rs`: GSM 7-bit pack/unpack, `<m>` copy) and the `sms.ussd` push the URC path publishes |
 
 ## 4. 前端

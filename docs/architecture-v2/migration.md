@@ -92,6 +92,11 @@
 
 ## 3. 待办事项（按序）
 
+> **收官备注（2026-10-08）**：本节是迁移期的施工顺序记录，全部条目已走完，
+> 最终状态以 [remaining-work.md](remaining-work.md) 为准——现在真正剩下的
+> 只有 FOTA 三条保留写（等产品决策）、10 条路由归属、CLI 无调用动词、
+> WebUI 自动化测试这几条清理项，见 remaining-work 第七节。
+
 1. **剩余模块**：`beam`（波束/扫描命令）、`diagnostics`（`cellscan`、端口扫描）。每个都遵循
    [module-guide.md](module-guide.md)；在它们迁移完成之前，CLI 动词是事实来源。`sms` 已落地：
    `modules/sms` 现在双向拥有 PDU 编解码器（SMS-SUBMIT 编码、SMS-DELIVER 解码、GSM 7-bit / UCS-2、
@@ -794,3 +799,34 @@ CI（此前无前端 job）既没有完整历史，也没有跑过任何 UI 证�
 本地可验证面（tag 基线 + smoke）全绿：prove-advanced 37 /
 prove-system 48 / prove-connection 58；其余 7 个基线在浅历史下
 MISSING 属预存，CI 完整 checkout 后首跑验证。
+
+## 收官与合并（切片，2026-10-08）
+
+### 合并
+
+PR #8 以 merge commit 并入 main（`da87664e`），合并后 main 的 CI
+（run `37711744420`）`static-checks` + `frontend-proofs` 双 job 全绿
+——10 项 UI 逐字比对 + 压缩树 smoke 在远端完整历史上跑通，迁移的
+「UI 冻结」承诺由 CI 兜底。原始 20 条验收标准就此 **20/20**。
+
+### 提交消息黑话清零与远端整链重建
+
+- 收官检查发现 5 笔提交的 **body** 里仍留着「第几刀」式说法（此前的
+  msg-filter 只替换了 subject 里的固定短语，body 里的变体全部漏网），
+  外加上一轮消息重写走的是「往远端 HEAD 上叠加」的推送路径，旧重建链
+  24 笔（含黑话消息）仍然可达；
+- 处置：本地 `filter-branch` 重写 20 笔（9 条精确替换，覆盖 body 变体），
+  再用 `tools/rebuild-remote-chain.py` 从原生锚点 `460fe4ab` 把 24 笔
+  整链重建推平——远端历史收敛为「原生 + 24」，旧 35 笔全部不可达；
+- 保留不算黑话的两类：改动描述里的引号引用（「本刀」改「本批」）与
+  术语映射行；历史章节名引用（§）原样保留；
+- 终验：远端树 = 本地树 + 6 个保护文件（5 个 `.gitignore` 排除的历史
+  误提交 + 1 个旧 bundle），0 缺失、0 内容差；「第四刀」全历史命中 0。
+
+### 文档同步
+
+README 增「架构 v2：单后端双前端」章节（两条机制性保证表 + URC 解耦）、
+CHANGELOG 增 `[Unreleased]` 收官条目、api-contract 补登
+`traffic.pdcp_report_set`、architecture.md 模块路由表与 registry 实际
+对齐、remaining-work.md 就地收官化（第七节改写为真实剩余清单）。
+测试计数口径统一为 `cargo test` **292**。

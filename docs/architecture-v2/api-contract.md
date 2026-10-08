@@ -24,7 +24,7 @@ API 就是边界。前端只知道路由名和领域 JSON；它们对 AT 命令�
   `modem.imei_set`、`network.radio_set`、`network.syscfg_set`、
   `system.thermal_set`、`system.led_set`、`system.thermal_thresholds_set`、
   `system.thermal_log_set`、`system.fota_start`、`system.fota_abort`、
-  `modem.nr_capability_set`）—— 一次显式的用户操作，执行实时读取；
+  `modem.nr_capability_set`、`traffic.pdcp_report_set`）—— 一次显式的用户操作，执行实时读取；
   它可能以调制解调器错误失败，由 UI 呈现。它绝不能因参数/内部
   错误而失败（registry 测试对每一条已注册路由都做了该断言）。
 
@@ -95,6 +95,7 @@ API 就是边界。前端只知道路由名和领域 JSON；它们对 AT 命令�
 | `traffic.get` / `traffic.cached` | PDCP 字段映射（`id`、`pduSessionId`、……、`dlDiscardCnt`） |
 | `traffic.netrate` | `{available, device, rx_bytes, tx_bytes, timestamp, source, traffic}` |
 | `traffic.clear` | `{cleared: true}` — 按需写 `AT^DSFLOWCLR`；调度器的动作失效机制会丢弃过期计数器 |
+| `traffic.pdcp_report_set` | `{applied: true, enabled, interval?}` — `{enabled: bool, interval?: i64}` → 关 = `AT^PDCPDATAINFO=0`（interval 被忽略），开 = `AT^PDCPDATAINFO=1,<ms>`；interval 白名单 200–65535 ms（对齐页面 InputNumber 界限）在这里校验。它只管 modem 侧开关——`^PDCPDATAINFO:` 周期上报本身走 URC 路径（`transport/urc.rs` → `daemon` 的 `pdcp_data` → `traffic` 主题推送），与这个开关解耦 |
 | `system.temperature` / `system.temperature.cached` | 12 个传感器字段 + `average` + `peak`/`peak_sensor` — 取最热的合理传感器（>0 °C、≤150 °C，`TemperatureState::peak()`），也就是 CLI 文本形态打印为 `temperature=`/`temperature_sensor=` 的那个值，也正是无线页面那一个温度仪表所显示的值 |
 | `system.device_control` | `{nic_rate: 1\|2, power_control: bool}` — `^TDPCIELANCFG?` 和 `^TDPMCFG?`；不应答的那个开关被省略，页面保持它显示的值 |
 | `system.nic_rate_set` | `{applied: true, nic_rate}` — `{rate: 1\|2}` → `^TDPCIELANCFG=<rate>`（重启后生效） |
@@ -163,8 +164,8 @@ API 就是边界。前端只知道路由名和领域 JSON；它们对 AT 命令�
 LuCI 通过 `api.js` 的 `route(name, params)` 辅助函数触达 registry ——
 即用 `cmd = api.<route> [json]` 调 `mt5700.at` —— 因此一个页面请求的
 是领域模型（`api.route('beam.ssb')`），而不是一帧还需要切分的带标签
-文本。纯渲染的辅助函数仍留在 CLI 动词上；页面按区块逐个迁移
-（见 `migration.md` 第 9 项）。
+文本。收官时全部页面都已按区块迁完（过程见 `migration.md` 的逐批
+切片）；纯渲染的辅助函数留在 CLI 动词上。
 
 遗留动词逐字节保留：控制套接字 `send|cached|scan`（外加 `api`；旧的
 `sms` 动词已消失 —— `sms.send` 是唯一的发送路径）、TCP RPC
