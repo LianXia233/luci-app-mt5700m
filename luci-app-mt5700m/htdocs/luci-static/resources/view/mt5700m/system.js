@@ -76,8 +76,8 @@ return view.extend({
 					return ui.addNotification(null, E('p', {}, _('Trigger temperatures must rise by level, and each recovery temperature must be lower than its trigger.')), 'warning');
 				ui.hideModal();
 				Promise.all([
-					api.at([ 'advanced-set', 'thermal-thresholds' ].concat(next)),
-					api.at([ 'advanced-set', 'thermal-log', serialLog.value, fileLog.value ])
+					api.routeCall('system.thermal_thresholds_set', { thresholds: next.map(Number) }),
+					api.routeCall('system.thermal_log_set', { serial: serialLog.value === '1', file: fileLog.value === '1' })
 				]).then(function() { ui.addNotification(null, E('p', {}, _('Thermal settings saved.'))); window.setTimeout(function() { window.location.reload(); }, 1200); }, function(err) { ui.addNotification(null, E('p', {}, err.message || String(err)), 'danger'); });
 			} }, _('Apply')) ])
 		]);
@@ -192,10 +192,10 @@ return view.extend({
 					c.stateRow(_('Current radio state'), functionLevel === '0' ? _('Airplane mode') : _('Online')),
 					c.actionBar(c.btn(functionLevel === '0' ? _('Resume mobile radio') : _('Enter airplane mode'), function() { c.runConfirmedRoute(_('Change radio function'), functionLevel === '0' ? _('Resume mobile registration and data service?') : _('Airplane mode immediately disconnects mobile data and voice service.'), 'network.radio_set', { airplane: functionLevel !== '0' }, functionLevel !== '0'); })),
 					c.formRow(_('Module status LED'), ledSelect),
-					c.actionBar(c.btn(_('Apply LED setting'), function() { c.confirmRun(_('Module status LED'), _('The LED setting is stored by the module and takes effect after restart.'), [ 'advanced-set', 'led', ledSelect.value ], true); })),
+					c.actionBar(c.btn(_('Apply LED setting'), function() { c.confirmRoute(_('Module status LED'), _('The LED setting is stored by the module and takes effect after restart.'), 'system.led_set', { enabled: ledSelect.value === '1' }, true); })),
 					c.actionBar(c.btn(_('Manage SIM PIN'), function() { self.showPinManager(sim); })),
 					c.formRow(_('SIM activation'), simEnabled),
-					c.actionBar(c.btn(_('Apply SIM activation'), function() { c.confirmRun(_('SIM activation'), simEnabled.value === '1' ? _('Activate the physical SIM for network registration?') : _('Deactivating the SIM immediately removes mobile service.'), [ 'advanced-set', 'sim-activation', simEnabled.value ], simEnabled.value === '0'); })),
+					c.actionBar(c.btn(_('Apply SIM activation'), function() { c.confirmRoute(_('SIM activation'), simEnabled.value === '1' ? _('Activate the physical SIM for network registration?') : _('Deactivating the SIM immediately removes mobile service.'), 'sim.activation_set', { active: simEnabled.value === '1' }, simEnabled.value === '0'); })),
 					c.formRow(_('Active SIM slot'), simSlot),
 					c.actionBar(c.btn(_('Switch SIM slot'), function() { c.confirmRoute(_('Switch SIM slot'), _('The MT5700M will detach from the network while changing the physical SIM path.'), 'sim.slot_set', { slot: Number(simSlot.value) }, true); }))
 				])

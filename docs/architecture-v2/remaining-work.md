@@ -30,13 +30,13 @@
 
 ---
 
-## 一、LuCI 前端剩余 CLI 调用点：24 处
+## 一、LuCI 前端剩余 CLI 调用点：20 处
 
 | 页面 | 调用点 | 说明 |
 |---|---|---|
 | `advanced.js` | 7 | 1 读帧 + 6 写 |
 | `connection.js` | 8 | 1 读帧 + 7 写 |
-| `system.js` | 8 | **1 读帧 + 7 保留写**（写入已从 13 处降到 7 处） |
+| `system.js` | 4 | **1 读帧 + 3 保留写**（写入已从 13 处降到 3 处，均为 FOTA 三步） |
 | `terminal.js` | 1 | **有意保留**：原始 AT 控制台是产品功能本身 |
 | `network.js` / `sms.js` / `status.js` / `settings.js` | 0 | 已清零 |
 
@@ -65,18 +65,20 @@
 | PostRoute `TDCFG PostRoute` + `AT^IPFILTERSWITCH=0` | **无写路由**；`IPFILTERSWITCH` 仅存在于 `cli.rs` |
 | DMZ `TDCFG dmz "<ip>"`（含 IPv4 校验） | **无写路由**；校验需从 `cli.rs` 搬进模块 |
 
-### 1.3 `system.js` — 剩 8 处（1 读帧 + 7 保留写）
+### 1.3 `system.js` — 剩 4 处（1 读帧 + 3 保留写）
 
-**读帧**（22 段）切路由所需读路由已基本齐备：身份/IMEI/版本 → `modem.get`；
+**读帧**（22 段）切路由所需读路由**已齐备**：身份/IMEI/版本 → `modem.get`；
 SIM/ICCID/IMSI → `sim.get`；号码 → `sim.number`；订阅速率 → `qos.get`；
 运营商 → `network.get`；功能级别 → `network.radio`；卡槽 → `sim.slot`；
-温度 → `system.temperature`；温控三行 → `system.thermal`。
-**缺 3 项**：网络时间（模块内无 `^NWTIME`）、LED（无）、SIM 激活（只有写常量、无查询解析）。
+SIM 激活 → `sim.activation`；温度 → `system.temperature`；温控三行 →
+`system.thermal`；LED → `system.led`；网络时间 → `system.network_time`。
+此前缺的 3 项（`^NWTIME` / `^LEDSWITCH` / `^HVSST` 查询解析）已补齐，
+**读帧是唯一剩下的、也是最大的一处**。
 
-**保留的 7 条写**（后端尚无能力或需产品决策）：
-温控阈值（只有 QUERY）、温控日志（只有 QUERY）、LED 写（无）、
-SIM 激活写（`HVSST` 仅内部使用）、
-FOTA 下载 / 续传 / 安装 —— 模块是「任务 + 观察 + 中止」形态，**迁移会改变交互，需产品决策**。
+**保留的 3 条写**：FOTA 下载 / 续传 / 安装 —— 模块是「任务 + 观察 + 中止」
+形态，**迁移会改变交互，需产品决策**。
+（第二刀已把温控阈值 / 温控日志 / LED / SIM 激活四条迁到路由，
+详见 migration.md。）
 
 ### 1.4 死导出（7 个）
 

@@ -705,14 +705,17 @@ variant: `runConfirmedAction` is now the only implementation, with
 thin callers. The modal's DOM, wording, button order and the
 recovery-delay behaviours cannot fork.
 
-Seven writes stay on CLI verbs on purpose: `advanced-set led`,
-`advanced-set sim-activation`, `advanced-set thermal-thresholds`,
-`advanced-set thermal-log` (the backend has no write for `^LEDSWITCH`,
-`^HVSST=`, `^THERMLDAUTOPARA=` or `^THERMLDLOGSW=` yet — see
-[remaining-work.md](remaining-work.md) item 1), and `fota-start` /
-`fota-resume` / `fota-upgrade`, where the module's shape is "start a task, then
-observe it" while the page drives a three-step download/resume/install flow;
-converting that is a product decision, not a refactor step.
+Seven writes stayed on CLI verbs after this slice: four of them (`advanced-set
+led`, `advanced-set sim-activation`, `advanced-set thermal-thresholds`,
+`advanced-set thermal-log`) because the backend had **no** write route for
+`^LEDSWITCH`, `^HVSST=`, `^THERMLDAUTOPARA=` or `^THERMLDLOGSW=` at the time,
+plus `fota-start` / `fota-resume` / `fota-upgrade`, where the module's shape is
+"start a task, then observe it" while the page drives a three-step
+download/resume/install flow; converting that is a product decision, not a
+refactor step. The first four moved a slice later — see
+[below]((#system-page-the-other-four-writes-move-to-routes-slice-2026-10-08))
+once the backend had the four groups of commands; only the FOTA three still
+intentionally hold the CLI line.
 
 `scripts/prove-system-parity.js` (baseline tag `pre-system-route`, 34 checks)
 renders six read frames — a full frame, SIM needs PIN, number not stored,
@@ -732,3 +735,39 @@ hard-coded SHA. The other proofs default to a SHA of their pre-slice commit,
 which cannot survive a fresh clone in a sandbox — the offset in
 `scripts/lib/at-fixtures.js` (`SYSTEM_FACTS` / `systemCliFrame`) now feeds both
 this proof and the smoke test, so the two cannot drift.
+
+### System page: the other four writes move to routes (slice, 2026-10-08)
+
+The backend had no route to carry these four when the previous slice shipped,
+so they were left on CLI verbs with the rest. Both halves landed since — four
+new route pairs on the backend (`system.led` / `system.led_set`,
+`system.network_time`, `system.thermal_thresholds_set` / `system.thermal_log_set`,
+`sim.activation` / `sim.activation_set`) and this slice — which moves the last
+four *simple* writes off verbs. The three FOTA writes remain, unchanged in
+reason: the module answers "task plus observation", the UI drives a flow, and
+closing that gap changes interaction rather than transport.
+
+| old CLI verb | route | equivalence |
+| ------------ | ----- | ----------- |
+| `advanced-set led <0\|1>` | `system.led_set {enabled}` | same `AT^LEDSWITCH=<0\|1>`; the select's string becomes a boolean at the boundary |
+| `advanced-set sim-activation <0\|1>` | `sim.activation_set {active}` | same `AT^HVSST=1,<0\|1>`; now built by the same constructor that brackets a slot switch |
+| `advanced-set thermal-thresholds <9 values>` | `system.thermal_thresholds_set {thresholds}` | same `AT^THERMLDAUTOPARA=<9 values>` |
+| `advanced-set thermal-log <s> <f>` | `system.thermal_log_set {serial,file}` | same `AT^THERMLDLOGSW=<s>,<f>` |
+
+Two things were deliberately **not** changed:
+
+* **The page keeps its own pre-submit validation** (the 0–150 °C / ladder check
+  and its two i18n strings). That is the precedent `sim.pin_apply` set — the
+  copy shown is UI, the module owns the modem's rule and re-checks it, and the
+  route is not reachable with a table the modem would refuse.
+* **The thermal modal still fires both writes as one `Promise.all`**, so its
+  "Thermal settings saved." + reload behaviour is byte-for-byte what it was.
+
+`scripts/prove-system-parity.js` grows from 34 to 39 checks against the same
+`pre-system-route` baseline: the four verb-disappearance checks moved into group
+B, group C gained LED (both positions), SIM activation (both states, driven
+through the `^HVSST` second field) and the thermal pair, and group D shrank from
+seven retained verbs to three. Group C still pins **both** sides per case — old
+argv *and* new params — so a mistyped parameter fails rather than silently
+diverging. `scripts/smoke-minified-luci.js` (28 → 31 checks) drives the new
+writes on the minified tree, including the two-call thermal modal.

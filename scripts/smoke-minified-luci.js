@@ -279,13 +279,25 @@ async function systemPage() {
 		[ 'Restart Module', 'Continue', null, 'modem.reset', '重启模块' ],
 		[ 'Restore factory settings', 'Restore factory settings',
 			(nodes) => { lib.inputsIn(nodes)[0].value = 'RESET'; },
-			'system.factory_reset', '工厂复位' ]
+			'system.factory_reset', '工厂复位' ],
+		[ 'Apply LED setting', 'Apply', null, 'system.led_set', '应用 LED 设置' ],
+		[ 'Apply SIM activation', 'Apply', null, 'sim.activation_set', '应用 SIM 激活' ]
 	];
 	for (const c of cases) {
 		const r = await fire(c[0], c[1], c[2]);
 		check('系统页：' + c[4] + '走 ' + c[3] + '（零 CLI）',
 			r.name === c[3] && r.pure, JSON.stringify(r.calls));
 	}
+	/* 温控：一个弹窗同时发两笔（Promise.all 的形态原样保留） */
+	api.calls.length = 0;
+	lib.pressButton(holder, 'Configure thermal protection');
+	lib.modalButton(side.scope, 'Apply');
+	for (let i = 0; i < 4; i++) await lib.tick();
+	const therm = api.calls.filter((c) => c.kind === 'routeCall').map((c) => c.name);
+	check('系统页：温控表 + 日志走两条路由（零 CLI）',
+		sameJson(therm, [ 'system.thermal_thresholds_set', 'system.thermal_log_set' ])
+		&& api.calls.length > 0 && api.calls.every((c) => c.kind === 'routeCall'),
+		JSON.stringify(api.calls));
 }
 
 (async function () {

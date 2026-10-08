@@ -2,18 +2,28 @@
 'use strict';
 
 /*
- * 系统页（system）一致性证明（LuCI 系统页 → 统一路由，6 条写入动词消失）
+ * 系统页（system）一致性证明（LuCI 系统页 → 统一路由，10 条写入动词消失）
  *
- * 这一刀切掉的是系统页最后 6 条 CLI **写入**动词。读帧（22 段）
- * `mt5700m-at system` 本刀未动 —— 它没有评估手段，切换它需要先补齐后端的
- * LED 读 / 网络时间 / SIM 激活读脚本，因此留在下一刀。
+ * 第二刀切掉第一批剩下的 4 条 CLI 写入动词。读帧（22 段）
+ * `mt5700m-at system` 本刀仍未动 —— 渲染必须逐字不变，同一份 CLI 文本帧
+ * 继续作为两侧共有的自变量。
  *
+ *   第一刀（6 条）
  *   - airplane      `mt5700m-at airplane <0|1>`      → network.radio_set {airplane}
  *   - sim-slot      `advanced-set sim-slot <v>`      → sim.slot_set {slot}
  *   - set-imei      `mt5700m-at set-imei <v>`        → modem.imei_set {imei}
  *   - restart       `mt5700m-at restart`             → modem.reset
  *   - sim-pin       `mt5700m-at sim-pin <op> a1 a2`  → sim.pin_apply {operation,pin,newPin}
  *   - factory-reset `mt5700m-at factory-reset`       → system.factory_reset
+ *
+ *   第二刀（4 条，后端能力本刀前已补齐）
+ *   - led                `advanced-set led <0|1>`         → system.led_set {enabled}
+ *   - sim-activation     `advanced-set sim-activation`    → sim.activation_set {active}
+ *   - thermal-thresholds `advanced-set thermal-thresholds` → system.thermal_thresholds_set {thresholds}
+ *   - thermal-log        `advanced-set thermal-log`       → system.thermal_log_set {serial,file}
+ *
+ *   保留 3 条：FOTA 下载 / 续传 / 安装 —— 模块是「任务 + 观察 + 中止」形态，
+ *   迁移会改变交互，需产品决策。
  *
  * 用法：
  *   node scripts/prove-system-parity.js [基线]   # 基线默认 pre-system-route
@@ -108,6 +118,16 @@ function eq(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
 
 function callsOf(side) { return side.scope.api.calls; }
 function lastCall(side) { const c = callsOf(side); return c[c.length - 1] || null; }
+/* 一笔弹窗可能同时发多笔请求（温控表 + 日志），按名字 / 参数反查。 */
+function callNamed(side, name, args) {
+	const c = callsOf(side);
+	for (let i = c.length - 1; i >= 0; i--) {
+		if (name && c[i].name !== name) continue;
+		if (args && !eq(c[i].args, args)) continue;
+		return c[i];
+	}
+	return null;
+}
 
 (async function main() {
 	let oldSource;
@@ -136,13 +156,17 @@ function lastCall(side) { const c = callsOf(side); return c[c.length - 1] || nul
 		check(c.name, a === b, diffText(a, b));
 	}
 
-	console.log('B. 6 条 CLI 动词已消失（静态）');
+	console.log('B. 10 条 CLI 动词已消失（静态）');
 	check('airplane 动词消失', !/\[\s*'airplane'/.test(newView));
 	check("advanced-set sim-slot 动词消失", !/'advanced-set',\s*'sim-slot'/.test(newView));
 	check('set-imei 动词消失', !/\[\s*'set-imei'/.test(newView));
 	check('restart 动词消失', !/\[\s*'restart'\]/.test(newView));
 	check('sim-pin 动词消失', !/\[\s*'sim-pin'/.test(newView));
 	check('factory-reset 动词消失', !/\[\s*'factory-reset'\]/.test(newView));
+	check("advanced-set led 动词消失", !/'advanced-set',\s*'led'/.test(newView));
+	check("advanced-set sim-activation 动词消失", !/'advanced-set',\s*'sim-activation'/.test(newView));
+	check('thermal-thresholds 动词消失', !/'thermal-thresholds'/.test(newView));
+	check('thermal-log 动词消失', !/'thermal-log'/.test(newView));
 
 	console.log('C. 迁移映射（旧侧发什么 vs 新侧发什么，逐字对照）');
 
@@ -264,12 +288,59 @@ function lastCall(side) { const c = callsOf(side); return c[c.length - 1] || nul
 			'old=' + JSON.stringify(o) + '\n       new=' + JSON.stringify(n));
 	}
 
-	console.log('D. 保留 7 条 CLI（无写路由 / 需产品决策，不得被迁走）');
-	for (const token of [ 'thermal-thresholds', 'thermal-log' ]) {
-		check('保留 advanced-set ' + token, newView.indexOf(token) >= 0);
+	/* 13/14. LED：初始值来自 ^LEDSWITCH 段 */
+	for (const led of [ '1', '0' ]) {
+		const s = shape({ led: led });
+		const oldSide = buildSide(oldRead), newSide = buildSide(newRead);
+		for (const side of [ oldSide, newSide ]) {
+			lib.pressButton(side.view.renderPage({ stdout: systemFrame(s), stderr: '' }), 'Apply LED setting');
+			lib.modalButton(side.scope, 'Apply');
+		}
+		await lib.tick();
+		const o = lastCall(oldSide), n = lastCall(newSide);
+		const ok = o && eq(o.args, [ 'advanced-set', 'led', led ])
+			&& n && n.name === 'system.led_set' && eq(n.params, { enabled: led === '1' });
+		check('led=' + led + ' → led_set {enabled:' + (led === '1') + '}', ok,
+			'old=' + JSON.stringify(o) + '\n       new=' + JSON.stringify(n));
 	}
-	check('保留 advanced-set led', /'advanced-set',\s*'led'/.test(newView));
-	check('保留 advanced-set sim-activation', /'advanced-set',\s*'sim-activation'/.test(newView));
+
+	/* 15/16. SIM 激活：初始值取 ^HVSST 第二字段 */
+	for (const field of [ '1', '0' ]) {
+		const s = shape({ hvsst: '1,' + field + ',0' });
+		const oldSide = buildSide(oldRead), newSide = buildSide(newRead);
+		for (const side of [ oldSide, newSide ]) {
+			lib.pressButton(side.view.renderPage({ stdout: systemFrame(s), stderr: '' }), 'Apply SIM activation');
+			lib.modalButton(side.scope, 'Apply');
+		}
+		await lib.tick();
+		const o = lastCall(oldSide), n = lastCall(newSide);
+		const ok = o && eq(o.args, [ 'advanced-set', 'sim-activation', field ])
+			&& n && n.name === 'sim.activation_set' && eq(n.params, { active: field === '1' });
+		check('sim-activation=' + field + ' → activation_set {active:' + (field === '1') + '}', ok,
+			'old=' + JSON.stringify(o) + '\n       new=' + JSON.stringify(n));
+	}
+
+	/* 17. 温控表 + 温控日志：一条弹窗同时发两笔 */
+	{
+		const nine = [ 60, 70, 65, 80, 75, 90, 85, 100, 95 ];
+		const oldSide = buildSide(oldRead), newSide = buildSide(newRead);
+		for (const side of [ oldSide, newSide ]) {
+			lib.pressButton(side.view.renderPage({ stdout: systemFrame(FULL), stderr: '' }), 'Configure thermal protection');
+			lib.modalButton(side.scope, 'Apply');
+		}
+		await lib.tick();
+		const oT = callNamed(oldSide, null, [ 'advanced-set', 'thermal-thresholds' ].concat(nine.map(String)));
+		const oL = callNamed(oldSide, null, [ 'advanced-set', 'thermal-log', '1', '0' ]);
+		const nT = callNamed(newSide, 'system.thermal_thresholds_set');
+		const nL = callNamed(newSide, 'system.thermal_log_set');
+		const ok = oT && oL && nT && nL
+			&& eq(nT.params, { thresholds: nine })
+			&& eq(nL.params, { serial: true, file: false });
+		check('温控表 / 日志 → thresholds_set + thermal_log_set', ok,
+			'old=' + JSON.stringify([ oT, oL ]) + '\n       new=' + JSON.stringify([ nT, nL ]));
+	}
+
+	console.log('D. 保留 3 条 CLI（FOTA 三步：迁移会改变交互，需产品决策）');
 	check('保留 fota-start', /'fota-start'/.test(newView));
 	check('保留 fota-resume', /'fota-resume'/.test(newView));
 	check('保留 fota-upgrade', /'fota-upgrade'/.test(newView));
@@ -290,5 +361,5 @@ function lastCall(side) { const c = callsOf(side); return c[c.length - 1] || nul
 		console.log(failures + ' 项不一致');
 		process.exit(1);
 	}
-	console.log('全部通过：系统页 6 条写入已从 CLI 迁到路由，UI 逐字未变。');
+	console.log('全部通过：系统页 10 条写入已从 CLI 迁到路由，UI 逐字未变。');
 })();
