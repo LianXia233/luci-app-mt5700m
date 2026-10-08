@@ -208,7 +208,6 @@ function cachedSnapshot() {
 /* ---------- AT 子命令速记 ---------- */
 
 function atHardware()          { return atSafe([ 'advanced', 'hardware' ]); }
-function atSystem()            { return atSafe([ 'system' ]); }
 function atConnectionSettings(){ return atSafe([ 'advanced', 'connection-settings' ]); }
 function atCommand(cmd)        { return at([ 'command', cmd ]); }
 
@@ -293,7 +292,6 @@ return baseclass.extend({
 	route: route,
 	routeCall: routeCall,
 	atHardware: atHardware,
-	atSystem: atSystem,
 	atConnectionSettings: atConnectionSettings,
 	atCommand: atCommand,
 });

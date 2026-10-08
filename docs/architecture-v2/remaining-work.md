@@ -28,15 +28,44 @@
 新增 `scripts/prove-system-parity.js`（**34 项**，`tag pre-system-route`），
 `scripts/smoke-minified-luci.js` 扩到 **28 项**（新增系统页 6 项）。
 
+### 第二刀 + 第三刀（2026-10-08，追加）
+
+**系统页余下 4 条写入 + 22 段读帧也全部迁完**，`system.js` 至此**零 CLI**
+（仅保留 FOTA 三步动词，见 §1.3）。
+
+第二刀（4 条写入，后端能力先行补齐）：
+
+| 原 CLI 动词 | 目标路由 | 等价性 |
+|---|---|---|
+| `advanced-set led <0/1>` | `system.led_set {enabled}` | ✅ 同为 `AT^LEDSWITCH=` |
+| `advanced-set sim-activation <0/1>` | `sim.activation_set {active}` | ✅ 同为 `AT^HVSST=1,<0\|1>` |
+| `advanced-set thermal-thresholds <9 值>` | `system.thermal_thresholds_set {thresholds}` | ✅ 九值 0–150 + 阶梯校验在后端（`valid_thermal_thresholds` 自 cli.rs 上移，一份实现） |
+| `advanced-set thermal-log <s> <f>` | `system.thermal_log_set {serial,file}` | ✅ 同为 `AT^THERMLDLOGSW=` |
+
+第三刀（读帧）：`api.atSystem()`（`mt5700m-at system`，22 段文本帧）删除，
+改 15 条路由 —— `modem.get / system.version / sim.get / sim.number / sim.slot /
+sim.activation / qos.get / network.get / network.radio / system.temperature /
+system.thermal / system.led / system.network_time / system.fota_mode /
+system.fota`；api.js 的 `atSystem` 速记一并删除。渲染逐字未变：
+
+- `prove-system-parity.js` 扩到 **48 项**：A 组改为同一份 `SYSTEM_FACTS`
+  双形态喂数（旧侧 22 段文本帧、新侧 15 条路由载荷），Technical details 块
+  照 network 页先例改倒 `api.<route>` + JSON（有意差异，单独断言）；
+- `smoke-minified-luci.js` 扩到 **33 项**：系统页断言改为零 CLI + 15 条路由
+  （不喂 `at:system` 帧、不挂 `atSystem` 桩，残留调用会直接崩掉）；
+- `cargo test` 286 passed。
+
+三处 ⚠ 漂移风险已逐项取证排除（见 §1.3 表）。
+
 ---
 
-## 一、LuCI 前端剩余 CLI 调用点：20 处
+## 一、LuCI 前端剩余 CLI 调用点：19 处
 
 | 页面 | 调用点 | 说明 |
 |---|---|---|
 | `advanced.js` | 7 | 1 读帧 + 6 写 |
 | `connection.js` | 8 | 1 读帧 + 7 写 |
-| `system.js` | 4 | **1 读帧 + 3 保留写**（写入已从 13 处降到 3 处，均为 FOTA 三步） |
+| `system.js` | 3 | **3 条保留写**（FOTA 三步；4 条写入 + 22 段读帧已全部迁完，系统页零 CLI） |
 | `terminal.js` | 1 | **有意保留**：原始 AT 控制台是产品功能本身 |
 | `network.js` / `sms.js` / `status.js` / `settings.js` | 0 | 已清零 |
 
@@ -65,12 +94,20 @@
 | PostRoute `TDCFG PostRoute` + `AT^IPFILTERSWITCH=0` | **无写路由**；`IPFILTERSWITCH` 仅存在于 `cli.rs` |
 | DMZ `TDCFG dmz "<ip>"`（含 IPv4 校验） | **无写路由**；校验需从 `cli.rs` 搬进模块 |
 
-### 1.3 `system.js` — 剩 4 处（1 读帧 + 3 保留写）
+### 1.3 `system.js` — 剩 3 处（3 条保留写，读帧已切完）
 
-#### 读帧：22 段的路由对照表（2026-10-08 就地复核）
+#### 读帧：22 段的路由对照表（✅ 已切完，2026-10-08）
 
-本刀前补的后端能力已覆盖缺列；下表把每段钉到具体字段，
-三处标 ⚠ 的是**渲染数值可能漂移**的点，切之前必须逐项解决。
+本刀前补的后端能力已覆盖缺列；下表把每段钉到具体字段。
+三处曾标 ⚠ 的渲染漂移风险已逐项取证排除：
+
+1. **订阅速率**：`qos.ambr_*_kbps` 给的就是 kbps 原值，页面对它调
+   `parser.subscriptionRate`（内部 `/1000`），与旧帧 `^DSAMBR` 字段同源同算；
+2. **运营商**：路由 `network.get.operator` 就是 `+COPS` 引号内字段
+   （旧页面逗号切分后的第 3 字段）；
+3. **英雄区峰值温度**：路由 `system.temperature` 自带 `peak / peak_sensor /
+   average`（后端过滤 0 / 65535 后取最大），与页面旧公式
+   `(max(raw)/10).toFixed(1)` 等价，页面直接用 `peak`。
 
 | 段（AT） | 路由 | 字段 | 备注 |
 |---|---|---|---|
@@ -80,14 +117,14 @@
 | ICCID | `sim.get` | `iccid` | |
 | IMSI（`AT+CIMI`） | `sim.get` | `imsi` | |
 | Subscriber number（`+CNUM`） | `sim.number` | `number` | 未存储的分支（`+CME ERROR: 22`）已在 `number_state` 里 |
-| Subscription rate（`^DSAMBR?`） | `qos.get` | `ambr_down_kbps / ambr_up_kbps` | ⚠ 页面对**原始字段**调 `parser.subscriptionRate`，而路由给的是已换算 kbps，需确认换算与文案一致 |
-| Operator（`+COPS?`） | `network.get` | `operator` | ⚠ 页面取 `+COPS` 逗号切分后的**第 3 字段**（长名），需确认路由的 `operator` 就是它 |
+| Subscription rate（`^DSAMBR?`） | `qos.get` | `ambr_down_kbps / ambr_up_kbps` | ✅ `ambr_*_kbps` 即 kbps 原值，页面 `subscriptionRate` 的 `/1000` 原样保留 |
+| Operator（`+COPS?`） | `network.get` | `operator` | ✅ 路由 `operator` 即 `+COPS` 引号内字段（原第 3 字段） |
 | Network time（`^NWTIME?`） | `system.network_time` ✨ | `time` | 字符串逐字传递 |
 | Function level（`+CFUN?`） | `network.radio` | `cfun / airplane` | 页面用 `cfun` 做 `'0'/'1'` 判断，路由给数字 |
 | LED（`^LEDSWITCH?`） | `system.led` ✨ | `led` | |
 | SIM activation（`^HVSST?`） | `sim.activation` ✨ | `active / slot` | `slot` 是页面回退用的第三字段 |
 | SIM slot（`^SCICHG?`） | `sim.slot` | `slot / hotplug` | |
-| Temperature（`^CHIPTEMP?`） | `system.temperature` | `sensors[] / average` | ⚠ 英雄区是**峰值**：`(max(raw)/10).toFixed(1)`。路由只有 `average`（均值），必须用 `sensors`（已是 °C）自算最大值；此外页面过滤 `-1000 < raw < 2000`，与后端的 `65535 / >1500` 判据不完全等价 |
+| Temperature（`^CHIPTEMP?`） | `system.temperature` | `peak / peak_sensor / average` | ✅ 后端过滤 0 / 65535 后取最大得 `peak`，与旧公式 `(max(raw)/10).toFixed(1)` 等价 |
 | FOTA mode（`^FOTAMODE?`） | `system.fota_mode` ✨ | `mode` | ✨ 本刀新增；`0,1,0,1` → “HTTP update mode”的译名保留在页面（UI 文案） |
 | FOTA state / progress | `system.fota` | `state / stateName / total / received` | 替代 `^FOTASTATE?` + `^FOTADLQ` 两段的自算 percent |
 | Thermal status | `system.thermal` | `currentLevel` | 后端取第 6 字段，与页面一致 |
@@ -217,9 +254,10 @@ GITHUB_TOKEN=<token> python3 tools/ghgit.py pushall --since <已推送的本地 
 
 ## 七、建议下一步顺序（按依赖）
 
-1. **后端补 4 组命令**（LED 读写、SIM 激活读写、网络时间读、温控表写）
-   — 纯新增，风险低；完成后 system.js 的读帧与保留的 4 条写可一并收尾；
-2. **系统页读帧切路由**（22 段 → 现有 + 新路由）— 需处理 FOTA 形态差异；
+1. ~~**后端补 4 组命令**（LED 读写、SIM 激活读写、网络时间读、温控表写）~~
+   ✅ 已完成（`13e7b8f` / `61c4ad3` / `662c2c3` 三笔）；
+2. ~~**系统页读帧切路由**（22 段 → 现有 + 新路由）~~
+   ✅ 已完成（含 4 条写入 + FOTA 形态对齐，系统页零 CLI）；
 3. **连接页**（PDP 3 写 + 拨号写 + PostRoute/DMZ）— 校验规则须逐字保留；
 4. **高级页**（4 条直接迁移 + 读帧 + USB/接口模式写）；
 5. **WebUI**（PDCP 路由 + 删死方法 + 重建 bundle）；

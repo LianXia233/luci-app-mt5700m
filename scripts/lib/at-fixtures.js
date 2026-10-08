@@ -349,6 +349,104 @@ function systemCliFrame(f) {
 	]);
 }
 
+/*
+ * 同一套事实的另一半形态：22 段文本帧 vs 15 条路由载荷。
+ *
+ * 两侧必须出自同一份 SYSTEM_FACTS，否则「渲染逐字相同」就没意义 —— 事实一
+ * 改，两边同时动。空字符串在这里一律表示「该段没答」，对应的键直接不出现，
+ * 与后端 `Option` 字段缺席的语义一致。
+ *
+ * 顺序必须与 system.js `load()` 里的 Promise.all 逐条对齐。
+ */
+const SYSTEM_ROUTES = [
+	'modem.get', 'system.version', 'sim.get', 'sim.number', 'sim.slot', 'sim.activation',
+	'qos.get', 'network.get', 'network.radio', 'system.temperature', 'system.thermal',
+	'system.led', 'system.network_time', 'system.fota_mode', 'system.fota'
+];
+
+function fields(text) {
+	return String(text || '').split(',').map((v) => v.trim()).filter((v) => v !== '');
+}
+function numOr(v, dflt) {
+	const n = Number(v);
+	return Number.isFinite(n) ? n : dflt;
+}
+
+function systemRouteResults(f) {
+	const chip = fields(f.chiptemp).map((v) => numOr(v, 0) / 10);
+	const plausible = chip.filter((v) => v > 0 && v <= 150);
+	const peak = plausible.length ? Math.max.apply(null, plausible) : null;
+	const thermalPara = fields(f.thermalPara).map((v) => numOr(v, 0));
+	const thermalFields = fields(f.thermalStatus);
+	const thermalLog = fields(f.thermalLogSw);
+	const copFields = fields(f.cops).map((v) => v.replace(/"/g, ''));
+	const dsambr = fields(f.dsambr);
+	const fotaDl = fields(f.fotadlq.replace(/"/g, ''));
+	const card = {};
+	if (f.sim) card.status = f.sim;
+	if (f.iccid) card.iccid = f.iccid;
+	if (f.imsi) card.imsi = f.imsi;
+	const msisdn = Object.assign({}, card);
+	if (f.number) msisdn.number = f.number; else msisdn.numberState = 'not_stored';
+	const version = {};
+	if (f.buildDate) version.buildDate = f.buildDate;
+	if (f.software) version.software = f.software;
+	if (f.hardware) version.hardware = f.hardware;
+	const modem = { model: 'MT5700M' };
+	if (f.revision) modem.revision = f.revision;
+	if (f.imei) modem.imei = f.imei;
+	const temperature = {};
+	if (peak !== null) {
+		temperature.peak = round1(peak);
+		temperature.peak_sensor = 'sub3GPA';
+		temperature.average = round1(plausible.reduce((a, b) => a + b, 0) / plausible.length);
+	}
+	const thermal = {};
+	if (thermalPara.length) thermal.thresholds = thermalPara;
+	if (thermalFields.length > 5) thermal.currentLevel = numOr(thermalFields[5], 0);
+	if (thermalLog.length) {
+		thermal.logSwitch = { consoleLog: thermalLog[0] === '1', fileLog: thermalLog[1] === '1' };
+	}
+	const byName = {
+		'modem.get': modem,
+		'system.version': version,
+		'sim.get': card,
+		'sim.number': msisdn,
+		'sim.slot': fields(f.scichg).length ? { slot: numOr(fields(f.scichg)[0], 0) } : {},
+		'sim.activation': fields(f.hvsst).length > 1 ? {
+			active: fields(f.hvsst)[1] === '1',
+			slot: numOr(fields(f.hvsst)[2], 0)
+		} : {},
+		'qos.get': dsambr.length > 2 ? {
+			active_cid: numOr(dsambr[0], 0),
+			ambr_down_kbps: numOr(dsambr[1], 0),
+			ambr_up_kbps: numOr(dsambr[2], 0)
+		} : {},
+		'network.get': copFields.length > 2 ? { operator: copFields[2] } : {},
+		'network.radio': f.cfun ? { cfun: numOr(f.cfun, 0), airplane: f.cfun === '0' } : {},
+		'system.temperature': temperature,
+		'system.thermal': thermal,
+		'system.led': f.led ? { led: f.led === '1' } : {},
+		'system.network_time': f.nwtime ? { time: f.nwtime } : {},
+		'system.fota_mode': f.fotamode ? { mode: f.fotamode } : {},
+		'system.fota': f.fotastate ? {
+			running: true,
+			state: String(f.fotastate),
+			total: numOr(fotaDl[fotaDl.length - 2], 0),
+			received: numOr(fotaDl[fotaDl.length - 1], 0)
+		} : {}
+	};
+	return SYSTEM_ROUTES.map((name) => byName[name]);
+}
+
+/* makeApi 的答案映射：`route:<name>` → 载荷（缺失即接不到 → null）。 */
+function systemRouteAnswers(f) {
+	const results = systemRouteResults(f);
+	const answers = {};
+	SYSTEM_ROUTES.forEach((name, i) => { answers['route:' + name] = results[i]; });
+	return answers;
+}
+
 module.exports = {
 	round1, ord,
 	decodeSignal, decodeCell, decodeRegistration, decodeRrc, decodeOperator, decodeTemps,
@@ -358,4 +456,5 @@ module.exports = {
 	SENSORS, SENSOR_KEYS,
 	sessionFacts, advancedSessionFrame, sessionPayload,
 	SYSTEM_FACTS, systemFacts, systemCliFrame,
+	SYSTEM_ROUTES, systemRouteResults, systemRouteAnswers,
 };

@@ -19,10 +19,11 @@
  *     network.session；
  *   - 连接页：拨号设置仍走 CLI 动词（未迁移），会话面板读 network.session，
  *     「清空计数」走 network.flow_clear 路由；
- *   - 系统页：22 段读帧仍是 `mt5700m-at system`（下一刀才切），6 条**写入**
- *     已走 network.radio_set / sim.slot_set / modem.reset / system.factory_reset /
- *     sim.pin_apply / modem.imei_set，保留的 7 条（LED / SIM 激活 / 温控表 /
- *     FOTA 三步）仍走动词。
+ *   - 系统页：零 CLI —— 22 段读帧已切成 15 条 display / on-demand 路由
+ *     （modem.get … system.fota），10 条写入走 network.radio_set / sim.slot_set /
+ *     modem.reset / system.factory_reset / sim.pin_apply / modem.imei_set /
+ *     system.led_set / sim.activation_set / system.thermal_thresholds_set +
+ *     system.thermal_log_set，仅保留 FOTA 三步动词。
  * 断言路由调用面、页面上的关键文字（盘面读数、无线偏好下拉、会话侧栏、概览页的
  * APN/QCI/速率/号码、系统页的身份/温度/运营商）与写路径（短信发送、清空计数、
  * 系统页四条写入）。退出码 0 = 通过。
@@ -238,10 +239,9 @@ async function connectionPage() {
 
 /* ------------------------------------------------------------ 系统页 */
 async function systemPage() {
-	const api = lib.makeApi({
-		'at:system': { stdout: fixtures.systemCliFrame(fixtures.systemFacts({})), stderr: '' }
-	});
-	api.atSystem = () => api.at([ 'system' ]);
+	// 不挂 atSystem、不喂 at:system 帧：新页 load() 只走 15 条路由，
+	// 任何残留的 CLI 读帧调用都会在这里直接崩掉（这本身就是断言）。
+	const api = lib.makeApi(fixtures.systemRouteAnswers(fixtures.systemFacts({})));
 	const side = lib.loadSide(read, api, RES + '/view/mt5700m/system.js');
 	side.view.load();
 	const holder = side.view.render();
@@ -249,8 +249,10 @@ async function systemPage() {
 	for (let i = 0; i < 20; i++) await lib.tick();
 	const text = lib.textOf(holder);
 	const at = api.calls.filter((c) => c.kind === 'at').map((c) => c.args.join(' '));
-	check('系统页：22 段读帧仍是 mt5700m-at system（下一刀才切）',
-		sameJson(at, [ 'system' ]), JSON.stringify(at));
+	check('系统页：零 CLI 调用（22 段读帧已切成路由）', sameJson(at, []), JSON.stringify(at));
+	const sysRoutes = api.calls.filter((c) => c.kind === 'route').map((c) => c.name);
+	check('系统页：15 条路由（顺序即 load() 的 Promise.all）',
+		sameJson(sysRoutes, fixtures.SYSTEM_ROUTES), JSON.stringify(sysRoutes));
 	/*
 	 * 不断言 `_('%d%% complete')` 的字面形式：luci-stub 的 format 是
 	 * `replace(/%[sd]/g)`，不处理 `%%` 转义，会得到 `50%% complete`。

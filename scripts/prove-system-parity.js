@@ -2,13 +2,15 @@
 'use strict';
 
 /*
- * 系统页（system）一致性证明（LuCI 系统页 → 统一路由，10 条写入动词消失）
+ * 系统页（system）一致性证明（LuCI 系统页 → 统一路由，10 条写入动词 + 22 段读帧全部消失）
  *
- * 第二刀切掉第一批剩下的 4 条 CLI 写入动词。读帧（22 段）
- * `mt5700m-at system` 本刀仍未动 —— 渲染必须逐字不变，同一份 CLI 文本帧
- * 继续作为两侧共有的自变量。
+ * 第三刀切掉最后的 22 段 CLI 读帧：`mt5700m-at system` → 15 条 display /
+ * on-demand 路由（modem.get / system.version / sim.* / qos.get / network.* /
+ * system.temperature / system.thermal / system.led / system.network_time /
+ * system.fota_mode / system.fota）。旧 JS 里的第二份帧解析（22 段的切分规则）
+ * 随之消失 —— 字段语义只剩后端一份。
  *
- *   第一刀（6 条）
+ *   第一刀（6 条写入）
  *   - airplane      `mt5700m-at airplane <0|1>`      → network.radio_set {airplane}
  *   - sim-slot      `advanced-set sim-slot <v>`      → sim.slot_set {slot}
  *   - set-imei      `mt5700m-at set-imei <v>`        → modem.imei_set {imei}
@@ -16,21 +18,28 @@
  *   - sim-pin       `mt5700m-at sim-pin <op> a1 a2`  → sim.pin_apply {operation,pin,newPin}
  *   - factory-reset `mt5700m-at factory-reset`       → system.factory_reset
  *
- *   第二刀（4 条，后端能力本刀前已补齐）
- *   - led                `advanced-set led <0|1>`         → system.led_set {enabled}
- *   - sim-activation     `advanced-set sim-activation`    → sim.activation_set {active}
+ *   第二刀（4 条写入，后端能力本刀前已补齐）
+ *   - led                `advanced-set led <0|1>`          → system.led_set {enabled}
+ *   - sim-activation     `advanced-set sim-activation`     → sim.activation_set {active}
  *   - thermal-thresholds `advanced-set thermal-thresholds` → system.thermal_thresholds_set {thresholds}
- *   - thermal-log        `advanced-set thermal-log`       → system.thermal_log_set {serial,file}
+ *   - thermal-log        `advanced-set thermal-log`        → system.thermal_log_set {serial,file}
  *
- *   保留 3 条：FOTA 下载 / 续传 / 安装 —— 模块是「任务 + 观察 + 中止」形态，
- *   迁移会改变交互，需产品决策。
+ *   第三刀（本刀，读帧）
+ *   - `api.atSystem()`（`mt5700m-at system` 的 22 段文本帧）→ 15 条路由，
+ *     api.js 的 atSystem 速记一并删除。渲染必须逐字不变。
+ *
+ *   保留 3 条写入：FOTA 下载 / 续传 / 安装 —— 模块是「任务 + 观察 + 中止」
+ *   形态，迁移会改变交互，需产品决策。
  *
  * 用法：
  *   node scripts/prove-system-parity.js [基线]   # 基线默认 pre-system-route
  * 退出码 0 = 通过，1 = 不一致，2 = 基线选错了（基线里已经没有旧实现）。
  *
- * 关键设计：两侧喂的是**同一份 CLI 文本帧**（病态用例见下），A 组因此要求
- * 渲染结果逐字相同 —— 本刀没有碰解析，任何一行不一样都说明改坏了 UI。
+ * 关键设计：两侧出自**同一份 SYSTEM_FACTS**（病态用例见下）—— 旧侧把它排成
+ * 22 段 CLI 文本帧，新侧排成 15 条路由载荷，两套排法都来自
+ * scripts/lib/at-fixtures.js 的同一份事实对象。事实一改两边同时动，「渲染
+ * 逐字相同」因此仍然成立。A 组比较时把 Technical details 折叠块抹平：块的
+ * 内容是**有意**差异（AT 原文 → api.<route> + JSON），单独断言。
  * C 组同时钉住**旧侧发出什么**与**新侧发出什么**，两者逐字对照；只看新侧
  * 是不够的：新侧参数写错而旧侧对不上时也必须失败。
  *
@@ -42,9 +51,8 @@
  * 2. `system.factory_reset` 发 `AT&F`，CLI 发 `AT&F0`。两者是同一条工厂
  *    复位命令（&F 默认即 profile 0），不是行为差异。
  *
- * 保留 7 条 CLI（前端仍走动词），本脚本 D 组断言它们**没有**被迁走 ——
- * 后端尚无对应写的能力（LED / SIM 激活 / 温控阈值 / 温控日志），或迁移
- * 会改变交互形态、需要产品决策（FOTA 下载 / 续传 / 安装）。
+ * 保留 3 条 CLI（前端仍走动词），本脚本 D 组断言它们**没有**被迁走 ——
+ * 迁移会改变交互形态、需要产品决策（FOTA 下载 / 续传 / 安装）。
  */
 
 const fs = require('fs');
@@ -82,8 +90,10 @@ function diffText(a, b) {
 }
 
 /* ------------------------------------------------------------ 共享事实
- * `mt5700m-at system` 的读帧夹具在 scripts/lib/at-fixtures.js（与 smoke 共用），
- * 两侧喂的是**同一份 CLI 文本帧**，渲染出来的每一行因此必须逐字相同。
+ * SYSTEM_FACTS 在 scripts/lib/at-fixtures.js（与 smoke 共用）。旧侧把它排成
+ * 22 段 CLI 文本帧（systemCliFrame），新侧排成 15 条路由载荷
+ * （systemRouteResults / systemRouteAnswers）—— 两套排法出自同一份事实，
+ * 渲染出来的每一行因此必须逐字相同（Technical details 块除外，单独断言）。
  */
 const systemFrame = fixtures.systemCliFrame;
 const shape = fixtures.systemFacts;
@@ -99,15 +109,48 @@ const CASES = [
 	{ name: '飞行模式（CFUN=0）', s: shape({ cfun: '0', fotastate: '13' }) }
 ];
 
-/* ------------------------------------------------------------ 装载两侧 */
-function buildSide(read) {
-	const api = lib.makeApi({});
-	const side = lib.loadSide(read, api, VIEW);
-	return side;
+/* ------------------------------------------------------------ 装载
+ * 旧版 load() 调 api.atSystem()（mt5700m/api.js 的速记），桩上要补挂同名
+ * 入口才能整页跑起来；新版不再引用它。 */
+function apiFor(answers) {
+	const api = lib.makeApi(answers || {});
+	api.atSystem = () => api.at([ 'system' ]);
+	return api;
+}
+function buildSide(read, answers) {
+	return lib.loadSide(read, apiFor(answers), VIEW);
 }
 
-function renderPage(side, s) {
-	return lib.lines(side.view.renderPage({ stdout: systemFrame(s), stderr: '' }));
+function renderPageOld(side, s) {
+	return side.view.renderPage({ stdout: systemFrame(s), stderr: '' });
+}
+function renderPageNew(side, s) {
+	return side.view.renderPage(fixtures.systemRouteResults(s));
+}
+
+/* Technical details 折叠块（<pre class="mt-raw">）的内容是**有意**差异：
+ * 旧侧倾倒 AT 文本帧原文，新侧倾倒路由载荷（api.<route> + JSON）。块本身
+ * 仍在（同一 class、同一标题），比较时两边都抹成占位符。 */
+function detailsPre(node) {
+	return lib.collect(node, n => n.tagName === 'PRE'
+		&& String((n.attrs && n.attrs['class']) || '').indexOf('mt-raw') !== -1)[0];
+}
+function neutralizeDetails(node) {
+	const pre = detailsPre(node);
+	if (!pre) return false;
+	pre.children = [ '<technical-details>' ];
+	return true;
+}
+function linesNeutralized(node) {
+	neutralizeDetails(node);
+	return lib.lines(node);
+}
+
+/* 整页 load()/render()（调用面组用）：按 LuCI 的调用方式真跑一遍 */
+function renderView(side) {
+	side.view.load();
+	const holder = side.view.render();
+	return side.view.contentReady.then(() => holder);
 }
 
 /* 弹窗控件定位用 luci-stub 的共享选择器（collect 支持数组入参，modal.children
@@ -115,6 +158,9 @@ function renderPage(side, s) {
 const modalNodes = (side) => lib.lastModal(side.scope).children;
 
 function eq(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+const sameJson = eq;
+
+function atSystemIn(src) { return /function atSystem|atSystem:/.test(src); }
 
 function callsOf(side) { return side.scope.api.calls; }
 function lastCall(side) { const c = callsOf(side); return c[c.length - 1] || null; }
@@ -149,11 +195,30 @@ function callNamed(side, name, args) {
 	}
 	const newView = newSource(VIEW);
 
-	console.log('A. 渲染逐字相同（读帧未动，任何差异都是改坏了 UI）');
+	console.log('A. 渲染逐字相同（同一份事实：旧 = 22 段文本帧，新 = 15 条路由载荷）');
 	for (const c of CASES) {
 		const oldSide = buildSide(oldRead), newSide = buildSide(newRead);
-		const a = renderPage(oldSide, c.s), b = renderPage(newSide, c.s);
+		const a = linesNeutralized(renderPageOld(oldSide, c.s));
+		const b = linesNeutralized(renderPageNew(newSide, c.s));
 		check(c.name, a === b, diffText(a, b));
+	}
+
+	console.log('A2. Technical details 折叠块（有意差异：AT 原文 → 路由载荷）');
+	{
+		const oldSide = buildSide(oldRead), newSide = buildSide(newRead);
+		const oldNode = renderPageOld(oldSide, FULL), newNode = renderPageNew(newSide, FULL);
+		const oldPre = detailsPre(oldNode), newPre = detailsPre(newNode);
+		const oldText = lib.textOf(oldPre), newText = lib.textOf(newPre);
+		check('「Technical details」折叠块仍在（同一 class、同一标题，非空）',
+			!!oldPre && !!newPre && oldText.length > 0 && newText.length > 0);
+		check('旧版倾倒的是整段 AT 文本帧（含 ^VERSION / ^CHIPTEMP 原文）',
+			oldText.indexOf('^VERSION') !== -1 && oldText.indexOf('^CHIPTEMP') !== -1);
+		check('新版不再出现任何 AT 应答原文；改倒路由载荷（api.<route> + JSON）',
+			newText.indexOf('^VERSION') === -1 && newText.indexOf('^CHIPTEMP') === -1
+			&& newText.indexOf('api.system.version') !== -1
+			&& newText.indexOf('"buildDate"') !== -1);
+		check('两侧各抹掉一处细节块内容（A 组剩下的差异必须是零）',
+			neutralizeDetails(oldNode) && neutralizeDetails(newNode));
 	}
 
 	console.log('B. 10 条 CLI 动词已消失（静态）');
@@ -175,8 +240,8 @@ function callNamed(side, name, args) {
 		const s = shape({ cfun: cfun });
 		const oldSide = buildSide(oldRead), newSide = buildSide(newRead);
 		const label = cfun === '0' ? 'Resume mobile radio' : 'Enter airplane mode';
-		lib.pressButton(oldSide.view.renderPage({ stdout: systemFrame(s), stderr: '' }), label);
-		lib.pressButton(newSide.view.renderPage({ stdout: systemFrame(s), stderr: '' }), label);
+		lib.pressButton(renderPageOld(oldSide, s), label);
+		lib.pressButton(renderPageNew(newSide, s), label);
 		lib.modalButton(oldSide.scope, 'Continue');
 		lib.modalButton(newSide.scope, 'Continue');
 		await lib.tick();
@@ -192,8 +257,8 @@ function callNamed(side, name, args) {
 	for (const slot of [ '0', '1' ]) {
 		const s = shape({ scichg: slot + ',0' });
 		const oldSide = buildSide(oldRead), newSide = buildSide(newRead);
-		lib.pressButton(oldSide.view.renderPage({ stdout: systemFrame(s), stderr: '' }), 'Switch SIM slot');
-		lib.pressButton(newSide.view.renderPage({ stdout: systemFrame(s), stderr: '' }), 'Switch SIM slot');
+		lib.pressButton(renderPageOld(oldSide, s), 'Switch SIM slot');
+		lib.pressButton(renderPageNew(newSide, s), 'Switch SIM slot');
 		lib.modalButton(oldSide.scope, 'Apply');
 		lib.modalButton(newSide.scope, 'Apply');
 		await lib.tick();
@@ -209,8 +274,7 @@ function callNamed(side, name, args) {
 		const s = FULL;
 		const oldSide = buildSide(oldRead), newSide = buildSide(newRead);
 		const expect = '862853030099999';
-		for (const side of [ oldSide, newSide ]) {
-			const page = side.view.renderPage({ stdout: systemFrame(s), stderr: '' });
+		for (const [ side, page ] of [[ oldSide, renderPageOld(oldSide, s) ], [ newSide, renderPageNew(newSide, s) ]]) {
 			lib.pressButton(page, 'Device identity laboratory');
 			lib.inputsIn(modalNodes(side))[0].value = expect;
 			lib.modalButton(side.scope, 'Review change');
@@ -228,8 +292,8 @@ function callNamed(side, name, args) {
 	{
 		const s = FULL;
 		const oldSide = buildSide(oldRead), newSide = buildSide(newRead);
-		for (const side of [ oldSide, newSide ]) {
-			lib.pressButton(side.view.renderPage({ stdout: systemFrame(s), stderr: '' }), 'Restart Module');
+		for (const [ side, page ] of [[ oldSide, renderPageOld(oldSide, s) ], [ newSide, renderPageNew(newSide, s) ]]) {
+			lib.pressButton(page, 'Restart Module');
 			lib.modalButton(side.scope, 'Continue');
 		}
 		await lib.tick();
@@ -244,8 +308,8 @@ function callNamed(side, name, args) {
 	{
 		const s = FULL;
 		const oldSide = buildSide(oldRead), newSide = buildSide(newRead);
-		for (const side of [ oldSide, newSide ]) {
-			lib.pressButton(side.view.renderPage({ stdout: systemFrame(s), stderr: '' }), 'Restore factory settings');
+		for (const [ side, page ] of [[ oldSide, renderPageOld(oldSide, s) ], [ newSide, renderPageNew(newSide, s) ]]) {
+			lib.pressButton(page, 'Restore factory settings');
 			lib.inputsIn(modalNodes(side))[0].value = 'RESET';
 			lib.modalButton(side.scope, 'Restore factory settings');
 		}
@@ -272,8 +336,8 @@ function callNamed(side, name, args) {
 	];
 	for (const pc of PIN_CASES) {
 		const oldSide = buildSide(oldRead), newSide = buildSide(newRead);
-		for (const side of [ oldSide, newSide ]) {
-			lib.pressButton(side.view.renderPage({ stdout: systemFrame(FULL), stderr: '' }), 'Manage SIM PIN');
+		for (const [ side, page ] of [[ oldSide, renderPageOld(oldSide, FULL) ], [ newSide, renderPageNew(newSide, FULL) ]]) {
+			lib.pressButton(page, 'Manage SIM PIN');
 			lib.selectsIn(modalNodes(side))[0].value = pc.op;
 			const ins = lib.inputsIn(modalNodes(side));
 			ins[0].value = pc.first;
@@ -292,8 +356,8 @@ function callNamed(side, name, args) {
 	for (const led of [ '1', '0' ]) {
 		const s = shape({ led: led });
 		const oldSide = buildSide(oldRead), newSide = buildSide(newRead);
-		for (const side of [ oldSide, newSide ]) {
-			lib.pressButton(side.view.renderPage({ stdout: systemFrame(s), stderr: '' }), 'Apply LED setting');
+		for (const [ side, page ] of [[ oldSide, renderPageOld(oldSide, s) ], [ newSide, renderPageNew(newSide, s) ]]) {
+			lib.pressButton(page, 'Apply LED setting');
 			lib.modalButton(side.scope, 'Apply');
 		}
 		await lib.tick();
@@ -308,8 +372,8 @@ function callNamed(side, name, args) {
 	for (const field of [ '1', '0' ]) {
 		const s = shape({ hvsst: '1,' + field + ',0' });
 		const oldSide = buildSide(oldRead), newSide = buildSide(newRead);
-		for (const side of [ oldSide, newSide ]) {
-			lib.pressButton(side.view.renderPage({ stdout: systemFrame(s), stderr: '' }), 'Apply SIM activation');
+		for (const [ side, page ] of [[ oldSide, renderPageOld(oldSide, s) ], [ newSide, renderPageNew(newSide, s) ]]) {
+			lib.pressButton(page, 'Apply SIM activation');
 			lib.modalButton(side.scope, 'Apply');
 		}
 		await lib.tick();
@@ -324,8 +388,8 @@ function callNamed(side, name, args) {
 	{
 		const nine = [ 60, 70, 65, 80, 75, 90, 85, 100, 95 ];
 		const oldSide = buildSide(oldRead), newSide = buildSide(newRead);
-		for (const side of [ oldSide, newSide ]) {
-			lib.pressButton(side.view.renderPage({ stdout: systemFrame(FULL), stderr: '' }), 'Configure thermal protection');
+		for (const [ side, page ] of [[ oldSide, renderPageOld(oldSide, FULL) ], [ newSide, renderPageNew(newSide, FULL) ]]) {
+			lib.pressButton(page, 'Configure thermal protection');
 			lib.modalButton(side.scope, 'Apply');
 		}
 		await lib.tick();
@@ -354,12 +418,34 @@ function callNamed(side, name, args) {
 			const rt = comp.match(/function runConfirmedRoute\([\s\S]*?\n}/);
 			return cli && rt && /runConfirmedAction/.test(cli[0]) && /runConfirmedAction/.test(rt[0]);
 		})());
-	check('读帧入口 atSystem 仍在（下一刀才切）', /api\.atSystem\(\)/.test(newView));
+	check('读帧入口已删：system.js 不再引用 atSystem / api.at(', !/atSystem|api\.at\(/.test(newView));
+	check('api.js 的 atSystem 速记一并删除（没有人再调 mt5700m-at system）',
+		!atSystemIn(newSource(RES + '/mt5700m/api.js')));
+
+	console.log('F. 调用面（22 段读帧 → 15 条路由，整页 load()/render() 真跑）');
+	{
+		const answers = Object.assign(
+			{ 'at:system': { stdout: systemFrame(FULL), stderr: '' } },
+			fixtures.systemRouteAnswers(FULL));
+		const oldSide = buildSide(oldRead, answers), newSide = buildSide(newRead, answers);
+		await Promise.all([ renderView(oldSide), renderView(newSide) ]);
+		const oldAt = oldSide.api.calls.filter(c => c.kind === 'at').map(c => c.args[0]);
+		const newAt = newSide.api.calls.filter(c => c.kind === 'at').map(c => c.args[0]);
+		check('旧版：at system（22 段文本帧，load() 里的一次调用）',
+			sameJson(oldAt, [ 'system' ]), JSON.stringify(oldAt));
+		check('新版：零 CLI 调用（系统页不再走 mt5700m-at）',
+			sameJson(newAt, []), JSON.stringify(newAt));
+		const newRoutes = newSide.api.calls.filter(c => c.kind === 'route').map(c => c.name);
+		check('新版：15 条路由（顺序即 load() 的 Promise.all）',
+			sameJson(newRoutes, fixtures.SYSTEM_ROUTES), JSON.stringify(newRoutes));
+		check('新版：路由数正确（15 条）', newRoutes.length === 15,
+			'got ' + newRoutes.length);
+	}
 
 	console.log('');
 	if (failures) {
 		console.log(failures + ' 项不一致');
 		process.exit(1);
 	}
-	console.log('全部通过：系统页 10 条写入已从 CLI 迁到路由，UI 逐字未变。');
+	console.log('全部通过：系统页 10 条写入 + 22 段读帧已从 CLI 迁到路由，UI 逐字未变。');
 })();
