@@ -4,6 +4,50 @@
 
 ---
 
+## [Unreleased] - architecture v2 收官
+
+### Changed
+
+- **架构 v2 收官（PR #7 + PR #8）：单 Rust 后端、双 AT-free 前端**：
+  - Background：架构 v2 的目标是把「前端直连 AT」与「解析逻辑双份维护」两个
+    历史包袱清零，两条验收标准：**前端不得访问 AT**（终端页有意保留）与
+    **无重复实现**。PR #7 完成主体路由化，PR #8 为收官批：死代码清零 +
+    WebUI 路由化收尾 + CI 证明链。
+  - Changes（PR #7，全页面读写路由化）：
+    - 系统页：22 段读帧切成 15 条路由（页面零 CLI）；LED / 网络时间 / 温控 /
+      SIM 激活（`^HVSST` 动词收敛）写入进后端；补 Version / FOTA 模式两组读能力。
+    - 连接页：7 条写路由 + Direct IP 读路由，随后整页读写双切路由化。
+    - 高级设置页：读写双切路由化。
+    - 全部路由在 `docs/architecture-v2/api-contract.md` 登记，migration /
+      remaining-work 同步登记。
+  - Changes（PR #8，收官批）：
+    - LuCI 死导出清零：旧盘点基于 CommonJS 正则失配（shared 模块实为
+      `'require baseclass'` + `return baseclass.extend({...})` 协议），按协议
+      重盘后删除 9 个——`parser.js` 29→24、`api.js` 15→12、`components.js` 45→44。
+    - `client.rs` 文档漂移修正 + 3 处死代码清理：at_cmd doc「三级级联」→
+      单通道转发；删 `NetworkFailed` 零构造变体（`core/error.rs` 同步收口）、
+      `libc_eagain`、`network_hosts`。
+    - WebUI：`setPDCPDataReport` 签名不变改走 `traffic.pdcp_report_set` 路由
+      （后端构造器白名单 interval 200–65535 ms，URC 数据流与开关解耦）；删
+      8 处死方法（`getConnectionState`×3 / `isAuthRequired`×3 / `readCommand`
+      连带 `pendingReads` / `getIMEI`）；bundle 重建同步（`index-BRUXWNeG.js`，
+      legacy 跳转页重建）。
+    - 验证：cargo test 291→**292**；`tsc --noEmit` + `vite build` 通过；
+      本地 prove 全绿（advanced 37 / system 48 / connection 58 / smoke 45）。
+
+### Added
+
+- **CI 证明链 `frontend-proofs` job（PR #8）**：`fetch-depth: 0` +
+  `fetch-tags: true`，跑 10 个 `prove-*-parity.js`（固定基线）+
+  `smoke-minified-luci.js`。基线锚定两条路：孤儿基线提交经增量上传为远端
+  orphan 提交并打 tag（`pre-system-route` / `pre-advanced-route`），其余
+  6 个脚本显式传远端原生基线 sha。兼容性预验证：`loadSide` 旧侧全套读基线
+  （parser / components / 页面同源自洽），基线自带被删死函数定义，无
+  ReferenceError 路径。UI 渲染不可变由逐字比对锁定：前端重构在 CI 层面被
+  证明「用户看到的界面一个字节都没变」。
+
+---
+
 ## [3.1.2] - 2026-10-06
 
 ### Chore
