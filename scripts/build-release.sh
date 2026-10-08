@@ -10,20 +10,72 @@ mkdir -p "${work_dir}" "${output_dir}"
 find "${output_dir}" -mindepth 1 -maxdepth 1 -delete
 cd "${work_dir}"
 
-# SDK downloads from downloads.openwrt.org occasionally die mid-stream with
-#   curl: (92) HTTP/2 stream 1 was not closed cleanly: PROTOCOL_ERROR (err 1)
-# which aborted a release build outright.  `--retry` alone does NOT cover
-# this: curl classifies a protocol error as a non-transient failure.  Force
-# HTTP/1.1 (the CDN is reliable over 1.1 and the SDK tarball is ~300 MB, so
-# the multiplexing win is irrelevant) and add --retry-all-errors so a broken
-# stream is retried instead of ending the run.
-CURL_OPTS=(--http1.1 --fail --location --retry 5 --retry-all-errors
-           --retry-delay 5 --connect-timeout 30)
+# SDK downloads from downloads.openwrt.org are flaky: the connection is
+# dropped mid-stream partway through the ~263 MB tarball, surfacing as
+#   curl: (92) HTTP/2 stream 1 was not closed cleanly: PROTOCOL_ERROR
+#   curl: (18) transfer closed with N bytes remaining to read
+# A plain `--retry` cannot ride this out: curl restarts from byte 0 on every
+# attempt, so a link that reliably dies at ~92% never completes no matter how
+# many times it is retried (observed: six attempts all aborted in the last
+# ~25 MB).  The server advertises `Accept-Ranges: bytes`, so instead we loop
+# with `-C -` (resume).  Each round keeps whatever bytes already landed and
+# asks for the rest; the tarball always finishes as long as the link makes
+# forward progress.  --http1.1 avoids the HTTP/2 multiplexing bug entirely.
+download() {
+	local url="$1" out="$2" want="${3:-0}"
+	local round size after rc stall=0
+	# Skip entirely if a complete copy is already on disk (size known).
+	if [ "${want}" -gt 0 ] && [ -f "${out}" ] \
+	   && [ "$(stat -c%s "${out}" 2>/dev/null || echo 0)" -ge "${want}" ]; then
+		echo "   ${out} already complete ($(stat -c%s "${out}") bytes)"
+		return 0
+	fi
+	for round in $(seq 1 60); do
+		size=0
+		[ -f "${out}" ] && size="$(stat -c%s "${out}" 2>/dev/null || echo 0)"
+		if [ "${want}" -gt 0 ] && [ "${size}" -ge "${want}" ]; then
+			echo "   done after ${round} round(s): ${size}/${want} bytes"
+			return 0
+		fi
+		rc=0
+		curl -sS --http1.1 --fail --location -C - --max-time 300 \
+			--connect-timeout 30 -o "${out}" "${url}" || rc=$?
+		after=0
+		[ -f "${out}" ] && after="$(stat -c%s "${out}" 2>/dev/null || echo 0)"
+		echo "   round ${round}: rc=${rc}  ${size} -> ${after}${want:+/${want}} bytes"
+		# curl exits 33 when the server refuses a range request because the
+		# file is already complete — treat that as success, not a stall.
+		if [ "${rc}" -eq 33 ] && [ "${want}" -gt 0 ] && [ "${after}" -ge "${want}" ]; then
+			return 0
+		fi
+		# No forward progress three rounds in a row ⇒ the link is dead, stop
+		# instead of burning the whole job timeout on hopeless retries.
+		if [ "${after}" -le "${size}" ] && [ "${rc}" -ne 0 ]; then
+			stall=$(( stall + 1 ))
+			if [ "${stall}" -ge 3 ]; then
+				echo "ERROR: download stalled with no progress: ${url}" >&2
+				return 1
+			fi
+		else
+			stall=0
+		fi
+		sleep 2
+	done
+	echo "ERROR: download did not finish in 60 rounds: ${url}" >&2
+	return 1
+}
 
-curl -sS "${CURL_OPTS[@]}" -O "${base_url}/sha256sums"
+# Grab the checksum manifest first and read the expected size of the SDK
+# tarball from its Content-Length, so `download` can tell "finished" from
+# "truncated" and stop the resume loop at exactly the right byte.
+download "${base_url}/sha256sums" sha256sums
+test -s sha256sums
 archive="$(awk '/openwrt-sdk-.*Linux-x86_64\.tar\.zst$/ { print $2; exit }' sha256sums | sed 's/^\*//')"
 test -n "${archive}"
-curl -sS "${CURL_OPTS[@]}" -o "${archive}" "${base_url}/${archive}"
+archive_size="$(curl -sSI --http1.1 --max-time 30 "${base_url}/${archive}" \
+	| awk 'tolower($1)=="content-length:" { gsub(/\r/,"",$2); print $2; exit }')"
+echo "SDK tarball: ${archive} (${archive_size:-unknown} bytes)"
+download "${base_url}/${archive}" "${archive}" "${archive_size:-0}"
 grep "[ *]${archive}$" sha256sums | sha256sum -c -
 tar --zstd -xf "${archive}"
 sdk_dir="$(find "${work_dir}" -maxdepth 1 -type d -name 'openwrt-sdk-*' | head -n 1)"
