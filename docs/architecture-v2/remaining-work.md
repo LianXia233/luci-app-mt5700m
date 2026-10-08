@@ -215,11 +215,28 @@ FOTA 下载 / 续传 / 安装 —— 模块是「任务 + 观察 + 中止」形�
 （温控阈值 / 温控日志 / LED / SIM 激活四条已在第二批迁到路由，
 详见 migration.md。）
 
-### 1.4 死导出（7 个）
+### 1.4 死导出（✅ 已清零，2026-10-08，第六批）
 
-`parser.js`: `countLines`、`hexNumber`
-`components.js`: `createSvg`、`signalPercent`
-`api.js`: `netrate`、`atTimeoutMs`、`atSafe`（内部仍用，仅去导出）
+> 旧盘点基于 CommonJS 正则，**失配**：LuCI shared 模块用
+> `'require baseclass'` + `return baseclass.extend({...})` 协议，不是
+> `module.exports`。本批按协议重新解析导出面 + 全仓引用计数后执行：
+
+| 模块 | 处置 | 明细 |
+|---|---|---|
+| `parser.js` | 29 → 24 导出 | 删 5 个全死项（定义 + 导出行）：`section`、`pick`、`parseContexts`、`countLines`、`hexNumber` |
+| `api.js` | 15 → 12 导出 | `atTimeoutMs`、`netrate`（全死，连带 `callNetrate` rpc 声明）删定义；`atSafe` 内部仍用，仅去导出 |
+| `components.js` | 45 → 44 导出 | `signalPercent` 内部仍用（信号条），仅去导出 |
+
+旧清单过时项更正：`createSvg` 本就**没有导出行**（纯内部函数）；
+`countLines`/`hexNumber`/`netrate` 属全死（函数 + 导出 + rpc 声明一并删）。
+
+验证：`node --check` 三模块通过；`prove-advanced` 37 / `smoke` 45 /
+`prove-connection` 58 全绿；四个老 prove 脚本 stash 前后输出逐字一致
+（预存行为不受影响）。
+
+盘点脚本要点（可复用）：取 `return baseclass.extend({` 之后的顶层
+`\t(\w+)\s*:` 为导出面；引用方含 view 页面（按各页 require 头解析别名，
+components 别名是 `c`）、shared 互相调用、测试脚本 stub。
 
 ---
 
@@ -242,7 +259,12 @@ FOTA 下载 / 续传 / 安装 —— 模块是「任务 + 观察 + 中止」形�
 
 **另有三处清理**：
 ① 两端都未引用的 10 条路由（`*.cached` 7 条 + `sim.get`、`traffic.get`、`traffic.netrate`）需明确归属或删除；
-② `transport/client.rs` 顶部注释仍写「control socket → direct serial → network 三级级联」与「daemon 不可达时直连串口安全」，但实现已无任何直连路径 —— **文档漂移**，应删上半段、保留「唯一所有者」说明；
+② ~~`transport/client.rs` 文档漂移~~ ✅ 已完成（第六批）：`at_cmd` doc 由
+「control socket → direct serial → network 三级级联」更正为单通道 daemon
+转发；删除 Network 段孤儿注释与 daemon-holding 孤儿 doc 块；`AtError` 的
+shell contract 举例更正为实际映射（2/1/124）；顺带删除死代码
+`NetworkFailed` 变体（零构造点，`core/error.rs` 的 From 转换同步收口）、
+`libc_eagain`（零调用）、`network_hosts`（零调用）；`cargo test` 291 passed；
 ③ CLI 的 `sms-list` / `sms-info` 已无调用者（其余 `status` / `advanced` / `flow-clear` 按既定决策作为诊断工具保留）。
 
 ---
@@ -289,7 +311,8 @@ FOTA 下载 / 续传 / 安装 —— 模块是「任务 + 观察 + 中止」形�
 
 1. **前端不得访问 AT** —— WebUI 的 PDCP 上报开关仍是原始 AT 写
    （LuCI/WebUI 的终端页为有意保留，不计入）；
-2. **无重复实现** —— 残留 LuCI 7 个死导出 + WebUI 8 个死方法。
+2. **无重复实现** —— LuCI 侧 9 个死导出已全部清零（见 1.4，第六批），
+   剩 WebUI 8 个死方法（见 3.2）。
 
 ---
 
@@ -338,5 +361,6 @@ GITHUB_TOKEN=<token> python3 tools/ghgit.py pushall --since <已推送的本地 
 3. **连接页**（PDP 3 写 + 拨号写 + PostRoute/DMZ）— 校验规则须逐字保留；
 4. **高级页**（4 条直接迁移 + 读帧 + USB/接口模式写）；
 5. **WebUI**（PDCP 路由 + 删死方法 + 重建 bundle）；
-6. **清理**（7 个死导出、CLI 无调用动词、`client.rs` 文档漂移、10 条路由归属）；
+6. ~~**清理**（7 个死导出、CLI 无调用动词、`client.rs` 文档漂移、10 条路由归属）~~
+   死导出与 `client.rs` 文档漂移已完成（第六批）；CLI 无调用动词与 10 条路由归属待做；
 7. **工具链**（证明基线全部改为 tag + CI 前端 job + `--unshallow` 跑全量）。

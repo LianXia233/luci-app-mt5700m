@@ -689,3 +689,42 @@ params 逐键一致。`scripts/smoke-minified-luci.js` 扩到 **45 项**：高�
 不喂 hardware 帧、不挂 atHardware 桩，断言零 CLI + 5 条读路由 + 控件取值 +
 两条写入抽样（usb_mode_set / thermal_set）。`cargo test` **291**（+1
 `tdcfg_mode` 形态测试）。
+
+## 高级设置页之后：死导出清零 + client.rs 文档漂移（切片，2026-10-08）
+
+### LuCI 侧：9 个死导出全部移除
+
+前几批页面迁移后，`parser.js` / `api.js` / `components.js` 的导出面留下一批
+无人调用的名字。**旧盘点基于 CommonJS 正则失配** —— LuCI shared 模块用
+`'require baseclass'` + `return baseclass.extend({...})` 协议，不是
+`module.exports`；本批按协议重新解析（取模块级 `return baseclass.extend({`
+之后的顶层 `\t(\w+)\s*:` 为导出面，引用方含 view 页面按 require 头解析别名、
+shared 互相调用、测试脚本 stub），逐项核实后执行：
+
+| 模块 | 处置 | 明细 |
+|---|---|---|
+| `parser.js` | 29 → 24 | 删 `section` / `pick` / `parseContexts` / `countLines` / `hexNumber`（全死：定义 + 导出行一并删；`parseContexts` 是连接页批次就确认的死项） |
+| `api.js` | 15 → 12 | `atTimeoutMs` 全死；`netrate` 全死（连带 `callNetrate` rpc 声明，页面实时速率走 `trafficSummary`）；`atSafe` 内部仍用（`cachedSnapshot`/`at` 的超时归一化路径），仅去导出 |
+| `components.js` | 45 → 44 | `signalPercent` 内部仍用（信号条），仅去导出 |
+
+旧盘点过时项更正：`createSvg` 本就没有导出行（纯内部函数）。
+`scripts/smoke-minified-luci.js` 45 项照常通过 —— 它喂给六个页面的桩不依赖
+任何被删名字，恰好构成「删除无副作用」的最小回归；`prove-advanced` 37 /
+`prove-connection` 58 全绿；四个老 prove 脚本 stash 前后输出逐字一致。
+
+### 后端侧：`transport/client.rs` 文档漂移与死代码
+
+- `at_cmd` 的 doc 从「control socket → direct serial → network 三级级联」
+  更正为单通道 daemon 转发（实现早已收敛到唯一 AT 所有者，注释是旧版残留）；
+- 删除 Network 段被截断的孤儿注释（`Port of at_network_cmd() …` 半句）与
+  daemon-holding 孤儿 doc 块（其描述的「daemon 不可达 → 直连串口安全」
+  与现行为矛盾，头部模块注释已正确表述）；
+- `AtError` 的 shell contract 举例更正为实际映射
+  （Disabled → 2、一般失败 → 1、SerialTimeout → 124）；
+- 顺带删除三处死代码：`NetworkFailed` 变体（零构造点，`core/error.rs` 的
+  `From<AtError>` 转换同步收口）、`libc_eagain`（零调用）、
+  `network_hosts`（零调用，唯一目的已随 network 通道删除）。
+  `Settings` 的 `host`/`port`/`mode` 与 `detect_modem_gateway` 仍被
+  `cli.rs` 的 `status` 输出使用，保留（遗留语义留给 WebUI 批次统一评估）。
+
+`cargo test` **291 passed**（编译器对枚举变体删除强制检查全部 match 位置）。
