@@ -136,6 +136,12 @@ pub fn ledswitch(on: bool) -> String {
 /// Network time query (`^NWTIME: …`).
 pub const NWTIME_QUERY: &str = "AT^NWTIME?";
 
+/// Module version block (`^VERSION:` with `BDT` / `EXTS` / `EXTH` lines).
+pub const VERSION_QUERY: &str = "AT^VERSION?";
+
+/// FOTA update mode (`^FOTAMODE?`).
+pub const FOTAMODE_QUERY: &str = "AT^FOTAMODE?";
+
 /// The nine thermal thresholds the page writes (`AT^THERMLDAUTOPARA=…`).
 ///
 /// Order and meaning are the page's: normal, first derate, first recovery,

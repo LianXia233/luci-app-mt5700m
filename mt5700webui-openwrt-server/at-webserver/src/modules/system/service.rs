@@ -11,15 +11,18 @@ use crate::core::error::BackendError;
 use crate::core::json::Value;
 use crate::core::task::Priority;
 use crate::modules::system::commands::{
-    self, CHIPTEMP, FACTORY_RESET, LEDSWITCH_QUERY, NIC_RATES, NWTIME_QUERY,
+    self, CHIPTEMP, FACTORY_RESET, FOTAMODE_QUERY, LEDSWITCH_QUERY, NIC_RATES, NWTIME_QUERY,
     TDPCIELANCFG_QUERY, TDPMCFG_QUERY, THERMAUTOFUN_QUERY, THERMLDAUTOPARA_QUERY,
-    THERMLDAUTOSTATUS_QUERY, THERMLDLOGSW_QUERY, valid_thermal_thresholds,
+    THERMLDAUTOSTATUS_QUERY, THERMLDLOGSW_QUERY, VERSION_QUERY, valid_thermal_thresholds,
 };
 use crate::modules::system::parser::{
-    parse_chiptemp, parse_ledswitch, parse_nic_rate, parse_nwtime, parse_power_control,
-    parse_thermautofun, parse_thermlevel, parse_thermlogsw, parse_thermthresholds,
+    parse_chiptemp, parse_fotamode, parse_ledswitch, parse_nic_rate, parse_nwtime,
+    parse_power_control, parse_thermautofun, parse_thermlevel, parse_thermlogsw,
+    parse_thermthresholds, parse_version,
 };
-use crate::modules::system::state::{DeviceControlState, TemperatureState, ThermalState};
+use crate::modules::system::state::{
+    DeviceControlState, TemperatureState, ThermalState, VersionState,
+};
 use crate::scheduler::channel::run_in_task;
 use crate::scheduler::jobs::TaskManager;
 use crate::state::bus::{EVENT_TEMPERATURE_UPDATED, TOPIC_TEMPERATURE};
@@ -243,6 +246,44 @@ pub fn read_network_time(ctx: &RefreshCtx) -> Result<String, BackendError> {
     parse_nwtime(&text).ok_or_else(|| {
         BackendError::AtRejected(format!(
             "^NWTIME? answered an unknown shape: {}",
+            text.trim()
+        ))
+    })
+}
+
+/// Read the module version block (`^VERSION?`).
+///
+/// Each line is independent, so a modem answering only part of the block is
+/// answered back with what it gave — no field is invented and none is dropped.
+pub fn read_version(ctx: &RefreshCtx) -> Result<VersionState, BackendError> {
+    let text = ctx.read(
+        VERSION_QUERY,
+        CTRL_AT_TIMEOUT,
+        CTRL_QUEUED_TIMEOUT,
+        Priority::Normal,
+    )?;
+    parse_version(&text).ok_or_else(|| {
+        BackendError::AtRejected(format!(
+            "^VERSION? answered an unknown shape: {}",
+            text.trim()
+        ))
+    })
+}
+
+/// Read the FOTA update mode (`^FOTAMODE?`).
+///
+/// The mode is returned as the raw `a,b,c,d` string: the name for it is UI copy
+/// (`HTTP update mode` for `0,1,0,1`), so the decoding stays in the page.
+pub fn read_fota_mode(ctx: &RefreshCtx) -> Result<String, BackendError> {
+    let text = ctx.read(
+        FOTAMODE_QUERY,
+        CTRL_AT_TIMEOUT,
+        CTRL_QUEUED_TIMEOUT,
+        Priority::Normal,
+    )?;
+    parse_fotamode(&text).ok_or_else(|| {
+        BackendError::AtRejected(format!(
+            "^FOTAMODE? answered an unknown shape: {}",
             text.trim()
         ))
     })

@@ -96,6 +96,8 @@ Two kinds of route, declared in the table itself (`Route::display` /
 | `system.led` | `{led?: bool}` — `^LEDSWITCH?`, the status LED; `{}` when the query did not answer, so the page keeps the switch where the user left it |
 | `system.led_set` | `{applied: true, led}` — `{enabled: bool}` → `^LEDSWITCH=<0\|1>`; stored by the module, takes effect after restart |
 | `system.network_time` | `{time?: "…"}` — `^NWTIME?`, the string exactly as the modem formatted it (the LuCI page only strips quotes); absent when there is no time line, i.e. no registration |
+| `system.version` | `{buildDate?, software?, hardware?}` — `^VERSION?` (`BDT` / `EXTS` / `EXTH`); each key present only when the modem answered that line, so the page's fallback (`software || revision`) keeps working |
+| `system.fota_mode` | `{mode?: "…"}` — `^FOTAMODE?` passed through undecoded: naming `0,1,0,1` "HTTP update mode" is UI copy, not a modem fact |
 | `system.thermal_thresholds_set` | `{applied: true, thresholds}` — `{thresholds: [i64; 9]}` → `^THERMLDAUTOPARA=<9 values>`; the ladder rule (9 values, 0–150 °C, rising triggers, each recovery below its own trigger) is enforced here and nowhere else |
 | `system.thermal_log_set` | `{applied: true, serial, file}` — `{serial: bool, file: bool}` → `^THERMLDLOGSW=<serial>,<file>` |
 | `system.fota` | `{running, phase: "idle"\|"running"\|"done"\|"error", step, progress, state, stateName, total, received, error?}` — the upgrade flow's state from the **task registry plus the published snapshot**, never an AT access, so a page reload (or its 1 s poll) cannot queue behind the download it is reporting on |

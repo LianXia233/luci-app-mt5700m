@@ -67,17 +67,38 @@
 
 ### 1.3 `system.js` — 剩 4 处（1 读帧 + 3 保留写）
 
-**读帧**（22 段）切路由所需读路由**已齐备**：身份/IMEI/版本 → `modem.get`；
-SIM/ICCID/IMSI → `sim.get`；号码 → `sim.number`；订阅速率 → `qos.get`；
-运营商 → `network.get`；功能级别 → `network.radio`；卡槽 → `sim.slot`；
-SIM 激活 → `sim.activation`；温度 → `system.temperature`；温控三行 →
-`system.thermal`；LED → `system.led`；网络时间 → `system.network_time`。
-此前缺的 3 项（`^NWTIME` / `^LEDSWITCH` / `^HVSST` 查询解析）已补齐，
-**读帧是唯一剩下的、也是最大的一处**。
+#### 读帧：22 段的路由对照表（2026-10-08 就地复核）
 
-**保留的 3 条写**：FOTA 下载 / 续传 / 安装 —— 模块是「任务 + 观察 + 中止」
-形态，**迁移会改变交互，需产品决策**。
-（第二刀已把温控阈值 / 温控日志 / LED / SIM 激活四条迁到路由，
+本刀前补的后端能力已覆盖缺列；下表把每段钉到具体字段，
+三处标 ⚠ 的是**渲染数值可能漂移**的点，切之前必须逐项解决。
+
+| 段（AT） | 路由 | 字段 | 备注 |
+|---|---|---|---|
+| Identity（`ATI`） | `modem.get` | `manufacturer / model / revision / imei` | 页面 model 是硬编码 `MT5700M`，revision 取 Identity |
+| Version（`^VERSION?`） | `system.version` ✨ | `buildDate / software / hardware` | ✨ 本刀新增；此前 Rust 侧**无人读** `^VERSION?` |
+| SIM（`+CPIN?`） | `sim.get` | `status` | |
+| ICCID | `sim.get` | `iccid` | |
+| IMSI（`AT+CIMI`） | `sim.get` | `imsi` | |
+| Subscriber number（`+CNUM`） | `sim.number` | `number` | 未存储的分支（`+CME ERROR: 22`）已在 `number_state` 里 |
+| Subscription rate（`^DSAMBR?`） | `qos.get` | `ambr_down_kbps / ambr_up_kbps` | ⚠ 页面对**原始字段**调 `parser.subscriptionRate`，而路由给的是已换算 kbps，需确认换算与文案一致 |
+| Operator（`+COPS?`） | `network.get` | `operator` | ⚠ 页面取 `+COPS` 逗号切分后的**第 3 字段**（长名），需确认路由的 `operator` 就是它 |
+| Network time（`^NWTIME?`） | `system.network_time` ✨ | `time` | 字符串逐字传递 |
+| Function level（`+CFUN?`） | `network.radio` | `cfun / airplane` | 页面用 `cfun` 做 `'0'/'1'` 判断，路由给数字 |
+| LED（`^LEDSWITCH?`） | `system.led` ✨ | `led` | |
+| SIM activation（`^HVSST?`） | `sim.activation` ✨ | `active / slot` | `slot` 是页面回退用的第三字段 |
+| SIM slot（`^SCICHG?`） | `sim.slot` | `slot / hotplug` | |
+| Temperature（`^CHIPTEMP?`） | `system.temperature` | `sensors[] / average` | ⚠ 英雄区是**峰值**：`(max(raw)/10).toFixed(1)`。路由只有 `average`（均值），必须用 `sensors`（已是 °C）自算最大值；此外页面过滤 `-1000 < raw < 2000`，与后端的 `65535 / >1500` 判据不完全等价 |
+| FOTA mode（`^FOTAMODE?`） | `system.fota_mode` ✨ | `mode` | ✨ 本刀新增；`0,1,0,1` → “HTTP update mode”的译名保留在页面（UI 文案） |
+| FOTA state / progress | `system.fota` | `state / stateName / total / received` | 替代 `^FOTASTATE?` + `^FOTADLQ` 两段的自算 percent |
+| Thermal status | `system.thermal` | `currentLevel` | 后端取第 6 字段，与页面一致 |
+| Thermal thresholds | `system.thermal` | `thresholds[]` | 页面用索引 0–8 |
+| Thermal log | `system.thermal` | `logSwitch.consoleLog / fileLog` | 页面按 `1/0` 判断“Enabled/Disabled” |
+
+#### 保留的 3 条写
+
+FOTA 下载 / 续传 / 安装 —— 模块是「任务 + 观察 + 中止」形态，
+**迁移会改变交互，需产品决策**。
+（温控阈值 / 温控日志 / LED / SIM 激活四条已在第二刀迁到路由，
 详见 migration.md。）
 
 ### 1.4 死导出（7 个）

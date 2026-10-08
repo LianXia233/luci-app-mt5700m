@@ -17,6 +17,41 @@ pub const SENSOR_TEXT_KEYS: [&str; 12] = [
     "modem2", "bbp1", "bbp2",
 ];
 
+/// The module version block (`^VERSION?`): build date, the software version
+/// the modem runs and its hardware revision.
+///
+/// A modem that answers with only some of the three lines is normal, so the
+/// fields are independent; the JSON carries only what was answered.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct VersionState {
+    /// `^VERSION:BDT` — firmware build timestamp.
+    pub build_date: Option<String>,
+    /// `^VERSION:EXTS` — external/software version.
+    pub software: Option<String>,
+    /// `^VERSION:EXTH` — external/hardware version.
+    pub hardware: Option<String>,
+}
+
+impl VersionState {
+    /// True when no line was answered at all.
+    pub fn is_empty(&self) -> bool {
+        self.build_date.is_none() && self.software.is_none() && self.hardware.is_none()
+    }
+
+    pub fn to_json(&self) -> Value {
+        let mut m = std::collections::BTreeMap::new();
+        let mut put = |k: &str, v: &Option<String>| {
+            if let Some(s) = v {
+                m.insert(k.to_string(), json::str_val(s));
+            }
+        };
+        put("buildDate", &self.build_date);
+        put("software", &self.software);
+        put("hardware", &self.hardware);
+        Value::Obj(m)
+    }
+}
+
 /// One `^CHIPTEMP?` reading: every sensor plus the average of the non-zero
 /// ones. Unreadable sensors are reported as 0.0 (legacy contract — the UI hides
 /// them), and the JSON always carries all 12 fields.

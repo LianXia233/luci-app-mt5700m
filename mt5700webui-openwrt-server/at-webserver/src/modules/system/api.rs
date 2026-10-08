@@ -29,6 +29,10 @@ pub fn routes() -> Vec<Route> {
         Route::display("system.led", led),
         Route::on_demand("system.led_set", led_set),
         Route::display("system.network_time", network_time),
+        // The rest of the system read frame: the module version block and the
+        // FOTA update mode — neither had a reader anywhere before.
+        Route::display("system.version", version),
+        Route::display("system.fota_mode", fota_mode),
         // The rest of the thermal card's writes: the nine-rung threshold table
         // and the two log switches.
         Route::on_demand("system.thermal_thresholds_set", thermal_thresholds_set),
@@ -108,6 +112,33 @@ fn network_time(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
     let mut m = std::collections::BTreeMap::new();
     if let Ok(time) = service::read_network_time(&refresh) {
         m.insert("time".to_string(), json::str_val(&time));
+    }
+    Ok(Value::Obj(m))
+}
+
+/// The module version block (`^VERSION?`).
+///
+/// Answers `{buildDate?, software?, hardware?}` — each key present only when
+/// the modem answered that line, so the page's row falls back exactly where it
+/// did when its own text parse came up empty (`software || revision` included).
+fn version(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    let refresh = ctx.refresh();
+    Ok(match service::read_version(&refresh) {
+        Ok(st) => st.to_json(),
+        Err(_) => Value::Obj(Default::default()),
+    })
+}
+
+/// The FOTA update mode (`^FOTAMODE?`).
+///
+/// Answers `{mode?: "…"}` with the raw field string: turning `0,1,0,1` into
+/// "HTTP update mode" is the page's own decoding, and that wording is UI copy
+/// this module does not own.
+fn fota_mode(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    let refresh = ctx.refresh();
+    let mut m = std::collections::BTreeMap::new();
+    if let Ok(mode) = service::read_fota_mode(&refresh) {
+        m.insert("mode".to_string(), json::str_val(&mode));
     }
     Ok(Value::Obj(m))
 }
