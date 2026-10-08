@@ -412,10 +412,6 @@ export class WebSocketATAdapter implements ATAdapter {
     reject?.(error);
   }
 
-  public getConnectionState(): ATConnectionState {
-    return this.connectionSnapshot.state;
-  }
-
   public getConnectionSnapshot(): ATConnectionSnapshot {
     return { ...this.connectionSnapshot };
   }
@@ -713,11 +709,6 @@ export class WebSocketATAdapter implements ATAdapter {
     this.authenticated = false;
     localStorage.removeItem('at_ws_auth_key');
     localStorage.removeItem('at_ws_auth_key_expiry');
-  }
-
-  // 检查是否需要认证
-  public isAuthRequired(): boolean {
-    return this.requireAuth;
   }
 
   public isReady(): boolean {
@@ -1292,11 +1283,24 @@ class MockWebSocketATAdapter extends WebSocketATAdapter {
 
       const response = resolveMockATCommand(command, this.mockState) as ATResponse;
 
-      if (/^AT\^PDCPDATAINFO=1(?:,(\d+))?$/i.test(commandLine)) {
-        const interval = Number(commandLine.match(/,(\d+)$/)?.[1]) || 750;
-        this.startMockPDCP(interval);
-      } else if (/^AT\^PDCPDATAINFO=0$/i.test(commandLine)) {
-        this.stopMockPDCP();
+      // PDCP 实时网速开关：页面走 `api.traffic.pdcp_report_set` 路由，
+      // 演示模式据此开/停本地 pdcp_data 模拟（真机由后端 URC 驱动推送）。
+      const pdcpApi = commandLine.match(/^api\.traffic\.pdcp_report_set(?:\s+(\{.*\}))?$/);
+      if (pdcpApi) {
+        let enabled = false;
+        let interval = 750;
+        try {
+          const p = (pdcpApi[1] ? JSON.parse(pdcpApi[1]) : {}) as {
+            enabled?: boolean;
+            interval?: number;
+          };
+          enabled = p.enabled === true;
+          if (typeof p.interval === 'number') interval = p.interval;
+        } catch {
+          enabled = false;
+        }
+        if (enabled) this.startMockPDCP(interval);
+        else this.stopMockPDCP();
       }
 
       return response;
@@ -1313,16 +1317,8 @@ class MockWebSocketATAdapter extends WebSocketATAdapter {
 
   public clearAuthKey(): void {}
 
-  public isAuthRequired(): boolean {
-    return false;
-  }
-
   public isReady(): boolean {
     return this.mockConnected;
-  }
-
-  public getConnectionState(): ATConnectionState {
-    return this.mockSnapshot.state;
   }
 
   public getConnectionSnapshot(): ATConnectionSnapshot {
@@ -1364,7 +1360,6 @@ export class ATService {
   private static instance: ATService | null = null; // 确保初始化为 null
   private adapter: ATAdapter;
   private newSMSSubscribers: Set<(response: ATResponse) => void> = new Set();
-  private pendingReads = new Map<string, Promise<ATResponse>>();
 
   private constructor() {
     this.adapter = isMockModeEnabled()
@@ -1404,14 +1399,6 @@ export class ATService {
     }
   }
 
-  // 检查是否需要认证
-  public isAuthRequired(): boolean {
-    if (this.adapter instanceof WebSocketATAdapter) {
-      return (this.adapter as WebSocketATAdapter).isAuthRequired();
-    }
-    return false;
-  }
-
   public isReady(): boolean {
     if (this.adapter instanceof WebSocketATAdapter) {
       return this.adapter.isReady();
@@ -1432,12 +1419,6 @@ export class ATService {
       return (this.adapter as MockWebSocketATAdapter).requestSnapshot();
     }
     return null;
-  }
-
-  public getConnectionState(): ATConnectionState {
-    if (this.adapter instanceof WebSocketATAdapter) return this.adapter.getConnectionState();
-    if (this.adapter instanceof MockWebSocketATAdapter) return this.adapter.getConnectionState();
-    return 'disconnected';
   }
 
   public getConnectionSnapshot(): ATConnectionSnapshot {
@@ -1492,46 +1473,6 @@ export class ATService {
     };
   }
 
-  /**
-   * Read-only query path for view initialization / refresh actions. The Rust
-   * backend may return { pending: true } while a shared raw-cache acquisition is
-   * running; retry a few times with bounded delay and coalesce identical reads
-   * so multiple WebUI pages never create duplicate refresh traffic.
-   */
-  public readCommand(
-    command: string,
-    options: { pendingRetries?: number; retryDelaysMs?: number[] } = {},
-  ): Promise<ATResponse> {
-    const key = command.trim().replace(/\s+/g, ' ').toUpperCase();
-    const existing = this.pendingReads.get(key);
-    if (existing) return existing;
-
-    const retries = Math.max(0, Math.min(4, options.pendingRetries ?? 3));
-    const delays = options.retryDelaysMs ?? [600, 1200, 2000, 3000];
-    const request = (async () => {
-      let result: ATResponse = { success: false, error: '读取命令未执行' };
-      for (let attempt = 0; attempt <= retries; attempt += 1) {
-        result = await this.sendCommand(command);
-        if (!('pending' in result) || result.pending !== true) return result;
-        if (attempt < retries) {
-          const delay = Math.max(0, delays[Math.min(attempt, delays.length - 1)] ?? 1000);
-          await new Promise((resolve) => setTimeout(resolve, delay));
-        }
-      }
-      return {
-        ...result,
-        success: false,
-        error: result.message || '设备后台仍在采集该数据，请稍后重试。',
-      };
-    })();
-
-    const coalesced = request.finally(() => {
-      if (this.pendingReads.get(key) === coalesced) this.pendingReads.delete(key);
-    });
-    this.pendingReads.set(key, coalesced);
-    return coalesced;
-  }
-
   public async sendCommand(command: string, timeoutMs?: number): Promise<ATResponse> {
     try {
       const response = await this.adapter.sendCommand(command, timeoutMs);
@@ -1558,18 +1499,7 @@ export class ATService {
   // （sms.list、sms.send、sms.delete、sms.storage、sms.ims_set）。
   // 设置短信格式（PDU/Text）
   // 删除短信
-  // 获取IMEI
-  public async getIMEI(): Promise<ATResponse> {
-    const response = await this.sendCommand('AT+CGSN');
-    if (response.success && typeof response.data === 'string') {
-      const imei = response.data.replace(/OK/i, '').trim();
-      return {
-        success: true,
-        data: imei,
-      };
-    }
-    return response;
-  }
+  // IMEI 不再走 AT：`modem.get` 路由自带 imei 字段（Identity 段同源）。
 
   public async setConnection(host: string, port: number): Promise<boolean> {
     if (this.adapter instanceof WebSocketATAdapter) {
@@ -1602,12 +1532,14 @@ export class ATService {
     else if (this.adapter instanceof MockWebSocketATAdapter) this.adapter.unsubscribeSMS(callback);
   }
 
-  // 设置PDCP数据上报
+  // 设置PDCP数据上报 —— 走后端路由 `traffic.pdcp_report_set`（模块侧
+  // `AT^PDCPDATAINFO=` 构造器是唯一实现），页面不再说原始 AT；URC 流
+  // 本身继续由后端 `pdcp_data` 事件推送，与本开关解耦。
   public async setPDCPDataReport(enable: boolean, interval?: number): Promise<ATResponse> {
-    const command = enable
-      ? `AT^PDCPDATAINFO=1${interval ? `,${interval}` : ''}`
-      : 'AT^PDCPDATAINFO=0';
-    return this.sendCommand(command);
+    const params: Record<string, unknown> = { enabled: enable };
+    if (enable && interval) params.interval = interval;
+    const res = await this.apiCommand('traffic.pdcp_report_set', params);
+    return { success: res.success, error: res.error } as CommandATResponse;
   }
 
   // 接听来电

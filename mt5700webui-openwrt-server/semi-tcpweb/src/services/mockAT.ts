@@ -713,6 +713,8 @@ const MOCK_API_ROUTES: Record<string, unknown> = {
   'api.network.registration_urc': { enabled: true },
   // 写：清空模组侧的流量计数器
   'api.traffic.clear': { cleared: true },
+  // 写：PDCP 实时网速开关（URC 流由 pdcp_data 事件通道演示，此处仅开关应答）
+  'api.traffic.pdcp_report_set': { applied: true, enabled: true, interval: 500 },
 };
 
 /**
@@ -1572,7 +1574,8 @@ export const resolveMockATCommand = (
   }
 
   if (
-    commandLine.startsWith('AT^PDCPDATAINFO=') ||
+    // AT^PDCPDATAINFO= 已离开演示命令面：页面走 api.traffic.pdcp_report_set，
+    // 由 MOCK_API_ROUTES 给出应答、MockWebSocketATAdapter 开/停本地模拟。
     commandLine === 'AT^FOTAMODE=0,1,0,1' ||
     commandLine === 'AT+CEUS=0' ||
     commandLine === 'AT+CEUS=1' ||

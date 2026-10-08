@@ -56,8 +56,9 @@ impl Default for Settings {
     }
 }
 
-/// Failure modes. Numeric exit codes match the shell contract (`exit 64`,
-/// `return 127`, ...) so LuCI's `fs.exec` callers keep working unchanged.
+/// Failure modes. Numeric exit codes keep the shell contract alive so LuCI's
+/// `fs.exec` callers keep working unchanged:
+/// Disabled -> 2, general failure -> 1, SerialTimeout -> 124.
 #[derive(Debug)]
 pub enum AtError {
     /// uci mt5700m.settings.enabled != 1 (shell: return 2)
@@ -70,8 +71,6 @@ pub enum AtError {
     NoSerialPort,
     /// serial read timed out; carries whatever partial output arrived
     SerialTimeout(String),
-    /// every network target failed
-    NetworkFailed,
     /// transport fine but the modem ended with an anchored ERROR result
     ModemError(String),
 }
@@ -80,7 +79,7 @@ impl AtError {
     pub fn exit_code(&self) -> i32 {
         match self {
             AtError::Disabled => 2,
-            AtError::Empty | AtError::NoSerialPort | AtError::NetworkFailed => 1,
+            AtError::Empty | AtError::NoSerialPort => 1,
             AtError::DaemonFailed(_) => 1,
             AtError::SerialTimeout(_) => 124,
             AtError::ModemError(_) => 1,
@@ -94,7 +93,6 @@ impl AtError {
             AtError::DaemonFailed(e) => format!("AT daemon failed: {}", e),
             AtError::NoSerialPort => "AT serial port not found".into(),
             AtError::SerialTimeout(_) => "serial response timeout".into(),
-            AtError::NetworkFailed => "network AT endpoint unreachable".into(),
             AtError::ModemError(_) => "modem returned ERROR".into(),
         }
     }
@@ -148,18 +146,6 @@ pub fn sanitize_command(cmd: &str) -> String {
 
 // ---------------------------------------------------------------- Serial
 
-/// `EAGAIN`'s raw errno on Linux. Kept as a helper so the constant lives in
-/// one place and the loop above stays readable.
-#[cfg(target_os = "linux")]
-fn libc_eagain() -> i32 {
-    11
-}
-
-#[cfg(not(target_os = "linux"))]
-fn libc_eagain() -> i32 {
-    35
-}
-
 /// True when the `uci` binary exists (OpenWrt). Non-OpenWrt hosts fall back
 /// to defaults.
 pub fn uci_available() -> bool {
@@ -171,13 +157,12 @@ pub fn uci_available() -> bool {
         .is_ok()
 }
 
-// ---------------------------------------------------------------- Network
-
-/// Port of `at_network_cmd()` using a native TCP stream. Sends `command\r` and
 // ---------------------------------------------------------------- Dispatch
 
-/// One-shot cascade : control socket → direct serial → network. Produces the
-/// same stdout text and success/failure semantics as the shell script.
+/// Forward one AT command to the daemon over the control socket. Produces the
+/// same stdout text and success/failure semantics as the old shell script:
+/// daemon answer passes through verbatim, modem ERROR still carries the full
+/// response text in `AtOutcome.text`.
 pub fn at_cmd(settings: &Settings, command: &str) -> AtOutcome {
     if !settings.enabled {
         return AtOutcome {
@@ -226,27 +211,6 @@ fn fail_daemon(command: &str, timeout_s: u64) -> AtOutcome {
         },
     }
 }
-
-
-
-/// Whether the AT daemon is currently holding the serial port.
-///
-/// The daemon opens the AT tty with `TIOCEXCL` (exclusive). If it is running,
-/// any direct `open()` of the same tty from this process either fails with
-/// EBUSY or — far worse — blocks indefinitely inside the tty layer, because
-/// the exclusive lock is never released while the daemon lives. Falling back
-/// to direct serial *while the daemon owns the port* is therefore not a
-/// degraded path, it is a deadlock: `mt5700m-at` hangs forever, rpcd's
-/// `fs.exec` has no timeout, and the LuCI page never finishes loading.
-///
-/// The control socket is the single source of truth: it exists and accepts
-/// connections only while the daemon is up. So:
-///   * daemon reachable but the request failed -> surface the error, NEVER
-///     touch the serial port (it is locked by the daemon);
-///   * daemon unreachable (socket gone) -> nobody owns the port, direct
-///     serial is safe and keeps the CLI usable standalone.
-
-
 
 // ---------------------------------------------------------------- Probing
 
@@ -356,22 +320,4 @@ fn extract_via(routes: &str) -> Option<String> {
         }
     }
     None
-}
-
-pub fn network_hosts(settings: &Settings) -> Vec<String> {
-    let gateway = detect_modem_gateway().unwrap_or_default();
-    let mut hosts: Vec<String> = Vec::new();
-    if !gateway.is_empty() {
-        hosts.push(gateway.clone());
-    }
-    if !settings.host.is_empty() && settings.host != gateway {
-        hosts.push(settings.host.clone());
-    }
-    if settings.host != "192.168.8.1" && gateway != "192.168.8.1" {
-        hosts.push("192.168.8.1".into());
-    }
-    if settings.host != "10.0.0.1" && gateway != "10.0.0.1" {
-        hosts.push("10.0.0.1".into());
-    }
-    hosts
 }

@@ -1,6 +1,6 @@
-# Architecture: layers, modules, dependency rules
+# 架构：分层、模块、依赖规则
 
-## 1. Process model
+## 1. 进程模型
 
 ```text
 /usr/bin/at-webserver            daemon: sole AT owner, StateCache, EventBus,
@@ -13,32 +13,31 @@ LuCI   ucode plugin ──nc──▶ daemon TCP RPC (newline JSON)  ── rpcd
 WebUI  WebSocket ─────────▶ daemon WS RPC                  ── React pages
 ```
 
-There is no second backend. The historical `mt5700m-manager` shell script and
-the `mt5700m-traffic` accounting daemon remain as *system helpers* invoked by
-init/rpcd glue; their AT-visible behaviour is routed through the daemon (see
-[data-flow.md](data-flow.md) §6). `mt5700m-traffic` is the single writer of the
-traffic history file and is read by both the backend and LuCI through one JSON
-interface.
+不存在第二个后端。历史上的 `mt5700m-manager` shell 脚本与
+`mt5700m-traffic` 计费守护进程保留为*系统辅助*，由 init/rpcd 胶水层调用；
+它们对 AT 可见的行为都经由守护进程转发（见
+[data-flow.md]（data-flow.md 第 6 节）。`mt5700m-traffic` 是流量历史文件的
+唯一写入者，后端与 LuCI 都通过同一个 JSON 接口读取它。
 
-## 2. Backend layers (bottom-up)
+## 2. 后端分层（自底向上）
 
-| Layer | Path | Responsibility | May depend on |
+| 层 | 路径 | 职责 | 可依赖 |
 | ----- | ---- | -------------- | ------------- |
-| core | `src/core/` | error model, JSON, runtime, task primitives, sha1, `AtChannel` trait | std only |
-| serial | `src/serial/` | exclusive tty open, USB presence monitor, probe | core |
-| scheduler | `src/scheduler/` | AT arbiter (queues, priorities, retries, dedup, duty cycle), task manager, read gate, command plan | core, serial, state |
-| state | `src/state/` | `StateCache` (topic TTLs), `EventBus` (coalescing, history), `RefreshCtx` | core |
-| modules | `src/modules/<name>/` | one business domain each: commands, parser, state, service, api | core, state, scheduler (channel only) |
-| transport | `src/transport/` | WS server, TCP RPC/control socket, URC dispatcher, AT client (CLI forwarding), channel | core, scheduler, modules (parsers only) |
-| api | `src/api/` | registry + envelopes + CLI adapter | all of the above |
-| daemon | `src/daemon.rs` | composition root: wires serial → arbiter → tasks → modules → transports | all |
+| core | `src/core/` | 错误模型、JSON、运行时、任务原语、sha1、`AtChannel` trait | 仅 std |
+| serial | `src/serial/` | 独占式打开 tty、USB 在位监控、探测 | core |
+| scheduler | `src/scheduler/` | AT 仲裁器（队列、优先级、重试、去重、占空比）、任务管理器、读闸门、命令计划 | core、serial、state |
+| state | `src/state/` | `StateCache`（主题 TTL）、`EventBus`（合并、历史）、`RefreshCtx` | core |
+| modules | `src/modules/<name>/` | 每个模块一个业务领域：commands、parser、state、service、api | core、state、scheduler（仅 channel） |
+| transport | `src/transport/` | WS 服务端、TCP RPC / 控制套接字、URC 分发器、AT 客户端（CLI 转发）、channel | core、scheduler、modules（仅 parser） |
+| api | `src/api/` | registry + 信封 + CLI 适配器 | 以上全部 |
+| daemon | `src/daemon.rs` | 组合根：把 serial → 仲裁器 → tasks → 模块 → transports 接线起来 | 全部 |
 
-Dependencies point **downward**. A module never reaches up into `daemon`,
-`transport` or `api`; the daemon wires modules in, it is not called by them.
+依赖方向**向下**。模块绝不会向上触达 `daemon`、
+`transport` 或 `api`；是守护进程把模块接进来，模块不会反过来调用它。
 
-## 3. Module contract
+## 3. 模块契约
 
-Every module is a directory with the same five files plus `mod.rs`:
+每个模块都是一个目录，含同样的五个文件外加 `mod.rs`：
 
 ```text
 src/modules/<name>/
@@ -51,20 +50,20 @@ src/modules/<name>/
 └── api.rs        routes() -> Vec<Route> + text renderers for the CLI
 ```
 
-Rules enforced by review and by the static checks in
-`scripts/`-adjacent tooling described in [migration.md](migration.md):
+以下规则由评审以及 [migration.md](migration.md) 中描述的
+`scripts/` 旁静态检查工具强制：
 
-* `service.rs` sees only `RefreshCtx` (AT + cache + bus) — never `AtArbiter`,
-  never a tty, never another module's state struct internals.
-* Cross-module data flows through cached topics (`ctx.cache.get(TOPIC_X)`) or a
-  module's `cached*` service function; cross-module AT never happens twice.
-* All wire JSON is produced by `state.rs::to_json`; the CLI's `key=value` text
-  is a rendering of the same struct (`to_text`), so a parsing fix cannot land
-  on one surface only.
+* `service.rs` 只能看到 `RefreshCtx`（AT + 缓存 + 总线）—— 绝不能看到
+  `AtArbiter`、tty，或其他模块状态结构体的内部。
+* 跨模块数据通过已缓存主题（`ctx.cache.get(TOPIC_X)`）或某模块的
+  `cached*` 服务函数流动；跨模块的 AT 绝不会重复执行两次。
+* 所有线上 JSON 都由 `state.rs::to_json` 产生；CLI 的 `key=value` 文本
+  是同一个结构体的另一种渲染（`to_text`），因此解析修复不可能只落到
+  其中一个面上。
 
-Modules present after this refactor:
+本次重构后存在的模块：
 
-| Module | Topics | Routes | Owns |
+| 模块 | 主题 | 路由 | 拥有 |
 | ------ | ------ | ------ | ---- |
 | `signal` | `signal` | `signal.get`, `signal.cached` | `^HCSQ?` math |
 | `network` | `network`, `registration` | `network.get`, `network.cached`, `registration.get`, `network.pdp`, `network.dhcp`, `network.registration_urc`, `network.lock_get`, `network.lock_apply`, `network.c5goption`, `network.c5goption_set`, `network.radio`, `network.radio_set`, `network.syscfg`, `network.syscfg_set`, `network.autodial`, `network.usb_mode`, `network.interface_cfg`, `network.pdp_contexts`, `network.schedule_get`, `network.schedule_set` | `+COPS?`, `^SYSINFOEX`, `+C5GREG/+CEREG/+CREG`, `^LTEFREQLOCK?`/`^NRFREQLOCK?` (inc. the grouped-CSV write and the radio-cycle apply), `^C5GOPTION`, `^DHCP?`/`^DHCPV6?`/`^IPV6CAP?` |
@@ -78,28 +77,27 @@ Modules present after this refactor:
 | `system` | `temperature` | `system.temperature`, `system.temperature.cached`, `system.device_control`, `system.nic_rate_set`, `system.power_control_set`, `system.factory_reset`, `system.service_mode`, `system.thermal`, `system.thermal_set`, `system.fota`, `system.fota_start`, `system.fota_abort` | `^CHIPTEMP?`, `^TDPCIELANCFG`, `^TDPMCFG`, `AT&F`, `^THERMAUTOFUN`/`^THERMLDLOGSW`/`^THERMLDAUTOPARA`/`^THERMLDAUTOSTATUS`, the FOTA set (`^FOTASTATE?`/`^FOTADLQ`/`^FOTAMODE`/`^FOTAOEMDL`/`^FOTADL`/`^FWUP`) in `fota.rs` |
 | `sms` | `sms` | `sms.status`, `sms.storage`, `sms.list`, `sms.send`, `sms.delete`, `sms.clear_all`, `sms.storage_set`, `sms.center_set`, `sms.ims_set`, `sms.analyze`, `sms.ussd_send`, `sms.ussd_cancel` | `+CMGF`/`+CMGL`/`+CMGD`/`+CPMS`/`+CSCA`/`^IMSSWITCH`/`+CUSD` (plus the IMS profile sequence's `+CGDCONT`/`+CEUS`/`+CFUN`) — SMS-SUBMIT PDU encoder and SMS-DELIVER decoder, multipart split/merge, send transaction, USSD codec (`ussd.rs`: GSM 7-bit pack/unpack, `<m>` copy) and the `sms.ussd` push the URC path publishes |
 
-## 4. Frontends
+## 4. 前端
 
-| Frontend | Entry | Data access | Owns |
+| 前端 | 入口 | 数据访问 | 拥有 |
 | -------- | ----- | ----------- | ---- |
-| LuCI | `luci-app-mt5700m/htdocs/.../view/mt5700m/*.js` | ucode plugin (`mt5700m.at/cached/events`) → daemon RPC | rendering, tabs, dialogs, form state |
-| WebUI | `semi-tcpweb/src/pages/*` | `services/at.ts` WS transport + `services/stateCache.ts` topic store | rendering, tabs, dialogs, form state |
+| LuCI | `luci-app-mt5700m/htdocs/.../view/mt5700m/*.js` | ucode 插件（`mt5700m.at/cached/events`）→ 守护进程 RPC | 渲染、标签页、弹窗、表单状态 |
+| WebUI | `semi-tcpweb/src/pages/*` | `services/at.ts` WS 传输层 + `services/stateCache.ts` 主题存储 | 渲染、标签页、弹窗、表单状态 |
 
-Neither frontend imports the other; they share no files, no storage keys and no
-state. Each can be built, deployed, updated or broken without touching the
-other. Their only common dependency is the API contract in
-[api-contract.md](api-contract.md).
+两个前端互不引用对方；它们不共享任何文件、任何存储键和任何
+状态。每一个都可以独立构建、部署、更新或损坏而不影响另一个。
+它们唯一的共同依赖就是 [api-contract.md](api-contract.md) 中的 API 契约。
 
-## 5. Concurrency model
+## 5. 并发模型
 
-* One OS thread per transport listener (WS, control socket, TCP RPC), one
-  reader thread for the tty, one executor thread in the arbiter.
-* All AT requests are *messages* (`AtRequestSpec`) on the arbiter's priority
-  queues with a budget (queue timeout + command timeout + slack). Nothing
-  blocks while holding the tty except the command currently being executed.
-* Periodic work is a `TaskManager` job: cancellable (task flag), timeout-able
-  (per-job budget), retry-able (policy per command class), observable (task
-  registry + `task.*` events), and non-leaking (jobs are reaped on completion).
-* A failing job can only fail its own tick: `RefreshCtx` turns timeouts into
-  "no answer" and falls back to the cached value, so one bad modem response
-  cannot crash the daemon, a route or a page.
+* 每个传输层监听者一个 OS 线程（WS、控制套接字、TCP RPC），一个
+  tty 读线程，仲裁器内一个执行线程。
+* 所有 AT 请求都是仲裁器优先级队列上的*消息*（`AtRequestSpec`），
+  并带有预算（排队超时 + 命令超时 + 余量）。除了当前正在执行的
+  那条命令，没有任何东西会在持有 tty 时阻塞。
+* 周期性工作是一个 `TaskManager` 任务：可取消（任务标志）、可超时
+  （每任务预算）、可重试（按命令类别的策略）、可观测（任务注册表 +
+  `task.*` 事件），且不泄漏（任务完成后被回收）。
+* 失败的任务只能让它自己的那一跳失败：`RefreshCtx` 把超时转成
+  「无应答」并回退到缓存值，因此一次糟糕的调制解调器响应
+  不可能搞崩守护进程、某个路由或某个页面。

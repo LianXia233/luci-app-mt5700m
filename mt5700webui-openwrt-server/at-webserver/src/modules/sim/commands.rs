@@ -24,9 +24,17 @@ pub const CIMI: &str = "AT+CIMI";
 /// Subscriber number stored on the SIM.
 pub const CNUM: &str = "AT+CNUM";
 
-/// `^HVSST` bracket around a slot switch: deactivate, then re-activate.
-pub const HVSST_BEGIN: &str = "AT^HVSST=1,0";
-pub const HVSST_END: &str = "AT^HVSST=1,1";
+/// SIM power path query (`^HVSST: <…>,<active>,<slot>`).
+pub const HVSST_QUERY: &str = "AT^HVSST?";
+
+/// `AT^HVSST=1,<0|1>` — switch the SIM power path off or on.
+///
+/// One constructor for every caller, including the two writes that bracket a
+/// slot switch, so the verb cannot drift between the deactivate/reactivate
+/// sequence and the page's own control.
+pub fn hvsst_power(active: bool) -> String {
+    format!("AT^HVSST=1,{}", if active { 1 } else { 0 })
+}
 /// Radio off/on, the tail of the slot-switch sequence.
 pub const CFUN_OFF: &str = "AT+CFUN=0";
 pub const CFUN_ON: &str = "AT+CFUN=1";
@@ -111,5 +119,15 @@ mod tests {
         assert_eq!(cpwd("SC", "1234", "5678"), "AT+CPWD=\"SC\",\"1234\",\"5678\"");
         assert_eq!(facility(false), "SC");
         assert_eq!(facility(true), "P2");
+    }
+
+    #[test]
+    fn hvsst_power_matches_the_vendor_spelling() {
+        // The ^HVSST write the CLI has always sent: `AT^HVSST=1,<0|1>`. The two
+        // halves of the slot-switch bracket are the same command, so they come
+        // from the same constructor.
+        assert_eq!(hvsst_power(false), "AT^HVSST=1,0");
+        assert_eq!(hvsst_power(true), "AT^HVSST=1,1");
+        assert_eq!(HVSST_QUERY, "AT^HVSST?");
     }
 }

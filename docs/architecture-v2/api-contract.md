@@ -1,124 +1,144 @@
-# API contract
+# API 契约
 
-The API is the boundary. Frontends know route names and domain JSON; they know
-nothing about AT commands, serial ports, the scheduler, cache keys or parsers.
+API 就是边界。前端只知道路由名和领域 JSON；它们对 AT 命令、
+串口、调度器、缓存键或解析器一无所知。
 
-## 1. Routes
+## 1. 路由
 
-Registered by modules in `api/registry.rs`; dispatched identically from every
-transport. `*.get` answers cache-first and performs at most one bounded refresh
-when the topic is still cold; `*.cached` never touches the modem.
+由模块注册在 `api/registry.rs`；从每个传输层分发的逻辑完全一致。
+`*.get` 以缓存优先作答，当主题仍是冷的最多执行一次有界刷新；
+`*.cached` 绝不触碰调制解调器。
 
-Two kinds of route, declared in the table itself (`Route::display` /
-`Route::on_demand`):
+路由分两类，在表本身中声明（`Route::display` / `Route::on_demand`）：
 
-* **display** (`signal.get`, `system.temperature`, …) — every page load calls
-  these, so they must answer with domain JSON even when the modem is missing or
-  busy; a failed refresh degrades to the previous value.
-* **on-demand** (`sim.number`, `network.pdp`, `network.dhcp`, `modem.mcs`,
-  `traffic.clear`, `network.registration_urc`, `network.lock_get`,
-  `network.lock_apply`, `network.c5goption`, `network.c5goption_set`,
-  `cell.neighbors`, `cell.scan_start`, `cell.scan_abort`, `beam.ssb`,
-  `sim.slot_set`, `sim.hotplug_set`,
-  `sim.pin_status`, `sim.pin_apply`, `system.nic_rate_set`,
-  `system.power_control_set`, `system.factory_reset`, `modem.reset`,
-  `modem.imei_set`, `network.radio_set`, `network.syscfg_set`,
-  `system.thermal_set`, `system.fota_start`, `system.fota_abort`,
-  `modem.nr_capability_set`) — an explicit user action that
-  performs a live read; it may fail with a modem error, which the UI surfaces.
-  It must never fail with a parameter/internal error (asserted by the registry
-  test for every registered route).
+* **display**（`signal.get`、`system.temperature`……）—— 每次页面加载
+  都会调用它们，因此即使调制解调器缺失或繁忙，它们也必须返回领域
+  JSON；刷新失败则降级为上一次的值。
+* **on-demand**（`sim.number`、`network.pdp`、`network.dhcp`、`modem.mcs`、
+  `traffic.clear`、`network.registration_urc`、`network.lock_get`、
+  `network.lock_apply`、`network.c5goption`、`network.c5goption_set`、
+  `cell.neighbors`、`cell.scan_start`、`cell.scan_abort`、`beam.ssb`、
+  `sim.slot_set`、`sim.hotplug_set`、`sim.activation_set`、
+  `sim.pin_status`、`sim.pin_apply`、`system.nic_rate_set`、
+  `system.power_control_set`、`system.factory_reset`、`modem.reset`、
+  `modem.imei_set`、`network.radio_set`、`network.syscfg_set`、
+  `system.thermal_set`、`system.led_set`、`system.thermal_thresholds_set`、
+  `system.thermal_log_set`、`system.fota_start`、`system.fota_abort`、
+  `modem.nr_capability_set`）—— 一次显式的用户操作，执行实时读取；
+  它可能以调制解调器错误失败，由 UI 呈现。它绝不能因参数/内部
+  错误而失败（registry 测试对每一条已注册路由都做了该断言）。
 
-| Route | Returns (domain JSON) |
+| 路由 | 返回（领域 JSON） |
 | ----- | --------------------- |
 | `signal.get` / `signal.cached` | `{sysmode, rssi, rsrp, rsrq, sinr, rscp, ecio}` |
 | `network.get` / `network.cached` | `{operator, sysmode, sysmode_detail}` |
-| `network.ims` | `{enabled?, registered?}` — on-demand `AT+CIREG?`; the wireless page's "IMS registration" row reads `registered` (1 = registered). A modem that rejects the query answers an empty object, which the page renders as no value |
-| `registration.get` | `{state, tac, ci, act, nssai, mcc, mnc, lac}` — `state` 1/5 = registered/roaming, the two values the wireless page renders as "Home network"/"Roaming" |
-| `network.rrc` | `{state?, camped?}` — on-demand `AT^RRCSTAT?`; `state` 0..3 (the page labels them Idle/Connected/Inactive/Invalid) and `camped` 98/99. Both firmware reply forms are accepted: `^RRCSTAT: 1,1,98` (state then flag) and `^RRCSTAT: 1,98` (no state field — the flag is not read as the state) |
+| `network.ims` | `{enabled?, registered?}` — 按需 `AT+CIREG?`；无线页面的 "IMS registration" 行读 `registered`（1 = 已注册）。拒绝该查询的调制解调器应答空对象，页面渲染为无值 |
+| `registration.get` | `{state, tac, ci, act, nssai, mcc, mnc, lac}` — `state` 的 1/5 = 已注册/漫游，也就是无线页面渲染为 "Home network"/"Roaming" 的那两个值 |
+| `network.rrc` | `{state?, camped?}` — 按需 `AT^RRCSTAT?`；`state` 取值 0..3（页面把它们标注为 Idle/Connected/Inactive/Invalid），`camped` 取值 98/99。固件两种应答形式都被接受：`^RRCSTAT: 1,1,98`（先 state 后标志）与 `^RRCSTAT: 1,98`（没有 state 字段 —— 此时标志不会被当成 state 读） |
 | `qos.get` / `qos.cached` | `{active_cid, ambr_down_kbps, ambr_up_kbps, ambr_apn, qci}` |
-| `network.pdp` | `{addresses: [{cid, address, family}]}` — on-demand `AT+CGPADDR` for the diagnostics panel |
-| `network.dhcp` | `{ipv4: {address, netmask, gateway, dhcp_server, primary_dns, secondary_dns}, ipv6: {…}, ipv6_capability}` — on-demand `AT^DHCP?`/`AT^DHCPV6?`/`AT^IPV6CAP?` (the hex little-endian decode happens here, not in the page); partial answers keep the fields that were read |
-| `network.registration_urc` | `{enabled: true}` — idempotent write `AT+CGREG=2`; the detailed PS registration report the Info page used to enable with raw AT |
-| `network.lock_get` | `{lock_type, mobility, items: [{band, arfcn, pci, scs}]}` — `rat=lte\|nr`, on-demand `AT^LTEFREQLOCK?`/`AT^NRFREQLOCK?`; the `mobility,num` row, the per-carrier rows and the hex PCI are decoded here |
-| `network.lock_apply` | `{cycled_radio, results: [{rat, applied, error?, code?, verified?, verify_error?}]}` — takes `{rat, lock_type, mobility, items}` or `{locks: [ … ]}` for both RATs in one radio cycle; the grouped-CSV write is assembled here, and each RAT's failure is reported separately. `"verify": true` polls the lock query the way the CLI's `lock` verb does (8 attempts after a radio cycle, one probe when the radio was already off, because the firmware publishes the new lock asynchronously) and adds `verified`/`verify_error`, so a caller does not have to know the firmware's timing |
-| `network.c5goption` | `{nr_sa_support_flag, nr_dc_mode, gc_access_mode}` — on-demand `AT^C5GOPTION?` |
-| `network.c5goption_set` | `{applied: true, cycled_radio}` — write with the radio cycled around it |
-| `network.radio` | `{airplane: bool, cfun}` — display route over `+CFUN?`; an empty object when the modem did not answer, so the switch keeps its position |
-| `network.radio_set` | `{applied: true, airplane}` — `{airplane: bool}` → `AT+CFUN=0\|1`; the network/registration snapshots are invalidated |
-| `network.syscfg` | `{acqorder, band, roam, srvdomain, lteband}` — display route over `^SYSCFGEX?`; the reply's quoted-or-bare order field and the two trailing reserves are handled here, an unanswered read is an empty object |
-| `network.syscfg_set` | `{applied: true}` — `{acqorder, band, roam, srvdomain, lteband}` → the seven-argument `AT^SYSCFGEX` write; the known acqorder list, the hex band masks and the roam/service-domain ranges are validated here (the CLI's `set-radio-policy` rules) |
-| `network.autodial` | `{enable, dialMode, protocol, apn, username, password, authType}` — `^SETAUTODIAL?`; when autodial is off the firmware omits the mode and the module fills it from `^NDISSTATQRY?` (`dialMode: 1` = the modem dials itself), and an unread state answers `{}` so the read-only dial page keeps what it shows |
+| `network.pdp` | `{addresses: [{cid, address, family}]}` — 按需 `AT+CGPADDR`，供诊断面板使用 |
+| `network.dhcp` | `{ipv4: {address, netmask, gateway, dhcp_server, primary_dns, secondary_dns}, ipv6: {…}, ipv6_capability}` — 按需 `AT^DHCP?`/`AT^DHCPV6?`/`AT^IPV6CAP?`（十六进制小端解码发生在这里，而不是页面里）；部分应答保留已读到的字段 |
+| `network.registration_urc` | `{enabled: true}` — 幂等写 `AT+CGREG=2`；即 Info 页过去用裸 AT 开启的那份详细 PS 注册上报 |
+| `network.lock_get` | `{lock_type, mobility, items: [{band, arfcn, pci, scs}]}` — `rat=lte\|nr`，按需 `AT^LTEFREQLOCK?`/`AT^NRFREQLOCK?`；`mobility,num` 行、每个载波的行以及十六进制 PCI 都在这里解码 |
+| `network.lock_apply` | `{cycled_radio, results: [{rat, applied, error?, code?, verified?, verify_error?}]}` — 接受 `{rat, lock_type, mobility, items}` 或 `{locks: [ … ]}`，在一个射频周期内完成两种 RAT；分组 CSV 写在这里拼装，每个 RAT 的失败分别上报。`"verify": true` 按 CLI `lock` 动词的方式轮询锁频查询（射频周期后尝试 8 次；若射频本来就是关的则只探一次，因为固件是异步发布新锁的），并追加 `verified`/`verify_error`，这样调用方无需了解固件的时序 |
+| `network.c5goption` | `{nr_sa_support_flag, nr_dc_mode, gc_access_mode}` — 按需 `AT^C5GOPTION?` |
+| `network.c5goption_set` | `{applied: true, cycled_radio}` — 写操作，射频在其前后各翻转一次 |
+| `network.radio` | `{airplane: bool, cfun}` — 基于 `+CFUN?` 的 display 路由；调制解调器不应答时返回空对象，这样开关保持原位 |
+| `network.radio_set` | `{applied: true, airplane}` — `{airplane: bool}` → `AT+CFUN=0\|1`；network/registration 两个快照被失效 |
+| `network.syscfg` | `{acqorder, band, roam, srvdomain, lteband}` — 基于 `^SYSCFGEX?` 的 display 路由；应答中带引号或不带引号的 order 字段以及末尾两个保留位都在这里处理，读取无应答则返回空对象 |
+| `network.syscfg_set` | `{applied: true}` — `{acqorder, band, roam, srvdomain, lteband}` → 七参数的 `AT^SYSCFGEX` 写；已知 acqorder 列表、十六进制 band 掩码以及漫游/服务域取值范围都在这里校验（即 CLI `set-radio-policy` 的规则） |
+| `network.autodial` | `{enable, dialMode, protocol, apn, username, password, authType}` — `^SETAUTODIAL?`；自动拨号关闭时固件会省略 mode，模块改用 `^NDISSTATQRY?` 补齐（`dialMode: 1` = 调制解调器自行拨号）；状态读不到时应答 `{}`，这样只读的拨号页保持它当前显示的内容 |
 | `network.usb_mode` | `{mode}` — `^SETMODE?` |
-| `network.interface_cfg` | `{mode, postRoute, dmz: {enabled, host}}` — one `^TDCFG?` read answers both of the dial page's cards (it used to issue the command twice); `Dmz: not cfg` is `enabled: false` |
-| `network.pdp_contexts` | `{contexts: [{cid, type, apn, pdp_addr, active}]}` — `+CGDCONT?` joined with `+CGACT?` by cid, cids 1–20 only (0 is the modem's own context) |
-| `network.schedule_get` | `{enabled, check_interval, timeout, unlock_lte, unlock_nr, toggle_airplane, night: {enabled, start, end, lte, nr}, day: {enabled, lte, nr}, status: {current_mode, next_switch, switch_count, applied}}` — the day/night band-lock config from UCI (`schedule_*`), typed and nested, plus the applier's live status. No modem access, so it answers on a dead modem too |
-| `network.schedule_set` | `{applied: true}` — validates (HH:MM window, interval ≥10 s, timeout ≥30 s, lock type 0–3) and writes `uci set at-webserver.config.schedule_*` + `commit`; the applier re-reads every 15 s. `enabled` (the LuCI master switch) and `status` are read-only here, so no caller can lock itself out of the feature |
-| `cell.neighbors` | `{cells: [{type, arfcn, pci, rsrp, rsrq, sinr, rxlev, band}]}` — on-demand `AT^MONNC`; hex PCI decoded to decimal, the 1/8-unit NR scaling, the "no measurement" sentinels (255/32767/-1256/-348/-188, dropped so the field is absent) and the ARFCN→band number all live here. `band` comes from `core::radio::arfcn_to_band`, the one band table in the backend; `band` absent means the ARFCN is outside every listed band |
-| `cell.scan_start` | `{started: true}` — `{rat?, plmn?, freq?, pci?, band?, scs?}`; validates the manual's constraints (band↔freq exclusivity, PCI only for LTE/NR, SCS required with an NR freq/PCI, band 1–512), builds `AT^CELLSCAN[=…]` including the band **bitmap** (`1 << (band-1)` in hex, nibble-built because n78 needs bit 77) and submits the exclusive task; rejects with `BUSY` while a scan runs |
-| `cell.scan_result` | `{running, state, cells, count, raw?, error?}` — the last scan, from the task registry plus the `scan` cache (TTL 30 min); `raw` is the modem's `^CELLSCAN` reply text verbatim, which is what the LuCI modal and `mt5700m-at cellscan` print. Never touches the modem, so a page reload after a finished scan still renders it |
-| `cell.scan_state` | `{running}` — task introspection only, never touches the modem, so a page reload finds a scan that outlived its mount |
-| `cell.scan_abort` | `{aborted}` — cancels the scan task (the arbiter injects the firmware's abort token on the wire); `{aborted: false}` when none ran, so a cancel racing the scan's own completion is not an error |
-| push `cellscan` | `{state: "done"\|"aborted"\|"error", cells: [{rat, ratName, plmn, freq, pci, band, lac, cid, rxlev, bsic, psc, scs, rsrp, rsrq, sinr, raw}], count, error?}` — published once per scan on the `scan` topic; the line layout (`^CELLSCAN:`, hex band/lac/cid, 1/2-dB RSRQ/SINR, 1/8-dB LTE SINR, the 15-vs-14 field quirk) is decoded in `modules/cell/scan.rs`, so no frontend parses it |
-| `beam.ssb` | `{servingCell: {arfcn, cid, pci, band?, rsrp, sinr, ta, ssbs: [{ssbId, rsrp}]}, neighborCells: [{pci, arfcn, band?, rsrp, sinr, ssbs}]}` — on-demand `AT^NRSSBID?`; the fixed offsets (8 serving slots, 4 per neighbour, stride 12), the "not measured" slots (255/32767) and the `band` numbers (`core::radio`) are handled here, so no frontend needs an ARFCN table |
-| `ca.get` / `ca.cached` | `{carriers: [{radio, band, source, dl_arfcn, ul_arfcn, dl_frequency_mhz, ul_frequency_mhz, dl_bandwidth_mhz, ul_bandwidth_mhz}], secondary: [{radio: "NR", arfcn, pci, rsrp?, rsrq?, sinr?, measType} \| {radio: "LTE", index, pci, band, rssi?, rsrp?, rsrq?, ulArfcn?, dlArfcn?, ulFreq?, dlFreq?, ulBandwidth?, dlBandwidth?}], carrier_count, ca_active, dc_active, nr_carrier_count, lte_carrier_count, lte_secondary_count, secondary_connection_count, ca_mode, ca_dl_bandwidth, ca_ul_bandwidth}` (`ca.get?refresh=1` forces a live read) — `secondary` is `^CASCELLINFO?` + `^MONSSC`: the per-carrier signal the `^HFREQINFO?` list does not carry (hex PCI, the manual's invalid values -1256/-348/-188, the ±8 descale heuristic and `<MEASTYPE>` all decoded here), so the info page merges the two by downlink ARFCN instead of parsing `^MONSSC` itself |
-| `cell.get` / `cell.cached` | `{band, channel, dlBandwidth, arfcn, sysmode, mcc, mnc, cid, pci, lac, scs, operator, raw}` — `scs` is the NR subcarrier-spacing code `^MONSC` reports (0 = 15 kHz); LTE has no such field, so it is absent and the wireless page omits its "SCS type" row |
-| `sim.get` / `sim.cached` | `{status, iccid, imsi, slot, hotplug}` (+ `number` once read) — the periodic snapshot also carries the active slot and the hot-plug switch |
-| `sim.number` | `{…, number}` — reads `+CNUM` on demand |
-| `sim.slot` | `{slot, hotplug}` — display route over the `sim` topic (0 = external, 1 = internal) |
-| `sim.slot_set` | `{switched: true, slot}` — `{slot: 0\|1}`; the vendor sequence (`^HVSST` deactivate/activate around `^SCICHG`, radio off/on) is performed here, once |
+| `network.usb_mode_set` | `{applied: true}` — `{mode}` → `AT^SETMODE=<mode>`；0–6 与 8 在这里校验，7（MBIM）保持拒绝（CLI 动词标注的「暂不支持」，页面下拉也从未提供） |
+| `network.interface_cfg` | `{mode, postRoute, dmz: {enabled, host}}` — 一次 `^TDCFG?` 读取同时应答拨号页的两张卡片（过去这条命令要发两次）；`Dmz: not cfg` 即 `enabled: false` |
+| `network.pdp_contexts` | `{contexts: [{cid, type, apn, pdp_addr, active}]}` — `+CGDCONT?` 与 `+CGACT?` 按 cid 连接，只取 cid 1–20（0 是调制解调器自身的上下文） |
+| `network.session` | `{ipv4: {connected, address, gateway, dns}, ipv6: {connected, address, dns}, capability?, mtu?, maximum_down?, maximum_up?, flow: {current_duration, current_tx, current_rx, total_duration, total_tx, total_rx}, sessions: [{cid, apn, ipv4, ipv6, type, ethernet}]}` — 一次聚合 `^NDISSTATQRY?`/`^DHCP?`/`^DHCPV6?`/`^IPV6CAP?`/`^DSFLOWQRY`/`^CGMTU=1`/`+CGPADDR`/`^DCONNSTAT?`（十六进制小端解码发生在这里，而不是页面里）；满 9 字段的 NDIS 应答由它判定连通，固件空应答退回「有没有地址」；整份不可用时返回 `null`，页面渲染为空卡。概览页的「移动 IP」卡与连接页的会话面板同读这一条 |
+| `network.flow_clear` | `{applied: true}` — `AT^DSFLOWCLR`；「清空模组计数」按钮的目标 |
+| `network.direct_ip` | `{enabled?}` — `^SETDIRECTIP?`；应答不是 0/1 时键缺席，页面据此禁用控件并隐藏写入按钮（旧帧解析同一条规则） |
+| `network.pdp_set` | `{applied: true}` — `{cid, type, apn}` → `AT+CGDCONT=<cid>,"<type>","<apn>"`；cid 1–11、type ∈ IP/IPV6/IPV4V6、`safe_at_field` 且 APN ≤99 在这里校验 |
+| `network.pdp_remove` | `{applied: true}` — `{cid}` → `AT+CGDCONT=<cid>`；cid 1–11 |
+| `network.pdp_state` | `{applied: true}` — `{cid, active}` → `AT+CGACT=<0\|1>,<cid>`；cid 1–11 |
+| `network.autodial_set` | `{applied: true}` — `{enabled, dialMode, protocol, apn, username, password, auth}` → `AT^SETAUTODIAL=0`（关闭时短路，不校验其余字段）或七参数形态；**尾部空字段必须省略**（MT5700M 拒绝）：apn 空时止于 `=1,<mode>,"<proto>"`、user+pass 空时止于 `"<apn>"`；mode 0–2、proto 同 PDP、auth 0–2 与 `safe_at_field`（apn ≤99 / user ≤31 / pass ≤31）在这里校验 |
+| `network.direct_ip_set` | `{applied: true}` — `{enabled}` → `AT^SETDIRECTIP=<0\|1>` |
+| `network.postroute_set` | `{applied, filterCleared}` — `{mode: 1\|2}` → `AT^TDCFG="infcfg","PostRoute",<mode>`；mode=1 追加 `AT^IPFILTERSWITCH=0`（两笔串行，首笔失败即止） |
+| `network.dmz_set` | `{applied: true}` — `{host}` → `AT^TDCFG="infcfg","dmz","<host>"`；`"0"` 即关闭（同一串），四段 IPv4 每段 ≤255 且禁止空段在这里校验 |
+| `network.interface_mode_set` | `{applied: true}` — `{mode: 1\|2}` → `AT^TDCFG="infcfg","mode",<mode>`；取值白名单在这里校验（构造器 `tdcfg_mode`，与 `tdcfg_postroute` 同款） |
+| `network.schedule_get` | `{enabled, check_interval, timeout, unlock_lte, unlock_nr, toggle_airplane, night: {enabled, start, end, lte, nr}, day: {enabled, lte, nr}, status: {current_mode, next_switch, switch_count, applied}}` — 来自 UCI 的昼夜频段锁定配置（`schedule_*`），带类型且已嵌套，外加 applier 的实时状态。不访问调制解调器，因此即使调制解调器已死也能应答 |
+| `network.schedule_set` | `{applied: true}` — 校验（HH:MM 时间窗、interval ≥10 s、timeout ≥30 s、锁类型 0–3）后写 `uci set at-webserver.config.schedule_*` + `commit`；applier 每 15 s 重读。`enabled`（LuCI 总开关）与 `status` 在此只读，因此没有调用方能把自己锁在该功能之外 |
+| `cell.neighbors` | `{cells: [{type, arfcn, pci, rsrp, rsrq, sinr, rxlev, band}]}` — 按需 `AT^MONNC`；十六进制 PCI 转十进制、NR 的 1/8 单位换算、"no measurement" 哨兵值（255/32767/-1256/-348/-188，被丢弃因此字段缺失）以及 ARFCN→band 编号全部在这里。`band` 来自 `core::radio::arfcn_to_band`，即后端唯一的频段表；`band` 缺失意味着该 ARFCN 落在所有已列频段之外 |
+| `cell.scan_start` | `{started: true}` — `{rat?, plmn?, freq?, pci?, band?, scs?}`；校验手册给出的约束（band 与 freq 互斥、PCI 仅用于 LTE/NR、NR 的 freq/PCI 必须带 SCS、band 1–512），构造 `AT^CELLSCAN[=…]`，其中包含 band **位图**（`1 << (band-1)` 的十六进制形式，按半字节拼装，因为 n78 需要第 77 位），并提交独占任务；扫描进行中以 `BUSY` 拒绝 |
+| `cell.scan_result` | `{running, state, cells, count, raw?, error?}` — 最近一次扫描，来自任务注册表加 `scan` 缓存（TTL 30 分钟）；`raw` 是调制解调器 `^CELLSCAN` 应答文本的逐字副本，也就是 LuCI 弹窗与 `mt5700m-at cellscan` 打印的内容。绝不触碰调制解调器，因此扫描结束后重新加载页面仍能渲染它 |
+| `cell.scan_state` | `{running}` — 仅任务自省，绝不触碰调制解调器，因此重新加载页面能找到一次比页面挂载活得更久的扫描 |
+| `cell.scan_abort` | `{aborted}` — 取消扫描任务（仲裁器在线路上注入固件的中止令牌）；`{aborted: false}` 表示没有任务在跑，因此与扫描自身完成相竞的取消不算错误 |
+| push `cellscan` | `{state: "done"\|"aborted"\|"error", cells: [{rat, ratName, plmn, freq, pci, band, lac, cid, rxlev, bsic, psc, scs, rsrp, rsrq, sinr, raw}], count, error?}` — 每次扫描在 `scan` 主题上发布一次；行的布局（`^CELLSCAN:`、十六进制 band/lac/cid、1/2-dB 的 RSRQ/SINR、1/8-dB 的 LTE SINR、15 字段与 14 字段的怪癖）在 `modules/cell/scan.rs` 中解码，因此没有前端需要解析它 |
+| `beam.ssb` | `{servingCell: {arfcn, cid, pci, band?, rsrp, sinr, ta, ssbs: [{ssbId, rsrp}]}, neighborCells: [{pci, arfcn, band?, rsrp, sinr, ssbs}]}` — 按需 `AT^NRSSBID?`；固定偏移（服务小区 8 个槽位、每个邻区 4 个、步长 12）、"not measured" 槽位（255/32767）以及 `band` 编号（`core::radio`）都在这里处理，因此没有前端需要一张 ARFCN 表 |
+| `ca.get` / `ca.cached` | `{carriers: [{radio, band, source, dl_arfcn, ul_arfcn, dl_frequency_mhz, ul_frequency_mhz, dl_bandwidth_mhz, ul_bandwidth_mhz}], secondary: [{radio: "NR", arfcn, pci, rsrp?, rsrq?, sinr?, measType} \| {radio: "LTE", index, pci, band, rssi?, rsrp?, rsrq?, ulArfcn?, dlArfcn?, ulFreq?, dlFreq?, ulBandwidth?, dlBandwidth?}], carrier_count, ca_active, dc_active, nr_carrier_count, lte_carrier_count, lte_secondary_count, secondary_connection_count, ca_mode, ca_dl_bandwidth, ca_ul_bandwidth}` (`ca.get?refresh=1` forces a live read) — `secondary` 来自 `^CASCELLINFO?` + `^MONSSC`：即 `^HFREQINFO?` 列表没有携带的每载波信号（十六进制 PCI、手册给出的无效值 -1256/-348/-188、±8 的反缩放启发式以及 `<MEASTYPE>` 都在这里解码），因此信息页按下行 ARFCN 合并两者，而不必自己解析 `^MONSSC` |
+| `cell.get` / `cell.cached` | `{band, channel, dlBandwidth, arfcn, sysmode, mcc, mnc, cid, pci, lac, scs, operator, raw}` — `scs` 是 `^MONSC` 上报的 NR 子载波间隔码（0 = 15 kHz）；LTE 没有该字段，因此它缺失，无线页面也就省略它的 "SCS type" 行 |
+| `sim.get` / `sim.cached` | `{status, iccid, imsi, slot, hotplug}` (+ `number` once read) — 周期快照还携带当前卡槽与热插拔开关 |
+| `sim.number` | `{…, number}` — 按需读取 `+CNUM` |
+| `sim.slot` | `{slot, hotplug}` — 基于 `sim` 主题的 display 路由（0 = 外置，1 = 内置） |
+| `sim.slot_set` | `{switched: true, slot}` — `{slot: 0\|1}`；厂商序列（围绕 `^SCICHG` 的 `^HVSST` 去激活/激活，射频关/开）在这里执行，且只此一份 |
 | `sim.hotplug_set` | `{applied: true, hotplug}` — `{hotplug: bool}` → `^TDSIMHP` |
-| `sim.pin_status` | `{code, lock, blocked, needsNewPin, card: {status, dead, present}, pinEnabled}` — `+CPIN?` with the CME-error branch (10 → `ABSENT`, 11/12/17/18 → the matching lock), `^SIMSQ?` for the dead/present refinement and `+CLCK="SC",2` when the card is ready |
-| `sim.pin_apply` | `{applied: true}` — `{operation: verify\|unblock\|enable\|disable\|change, pin, newPin?, pin2?}`; the operation picks CPIN/CLCK/CPWD, and the 4–8 digit rules are validated here |
+| `sim.activation` | `{active?: bool, slot?: int}` — `^HVSST?`，即系统页显示为 "SIM power path" 的 SIM 供电路径；`slot` 是第三个字段，LuCI 也曾把它当作当前卡槽的回退值。查询不应答时返回 `{}` |
+| `sim.activation_set` | `{applied: true, active}` — `{active: bool}` → `^HVSST=1,<0\|1>`；由包裹卡槽切换的同一个构造器生成，因此该动词只有一种写法 |
+| `sim.pin_status` | `{code, lock, blocked, needsNewPin, card: {status, dead, present}, pinEnabled}` — `+CPIN?` 带 CME 错误分支（10 → `ABSENT`，11/12/17/18 → 对应的锁），`^SIMSQ?` 用于细化 dead/present，卡片就绪时再发 `+CLCK="SC",2` |
+| `sim.pin_apply` | `{applied: true}` — `{operation: verify\|unblock\|enable\|disable\|change, pin, newPin?, pin2?}`；操作决定走 CPIN/CLCK/CPWD，4–8 位数字规则在这里校验 |
 | `modem.get` / `modem.cached` | `{manufacturer, model, revision, imei}` |
 | `modem.txpower` | `{total, pusch, pucch, srs, prach}` |
 | `modem.nr_txpower` | `{carriers: [{pusch, pucch, srs, prach, freq}]}` |
 | `modem.endc` | `{available, plmnAvailable, restricted, established}` |
-| `modem.mcs` | `{downlink: {rat, carriers: [{index, group, rat, mcs_table_index, code0, code1}], avg_mcs}, uplink: {…}}` — on-demand `AT^MCS=1` / `AT^MCS=0`; `group`/`rat` are the reply's own per-line grouping (LuCI prints one block per `^MCS` line, the WebUI ignores them and pairs carriers with `^HFREQINFO` by position), `rat` at the direction level is the merged view (NR wins); the frontends map `code0` to modulation/level labels |
-| `modem.reset` | `{rebooting: true}` — `AT^RESET`; the snapshot is dropped so the next read is post-restart |
-| `modem.imei_set` | `{applied: true, imei}` — `{imei: "15 digits"}` → `^PHYNUM=IMEI,<imei>`; the digit rule is validated here |
-| `modem.nr_capability` | `{ca, vonr, dss: {rateMatchingLTE, additionalDMRS}}` — display route over `^NRRCCAPQRY=3/2/5`; each reply echoes its kind (the parser matches on it) and an ability that did not answer stays absent, including half a DSS pair |
-| `modem.nr_capability_set` | `{applied: true, wrote: [kind…]}` — `{ca?, vonr?, dss?: {rateMatchingLTE, additionalDMRS}}`, at least one; each ability becomes its own `^NRRCCAPCFG` write, with the VoNR 0–3 and DSS 0/1 ranges validated here |
-| `traffic.get` / `traffic.cached` | PDCP field map (`id`, `pduSessionId`, …, `dlDiscardCnt`) |
+| `modem.mcs` | `{downlink: {rat, carriers: [{index, group, rat, mcs_table_index, code0, code1}], avg_mcs}, uplink: {…}}` — 按需 `AT^MCS=1` / `AT^MCS=0`；`group`/`rat` 是应答自身的按行分组（LuCI 每 `^MCS` 行打印一个块，WebUI 忽略它们并按位置把载波与 `^HFREQINFO` 配对），方向层的 `rat` 是合并视图（NR 优先）；前端把 `code0` 映射为调制/等级标签 |
+| `modem.reset` | `{rebooting: true}` — `AT^RESET`；快照被丢弃，因此下一次读到的是重启后的状态 |
+| `modem.imei_set` | `{applied: true, imei}` — `{imei: "15 digits"}` → `^PHYNUM=IMEI,<imei>`；位数规则在这里校验 |
+| `modem.nr_capability` | `{ca, vonr, dss: {rateMatchingLTE, additionalDMRS}}` — 基于 `^NRRCCAPQRY=3/2/5` 的 display 路由；每条应答都回显自己的种类（解析器据此匹配），没有应答的能力保持缺失，包括 DSS 只有一半的情况 |
+| `modem.nr_capability_set` | `{applied: true, wrote: [kind…]}` — `{ca?, vonr?, dss?: {rateMatchingLTE, additionalDMRS}}`，至少给一个；每个能力各自成为一条 `^NRRCCAPCFG` 写，VoNR 的 0–3 与 DSS 的 0/1 取值范围在这里校验 |
+| `traffic.get` / `traffic.cached` | PDCP 字段映射（`id`、`pduSessionId`、……、`dlDiscardCnt`） |
 | `traffic.netrate` | `{available, device, rx_bytes, tx_bytes, timestamp, source, traffic}` |
-| `traffic.clear` | `{cleared: true}` — on-demand write `AT^DSFLOWCLR`; the scheduler's action-invalidation drops the stale counters |
-| `system.temperature` / `system.temperature.cached` | 12 sensor fields + `average` + `peak`/`peak_sensor` — the hottest plausible sensor (>0 °C, ≤150 °C, `TemperatureState::peak()`), i.e. exactly the value the CLI text form prints as `temperature=`/`temperature_sensor=` and what the wireless page's single temperature gauge shows |
-| `system.device_control` | `{nic_rate: 1\|2, power_control: bool}` — `^TDPCIELANCFG?` and `^TDPMCFG?`; a switch that did not answer is omitted, and the page keeps the value it shows |
-| `system.nic_rate_set` | `{applied: true, nic_rate}` — `{rate: 1\|2}` → `^TDPCIELANCFG=<rate>` (takes effect after a reboot) |
+| `traffic.clear` | `{cleared: true}` — 按需写 `AT^DSFLOWCLR`；调度器的动作失效机制会丢弃过期计数器 |
+| `system.temperature` / `system.temperature.cached` | 12 个传感器字段 + `average` + `peak`/`peak_sensor` — 取最热的合理传感器（>0 °C、≤150 °C，`TemperatureState::peak()`），也就是 CLI 文本形态打印为 `temperature=`/`temperature_sensor=` 的那个值，也正是无线页面那一个温度仪表所显示的值 |
+| `system.device_control` | `{nic_rate: 1\|2, power_control: bool}` — `^TDPCIELANCFG?` 和 `^TDPMCFG?`；不应答的那个开关被省略，页面保持它显示的值 |
+| `system.nic_rate_set` | `{applied: true, nic_rate}` — `{rate: 1\|2}` → `^TDPCIELANCFG=<rate>`（重启后生效） |
 | `system.power_control_set` | `{applied: true, power_control}` — `{enabled: bool}` → `^TDPMCFG=<0\|1>` |
-| `system.factory_reset` | `{restored: true}` — `AT&F` (AT defaults; the modem is not restarted) |
-| `system.service_mode` | `{mode: "serial"\|"network"}` — how the daemon reaches the modem, recorded once at startup (`core::modem`); replaces the pages' `AT+CONNECT?` probe |
-| `system.thermal` | `{enabled, caMimoSwitch, interval, logSwitch: {consoleLog, fileLog}, thresholds: [...], currentLevel}` — `^THERMAUTOFUN?` / `^THERMLDLOGSW?` / `^THERMLDAUTOPARA?` / `^THERMLDAUTOSTATUS?` (the level is the 6th status field, decoded here); a query that did not answer leaves its fields absent |
-| `system.thermal_set` | `{applied: true}` — `{enabled, caMimoSwitch?, interval}` → `^THERMAUTOFUN=<on>,<caMimo>,<interval>`; the interval range is validated here |
-| `system.fota` | `{running, phase: "idle"\|"running"\|"done"\|"error", step, progress, state, stateName, total, received, error?}` — the upgrade flow's state from the **task registry plus the published snapshot**, never an AT access, so a page reload (or its 1 s poll) cannot queue behind the download it is reporting on |
-| `system.fota_start` | `{started: true}` — `{url}`; the address rules (`http://` only, empty rejected, trailing slash added, quote guard) are validated here and the module submits its `fota.system` task, which runs the whole flow: `ATE0`, `^FOTAMODE=0,1,0,1`, `^FOTAOEMDL="…"`, then the state machine (`^FOTASTATE?` every 1 s, `^FOTADLQ` progress on 30, resume on 31 at most once per 5 s, `^FWUP` on 40). Rejects with `BUSY` while a flow runs |
-| `system.fota_abort` | `{aborted}` — cancels the flow task; `{aborted: false}` when none ran. The WebUI's page has no cancel button (UI unchanged), so this is the terminal/API escape hatch |
-| push `fota.progress` | `{running, phase, step, progress, state, stateName, total, received, error?}` — published on the `fota` topic on every state change (immediate delivery), the same object `system.fota` answers with |
-| `sms.status` | `{enabled, imsOn?, center?, storage?}` — page-load snapshot: `+CMGF?` (the read that decides 短信是否开启), `^IMSSWITCH?`, `+CSCA?` (only when IMS is on, as the page always did) and `+CPMS?`; a missing/unread field is omitted and `enabled` is always present |
-| `sms.storage` | `{read, write, receive, storages: [name…]}` — `+CPMS?` decoded (`name`, `used`, `total` per plane, distinct names for the clear-all loop) |
-| `sms.list` | `{messages: [{index, content, number, time, type, isConcatenated?, concatenatedRef/Seq/Total?}]}` — `+CMGF=0` when needed, then `+CMGL=4`; every PDU is decoded and multipart parts are merged in sequence order, so no frontend reassembles a PDU |
-| `sms.send` | `{sent: true, parts}` — `{number, text}`; the destination is normalised (11-digit local numbers get country code 86) and encoded here (GSM 7-bit / UCS-2, multipart split, service centre from `+CSCA?` — `00` when the modem reports none), then sent as one `AT+CMGS` transaction per part on the arbiter thread (`AT+CMGS=<len>` counts the TPDU octets only); a multipart failure reads `第 i/n 条发送失败：<cause>` |
+| `system.factory_reset` | `{restored: true}` — `AT&F`（AT 默认值；调制解调器不会重启） |
+| `system.service_mode` | `{mode: "serial"\|"network"}` — 守护进程如何访问调制解调器，启动时记录一次（`core::modem`）；取代了页面里的 `AT+CONNECT?` 探测 |
+| `system.thermal` | `{enabled, caMimoSwitch, interval, logSwitch: {consoleLog, fileLog}, thresholds: [...], currentLevel}` — `^THERMAUTOFUN?` / `^THERMLDLOGSW?` / `^THERMLDAUTOPARA?` / `^THERMLDAUTOSTATUS?`（level 是状态行的第 6 个字段，在这里解码）；某条查询不应答则其字段保持缺失 |
+| `system.thermal_set` | `{applied: true}` — `{enabled, caMimoSwitch?, interval}` → `^THERMAUTOFUN=<on>,<caMimo>,<interval>`；interval 取值范围在这里校验 |
+| `system.led` | `{led?: bool}` — `^LEDSWITCH?`，状态指示灯；查询不应答时返回 `{}`，这样页面把开关保持在用户留下的位置 |
+| `system.led_set` | `{applied: true, led}` — `{enabled: bool}` → `^LEDSWITCH=<0\|1>`；由模块保存，重启后生效 |
+| `system.network_time` | `{time?: "…"}` — `^NWTIME?`，字符串与调制解调器格式化的结果完全一致（LuCI 页面只去掉引号）；没有时间行（即未注册）时该字段缺失 |
+| `system.version` | `{buildDate?, software?, hardware?}` — `^VERSION?`（`BDT` / `EXTS` / `EXTH`）；每个键仅在调制解调器应答了对应那一行时出现，因此页面的回退逻辑（`software || revision`）继续有效 |
+| `system.fota_mode` | `{mode?: "…"}` — `^FOTAMODE?` 原样透传、不做解码：把 `0,1,0,1` 称为 "HTTP update mode" 属于 UI 文案，而不是调制解调器的事实 |
+| `system.thermal_thresholds_set` | `{applied: true, thresholds}` — `{thresholds: [i64; 9]}` → `^THERMLDAUTOPARA=<9 values>`；阶梯规则（9 个值、0–150 °C、触发点递增、每个恢复点低于自己的触发点）在这里强制，且只在这里 |
+| `system.thermal_log_set` | `{applied: true, serial, file}` — `{serial: bool, file: bool}` → `^THERMLDLOGSW=<serial>,<file>` |
+| `system.fota` | `{running, phase: "idle"\|"running"\|"done"\|"error", step, progress, state, stateName, total, received, error?}` — 升级流程的状态来自**任务注册表加已发布的快照**，绝不是一次 AT 访问，因此重新加载页面（或它的 1 s 轮询）不可能排在自己正在上报的那个下载之后 |
+| `system.fota_start` | `{started: true}` — `{url}`；地址规则（只允许 `http://`、拒绝空值、补上结尾斜杠、引号防护）在这里校验，随后模块提交它的 `fota.system` 任务，该任务跑完整个流程：`ATE0`、`^FOTAMODE=0,1,0,1`、`^FOTAOEMDL="…"`，然后是状态机（每 1 s `^FOTASTATE?`，状态 30 时取 `^FOTADLQ` 进度，状态 31 时每 5 s 最多续传一次，状态 40 时 `^FWUP`）。流程进行中以 `BUSY` 拒绝 |
+| `system.fota_abort` | `{aborted}` — 取消流程任务；`{aborted: false}` 表示没有任务在跑。WebUI 的页面没有取消按钮（UI 不变），因此这是终端/API 的逃生口 |
+| push `fota.progress` | `{running, phase, step, progress, state, stateName, total, received, error?}` — 每次状态变化时在 `fota` 主题上发布（即时投递），与 `system.fota` 应答的是同一个对象 |
+| `sms.status` | `{enabled, imsOn?, center?, storage?}` — 页面加载时的快照：`+CMGF?`（决定短信是否开启的那次读取）、`^IMSSWITCH?`、`+CSCA?`（仅当 IMS 开启，与页面一贯做法一致）和 `+CPMS?`；缺失/读不到的字段被省略，而 `enabled` 始终存在 |
+| `sms.storage` | `{read, write, receive, storages: [name…]}` — `+CPMS?` 解码结果（每个存储面 `name`、`used`、`total`，清空全部短信的循环用到去重后的名字） |
+| `sms.list` | `{messages: [{index, content, number, time, type, isConcatenated?, concatenatedRef/Seq/Total?}]}` — 必要时先 `+CMGF=0`，再 `+CMGL=4`；每个 PDU 都被解码，多段短信按序号合并，因此没有前端需要重组 PDU |
+| `sms.send` | `{sent: true, parts}` — `{number, text}`；目标号码在这里归一化（11 位本地号码补国家码 86）并编码（GSM 7-bit / UCS-2、多段拆分、短信中心取自 `+CSCA?` — `00` 当调制解调器没上报时），然后在仲裁器线程上按每条分段一次 `AT+CMGS` 事务发送（`AT+CMGS=<len>` 只计 TPDU 的字节数）；多段发送失败时读到的文案是 `第 i/n 条发送失败：<cause>` |
 | `sms.delete` | `{deleted: true}` — `{index}` → `+CMGD=<index>` |
-| `sms.clear_all` | `{cleared: [storage…]}` — reads `+CPMS?` itself, then per plane `+CPMS="X","X","X"` + `+CMGD=1,4` with the firmware's settle times (the settings page's 清空所有短信) |
-| `sms.storage_set` | `{applied: true}` — `{read, write?, receive?}` (defaults to `read`) → `+CPMS=…`; storage names are validated against `SM`/`ME` here |
-| `sms.center_set` | `{applied: true}` — `{number}` → `+CSCA="<number>"`; empty/illegal characters rejected here |
-| `sms.ims_set` | `{applied: true}` — `{enabled}` runs the module's five-step IMS sequence (`+CFUN=0` → IMS PDP profile → `+CEUS` → `^IMSSWITCH` → `+CFUN=1`) with its settle times, one implementation shared by both frontends and the CLI |
-| `sms.analyze` | `{encoding: "7bit"\|"UCS2", chars, parts}` — `{text}`; the compose hint's part count comes from the same codec `sms.send` uses, so the promise and the send cannot disagree |
-| `sms.ussd_send` | `{sent: true, reply?}` — `{code}`; the code is validated and packed here (GSM 7-bit, the manual's own example `*133#` → `AAD86C3602`, sent as `AT+CUSD=1,"…",15`), a rejected code answers the panel's copy verbatim, and a firmware that returns the answer inline gets it decoded into `reply` (`{m, mText, text, needsReply}`) |
-| `sms.ussd_cancel` | `{cancelled: true}` — `AT+CUSD=2`, releasing the session |
-| push `network.reject` | `{plmn, domain, domainText, cause, causeText, rat, ratText, rejectType, rejectTypeText, originalCause, lac, rac, cellId, esmCause?, raw, at}` — a `^REJINFO` line (手册 13.14) decoded by `modules/network/reject.rs`: the cause table, the USIM range 65537–65543 and the domain/rat/type labels live here, not in a page (the `network` topic) |
-| push `qos.ambr` | `{ambr_down_kbps, ambr_up_kbps, ambr_apn?}` — an unsolicited `^DSAMBR` line (手册 5.33) decoded by `modules/qos` with the same field names `qos.get` uses, so the info page updates APN/AMBR without polling (the `qos` topic) |
-| push `sim.changed` | the raw line (`+CPIN:` / `^SIMSQ:` / `^SIMST`) — a nudge on the `sim` topic: the card handler re-reads `sim.pin_status` instead of pattern-matching URC text in the browser |
-| push `sms.ussd` | `{m, mText, text, needsReply}` — the `+CUSD:` line the network sends out-of-band, decoded by the same codec (the `sms` topic). The raw line still goes out as `raw_data`, but no page parses it |
+| `sms.clear_all` | `{cleared: [storage…]}` — 自行读取 `+CPMS?`，然后按每个存储面执行 `+CPMS="X","X","X"` + `+CMGD=1,4`，并遵循固件的稳定时间（即设置页的清空所有短信） |
+| `sms.storage_set` | `{applied: true}` — `{read, write?, receive?}`（缺省取 `read`）→ `+CPMS=…`；存储名在这里按 `SM`/`ME` 校验 |
+| `sms.center_set` | `{applied: true}` — `{number}` → `+CSCA="<number>"`；空值/非法字符在这里被拒绝 |
+| `sms.ims_set` | `{applied: true}` — `{enabled}` 执行模块的五步 IMS 序列（`+CFUN=0` → IMS PDP profile → `+CEUS` → `^IMSSWITCH` → `+CFUN=1`）及其稳定时间，两个前端与 CLI 共用同一份实现 |
+| `sms.analyze` | `{encoding: "7bit"\|"UCS2", chars, parts}` — `{text}`；撰写提示里的分段数来自 `sms.send` 所使用的同一个编解码器，因此承诺与实际发送不可能互相矛盾 |
+| `sms.ussd_send` | `{sent: true, reply?}` — `{code}`；码值在这里校验并打包（GSM 7-bit，手册自带的例子 `*133#` → `AAD86C3602`，以 `AT+CUSD=1,"…",15` 发出），被拒绝的码值原样回显面板的文案，若固件把应答内联返回则解码进 `reply`（`{m, mText, text, needsReply}`） |
+| `sms.ussd_cancel` | `{cancelled: true}` — `AT+CUSD=2`，释放会话 |
+| push `network.reject` | `{plmn, domain, domainText, cause, causeText, rat, ratText, rejectType, rejectTypeText, originalCause, lac, rac, cellId, esmCause?, raw, at}` — 由 `modules/network/reject.rs` 解码的一条 `^REJINFO` 行（手册 13.14）：原因表、USIM 的 65537–65543 区间以及 domain/rat/type 标签都在这里，而不是在页面里（`network` 主题） |
+| push `qos.ambr` | `{ambr_down_kbps, ambr_up_kbps, ambr_apn?}` — 由 `modules/qos` 解码的一条主动上报 `^DSAMBR` 行（手册 5.33），字段与 `qos.get` 所用的完全一致，因此信息页无需轮询即可更新 APN/AMBR（`qos` 主题） |
+| push `sim.changed` | the raw line (`+CPIN:` / `^SIMSQ:` / `^SIMST`) — `sim` 主题上的一次轻推：卡片处理器改为重新读取 `sim.pin_status`，而不是在浏览器里对 URC 文本做模式匹配 |
+| push `sms.ussd` | `{m, mText, text, needsReply}` — 网络带外送来的 `+CUSD:` 行，由同一个编解码器解码（`sms` 主题）。原始行仍作为 `raw_data` 发出，但没有页面会解析它 |
 
-Field names and types are exactly what the cache published before the refactor,
-so existing consumers (LuCI topics, WebUI `stateCache`, `mt5700m-at cached`)
-keep working unchanged. Absent fields are omitted rather than sent as `null`,
-matching the previous writers.
+字段名与类型与重构前缓存发布的完全一致，因此既有消费方
+（LuCI 主题、WebUI `stateCache`、`mt5700m-at cached`）无需改动即可
+继续工作。缺失字段是被省略，而不是发成 `null`，与之前的写入者
+保持一致。
 
-## 2. Transports and envelopes
+## 2. 传输层与信封
 
-| Transport | Call shape | Success | Failure |
+| 传输层 | 调用形态 | 成功 | 失败 |
 | --------- | ---------- | ------- | ------- |
 | WebSocket (WebUI) | `{"method":"api","params":{"path":"signal.get"}}` | `{success: true, data: {…}}` | `{success: false, error, code, retryable}` |
 | WS command line (WebUI service layer) | `api.signal.get` / `api.ca.get {"refresh":true}` | `{success: true, data: {…}}` | as above |
@@ -128,35 +148,35 @@ matching the previous writers.
 | TCP RPC `at` (LuCI `mt5700.at`) | `{"cmd":"api.beam.ssb"}` (optional trailing JSON = params) | `{success: true, data: {…}}` | as above |
 | `mt5700m-at` CLI | `mt5700m-at <verb>` | legacy text on stdout | exit code + stderr (`124` on timeout) |
 
-`error` in the envelopes is `BackendError::detail()`: for a rejected parameter
-it is the bare rejection text ("频段与频点不能同时指定") — the exact copy the
-pages showed when they validated locally — and for everything else it is the
-same `message()` the logs and the CLI print. `code` is always `Error::code()`.
+信封里的 `error` 是 `BackendError::detail()`：对于被拒绝的参数，
+它就是那句裸的拒绝文案（"频段与频点不能同时指定"）—— 也就是页面在
+本地校验时显示的同一份文案；其他情况则是日志与 CLI 打印的同一个
+`message()`。`code` 始终是 `Error::code()`。
 
-A route is reachable through every transport, and the `api.` prefix is
-normalised inside `registry::dispatch`, so `api.signal.get` (WS/LuCI command
-line, `split_api_command` carries the optional trailing JSON as `params`) and
-`signal.get` (control socket, JSON-RPC, CLI) hit the same handler. Frontends
-call routes; only the deliberate raw-AT consoles (`WebUI /at` terminal, LuCI
-`terminal.js`) still send AT.
+一条路由可以通过每一种传输层访问，`api.` 前缀在 `registry::dispatch`
+内部被归一化，因此 `api.signal.get`（WS/LuCI 命令行，
+`split_api_command` 把可选的尾部 JSON 作为 `params` 携带）与
+`signal.get`（控制套接字、JSON-RPC、CLI）命中的是同一个处理器。
+前端调用路由；只有有意保留的裸 AT 控制台（`WebUI /at` terminal、LuCI
+`terminal.js`）仍在发 AT。
 
-LuCI reaches the registry through `api.js`'s `route(name, params)` helper —
-`mt5700.at` with `cmd = api.<route> [json]` — so a page asks for a domain model
-(`api.route('beam.ssb')`) instead of a labelled text frame it would have to
-slice. The render-only helpers stay on the CLI verbs; the pages migrate one
-section at a time (see `migration.md` item 9).
+LuCI 通过 `api.js` 的 `route(name, params)` 辅助函数触达 registry ——
+即用 `cmd = api.<route> [json]` 调 `mt5700.at` —— 因此一个页面请求的
+是领域模型（`api.route('beam.ssb')`），而不是一帧还需要切分的带标签
+文本。纯渲染的辅助函数仍留在 CLI 动词上；页面按区块逐个迁移
+（见 `migration.md` 第 9 项）。
 
-Legacy verbs are preserved byte for byte: control socket `send|cached|scan`
-(+ `api`; the old `sms` verb is gone — `sms.send` is the one send path),
-TCP RPC `at|cached|events|scan|ping` (+ `api`), WS events
-`{type, data, timestamp}` with topic names `signal[.updated]`,
-`network.updated`, `cell.updated`, `temperature.updated`, `traffic.updated`,
-`netrate.updated`, `registration.updated`, `endc.updated`, `txpower.updated`,
-`nr_txpower.updated`, `sim.updated`, `modem.info` and the `^(usb|modem|task|scan|beam|sms)\.`
-family. Auth failures keep the exact strings `Authentication failed`,
-`Authentication timeout`, `Invalid authentication`.
+遗留动词逐字节保留：控制套接字 `send|cached|scan`（外加 `api`；旧的
+`sms` 动词已消失 —— `sms.send` 是唯一的发送路径）、TCP RPC
+`at|cached|events|scan|ping`（外加 `api`）、WS 事件
+`{type, data, timestamp}`，其主题名包括 `signal[.updated]`、
+`network.updated`、`cell.updated`、`temperature.updated`、`traffic.updated`、
+`netrate.updated`、`registration.updated`、`endc.updated`、`txpower.updated`、
+`nr_txpower.updated`、`sim.updated`、`modem.info` 以及
+`^(usb|modem|task|scan|beam|sms)\.` 系列。鉴权失败仍保持精确字符串
+`Authentication failed`、`Authentication timeout`、`Invalid authentication`。
 
-## 3. Timeout budget (unchanged)
+## 3. 超时预算（不变）
 
 ```text
 frontend hard timeout 30 s
@@ -165,12 +185,12 @@ frontend hard timeout 30 s
 CLI capture hard cap 25 s (exit 124)
 ```
 
-## 4. Adding a capability
+## 4. 新增一项能力
 
-1. Add the route to the owning module's `api.rs` (`Route { name, handler }`).
-2. Register it in `api/registry.rs::routes()`.
-3. Both frontends (and the CLI) can call it immediately — no transport work, no
-   duplicated parsing, no new cache key unless the module publishes one.
+1. 把路由加进所属模块的 `api.rs`（`Route { name, handler }`）。
+2. 在 `api/registry.rs::routes()` 中注册它。
+3. 两个前端（以及 CLI）立刻就能调用它 —— 无需传输层改动、无需
+   重复解析，除非模块自己要发布，否则也不需要新的缓存键。
 
-Any route must answer on a cold cache with no modem attached: registry tests
-assert exactly that for every registered route.
+任何路由都必须在冷缓存、未接调制解调器的情况下作出应答：
+registry 测试对每一条已注册路由都确切地断言了这一点。

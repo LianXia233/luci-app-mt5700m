@@ -4,7 +4,7 @@
 /*
  * 小区扫描弹窗一致性证明（LuCI 无线页，扫描弹窗切片）
  *
- * 这一刀把弹窗从「切 `mt5700m-at cellscan` 文本帧」改成「读统一路由」：
+ * 本批把弹窗从「切 `mt5700m-at cellscan` 文本帧」改成「读统一路由」：
  *   - 服务小区卡片：^MONSC 文本 + `parser.arfcnToBand` 猜频段 → `cell.get`
  *     （modules/cell 解码，PCI/CID 十进制、band 来自 core::radio）与
  *     `signal.get`（modules/signal 解码 ^HCSQ，与整页仪表同一份读数）
@@ -18,7 +18,7 @@
  *     拼写对不上 CLI 的输出）随文本路径一起删除，弹窗可见内容不变
  *
  * 用法：
- *   node scripts/prove-cellscan-parity.js [基线]   # 基线默认 HEAD，本刀之前是 fceb6ea
+ *   node scripts/prove-cellscan-parity.js [基线]   # 基线默认 HEAD，本批之前是 fceb6ea
  * 退出码 0 = 通过，1 = 不一致，2 = 基线选错了（基线里已经没有旧实现）。
  *
  * 脚本做四件事：
@@ -127,8 +127,8 @@ const old = lib.loadSide(oldSource, apiOld);
 const neu = lib.loadSide(newSource, apiNew);
 
 if (typeof old.parser.parseMonsc !== 'function' || typeof old.api.atCellscan !== 'function') {
-	console.error('基线 ' + BASELINE + ' 已经包含这一刀（parser.js 里没有 parseMonsc / api.js 里没有 atCellscan）'
-		+ '——没有旧管线可比较。\n本刀的基线是 fceb6ea：\n  node scripts/prove-cellscan-parity.js fceb6ea');
+	console.error('基线 ' + BASELINE + ' 已经包含本批（parser.js 里没有 parseMonsc / api.js 里没有 atCellscan）'
+		+ '——没有旧管线可比较。\n本批的基线是 fceb6ea：\n  node scripts/prove-cellscan-parity.js fceb6ea');
 	process.exit(2);
 }
 

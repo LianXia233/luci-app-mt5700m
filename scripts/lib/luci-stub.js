@@ -4,7 +4,7 @@
  * 迁移期一致性证明的公共桩（scripts/lib/luci-stub.js）
  *
  * 两个 prove-* 脚本都要把 LuCI 的 view/component 模块装进一个「够用的 DOM」
- * 里跑起来，再比较渲染结果。这里集中一份，避免每把刀各复制一套桩：
+ * 里跑起来，再比较渲染结果。这里集中一份，避免每批各复制一套桩：
  *
  *   - makeScope(api)      LuCI 全局（E/_/ui/dom/window/L/String.format）+ 记录调用的 api 桩
  *   - loadModule(src, s)  用 new Function 把模块源码在桩作用域里求值
@@ -357,6 +357,15 @@ function collect(node, pred, out) {
 	return out;
 }
 function buttons(node) { return collect(node, n => n.tagName === 'BUTTON'); }
+/* modal.children 是数组；collect 已支持数组入参，这里只补语义名 */
+function selectsIn(nodes) { return collect(nodes, n => n.tagName === 'SELECT'); }
+function inputsIn(nodes) { return collect(nodes, n => n.tagName === 'INPUT'); }
+/* 最近一次 showModal：弹窗里的控件、标题、按钮都从这里取 */
+function lastModal(scope) {
+	const modal = scope.ui.modals[scope.ui.modals.length - 1];
+	if (!modal) throw new Error('no modal open');
+	return modal;
+}
 /* 按可见文字找按钮（LuCI 里按钮文字就是 E(...) 的子文本） */
 function findButton(node, text) {
 	return buttons(node).filter(b => textOf(b) === String(text))[0] || null;
@@ -388,6 +397,7 @@ module.exports = {
 	El, StubEvent, makeApi, makeScope, loadModule, loadSide,
 	serialize, lines, countTag, textOf,
 	slotEntries, slotValues, slotsOf,
-	collect, buttons, findButton, pressButton, modalButton, modalTitle,
-	tick
+	collect, buttons, findButton, pressButton,
+	selectsIn, inputsIn, lastModal,
+	modalButton, modalTitle, tick
 };

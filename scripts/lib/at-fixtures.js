@@ -6,7 +6,7 @@
  * 这些 prove-*.js 脚本都要做同一件事：把「同一份调制解调器读数」写成两种形态 ——
  * 旧前端消费的 CLI 文本帧，和新前端消费的路由载荷 —— 然后比较两边的渲染。
  * mini 解码器（按 modules/<module>/parser.rs 的规则把 AT 应答解成领域值）与帧构造器
- * 因此集中在这里一份，避免每把刀各抄一遍。
+ * 因此集中在这里一份，避免每批各抄一遍。
  *
  * 这些解码器只是**测试夹具**：真正的解码在 Rust 里，脚本里的钉子（每个
  * prove-*.js 开头，样本取自对应的 Rust 单测）负责保证夹具与后端一致。
@@ -296,6 +296,340 @@ function sessionPayload(facts) {
 	return payload;
 }
 
+/* ------------------------------------------------------- 连接页设置（connection settings）
+ *
+ * `mt5700m-at advanced connection-settings` 的 5 段读帧（Auto dial /
+ * Interface mode / PDP contexts / PDP activation / Direct IP）与 4 条路由
+ * （network.autodial / network.interface_cfg / network.pdp_contexts /
+ * network.direct_ip）。同一份 SETTINGS_FACTS 生成两个形态 —— 帧里正则解出
+ * 的值与路由给的值不可能漂移。
+ *
+ * autodial 的解析规则照 modules/network/parser.rs::parse_autodial：
+ * ^SETAUTODIAL: 后按位置切分（引号内逗号不分隔），auth 字段缺席时
+ * authType 不出现 —— 页面的 autoKnown 判据依赖这一点（旧正则对缩短应答
+ * 整行不识别、控件回落默认值）。
+ */
+const SETTINGS_FACTS = {
+	autodial: '1,2,"IPV4V6","cmnet","","",1',
+	// TDCFG 应答有两种实测形态（modules/network/parser.rs 单测各钉一份）：
+	// `PostRoute: 1`（冒号紧跟）与真实抓包的 `PostRoute : 0`（冒号前有空格，
+	// 见 parse_interface_cfg 的 doc 注释；姊妹项目 luci-app-mt5700 的 dial.js
+	// 用 /PostRoute\s*:\s*(\d+)/ 两种都认）。mt5700m 旧前端的正则漏了 `\s*`，
+	// 带空格形态整行不识别 —— prove-connection-parity 的「真实抓包形态」组
+	// 把这个盲区钉成有意差异。Dmz 在两种固件形态里都是冒号紧跟。
+	tdcfg: 'Mode : 1\nPostRoute: 1\nDmz: 192.168.8.100',
+	cgdcont: '+CGDCONT: 1,"IPV4V6","cmnet","10.6.172.152"\n+CGDCONT: 2,"IP","",""',
+	cgact: '+CGACT: 1,1\n+CGACT: 2,0',
+	directip: '0'
+};
+const settingsFacts = (over) => Object.assign({}, SETTINGS_FACTS, over || {});
+
+function connectionSettingsFrame(f) {
+	return textFrame([
+		[ 'Auto dial', 'AT^SETAUTODIAL?', '^SETAUTODIAL: ' + f.autodial ],
+		[ 'Interface mode', 'AT^TDCFG?', f.tdcfg ],
+		[ 'PDP contexts', 'AT+CGDCONT?', f.cgdcont ],
+		[ 'PDP activation', 'AT+CGACT?', f.cgact ],
+		[ 'Direct IP', 'AT^SETDIRECTIP?', '^SETDIRECTIP: ' + f.directip ]
+	]);
+}
+
+/* 引号感知的字段切分（modules/network/parser.rs 的 split_at_args 简版） */
+function splitAtArgs(body) {
+	const fields = [];
+	let cur = '', inQuotes = false;
+	for (const ch of String(body)) {
+		if (ch === '"') { inQuotes = !inQuotes; continue; }
+		if (ch === ',' && !inQuotes) { fields.push(cur); cur = ''; continue; }
+		cur += ch;
+	}
+	fields.push(cur);
+	return fields.map((v) => v.trim());
+}
+const digits = (v) => /^\d+$/.test(v || '');
+
+function settingsRouteResults(f) {
+	const autoFields = splitAtArgs(f.autodial);
+	const autodial = {};
+	if (autoFields.length && digits(autoFields[0])) {
+		autodial.enable = Number(autoFields[0]);
+		if (digits(autoFields[1])) autodial.dialMode = Number(autoFields[1]);
+		autodial.protocol = autoFields[2] || '';
+		autodial.apn = autoFields[3] || '';
+		autodial.username = autoFields[4] || '';
+		autodial.password = autoFields[5] || '';
+		if (digits(autoFields[6])) autodial.authType = Number(autoFields[6]);
+	}
+	const cfg = {};
+	String(f.tdcfg).split('\n').forEach(function (line) {
+		const i = line.indexOf(':');
+		if (i < 0) return;
+		const key = line.slice(0, i).trim().toLowerCase();
+		const value = line.slice(i + 1).trim();
+		if (key === 'mode' && digits(value)) cfg.mode = Number(value);
+		else if (key === 'postroute' && digits(value)) cfg.postRoute = Number(value);
+		else if (key === 'dmz') {
+			const on = value !== 'not cfg' && value !== '';
+			cfg.dmz = { enabled: on, host: on ? value : '' };
+		}
+	});
+	const contexts = [];
+	String(f.cgdcont).split('\n').forEach(function (line) {
+		const body = line.trim();
+		if (body.indexOf('+CGDCONT:') !== 0) return;
+		const fields = splitAtArgs(body.slice('+CGDCONT:'.length));
+		if (!fields.length || !digits(fields[0])) return;
+		contexts.push({ cid: Number(fields[0]), type: fields[1] || '', apn: fields[2] || '',
+			pdp_addr: fields[3] || '', active: false });
+	});
+	String(f.cgact).split('\n').forEach(function (line) {
+		const m = line.trim().match(/^\+CGACT:\s*(\d+),(\d+)/);
+		if (m) contexts.forEach(function (c) { if (String(c.cid) === m[1]) c.active = m[2] === '1'; });
+	});
+	const directIp = {};
+	if (f.directip === '0') directIp.enabled = false;
+	else if (f.directip === '1') directIp.enabled = true;
+	return { autodial: autodial, interface_cfg: cfg, pdp_contexts: { contexts: contexts }, direct_ip: directIp };
+}
+
+function settingsRouteAnswers(f) {
+	const r = settingsRouteResults(f);
+	return {
+		'route:network.autodial': r.autodial,
+		'route:network.interface_cfg': r.interface_cfg,
+		'route:network.pdp_contexts': r.pdp_contexts,
+		'route:network.direct_ip': r.direct_ip
+	};
+}
+
+/* -------------------------------------------------- 高级设置页（advanced）
+ *
+ * `advanced hardware` 的 8 段读帧与 5 条读路由载荷的双形态。TDPCIELANCFG
+ * 样本带 `,0` 尾巴（姊妹项目 mock-modem 同款形态，旧正则只取首字段）；
+ * THERMAUTOFUN 用空格分隔（parse_thermautofun 单测样本同款，旧正则
+ * `[,\s]+` 两种都认）。tdcfg 直接引用 SETTINGS_FACTS 的同一段真相。
+ */
+const ADVANCED_FACTS = {
+	setmode: '4',
+	// 主样本用冒号紧跟形态（旧正则可解析）证明「迁移无漂移」；SETTINGS_FACTS
+	// 的 tdcfg 是 Mode 带空格形态（连接页不读 Mode，无影响），advanced 页把它
+	// 留给 prove 的盲区组单独点名（Mode : x → 旧正则不识别，有意修复）。
+	tdcfg: 'Mode: 1\nPostRoute: 1\nDmz: 192.168.8.100',
+	tdpcielancfg: '2,0',
+	tdpmcfg: '1,0,0,0',
+	ledswitch: '1',
+	tdsimhp: '1',
+	scichg: '0',
+	thermautofun: '1 0 30'
+};
+
+function advancedFacts(overrides) {
+	return Object.assign({}, ADVANCED_FACTS, overrides || {});
+}
+
+function advancedFrame(f) {
+	return textFrame([
+		[ 'USB mode', 'AT^SETMODE?', '^SETMODE: ' + f.setmode ],
+		[ 'Interface mode', 'AT^TDCFG?', f.tdcfg ],
+		[ 'NIC speed', 'AT^TDPCIELANCFG?', '^TDPCIELANCFG: ' + f.tdpcielancfg ],
+		[ 'PCIe controller', 'AT^TDPMCFG?', '^TDPMCFG: ' + f.tdpmcfg ],
+		[ 'LED', 'AT^LEDSWITCH?', '^LEDSWITCH: ' + f.ledswitch ],
+		[ 'SIM hotplug', 'AT^TDSIMHP?', '^TDSIMHP: ' + f.tdsimhp ],
+		[ 'SIM slot', 'AT^SCICHG?', '^SCICHG: ' + f.scichg ],
+		[ 'Thermal control', 'AT^THERMAUTOFUN?', '^THERMAUTOFUN: ' + f.thermautofun ]
+	]);
+}
+
+/* 5 条读路由的载荷。解析规则对齐 Rust 侧：parse_usb_mode（无前缀数字行也认）、
+ * parse_interface_cfg（Mode/PostRoute/Dmz 宽松键序）、device_control 的首字段
+ * 语义（TDPCIELANCFG 首字段 = PHY profile，TDPMCFG 首字段 = 开关）、
+ * parse_thermautofun（前三个数字 = enabled/caMimo/interval）。缺席键不出现，
+ * 与 Rust 的 Option 字段一致。 */
+function advancedRouteResults(f) {
+	const cfg = settingsRouteResults({ tdcfg: f.tdcfg }).interface_cfg;
+	const nicFields = String(f.tdpcielancfg).split(',');
+	const pmFields = String(f.tdpmcfg).split(',');
+	const deviceControl = {};
+	if (digits(nicFields[0])) deviceControl.nic_rate = Number(nicFields[0]);
+	if (digits(pmFields[0])) deviceControl.power_control = pmFields[0] === '1';
+	const thermParts = String(f.thermautofun).split(/[,\s]+/).filter(Boolean);
+	const thermal = {};
+	if (thermParts.length >= 3) {
+		thermal.enabled = thermParts[0] === '1';
+		thermal.caMimoSwitch = thermParts[1] === '1';
+		thermal.interval = Number(thermParts[2]);
+	}
+	return {
+		usb_mode: digits(String(f.setmode)) ? { mode: Number(f.setmode) } : {},
+		interface_cfg: cfg,
+		device_control: deviceControl,
+		sim_slot: { slot: Number(f.scichg), hotplug: f.tdsimhp === '1' },
+		thermal: thermal
+	};
+}
+
+function advancedRouteAnswers(f) {
+	const r = advancedRouteResults(f);
+	return {
+		'route:network.usb_mode': r.usb_mode,
+		'route:network.interface_cfg': r.interface_cfg,
+		'route:system.device_control': r.device_control,
+		'route:sim.slot': r.sim_slot,
+		'route:system.thermal': r.thermal
+	};
+}
+
+/* ------------------------------------------------------- 系统页（system）
+ *
+ * `mt5700m-at system` 的 22 段读帧。与 sessionFacts 同一套模式：事实对象 →
+ * CLI 文本帧。prove-system-parity.js（渲染逐字比对）与 smoke-minified-luci.js
+ * （压缩后冒烟）都从这里取帧，两处用到的读数不可能漂移。
+ *
+ * 本批只迁 6 条**写入**，读帧仍是 CLI（`api.atSystem()`），因此 FRAME 是**
+ * 两侧共有的输入** —— 它同时也是「渲染结果必须逐字不变」的自变量。
+ */
+const SYSTEM_FACTS = {
+	imei: '862853030012345', revision: 'MT5700M-2.5.0',
+	buildDate: 'Aug 15 2025 10:20:30', software: 'MT5700M-2.5.0', hardware: 'MT5700M-HW-1.0',
+	sim: 'READY', iccid: '89860312345678901234', imsi: '460011234567890',
+	number: '+8613800138000',
+	dsambr: '1,1000000,200000', cops: '0,0,"CHN-UNICOM",7',
+	nwtime: '2025/08/15 12:00:00', cfun: '1', led: '1',
+	hvsst: '1,1,0', scichg: '0,0', chiptemp: '451,443',
+	fotamode: '0,1,0,1', fotastate: '30', fotadlq: '"update.bin",100,50',
+	thermalStatus: '1,2,3,4,5,2,7',
+	thermalPara: '60,70,65,80,75,90,85,100,95',
+	thermalLogSw: '1,0'
+};
+const systemFacts = (over) => Object.assign({}, SYSTEM_FACTS, over || {});
+
+function systemCliFrame(f) {
+	return textFrame([
+		[ 'Identity', 'ATI', (function () {
+			return [ 'Manufacturer: Quectel', 'Model: MT5700M',
+				'Revision: ' + f.revision, 'IMEI: ' + f.imei ].join('\n');
+		})() ],
+		[ 'Version', 'AT^VERSION?', [ '^VERSION:BDT: ' + f.buildDate,
+			'^VERSION:EXTS: ' + f.software, '^VERSION:EXTH: ' + f.hardware ].join('\n') ],
+		[ 'SIM', 'AT+CPIN?', '+CPIN: ' + f.sim ],
+		[ 'ICCID', 'AT^ICCID?', '^ICCID: ' + f.iccid ],
+		[ 'IMSI', 'AT+CIMI', f.imsi ],
+		[ 'Subscriber number', 'AT+CNUM', f.number ? '+CNUM: "' + f.number + '",145' : '+CME ERROR: 22' ],
+		[ 'Subscription rate', 'AT^DSAMBR?', '^DSAMBR: ' + f.dsambr ],
+		[ 'Operator', 'AT+COPS?', '+COPS: ' + f.cops ],
+		[ 'Network time', 'AT^NWTIME?', '^NWTIME: ' + f.nwtime ],
+		[ 'Function level', 'AT+CFUN?', '+CFUN: ' + f.cfun ],
+		[ 'LED', 'AT^LEDSWITCH?', '^LEDSWITCH: ' + f.led ],
+		[ 'SIM activation', 'AT^HVSST?', '^HVSST: ' + f.hvsst ],
+		[ 'SIM slot', 'AT^SCICHG?', '^SCICHG: ' + f.scichg ],
+		[ 'Temperature', 'AT^CHIPTEMP?', '^CHIPTEMP: ' + f.chiptemp ],
+		[ 'FOTA mode', 'AT^FOTAMODE?', '^FOTAMODE: ' + f.fotamode ],
+		[ 'FOTA state', 'AT^FOTASTATE?', '^FOTASTATE: ' + f.fotastate ],
+		[ 'FOTA progress', 'AT^FOTADLQ', '^FOTADLQ: ' + f.fotadlq ],
+		[ 'Thermal status', 'AT^THERMLDAUTOSTATUS?', '^THERMLDAUTOSTATUS: ' + f.thermalStatus ],
+		[ 'Thermal thresholds', 'AT^THERMLDAUTOPARA?', '^THERMLDAUTOPARA: ' + f.thermalPara ],
+		[ 'Thermal log', 'AT^THERMLDLOGSW?', '^THERMLDLOGSW: ' + f.thermalLogSw ]
+	]);
+}
+
+/*
+ * 同一套事实的另一半形态：22 段文本帧 vs 15 条路由载荷。
+ *
+ * 两侧必须出自同一份 SYSTEM_FACTS，否则「渲染逐字相同」就没意义 —— 事实一
+ * 改，两边同时动。空字符串在这里一律表示「该段没答」，对应的键直接不出现，
+ * 与后端 `Option` 字段缺席的语义一致。
+ *
+ * 顺序必须与 system.js `load()` 里的 Promise.all 逐条对齐。
+ */
+const SYSTEM_ROUTES = [
+	'modem.get', 'system.version', 'sim.get', 'sim.number', 'sim.slot', 'sim.activation',
+	'qos.get', 'network.get', 'network.radio', 'system.temperature', 'system.thermal',
+	'system.led', 'system.network_time', 'system.fota_mode', 'system.fota'
+];
+
+function fields(text) {
+	return String(text || '').split(',').map((v) => v.trim()).filter((v) => v !== '');
+}
+function numOr(v, dflt) {
+	const n = Number(v);
+	return Number.isFinite(n) ? n : dflt;
+}
+
+function systemRouteResults(f) {
+	const chip = fields(f.chiptemp).map((v) => numOr(v, 0) / 10);
+	const plausible = chip.filter((v) => v > 0 && v <= 150);
+	const peak = plausible.length ? Math.max.apply(null, plausible) : null;
+	const thermalPara = fields(f.thermalPara).map((v) => numOr(v, 0));
+	const thermalFields = fields(f.thermalStatus);
+	const thermalLog = fields(f.thermalLogSw);
+	const copFields = fields(f.cops).map((v) => v.replace(/"/g, ''));
+	const dsambr = fields(f.dsambr);
+	const fotaDl = fields(f.fotadlq.replace(/"/g, ''));
+	const card = {};
+	if (f.sim) card.status = f.sim;
+	if (f.iccid) card.iccid = f.iccid;
+	if (f.imsi) card.imsi = f.imsi;
+	const msisdn = Object.assign({}, card);
+	if (f.number) msisdn.number = f.number; else msisdn.numberState = 'not_stored';
+	const version = {};
+	if (f.buildDate) version.buildDate = f.buildDate;
+	if (f.software) version.software = f.software;
+	if (f.hardware) version.hardware = f.hardware;
+	const modem = { model: 'MT5700M' };
+	if (f.revision) modem.revision = f.revision;
+	if (f.imei) modem.imei = f.imei;
+	const temperature = {};
+	if (peak !== null) {
+		temperature.peak = round1(peak);
+		temperature.peak_sensor = 'sub3GPA';
+		temperature.average = round1(plausible.reduce((a, b) => a + b, 0) / plausible.length);
+	}
+	const thermal = {};
+	if (thermalPara.length) thermal.thresholds = thermalPara;
+	if (thermalFields.length > 5) thermal.currentLevel = numOr(thermalFields[5], 0);
+	if (thermalLog.length) {
+		thermal.logSwitch = { consoleLog: thermalLog[0] === '1', fileLog: thermalLog[1] === '1' };
+	}
+	const byName = {
+		'modem.get': modem,
+		'system.version': version,
+		'sim.get': card,
+		'sim.number': msisdn,
+		'sim.slot': fields(f.scichg).length ? { slot: numOr(fields(f.scichg)[0], 0) } : {},
+		'sim.activation': fields(f.hvsst).length > 1 ? {
+			active: fields(f.hvsst)[1] === '1',
+			slot: numOr(fields(f.hvsst)[2], 0)
+		} : {},
+		'qos.get': dsambr.length > 2 ? {
+			active_cid: numOr(dsambr[0], 0),
+			ambr_down_kbps: numOr(dsambr[1], 0),
+			ambr_up_kbps: numOr(dsambr[2], 0)
+		} : {},
+		'network.get': copFields.length > 2 ? { operator: copFields[2] } : {},
+		'network.radio': f.cfun ? { cfun: numOr(f.cfun, 0), airplane: f.cfun === '0' } : {},
+		'system.temperature': temperature,
+		'system.thermal': thermal,
+		'system.led': f.led ? { led: f.led === '1' } : {},
+		'system.network_time': f.nwtime ? { time: f.nwtime } : {},
+		'system.fota_mode': f.fotamode ? { mode: f.fotamode } : {},
+		'system.fota': f.fotastate ? {
+			running: true,
+			state: String(f.fotastate),
+			total: numOr(fotaDl[fotaDl.length - 2], 0),
+			received: numOr(fotaDl[fotaDl.length - 1], 0)
+		} : {}
+	};
+	return SYSTEM_ROUTES.map((name) => byName[name]);
+}
+
+/* makeApi 的答案映射：`route:<name>` → 载荷（缺失即接不到 → null）。 */
+function systemRouteAnswers(f) {
+	const results = systemRouteResults(f);
+	const answers = {};
+	SYSTEM_ROUTES.forEach((name, i) => { answers['route:' + name] = results[i]; });
+	return answers;
+}
+
 module.exports = {
 	round1, ord,
 	decodeSignal, decodeCell, decodeRegistration, decodeRrc, decodeOperator, decodeTemps,
@@ -304,4 +638,8 @@ module.exports = {
 	temperatureText, textFrame,
 	SENSORS, SENSOR_KEYS,
 	sessionFacts, advancedSessionFrame, sessionPayload,
+	SETTINGS_FACTS, settingsFacts, connectionSettingsFrame, settingsRouteResults, settingsRouteAnswers,
+	ADVANCED_FACTS, advancedFacts, advancedFrame, advancedRouteResults, advancedRouteAnswers,
+	SYSTEM_FACTS, systemFacts, systemCliFrame,
+	SYSTEM_ROUTES, systemRouteResults, systemRouteAnswers,
 };

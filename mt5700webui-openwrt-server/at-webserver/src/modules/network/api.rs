@@ -54,12 +54,25 @@ pub fn routes() -> Vec<Route> {
         Route::display("network.autodial", autodial),
         Route::display("network.usb_mode", usb_mode),
         Route::display("network.interface_cfg", interface_cfg),
+        // The advanced page's two interface writes. SETMODE=7 (MBIM) stays
+        // rejected — the CLI verb marked it temporarily unsupported and the
+        // page's own selector never offered it.
+        Route::on_demand("network.usb_mode_set", usb_mode_set),
+        Route::on_demand("network.interface_mode_set", interface_mode_set),
         Route::display("network.pdp_contexts", pdp_contexts),
         // 定时锁频：配置在 UCI 里（`scheduler::plan` 每 15 s 读一次生效），
         // 读路由给页面快照，写路由只落盘不碰模组 —— LuCI 的 `AT+SCHED*`
         // 伪命令现在也只是这两条的别名。
         Route::display("network.schedule_get", schedule_get),
         Route::on_demand("network.schedule_set", schedule_set),
+        Route::display("network.direct_ip", direct_ip),
+        Route::on_demand("network.pdp_set", pdp_set),
+        Route::on_demand("network.pdp_remove", pdp_remove),
+        Route::on_demand("network.pdp_state", pdp_state),
+        Route::on_demand("network.autodial_set", autodial_set),
+        Route::on_demand("network.direct_ip_set", direct_ip_set),
+        Route::on_demand("network.postroute_set", postroute_set),
+        Route::on_demand("network.dmz_set", dmz_set),
     ]
 }
 
@@ -147,6 +160,34 @@ fn interface_cfg(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
     }
 }
 
+/// Set the USB network-driver profile (`AT^SETMODE=<0-6|8>`).
+///
+/// SETMODE=7 (MBIM) stays rejected: the CLI verb marked it temporarily
+/// unsupported and the page's own selector never offered it.
+fn usb_mode_set(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+    let mode = required_num(params, "mode")?;
+    if !(0..=8).contains(&mode) || mode == 7 {
+        return Err(BackendError::InvalidParameter(
+            "network.usb_mode_set needs mode 0-6 or 8 (7 = MBIM, temporarily unsupported)"
+                .to_string(),
+        ));
+    }
+    ctx.refresh().action(&commands::set_mode(mode as u8))?;
+    Ok(applied_json())
+}
+
+/// Set the interface operating mode (`AT^TDCFG="infcfg","mode",<1|2>`).
+fn interface_mode_set(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+    let mode = required_num(params, "mode")?;
+    let command = commands::tdcfg_mode(mode).ok_or_else(|| {
+        BackendError::InvalidParameter(
+            "network.interface_mode_set needs mode 1 or 2".to_string(),
+        )
+    })?;
+    ctx.refresh().action(&command)?;
+    Ok(applied_json())
+}
+
 /// PDP context table (`+CGDCONT?` + `+CGACT?`) — `{contexts: [...]}`.
 fn pdp_contexts(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
     let refresh = ctx.refresh();
@@ -157,6 +198,126 @@ fn pdp_contexts(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
     let mut m = std::collections::BTreeMap::new();
     m.insert("contexts".to_string(), Value::Arr(contexts));
     Ok(Value::Obj(m))
+}
+
+/// IP passthrough flag (`^SETDIRECTIP?`) — the dial page's "IP passthrough"
+/// select. A missing/unknown answer yields `{}`: the page disables the
+/// control, exactly as it did when the frame section was unreadable.
+fn direct_ip(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    let refresh = ctx.refresh();
+    let mut m = std::collections::BTreeMap::new();
+    if let Ok(text) = refresh.query(commands::SETDIRECTIP_QUERY) {
+        if let Some(enabled) = parser::parse_directip(&text) {
+            m.insert("enabled".to_string(), Value::Bool(enabled));
+        }
+    }
+    Ok(Value::Obj(m))
+}
+
+/// Define/overwrite a PDP profile (`AT+CGDCONT=<cid>,"<type>","<apn>"`).
+fn pdp_set(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+    let cid = crate::api::params::required_num(params, "cid")?;
+    let pdp_type = crate::api::params::required_text(params, "type")?;
+    let apn = crate::api::params::required_text(params, "apn")?;
+    let command = commands::cgdcont_set(u32::try_from(cid).unwrap_or(0), pdp_type, apn)
+        .ok_or_else(|| {
+            BackendError::InvalidParameter(
+                "network.pdp_set needs cid 1-11, type IP|IPV6|IPV4V6 and a plain APN up to 99 chars"
+                    .to_string(),
+            )
+        })?;
+    ctx.refresh().action(&command)?;
+    Ok(applied_json())
+}
+
+/// Delete a PDP profile (`AT+CGDCONT=<cid>` — the carrier default returns).
+fn pdp_remove(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+    let cid = crate::api::params::required_num(params, "cid")?;
+    let command = commands::cgdcont_remove(u32::try_from(cid).unwrap_or(0)).ok_or_else(|| {
+        BackendError::InvalidParameter("network.pdp_remove needs cid 1-11".to_string())
+    })?;
+    ctx.refresh().action(&command)?;
+    Ok(applied_json())
+}
+
+/// Activate/deactivate a PDP profile (`AT+CGACT=<state>,<cid>`).
+fn pdp_state(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+    let cid = crate::api::params::required_num(params, "cid")?;
+    let active = crate::api::params::required_bool(params, "active")?;
+    let command = commands::cgact(active, u32::try_from(cid).unwrap_or(0)).ok_or_else(|| {
+        BackendError::InvalidParameter("network.pdp_state needs cid 1-11".to_string())
+    })?;
+    ctx.refresh().action(&command)?;
+    Ok(applied_json())
+}
+
+/// Module-side dialing (`AT^SETAUTODIAL=…`). `enabled=false` short-circuits
+/// to `AT^SETAUTODIAL=0` and the other fields stay unchecked — the CLI
+/// verb's exact behaviour.
+fn autodial_set(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+    let enabled = crate::api::params::required_bool(params, "enabled")?;
+    let dial_mode = crate::api::params::num(params, "dialMode").unwrap_or(1);
+    let protocol = crate::api::params::text(params, "protocol").unwrap_or("IPV4V6");
+    let apn = crate::api::params::text(params, "apn").unwrap_or("");
+    let username = crate::api::params::text(params, "username").unwrap_or("");
+    let password = crate::api::params::text(params, "password").unwrap_or("");
+    let auth = crate::api::params::num(params, "auth").unwrap_or(0);
+    let command = commands::setautodial(enabled, dial_mode, protocol, apn, username, password, auth)
+        .ok_or_else(|| {
+            BackendError::InvalidParameter(
+                "network.autodial_set rejected its arguments (dialMode 0-2, protocol IP|IPV6|IPV4V6, auth 0-2, plain fields: apn<=99, username/password<=31)"
+                    .to_string(),
+            )
+        })?;
+    ctx.refresh().action(&command)?;
+    Ok(applied_json())
+}
+
+/// IP passthrough (`AT^SETDIRECTIP=<0|1>`).
+fn direct_ip_set(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+    let enabled = crate::api::params::required_bool(params, "enabled")?;
+    ctx.refresh().action(&commands::setdirectip(enabled))?;
+    Ok(applied_json())
+}
+
+/// Post-routing (`AT^TDCFG="infcfg","PostRoute",<mode>`). Turning it on also
+/// clears the inbound filter (`AT^IPFILTERSWITCH=0`), like the CLI verb;
+/// if the first write fails the second is not attempted.
+fn postroute_set(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+    let mode = crate::api::params::required_num(params, "mode")?;
+    let command =
+        commands::tdcfg_postroute(mode).ok_or_else(|| {
+            BackendError::InvalidParameter("network.postroute_set needs mode 1|2".to_string())
+        })?;
+    let refresh = ctx.refresh();
+    refresh.action(&command)?;
+    let mut filter_cleared = false;
+    if mode == 1 {
+        refresh.action(commands::IPFILTERSWITCH_OFF)?;
+        filter_cleared = true;
+    }
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("applied".to_string(), Value::Bool(true));
+    m.insert("filterCleared".to_string(), Value::Bool(filter_cleared));
+    Ok(Value::Obj(m))
+}
+
+/// DMZ host (`AT^TDCFG="infcfg","dmz","<host>"`); host `"0"` disables.
+fn dmz_set(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+    let host = crate::api::params::required_text(params, "host")?;
+    let command = commands::tdcfg_dmz(host).ok_or_else(|| {
+        BackendError::InvalidParameter(
+            "network.dmz_set needs host \"0\" or a dotted-quad IPv4".to_string(),
+        )
+    })?;
+    ctx.refresh().action(&command)?;
+    Ok(applied_json())
+}
+
+fn applied_json() -> Value {
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("applied".to_string(), Value::Bool(true));
+    Value::Obj(m)
 }
 
 /// Airplane mode (`+CFUN?`): the switch the system page shows.

@@ -4,19 +4,19 @@
 /*
  * 网络页一致性证明（LuCI 无线页状态区块 / network 帧切片）
  *
- * 这一刀把无线页状态区块从「切 `mt5700m-at network` 文本帧」改成「读统一路由」：
+ * 本批把无线页状态区块从「切 `mt5700m-at network` 文本帧」改成「读统一路由」：
  *   - 信号仪表数值：^MONSC 第 8..10 字段（NR）/ 第 7..9 字段（LTE）→ `signal.get`
  *     （modules::signal 解码 ^HCSQ，索引 → dBm/dB 只有一份换算）
  *   - 服务小区行（RAT/ARFCN/PCI/CID/TAC/SCS）：^MONSC 文本 → `cell.get`
  *   - 注册状态：+CEREG 文本 → `registration.get`
  *   - 运营商：+COPS 文本 → `network.get`
- *   - RRC 状态：^RRCSTAT 文本 → `network.rrc`（这刀新加的路由）
+ *   - RRC 状态：^RRCSTAT 文本 → `network.rrc`（这批新加的路由）
  *   - 温度：帧里的 `temperature=` 行 → `system.temperature` 的 `peak`
  *   - 每页 `network` 帧调用（api.atNetwork）与 parser.js 的 parseServingCell
  *     （MONSC 字段布局的第二份 JS 实现）一起删除
  *
  * 用法：
- *   node scripts/prove-network-parity.js [基线]    # 基线默认 HEAD，本刀之前是 24ed5ef
+ *   node scripts/prove-network-parity.js [基线]    # 基线默认 HEAD，本批之前是 24ed5ef
  * 退出码 0 = 通过，1 = 不一致，2 = 基线选错了（基线里已经没有旧实现）。
  *
  * 脚本做五件事：
@@ -100,7 +100,7 @@ check('temperature：^CHIPTEMP 十分之一度 + peak 取最大（45.1 / mimo_pa
 /* ------------------------------------------------------------ 桩
 
  * 两边都要装 api.js 里的那几个取数函数（视图按名调用），桩只记录调用。
- * 旧版还会调 api.atNetwork()（这一刀要删掉的那次 CLI 帧调用）。
+ * 旧版还会调 api.atNetwork()（本批要删掉的那次 CLI 帧调用）。
  */
 function apiFor(answers) {
 	const api = lib.makeApi(answers);
@@ -133,7 +133,7 @@ function oldFrame() {
 		[ 'Operator', 'AT+COPS?', MODEM.cops ]
 	]) + temperatureText(decodeTemps(MODEM.chiptemp));
 }
-/* 新输入：无线偏好区块仍是文本帧（这一刀没动它），其余走路由 */
+/* 新输入：无线偏好区块仍是文本帧（本批没动它），其余走路由 */
 function radioFrame() {
 	return fixtures.textFrame([
 		[ 'Radio mode', 'AT^SYSCFGEX?', MODEM.syscfgex ],
@@ -169,8 +169,8 @@ const old = lib.loadSide(oldSource, apiOld);
 const neu = lib.loadSide(newSource, apiNew);
 
 if (typeof old.parser.parseServingCell !== 'function') {
-	console.error('基线 ' + BASELINE + ' 已经包含这一刀（parser.js 里没有 parseServingCell）——没有旧管线可比较。\n'
-		+ '本刀的基线是 24ed5ef：\n  node scripts/prove-network-parity.js 24ed5ef');
+	console.error('基线 ' + BASELINE + ' 已经包含本批（parser.js 里没有 parseServingCell）——没有旧管线可比较。\n'
+		+ '本批的基线是 24ed5ef：\n  node scripts/prove-network-parity.js 24ed5ef');
 	process.exit(2);
 }
 
@@ -261,7 +261,7 @@ Promise.all([ renderView(old), renderView(neu) ]).then(function (holders) {
 	/* ------------------------------------- 3) Technical details 的既有形态 */
 	check('「Technical details」折叠块仍在（同一 class、同一标题）',
 		!!preOf(oldHolder) && !!preOf(newHolder) && oldPreText.length > 0 && newPreText.length > 0);
-	check('旧版这块倾倒的是 AT 文本帧（含 ^HCSQ/^MONSC 原文）——本刀删掉的耦合',
+	check('旧版这块倾倒的是 AT 文本帧（含 ^HCSQ/^MONSC 原文）——本批删掉的耦合',
 		oldPreText.indexOf('^HCSQ') !== -1 && oldPreText.indexOf('^MONSC') !== -1);
 	check('新版不再出现任何 AT 应答原文；改倒路由载荷（api.<route> + JSON）',
 		newPreText.indexOf('^HCSQ') === -1 && newPreText.indexOf('api.signal.get') !== -1

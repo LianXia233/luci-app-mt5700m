@@ -94,9 +94,7 @@ impl BackendError {
 impl From<AtError> for BackendError {
     fn from(e: AtError) -> Self {
         match e {
-            AtError::Disabled | AtError::NoSerialPort | AtError::NetworkFailed => {
-                BackendError::ModemUnavailable
-            }
+            AtError::Disabled | AtError::NoSerialPort => BackendError::ModemUnavailable,
             AtError::Empty => BackendError::InvalidParameter("empty command".into()),
             AtError::DaemonFailed(msg) => BackendError::TransportError(msg),
             AtError::SerialTimeout(_) | AtError::ModemError(_) => BackendError::AtTimeout,

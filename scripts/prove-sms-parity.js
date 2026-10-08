@@ -4,7 +4,7 @@
 /*
  * 短信页一致性证明（LuCI 短信页 → 统一路由，前端最后一份 PDU 解码删除）
  *
- * 这一刀把无线页之外最后一块 CLI 文本帧切掉：短信页原来读 `sms-list` /
+ * 本批把无线页之外最后一块 CLI 文本帧切掉：短信页原来读 `sms-list` /
  * `sms-info` 两个 CLI 帧，自己在 `parser.js` 里解 +CMGL 的 PDU（GSM 7bit /
  * UCS-2 / 长短信 UDH 合并）、从 +CPMS/+CSCA/^IMSSWITCH 里正则取值，写操作走
  * `sms-send`/`sms-delete`/`sms-clear`/`sms-set`/`sms-ims` 动词。现在：
@@ -16,7 +16,7 @@
  *     `swapDigits` —— 前端不再有第二份 PDU 解码。
  *
  * 用法：
- *   node scripts/prove-sms-parity.js [基线]     # 基线默认 HEAD，本刀之前是 812ba41
+ *   node scripts/prove-sms-parity.js [基线]     # 基线默认 HEAD，本批之前是 812ba41
  * 退出码 0 = 通过，1 = 不一致，2 = 基线选错了（基线里已经没有旧实现）。
  *
  * 关键设计：PDU 夹具沿用 WebUI 演示数据里的已知向量（
@@ -184,8 +184,8 @@ if (typeof lib.loadSide(oldSource, apiOld, VIEW).scope === 'undefined') process.
 	// 旧版才有这两个包装；基线里没有就是基线选错了
 	const oldApiJs = oldSource(RES + '/mt5700m/api.js');
 	if (oldApiJs.indexOf('function atSmsList') === -1) {
-		console.error('基线 ' + BASELINE + ' 已经包含这一刀（api.js 里没有 atSmsList）——没有旧管线可比较。\n'
-			+ '本刀的基线是 812ba41：\n  node scripts/prove-sms-parity.js 812ba41');
+		console.error('基线 ' + BASELINE + ' 已经包含本批（api.js 里没有 atSmsList）——没有旧管线可比较。\n'
+			+ '本批的基线是 812ba41：\n  node scripts/prove-sms-parity.js 812ba41');
 		process.exit(2);
 	}
 }

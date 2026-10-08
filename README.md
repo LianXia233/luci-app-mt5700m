@@ -1,6 +1,6 @@
 <div align="center">
 
-# MT5700M Manager for OpenWrt
+# MT5700M OpenWrt 管理器
 
 **面向移远 Quectel MT5700M-CN 5G 模组的高性能 OpenWrt LuCI 管理器与 Web 控制中心**
 
@@ -79,7 +79,7 @@
 | CLI fork 子进程 | `cli_capture` → `cli.rs: run_at`（复用 control socket） |
 
 > 第二处最容易漏：只接 `run_command` 时闸门等于没装，实测表现为
-> `mt5700m-at cached` 里始终没有 `raw:` topic。
+> `mt5700m-at cached` 里始终没有 `raw:` 主题。
 
 完整设计见 [`docs/async-architecture.md`](docs/async-architecture.md)。
 
@@ -93,7 +93,7 @@
 > **v3.0.0 起**：AT 串口由 Rust 后端直接用 termios ioctl 配置
 > （`TCGETS`/`TCSETS`/`TCFLSH`），**不再依赖 BusyBox `stty` applet**
 > （OpenWrt 镜像普遍不内置），并统一 `O_NONBLOCK` + `VMIN=1`/`VTIME=0`。
-> 后端另提供 `atprobe` 诊断子命令，绕开 daemon 独占锁直探 AT 口。
+> 后端另提供 `atprobe` 诊断子命令，绕开守护进程独占锁直探 AT 口。
 
 ---
 

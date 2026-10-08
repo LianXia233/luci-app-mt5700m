@@ -430,21 +430,36 @@ function confirmRoute(title, message, name, params, restartRequired) {
 	return confirmAction(title, message, function() { return api.routeCall(name, params); }, restartRequired);
 }
 
-// 通用确认执行（system 页），支持 danger 样式与自定义恢复延迟
-function runConfirmed(title, message, args, danger, recoveryDelay) {
+/*
+ * 通用确认执行（system 页）的唯一实现：支持 danger 样式与自定义恢复延迟。
+ *
+ * 与 `confirmAction` 同理，DOM / 文案 / 按钮顺序只有这一份，两条写路径
+ * （CLI 动词、统一路由）不可能把弹窗渲染出分叉。
+ */
+function runConfirmedAction(title, message, run, danger, recoveryDelay) {
 	return ui.showModal(title, [
 		E('p', {}, message),
 		E('div', { 'class': 'right' }, [
 			E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')), ' ',
 			E('button', { 'class': 'btn ' + (danger ? 'cbi-button-negative' : 'cbi-button-apply'), 'click': function() {
 				ui.hideModal();
-				api.at(args).then(function() {
+				run().then(function() {
 					ui.addNotification(null, E('p', {}, recoveryDelay ? _('Restart accepted. The USB interface normally returns in about 22 seconds.') : _('Command accepted by the modem.')));
 					window.setTimeout(function() { window.location.reload(); }, recoveryDelay || 1500);
 				}, function(err) { ui.addNotification(null, E('p', {}, err.message || String(err)), 'danger'); });
 			} }, _('Continue'))
 		])
 	]);
+}
+
+// CLI 动词（还没迁到路由的路径：LED / SIM 激活 / 温控表 / FOTA 三步）
+function runConfirmed(title, message, args, danger, recoveryDelay) {
+	return runConfirmedAction(title, message, function() { return api.at(args); }, danger, recoveryDelay);
+}
+
+// 统一路由版：danger / recoveryDelay / 文案与 CLI 版逐字相同。
+function runConfirmedRoute(title, message, name, params, danger, recoveryDelay) {
+	return runConfirmedAction(title, message, function() { return api.routeCall(name, params); }, danger, recoveryDelay);
 }
 
 /* ---------- 折叠区 / 原始输出 ---------- */
@@ -940,10 +955,10 @@ return baseclass.extend({
 	confirmRun: confirmRun,
 	confirmRoute: confirmRoute,
 	runConfirmed: runConfirmed,
+	runConfirmedRoute: runConfirmedRoute,
 	details: details,
 	raw: raw,
 	signalColorClass: signalColorClass,
-	signalPercent: signalPercent,
 	signalBar: signalBar,
 	signalBars: signalBars,
 	gauge: gauge,

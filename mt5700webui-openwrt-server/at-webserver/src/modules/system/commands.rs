@@ -118,6 +118,73 @@ pub fn thermautofun(enabled: bool, ca_mimo: bool, interval: i64) -> String {
     )
 }
 
+// ------------------------------------------------- LED / network time
+//
+// Two board-level facts the system page reads and one it writes. `^LEDSWITCH`
+// is the module's status LED (the page's own wording: "the LED setting is
+// stored by the module and takes effect after restart"); `^NWTIME` is the time
+// the operator's network publishes, which the page shows verbatim.
+
+/// Status LED query (`^LEDSWITCH: <0|1>`).
+pub const LEDSWITCH_QUERY: &str = "AT^LEDSWITCH?";
+
+/// `AT^LEDSWITCH=<0|1>`.
+pub fn ledswitch(on: bool) -> String {
+    format!("AT^LEDSWITCH={}", if on { 1 } else { 0 })
+}
+
+/// Network time query (`^NWTIME: …`).
+pub const NWTIME_QUERY: &str = "AT^NWTIME?";
+
+/// Module version block (`^VERSION:` with `BDT` / `EXTS` / `EXTH` lines).
+pub const VERSION_QUERY: &str = "AT^VERSION?";
+
+/// FOTA update mode (`^FOTAMODE?`).
+pub const FOTAMODE_QUERY: &str = "AT^FOTAMODE?";
+
+/// The nine thermal thresholds the page writes (`AT^THERMLDAUTOPARA=…`).
+///
+/// Order and meaning are the page's: normal, first derate, first recovery,
+/// second derate, second recovery, continuous limit, its recovery, emergency
+/// radio-off, emergency recovery.
+pub fn thermldautopara(values: &[i64]) -> String {
+    let body: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+    format!("AT^THERMLDAUTOPARA={}", body.join(","))
+}
+
+/// `AT^THERMLDLOGSW=<serial>,<file>`.
+pub fn thermldlogsw(serial: bool, file: bool) -> String {
+    format!(
+        "AT^THERMLDLOGSW={},{}",
+        if serial { 1 } else { 0 },
+        if file { 1 } else { 0 }
+    )
+}
+
+/// The threshold table's validation, moved here from the CLI verb.
+///
+/// The page validated before it built the command (and the CLI repeated the
+/// check), so an impossible table never reached the modem. Nine values in
+/// 0–150°C, with every trigger level rising and every recovery below its own
+/// trigger. Kept as-is rather than reworded: this is the modem's rule, not a
+/// formatting choice.
+pub fn valid_thermal_thresholds(values: &[i64]) -> bool {
+    if values.len() != 9 {
+        return false;
+    }
+    if values.iter().any(|v| !(0..=150).contains(v)) {
+        return false;
+    }
+    values[1] > values[0]
+        && values[3] > values[1]
+        && values[5] > values[3]
+        && values[7] > values[5]
+        && values[2] < values[1]
+        && values[4] < values[3]
+        && values[6] < values[5]
+        && values[8] < values[7]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,5 +205,47 @@ mod tests {
             "AT^THERMAUTOFUN=1,1,2"
         );
         assert_eq!(thermautofun(false, false, 30), "AT^THERMAUTOFUN=0,0,30");
+    }
+
+    #[test]
+    fn led_write_form_matches_the_cli_verb() {
+        assert_eq!(ledswitch(true), "AT^LEDSWITCH=1");
+        assert_eq!(ledswitch(false), "AT^LEDSWITCH=0");
+        assert_eq!(LEDSWITCH_QUERY, "AT^LEDSWITCH?");
+        assert_eq!(NWTIME_QUERY, "AT^NWTIME?");
+    }
+
+    #[test]
+    fn thermal_table_write_joins_nine_fields() {
+        // Same shape as the CLI's `advanced-set thermal-thresholds`, which
+        // joined its arguments with commas.
+        assert_eq!(
+            thermldautopara(&[60, 70, 65, 80, 75, 90, 85, 100, 95]),
+            "AT^THERMLDAUTOPARA=60,70,65,80,75,90,85,100,95"
+        );
+        assert_eq!(thermldlogsw(true, false), "AT^THERMLDLOGSW=1,0");
+        assert_eq!(thermldlogsw(false, true), "AT^THERMLDLOGSW=0,1");
+    }
+
+    #[test]
+    fn thermal_table_rule_is_the_clis() {
+        let ok = [60, 70, 65, 80, 75, 90, 85, 100, 95];
+        assert!(valid_thermal_thresholds(&ok));
+        // Wrong length.
+        assert!(!valid_thermal_thresholds(&[60, 70, 65]));
+        assert!(!valid_thermal_thresholds(&[
+            60, 70, 65, 80, 75, 90, 85, 100, 95, 120
+        ]));
+        // Out of range.
+        assert!(!valid_thermal_thresholds(&[60, 151, 65, 80, 75, 90, 85, 100, 95]));
+        assert!(!valid_thermal_thresholds(&[-1, 70, 65, 80, 75, 90, 85, 100, 95]));
+        // Trigger levels must rise …
+        let mut flat = ok;
+        flat[1] = 60;
+        assert!(!valid_thermal_thresholds(&flat));
+        // … and every recovery must sit below its own trigger.
+        let mut recov = ok;
+        recov[2] = 75;
+        assert!(!valid_thermal_thresholds(&recov));
     }
 }

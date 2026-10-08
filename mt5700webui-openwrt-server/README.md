@@ -1,4 +1,4 @@
-# MT5700M WebUI for OpenWrt
+# 面向 OpenWrt 的 MT5700M WebUI
 
 [![CI](https://github.com/LianXia233/luci-app-mt5700m/actions/workflows/ci.yml/badge.svg)](https://github.com/LianXia233/luci-app-mt5700m/actions/workflows/ci.yml)
 

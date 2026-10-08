@@ -7,13 +7,13 @@
 | 路径 | 说明 |
 | --- | --- |
 | `at-webserver/src/` | **本地新增**：Rust 后端源码（v4.0 重写，std-only 零第三方依赖） |
-| `at-webserver/Cargo.toml` | **本地新增**：Rust 工程（release profile：opt-level=z + lto + strip） |
+| `at-webserver/Cargo.toml` | **本地新增**：Rust 工程（release 构建档位：opt-level=z + lto + strip） |
 | `at-webserver/files/` | 上游打包文件 + 本地改造的 init.d（默认 UCI 配置、`www/5700` 前端构建产物） |
 | `semi-tcpweb/` | 上游 React + Semi Design 前端源码 |
 | `docs/` | 上游文档与截图 |
 
 上游 Go 后端源码、Python 移植版（`at-webserver.py` + `files-py/`）已在 v2.4.0 移除：
-Go 版在 ImmortalWrt 6.18 内核存在串口空闲读被误判 EOF 的兼容问题且缺 UBUS transport；
+Go 版在 ImmortalWrt 6.18 内核存在串口空闲读被误判 EOF 的兼容问题且缺 UBUS 传输层；
 Python 版由 Rust 重写接替。重写背景与行为对齐说明见仓库根 `CHANGELOG.md`。
 
 ## 与上游的差异
@@ -24,7 +24,7 @@ Python 版由 Rust 重写接替。重写背景与行为对齐说明见仓库根 
    本仓库不发布独立的 `at-webserver` 包，Rust 二进制由 `cargo build` 编译后折叠进
    `luci-app-mt5700m`。
 3. **v2.4.0：AT 后端 Rust 重写**（`at-webserver` 4.0，std-only 单二进制，argv[0] 分发）：
-   以 `at-webserver` 运行是 WebSocket daemon（复刻 Python 版全部行为：命令收发/URC 分发/
+   以 `at-webserver` 运行是 WebSocket 守护进程（复刻 Python 版全部行为：命令收发/URC 分发/
    短信通知/定时锁频/全网扫频）；经 `/usr/sbin/mt5700m-at` symlink 调用则进入 LuCI shell
    后端模式（stdout/退出码契约与原 shell 逐条对齐）。零第三方 crate，firmware 友好。
 
@@ -39,7 +39,7 @@ Python 版由 Rust 重写接替。重写背景与行为对齐说明见仓库根 
 
 | 模式 | 通道 | 主动上报（URC） | 与 luci-app-mt5700m 共存 |
 | --- | --- | --- | --- |
-| `SERIAL`（默认） | daemon 独占打开 PCUI 串口（`serial_port=auto` 自动扫描或手动指定） | 支持 | 支持（管理页经控制套接字，WebUI 经 WebSocket，共用同一串口） |
+| `SERIAL`（默认） | 守护进程独占打开 PCUI 串口（`serial_port=auto` 自动扫描或手动指定） | 支持 | 支持（管理页经控制套接字，WebUI 经 WebSocket，共用同一串口） |
 | `NETWORK` | TCP 连模组网络 AT 口（默认 `192.168.8.1:20249`） | 支持 | 支持 |
 
 SERIAL 模式要点：

@@ -13,8 +13,11 @@ use crate::transport::client::{self, AtError, AtOutcome, Mode, Settings};
 // historical local names so call sites and their tests stay readable.
 use crate::modules::ca::{commands as ca_commands, parser as ca_parser};
 use crate::modules::qos::{commands as qos_commands, parser as qos_parser, state::QosState};
+use crate::modules::sim::commands as sim_commands;
+use crate::modules::system::commands as system_commands;
 use crate::modules::system::parser::parse_chiptemp;
 use crate::modules::system::state::TemperatureState;
+use crate::modules::network::commands as network_commands;
 use crate::modules::network::parser::{
     parse_cops_operator as extract_cops_operator,
     parse_cops_rat as extract_cops_rat, parse_sysinfo_mode as extract_sysinfo_mode,
@@ -621,10 +624,6 @@ pub fn print_sms_info(settings: &Settings) -> String {
 
 // ---------------------------------------------------------------- Setters
 
-fn safe_at_field(v: &str) -> bool {
-    !v.contains('"') && !v.contains(',') && !v.contains('\r') && !v.contains('\n')
-}
-
 fn valid_pin(v: &str) -> bool {
     let n = v.len();
     (4..=8).contains(&n) && v.bytes().all(|b| b.is_ascii_digit())
@@ -726,28 +725,21 @@ fn set_5g_access_mode(settings: &Settings, preset: &str) -> i32 {
     rc
 }
 
-fn valid_thermal_thresholds(args: &[String]) -> bool {
-    if args.len() != 9 {
-        return false;
-    }
-    let mut values = [0i64; 9];
-    for (i, a) in args.iter().enumerate() {
+/// Parse `advanced-set thermal-thresholds` arguments into the nine values the
+/// modem takes, or `None` when they are rejected (exit 64).
+///
+/// The rule itself moved to `system::commands` so the API route, this CLI verb
+/// and the WebUI cannot drift apart — the modem's ladder is one fact, kept in
+/// one place. Here we only turn strings into numbers.
+fn parse_thermal_thresholds(args: &[String]) -> Option<Vec<i64>> {
+    let mut values = Vec::with_capacity(args.len());
+    for a in args {
         match a.parse::<i64>() {
-            Ok(v) if (0..=150).contains(&v) => values[i] = v,
-            _ => return false,
+            Ok(v) => values.push(v),
+            Err(_) => return None,
         }
     }
-    // value[2] <= value[1] etc. means the shell awk exits 1 on violations:
-    // v2>v1, v4>v2, v6>v4, v8>v6 must hold, and v3<v2, v5<v4, v7<v6, v9<v8.
-    // awk indices are 1-based: value[2] > value[1] etc.
-    values[1] > values[0]
-        && values[3] > values[1]
-        && values[5] > values[3]
-        && values[7] > values[5]
-        && values[2] < values[1]
-        && values[4] < values[3]
-        && values[6] < values[5]
-        && values[8] < values[7]
+    system_commands::valid_thermal_thresholds(&values).then_some(values)
 }
 
 /// Send one SMS through the unified `sms.send` route on the daemon.
@@ -1262,49 +1254,40 @@ fn cmd_advanced_set(settings: &Settings, args: &[String]) -> i32 {
         "5g-access" => set_5g_access_mode(settings, get(0)),
         "autodial" => {
             let enable = get(0);
-            let dial_mode = get(1);
-            let protocol = get(2);
-            let apn = get(3);
-            let username = get(4);
-            let password = get(5);
-            let auth_type = get(6);
             if !matches!(enable, "0" | "1") {
                 return EXIT_USAGE;
             }
-            if enable == "0" {
-                return run_at(settings, "AT^SETAUTODIAL=0");
-            }
-            if !matches!(dial_mode, "0" | "1" | "2") {
-                return EXIT_USAGE;
-            }
-            if !matches!(protocol, "IP" | "IPV6" | "IPV4V6") {
-                return EXIT_USAGE;
-            }
-            if !matches!(auth_type, "0" | "1" | "2") {
-                return EXIT_USAGE;
-            }
-            if !safe_at_field(apn) || !safe_at_field(username) || !safe_at_field(password) {
-                return EXIT_USAGE;
-            }
-            if apn.len() > 99 || username.len() > 31 || password.len() > 31 {
-                return EXIT_USAGE;
-            }
-            // MT5700M rejects trailing empty fields; omit every optional
-            // field when empty so dial_mode is actually applied.
-            let cmd = if apn.is_empty() {
-                format!("AT^SETAUTODIAL={},{},\"{}\"", enable, dial_mode, protocol)
-            } else if username.is_empty() && password.is_empty() {
-                format!(
-                    "AT^SETAUTODIAL={},{},\"{}\",\"{}\"",
-                    enable, dial_mode, protocol, apn
-                )
+            // The module's setautodial() reproduces the historical validation
+            // order: disabled short-circuits to AT^SETAUTODIAL=0 with the
+            // remaining arguments unchecked; numeric fields must parse.
+            let dial_mode = if enable == "1" {
+                match get(1).parse::<i64>() {
+                    Ok(v) => v,
+                    Err(_) => return EXIT_USAGE,
+                }
             } else {
-                format!(
-                    "AT^SETAUTODIAL={},{},\"{}\",\"{}\",\"{}\",\"{}\",{}",
-                    enable, dial_mode, protocol, apn, username, password, auth_type
-                )
+                1
             };
-            run_at(settings, &cmd)
+            let auth_type = if enable == "1" {
+                match get(6).parse::<i64>() {
+                    Ok(v) => v,
+                    Err(_) => return EXIT_USAGE,
+                }
+            } else {
+                0
+            };
+            match network_commands::setautodial(
+                enable == "1",
+                dial_mode,
+                get(2),
+                get(3),
+                get(4),
+                get(5),
+                auth_type,
+            ) {
+                Some(cmd) => run_at(settings, &cmd),
+                None => EXIT_USAGE,
+            }
         }
         "nic-speed" => match get(0) {
             "1" | "2" => run_at(settings, &format!("AT^TDPCIELANCFG={}", get(0))),
@@ -1315,59 +1298,56 @@ fn cmd_advanced_set(settings: &Settings, args: &[String]) -> i32 {
             _ => EXIT_USAGE,
         },
         "led" => match get(0) {
-            "0" | "1" => run_at(settings, &format!("AT^LEDSWITCH={}", get(0))),
+            "0" | "1" => run_at(settings, &system_commands::ledswitch(get(0) == "1")),
             _ => EXIT_USAGE,
         },
         "usb-mode" => {
             // SETMODE=7 (MBIM) is marked temporarily unsupported.
             match get(0) {
-                "0" | "1" | "2" | "3" | "4" | "5" | "6" | "8" => {
-                    run_at(settings, &format!("AT^SETMODE={}", get(0)))
-                }
+                "0" | "1" | "2" | "3" | "4" | "5" | "6" | "8" => run_at(
+                    settings,
+                    &network_commands::set_mode(get(0).parse::<u8>().unwrap_or(0)),
+                ),
                 _ => EXIT_USAGE,
             }
         }
         "interface-mode" => match get(0) {
-            "1" | "2" => run_at(
-                settings,
-                &format!("AT^TDCFG=\"infcfg\",\"mode\",{}", get(0)),
-            ),
+            "1" | "2" => match get(0).parse::<i64>() {
+                Ok(mode) => match network_commands::tdcfg_mode(mode) {
+                    Some(cmd) => run_at(settings, &cmd),
+                    None => EXIT_USAGE,
+                },
+                Err(_) => EXIT_USAGE,
+            },
             _ => EXIT_USAGE,
         },
-        "postroute" => match get(0) {
-            "2" => run_at(settings, "AT^TDCFG=\"infcfg\",\"PostRoute\",2"),
-            "1" => {
-                let rc = run_at(settings, "AT^TDCFG=\"infcfg\",\"PostRoute\",1");
-                if rc != 0 {
-                    return rc;
-                }
-                run_at(settings, "AT^IPFILTERSWITCH=0")
-            }
-            _ => EXIT_USAGE,
-        },
-        "dmz" => {
-            let dmz = get(0);
-            if dmz == "0" {
-                return run_at(settings, "AT^TDCFG=\"infcfg\",\"dmz\",\"0\"");
-            }
-            let parts: Vec<&str> = dmz.split('.').collect();
-            let ok = parts.len() == 4
-                && parts.iter().all(|p| {
-                    !p.is_empty()
-                        && p.bytes().all(|b| b.is_ascii_digit())
-                        && p.parse::<u32>().map(|n| n <= 255).unwrap_or(false)
-                });
-            if !ok {
+        "postroute" => {
+            let Ok(mode) = get(0).parse::<i64>() else {
                 return EXIT_USAGE;
+            };
+            let Some(first) = network_commands::tdcfg_postroute(mode) else {
+                return EXIT_USAGE;
+            };
+            let rc = run_at(settings, &first);
+            if rc != 0 {
+                return rc;
             }
-            run_at(settings, &format!("AT^TDCFG=\"infcfg\",\"dmz\",\"{}\"", dmz))
+            // Enabling post-routing must also clear the inbound filter.
+            if mode == 1 {
+                return run_at(settings, network_commands::IPFILTERSWITCH_OFF);
+            }
+            rc
         }
+        "dmz" => match network_commands::tdcfg_dmz(get(0)) {
+            Some(cmd) => run_at(settings, &cmd),
+            None => EXIT_USAGE,
+        },
         "sim-hotplug" => match get(0) {
             "0" | "1" => run_at(settings, &format!("AT^TDSIMHP={}", get(0))),
             _ => EXIT_USAGE,
         },
         "sim-activation" => match get(0) {
-            "0" | "1" => run_at(settings, &format!("AT^HVSST=1,{}", get(0))),
+            "0" | "1" => run_at(settings, &sim_commands::hvsst_power(get(0) == "1")),
             _ => EXIT_USAGE,
         },
         "sim-slot" => match get(0) {
@@ -1396,13 +1376,13 @@ fn cmd_advanced_set(settings: &Settings, args: &[String]) -> i32 {
             if !matches!(serial, "0" | "1") || !matches!(file, "0" | "1") {
                 return EXIT_USAGE;
             }
-            run_at(settings, &format!("AT^THERMLDLOGSW={},{}", serial, file))
+            run_at(settings, &system_commands::thermldlogsw(serial == "1", file == "1"))
         }
         "thermal-thresholds" => {
-            if !valid_thermal_thresholds(rest) {
+            let Some(values) = parse_thermal_thresholds(rest) else {
                 return EXIT_USAGE;
-            }
-            run_at(settings, &format!("AT^THERMLDAUTOPARA={}", rest.join(",")))
+            };
+            run_at(settings, &system_commands::thermldautopara(&values))
         }
         "carrier-aggregation" => match get(0) {
             "0" | "1" => run_at(settings, &format!("AT^NRRCCAPCFG=3,{}", get(0))),
@@ -1421,7 +1401,7 @@ fn cmd_advanced_set(settings: &Settings, args: &[String]) -> i32 {
             run_at(settings, &format!("AT^NRRCCAPCFG=5,{},{}", rate, dmrs))
         }
         "direct-ip" => match get(0) {
-            "0" | "1" => run_at(settings, &format!("AT^SETDIRECTIP={}", get(0))),
+            "0" | "1" => run_at(settings, &network_commands::setdirectip(get(0) == "1")),
             _ => EXIT_USAGE,
         },
         _ => EXIT_USAGE,
@@ -1745,42 +1725,48 @@ pub fn run(args: &[String]) -> i32 {
             let cid = rest.first().map(|s| s.as_str()).unwrap_or("");
             let pdp_type = rest.get(1).map(|s| s.as_str()).unwrap_or("");
             let apn = rest.get(2).map(|s| s.as_str()).unwrap_or("");
-            if !matches!(
-                cid,
-                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11"
-            ) {
+            // The historical whitelist only accepted canonical "1".."11":
+            // parse, then require the round-trip so "01" is still refused.
+            let Ok(cid_num) = cid.parse::<u32>() else {
+                return EXIT_USAGE;
+            };
+            if cid_num.to_string() != cid {
                 return EXIT_USAGE;
             }
-            if !matches!(pdp_type, "IP" | "IPV6" | "IPV4V6") {
-                return EXIT_USAGE;
+            match network_commands::cgdcont_set(cid_num, pdp_type, apn) {
+                Some(cmd) => run_at(&settings, &cmd),
+                None => EXIT_USAGE,
             }
-            if !safe_at_field(apn) || apn.len() > 99 {
-                return EXIT_USAGE;
-            }
-            run_at(
-                &settings,
-                &format!("AT+CGDCONT={},\"{}\",\"{}\"", cid, pdp_type, apn),
-            )
         }
-        "pdp-remove" => match rest.first().map(|s| s.as_str()) {
-            Some(cid @ ("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11")) => {
-                run_at(&settings, &format!("AT+CGDCONT={}", cid))
+        "pdp-remove" => {
+            let cid = rest.first().map(|s| s.as_str()).unwrap_or("");
+            let Ok(cid_num) = cid.parse::<u32>() else {
+                return EXIT_USAGE;
+            };
+            if cid_num.to_string() != cid {
+                return EXIT_USAGE;
             }
-            _ => EXIT_USAGE,
-        },
+            match network_commands::cgdcont_remove(cid_num) {
+                Some(cmd) => run_at(&settings, &cmd),
+                None => EXIT_USAGE,
+            }
+        }
         "pdp-state" => {
             let state = rest.first().map(|s| s.as_str()).unwrap_or("");
             let cid = rest.get(1).map(|s| s.as_str()).unwrap_or("");
             if !matches!(state, "0" | "1") {
                 return EXIT_USAGE;
             }
-            if !matches!(
-                cid,
-                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11"
-            ) {
+            let Ok(cid_num) = cid.parse::<u32>() else {
+                return EXIT_USAGE;
+            };
+            if cid_num.to_string() != cid {
                 return EXIT_USAGE;
             }
-            run_at(&settings, &format!("AT+CGACT={},{}", state, cid))
+            match network_commands::cgact(state == "1", cid_num) {
+                Some(cmd) => run_at(&settings, &cmd),
+                None => EXIT_USAGE,
+            }
         }
         "flow-clear" => run_at(&settings, "AT^DSFLOWCLR"),
         "airplane" => match rest.first().map(|s| s.as_str()) {
@@ -1912,6 +1898,25 @@ mod tests {
             "AT^NRFREQLOCK=2,0,1,\"78\",\"643456\",\"0\",\"10\""
         );
         assert!(build_nr_lock_command("1", "78", "643456", "9", "").is_none());
+    }
+
+    #[test]
+    fn thermal_thresholds_contract() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<String>>();
+        let ok = &["60", "70", "65", "80", "75", "90", "85", "100", "95"];
+        let values = parse_thermal_thresholds(&s(ok)).expect("a valid ladder");
+        assert_eq!(
+            system_commands::thermldautopara(&values),
+            "AT^THERMLDAUTOPARA=60,70,65,80,75,90,85,100,95"
+        );
+        // The shell rejected these before the rewrite and still must: wrong
+        // count, a non-number, out of range, and a broken ladder.
+        assert!(parse_thermal_thresholds(&s(&ok[..8])).is_none());
+        assert!(parse_thermal_thresholds(&s(&["60", "x", "65", "80", "75", "90", "85", "100", "95"])).is_none());
+        assert!(parse_thermal_thresholds(&s(&["60", "151", "65", "80", "75", "90", "85", "100", "95"])).is_none());
+        assert!(parse_thermal_thresholds(&s(&["60", "60", "65", "80", "75", "90", "85", "100", "95"])).is_none());
+        assert_eq!(system_commands::thermldlogsw(true, false), "AT^THERMLDLOGSW=1,0");
+        assert_eq!(system_commands::ledswitch(true), "AT^LEDSWITCH=1");
     }
 
     #[test]

@@ -3,7 +3,7 @@
 use crate::api::registry::{ApiCtx, Route};
 use crate::core::error::BackendError;
 use crate::core::json::{self, Value};
-use crate::modules::traffic::commands::DSFLOWCLR;
+use crate::modules::traffic::commands::{self, DSFLOWCLR};
 use crate::modules::traffic::service;
 use crate::state::bus::{TOPIC_NETRATE, TOPIC_TRAFFIC};
 
@@ -14,6 +14,7 @@ pub fn routes() -> Vec<Route> {
         Route::display("traffic.cached", cached),
         Route::display("traffic.netrate", netrate),
         Route::on_demand("traffic.clear", clear),
+        Route::on_demand("traffic.pdcp_report_set", pdcp_report_set),
     ]
 }
 
@@ -76,5 +77,33 @@ fn clear(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
     refresh.action(DSFLOWCLR)?;
     let mut m = std::collections::BTreeMap::new();
     m.insert("cleared".to_string(), Value::Bool(true));
+    Ok(Value::Obj(m))
+}
+
+/// Switch the PDCP data-report URC on/off (`AT^PDCPDATAINFO=...`).
+///
+/// On-demand write: the Info page's live-speed toggle. The URC stream itself
+/// keeps flowing through the daemon's `pdcp_data` events regardless — this
+/// only owns the modem-side switch, replacing the page's raw-AT write
+/// (`setPDCPDataReport` used to speak `AT^PDCPDATAINFO=` directly).
+fn pdcp_report_set(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+    let enabled = crate::api::params::required_bool(params, "enabled")?;
+    let interval = crate::api::params::num(params, "interval");
+    let command = commands::pdcp_report(enabled, interval).ok_or_else(|| {
+        BackendError::InvalidParameter(
+            "traffic.pdcp_report_set needs enabled=false, or enabled=true with interval 200-65535 ms"
+                .to_string(),
+        )
+    })?;
+    let refresh = ctx.refresh();
+    refresh.action(&command)?;
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("applied".to_string(), Value::Bool(true));
+    m.insert("enabled".to_string(), Value::Bool(enabled));
+    if enabled {
+        if let Some(ms) = interval {
+            m.insert("interval".to_string(), json::num_val(ms));
+        }
+    }
     Ok(Value::Obj(m))
 }

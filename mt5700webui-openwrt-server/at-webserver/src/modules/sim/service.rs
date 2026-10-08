@@ -135,12 +135,37 @@ pub fn switch_slot(ctx: &RefreshCtx, target: i64) -> Result<(), BackendError> {
             target
         )));
     }
-    ctx.action(commands::HVSST_BEGIN)?;
+    ctx.action(&commands::hvsst_power(false))?;
     ctx.action(&commands::scichg_slot(target, 1 - target))?;
-    ctx.action(commands::HVSST_END)?;
+    ctx.action(&commands::hvsst_power(true))?;
     ctx.action(commands::CFUN_OFF)?;
     sleep(RADIO_CYCLE_PAUSE);
     ctx.action(commands::CFUN_ON)?;
+    ctx.cache.invalidate(TOPIC_SIM);
+    Ok(())
+}
+
+/// Read the SIM power path (`^HVSST?`).
+///
+/// A live read. An unparsable answer is an error here; the `sim.activation`
+/// route turns that into an absent field so the page keeps the switch where the
+/// user left it.
+pub fn read_activation(ctx: &RefreshCtx) -> Result<(bool, Option<i64>), BackendError> {
+    let text = ctx.query(commands::HVSST_QUERY)?;
+    parser::parse_hvsst(&text).ok_or_else(|| {
+        BackendError::AtRejected(format!(
+            "^HVSST? answered an unknown shape: {}",
+            text.trim()
+        ))
+    })
+}
+
+/// Switch the SIM power path off or on (`^HVSST=1,<0|1>`).
+///
+/// Deactivating removes mobile service immediately, which is what the page's
+/// confirmation says; the snapshot is dropped so the next read shows reality.
+pub fn set_activation(ctx: &RefreshCtx, active: bool) -> Result<(), BackendError> {
+    ctx.action(&commands::hvsst_power(active))?;
     ctx.cache.invalidate(TOPIC_SIM);
     Ok(())
 }

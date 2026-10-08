@@ -69,7 +69,7 @@
 | `state_cache.rs` | **StateCache（SWR）**：signal/network/registration/temperature/traffic/cell/sim/modem/usb |
 | `event_bus.rs` | **EventBus**：主题订阅/发布，高频遥测 100ms 合并（coalescing），task/usb/modem/sms/scan 即时直推 |
 | `snapshot.rs` | 后台状态采集器：周期抓取快照写入 StateCache，开机预热 |
-| `device_monitor.rs` | USBNotify 热插拔监视：invalidate cache、取消无效任务、重连 transport、推事件 |
+| `device_monitor.rs` | USBNotify 热插拔监视：缓存失效、取消无效任务、重连传输层、推事件 |
 | `daemon.rs` | 接线层：HTTP/控制套接字/WebSocket→「读缓存 / 下发任务」，WebSocket 事件推送 |
 
 ## 4. Task Scheduler 设计
@@ -110,7 +110,7 @@ Cache Expired ──► 立即返回旧值，同时后台刷新（SWR），绝�
 
 后台刷新完成后：`Cache Update → EventBus → WebSocket → 前端自动更新`。
 
-写操作（APN/PDP/频段/重启/SIM）会**主动 invalidate** 受影响缓存，再后台重取。
+写操作（APN/PDP/频段/重启/SIM）会**主动使受影响缓存失效**，再后台重取。
 
 ## 7. EventBus 设计
 
@@ -183,7 +183,7 @@ connect → 可选 { action: subscribe, topics:[...] } → 服务端只推订阅
 | CLI fork 子进程 | `daemon.rs: cli_capture` → `cli.rs: run_at` | 复用 control socket，自动覆盖 |
 
 第二处是最容易漏的：只接 `run_command` 时闸门等于没装，实测表现为
-`mt5700m-at cached` 里始终没有 `raw:` topic。
+`mt5700m-at cached` 里始终没有 `raw:` 主题。
 
 ### 11.3 判定漏洞修复
 

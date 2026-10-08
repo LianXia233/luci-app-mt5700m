@@ -4,7 +4,7 @@
 /*
  * 概览页（status）一致性证明（LuCI 概览页 → 统一路由，前端最后一条 CLI 状态帧消失）
  *
- * 这一刀切掉的是概览页详情帧里的两条 CLI 文本帧：`mt5700m-at status`（CLI 把
+ * 本批切掉的是概览页详情帧里的两条 CLI 文本帧：`mt5700m-at status`（CLI 把
  * 同一份 StateCache 渲染第二遍，4 行「实时补充」还自己另开 AT 通道现问模组 ——
  * 本项目明令禁止的「第二个 AT 串口持有者」）与 `mt5700m-at advanced session`
  * （八个慢命令的文本转储，前端拿正则从里面取值）。现在：
@@ -19,7 +19,7 @@
  *   - 删除：`api.js` 的 `atStatus`/`atSession` —— 概览页不再有任何 CLI 调用。
  *
  * 用法：
- *   node scripts/prove-status-parity.js [基线]   # 基线默认 8a8c501（本刀之前）
+ *   node scripts/prove-status-parity.js [基线]   # 基线默认 8a8c501（本批之前）
  * 退出码 0 = 通过，1 = 不一致，2 = 基线选错了（基线里已经没有旧实现）。
  *
  * 关键设计：两侧喂的是**同一份事实**的两种表达 —— 旧侧是 CLI 文本帧
@@ -31,7 +31,7 @@
  *
  * 1. baseline 的 `mergeStatusLines(CLI, 快照)` 是「快照行覆盖 CLI 行」（同名键
  *    后者胜），所以 temperature 一直是快照里的原始浮点（45.1），CLI 那边的
- *    `round()` 取整从来没有显示过 —— 这一刀之后仍然是 45.1，不是「改了行为」。
+ *    `round()` 取整从来没有显示过 —— 本批之后仍然是 45.1，不是「改了行为」。
  *
  * 2. **旧详情帧其实是坏的**：baseline 的 `refreshDetail` 把
  *    `mergeStatusLines(oldNative, native.stdout)` 的第二个参数传成了字符串
@@ -54,7 +54,7 @@
  *   C. 单向覆盖：新侧不许再出现任何 `at:` 调用。
  *
  * 会话夹具在 scripts/lib/at-fixtures.js：一份事实对象同时生成 CLI 帧与路由载荷
- * （会话那一刀之后连接页与概览页共用它，见 prove-connection-parity.js）。
+ * （会话那一批之后连接页与概览页共用它，见 prove-connection-parity.js）。
  */
 
 const fs = require('fs');
@@ -341,8 +341,8 @@ async function render(kind, shape, opts) {
 
 /* ------------------------------------------------------------ 自检 */
 if (oldSource(VIEW).indexOf('api.atStatus()') === -1) {
-	console.error('基线 ' + BASELINE + ' 已经包含这一刀（status.js 里没有 api.atStatus()）——没有旧管线可比较。\n'
-		+ '本刀的基线是 8a8c501：\n  node scripts/prove-status-parity.js 8a8c501');
+	console.error('基线 ' + BASELINE + ' 已经包含本批（status.js 里没有 api.atStatus()）——没有旧管线可比较。\n'
+		+ '本批的基线是 8a8c501：\n  node scripts/prove-status-parity.js 8a8c501');
 	process.exit(2);
 }
 check('基线里旧侧确实读 CLI 状态帧（api.atStatus + atSession）',

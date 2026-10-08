@@ -1,6 +1,6 @@
 //! `^CHIPTEMP?` / `^TDPCIELANCFG?` / `^TDPMCFG?` / FOTA decoders.
 
-use crate::modules::system::state::{TemperatureState, SENSOR_NAMES};
+use crate::modules::system::state::{TemperatureState, VersionState, SENSOR_NAMES};
 use crate::state::refresh::round1;
 
 /// Parse `^CHIPTEMP: t0..t11` (tenths of degrees) into the 12 named sensors
@@ -63,6 +63,91 @@ pub fn parse_power_control(raw: &str) -> Option<bool> {
         .find_map(|l| l.trim().strip_prefix("^TDPMCFG:"))?
         .trim();
     body.split(',').next()?.trim().parse::<i64>().ok().map(|n| n == 1)
+}
+
+/// `^LEDSWITCH: <0|1>` -> whether the module's status LED is enabled.
+///
+/// The page read this field as text and only compared it against `"1"`, so a
+/// modem answering anything else leaves the dropdown where it was.
+pub fn parse_ledswitch(raw: &str) -> Option<bool> {
+    let body = raw
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("^LEDSWITCH:"))?
+        .trim();
+    let v = body.split(',').next()?.trim().parse::<i64>().ok()?;
+    match v {
+        1 => Some(true),
+        0 => Some(false),
+        _ => None,
+    }
+}
+
+/// `^NWTIME: …` -> the timestamp as the network published it.
+///
+/// Returned **verbatim** (minus the quotes some firmwares wrap it in and the
+/// surrounding whitespace): the page displayed this string as-is and had no
+/// interpretation to move into the module. `None` when the modem does not
+/// answer with a time line — a registration-less modem has none.
+pub fn parse_nwtime(raw: &str) -> Option<String> {
+    let body = raw
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("^NWTIME:"))?
+        .trim();
+    let text = body.trim_matches('"').trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.to_string())
+    }
+}
+
+/// The module version block (`^VERSION?`).
+///
+/// Three independent lines the system page shows as build date, software and
+/// hardware version. Each is taken verbatim after its `^VERSION:<tag>` prefix
+/// (then trimmed, which also drops the `: ` separator) — none of them has an
+/// interpretation to move into the module. None when no line answered.
+pub fn parse_version(raw: &str) -> Option<VersionState> {
+    let field = |tag: &str| -> Option<String> {
+        let after = raw
+            .lines()
+            .find_map(|l| l.trim().strip_prefix(tag))?
+            .trim_start_matches(':')
+            .trim();
+        let text = after.trim_matches('"').trim();
+        if text.is_empty() {
+            None
+        } else {
+            Some(text.to_string())
+        }
+    };
+    let st = VersionState {
+        build_date: field("^VERSION:BDT"),
+        software: field("^VERSION:EXTS"),
+        hardware: field("^VERSION:EXTH"),
+    };
+    if st.is_empty() {
+        None
+    } else {
+        Some(st)
+    }
+}
+
+/// FOTA update mode (`^FOTAMODE: <a>,<b>,<c>,<d>`).
+///
+/// Returned as the raw field string: calling `0,1,0,1` "HTTP update mode" is
+/// the page's own decoding, and that wording is UI copy. The route must be able
+/// to answer whatever mode the modem reported.
+pub fn parse_fotamode(raw: &str) -> Option<String> {
+    let body = raw
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("^FOTAMODE:"))?
+        .trim();
+    let fields: Vec<&str> = body.split(',').map(|f| f.trim()).collect();
+    if fields.is_empty() || fields.iter().any(|f| f.is_empty()) {
+        return None;
+    }
+    Some(fields.join(","))
 }
 
 /// Split a vendor payload into numbers, accepting spaces and commas.
@@ -197,6 +282,30 @@ mod tests {
     }
 
     #[test]
+    fn led_switch_read() {
+        assert_eq!(parse_ledswitch("^LEDSWITCH: 1\r\n\r\nOK"), Some(true));
+        assert_eq!(parse_ledswitch("^LEDSWITCH: 0\r\nOK"), Some(false));
+        // An out-of-range answer keeps the page's own value.
+        assert_eq!(parse_ledswitch("^LEDSWITCH: 2"), None);
+        assert_eq!(parse_ledswitch("+CME ERROR: 3"), None);
+    }
+
+    #[test]
+    fn network_time_is_passed_through_verbatim() {
+        assert_eq!(
+            parse_nwtime("^NWTIME: 2025/08/15 12:00:00\r\nOK").as_deref(),
+            Some("2025/08/15 12:00:00")
+        );
+        // Some firmwares quote the timestamp; the page stripped quotes too.
+        assert_eq!(
+            parse_nwtime("^NWTIME: \"2025/08/15 12:00:00\"").as_deref(),
+            Some("2025/08/15 12:00:00")
+        );
+        assert_eq!(parse_nwtime("^NWTIME: "), None);
+        assert_eq!(parse_nwtime("OK"), None);
+    }
+
+    #[test]
     fn fota_state_and_progress_keep_the_page_semantics() {
         assert_eq!(parse_fota_state("^FOTASTATE: 30\r\nOK"), Some(30));
         assert_eq!(parse_fota_state("^FOTASTATE:10"), Some(10));
@@ -230,5 +339,44 @@ mod tests {
             Some(3)
         );
         assert_eq!(parse_thermlevel("^THERMLDAUTOSTATUS: 1,2,3"), None);
+    }
+
+    #[test]
+    fn version_block_keeps_each_line_independent() {
+        let st = parse_version(
+            "^VERSION:BDT: Aug 15 2025 10:20:30\r\n\
+             ^VERSION:EXTS: MT5700M-2.5.0\r\n\
+             ^VERSION:EXTH: MT5700M-HW-1.0\r\nOK",
+        )
+        .expect("the three lines");
+        assert_eq!(st.build_date.as_deref(), Some("Aug 15 2025 10:20:30"));
+        assert_eq!(st.software.as_deref(), Some("MT5700M-2.5.0"));
+        assert_eq!(st.hardware.as_deref(), Some("MT5700M-HW-1.0"));
+        assert!(!st.is_empty());
+        // A modem that answers only part of the block gets answered back
+        // verbatim: no missing field is invented.
+        let partial = parse_version("^VERSION:EXTS: MT5700M-2.5.0\r\nOK").expect("one line");
+        assert_eq!(partial.software.as_deref(), Some("MT5700M-2.5.0"));
+        assert_eq!(partial.build_date, None);
+        assert_eq!(partial.hardware, None);
+        assert_eq!(parse_version("OK"), None);
+        assert_eq!(parse_version("^VERSION:BDT: \r\nOK"), None);
+    }
+
+    #[test]
+    fn fota_mode_is_passed_through_undecoded() {
+        // Calling this "HTTP update mode" is UI copy, so the decoder must not
+        // take that interpretation away from the page.
+        assert_eq!(
+            parse_fotamode("^FOTAMODE: 0,1,0,1\r\nOK"),
+            Some("0,1,0,1".to_string())
+        );
+        assert_eq!(
+            parse_fotamode("^FOTAMODE: 1,2,3,4\r\nOK"),
+            Some("1,2,3,4".to_string())
+        );
+        assert_eq!(parse_fotamode("OK"), None);
+        assert_eq!(parse_fotamode("^FOTAMODE: \r\nOK"), None);
+        assert_eq!(parse_fotamode("^FOTAMODE: 0,,1,1\r\nOK"), None);
     }
 }

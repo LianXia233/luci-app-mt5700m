@@ -22,6 +22,8 @@ pub fn routes() -> Vec<Route> {
         Route::on_demand("sim.number", number),
         Route::display("sim.slot", slot),
         Route::on_demand("sim.slot_set", slot_set),
+        Route::display("sim.activation", activation),
+        Route::on_demand("sim.activation_set", activation_set),
         Route::on_demand("sim.hotplug_set", hotplug_set),
         Route::on_demand("sim.pin_status", pin_status),
         Route::on_demand("sim.pin_apply", pin_apply),
@@ -95,6 +97,37 @@ fn slot(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
     if let Some(v) = st.hotplug {
         m.insert("hotplug".to_string(), Value::Bool(v));
     }
+    Ok(Value::Obj(m))
+}
+
+/// Read the SIM power path (`^HVSST?`).
+///
+/// Display route: `{}` when the modem does not answer, so the page keeps the
+/// switch where the user left it — the same thing it did when its own text
+/// parse came up empty.
+///
+/// Answers `{active?: bool, slot?: int}`; `slot` is the third field, which the
+/// system page used as its fallback active slot.
+fn activation(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    let refresh = ctx.refresh();
+    let mut m = std::collections::BTreeMap::new();
+    if let Ok((active, slot)) = service::read_activation(&refresh) {
+        m.insert("active".to_string(), Value::Bool(active));
+        if let Some(slot) = slot {
+            m.insert("slot".to_string(), json::num_val(slot));
+        }
+    }
+    Ok(Value::Obj(m))
+}
+
+/// Switch the SIM power path off or on. Params: `{active: bool}`.
+fn activation_set(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+    let active = required_bool(params, "active")?;
+    let refresh = ctx.refresh();
+    service::set_activation(&refresh, active)?;
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("applied".to_string(), Value::Bool(true));
+    m.insert("active".to_string(), Value::Bool(active));
     Ok(Value::Obj(m))
 }
 
