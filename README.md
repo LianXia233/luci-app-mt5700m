@@ -4,7 +4,7 @@
 
 **面向移远 Quectel MT5700M-CN 5G 模组的高性能 OpenWrt LuCI 管理器与 Web 控制中心**
 
-[![Version](https://img.shields.io/badge/Version-v3.1.2-blue.svg?style=flat-square)](https://github.com/LianXia233/luci-app-mt5700m/releases)
+[![Version](https://img.shields.io/badge/Version-v3.2.0-blue.svg?style=flat-square)](https://github.com/LianXia233/luci-app-mt5700m/releases)
 [![OpenWrt](https://img.shields.io/badge/OpenWrt-Filogic%20%7C%20ImmortalWrt-00C49F.svg?style=flat-square&logo=openwrt)](https://openwrt.org/)
 [![Backend](https://img.shields.io/badge/Backend-Rust%20(std--only)-DEA584.svg?style=flat-square&logo=rust)](mt5700webui-openwrt-server/at-webserver/)
 [![WebUI](https://img.shields.io/badge/WebUI-React%20%2B%20Semi%20Design-61DAFB.svg?style=flat-square&logo=react)](mt5700webui-openwrt-server/semi-tcpweb/)

@@ -21,6 +21,11 @@ LUCI_MINIFY_JS:=0
 LUCI_MINIFY_CSS:=0
 
 PKG_NAME:=luci-app-mt5700m
+# v3.2.0 — 架构 v2 收官（PR #7/#8/#9）：全页面读写路由化、双前端死代码清零、
+# CI 前端证明链（cargo test 292）。发布构建默认关闭 LuCI 前端 JS 压缩
+# （build-release.sh 不再调用 minify-luci-frontend.sh，安装包内 JS 保持源码
+# 可读，需要时 MINIFY_LUCI_FRONTEND=1 恢复）。无 UI 行为变更。
+#
 # v3.1.2 — 版本号提升并触发重新编译（3.1.0 → 3.1.2，跳过已被 manual-v3.1.1
 # 手动构建占用的 3.1.1），包含 v3.1.0 之后合入的模组状态视图共享异步状态重构。
 #
@@ -35,7 +40,7 @@ PKG_NAME:=luci-app-mt5700m
 # ioctl；串口打开一律 O_NONBLOCK + VMIN=1/VTIME=0。旧版二进制在不修正
 # termios 的情况下会把 TTY 留在 cooked 模式，AT 读取全部超时。
 # 写命令、拨号、短信路径不变。
-PKG_VERSION:=3.1.2
+PKG_VERSION:=3.2.0
 PKG_RELEASE:=1
 PKG_LICENSE:=Apache-2.0
 

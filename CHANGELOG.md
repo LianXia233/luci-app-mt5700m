@@ -4,7 +4,7 @@
 
 ---
 
-## [Unreleased] - architecture v2 收官
+## [3.2.0] - 2026-10-08
 
 ### Changed
 
@@ -45,6 +45,19 @@
   （parser / components / 页面同源自洽），基线自带被删死函数定义，无
   ReferenceError 路径。UI 渲染不可变由逐字比对锁定：前端重构在 CI 层面被
   证明「用户看到的界面一个字节都没变」。
+
+### Chore
+
+- **版本号提升并触发重新编译**：LuCI 包 `3.1.2 → 3.2.0`。架构 v2 收官（PR #7
+  全页面路由化 + PR #8 收官批 + PR #9 文档同步）作为 minor 里程碑发版，
+  循 3.1.0 异步化架构的 minor 提升先例。
+- **发布构建默认关闭 LuCI 前端 JS 压缩**：`build-release.sh` 不再调用
+  `scripts/minify-luci-frontend.sh`，安装包内的 LuCI 前端 JS/CSS 保持源码可读，
+  方便设备端调试、比对与 grep；压缩脚本与 CI 证明链（static-checks +
+  frontend-proofs）原样保留，需要恢复压缩时
+  `MINIFY_LUCI_FRONTEND=1 ./scripts/build-release.sh` 一键打开。
+  WebUI（/5700 React bundle）为仓库内置 prebuilt 产物，本就不参与编译期压缩，
+  维持不变。
 
 ---
 
