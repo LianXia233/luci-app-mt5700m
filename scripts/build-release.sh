@@ -24,6 +24,17 @@ cd "${work_dir}"
 download() {
 	local url="$1" out="$2" want="${3:-0}"
 	local round size after rc stall=0
+	# With no explicit size, ask the server what it should be.  Without this
+	# the completion check can never fire (`want=0` is never `>=`), and a file
+	# that DID download completely would keep looping until the round cap —
+	# the exact failure seen on sha256sums (26,336,446 bytes fetched, then 54
+	# wasted rounds because nothing ever compared against 26,336,446).
+	if [ "${want}" -eq 0 ]; then
+		want="$(curl -sSI --http1.1 --max-time 30 "${url}" \
+			| awk 'tolower($1)=="content-length:" { gsub(/\r/,"",$2); print $2; exit }')"
+		want="${want:-0}"
+		echo "   expected size: ${want} bytes (from Content-Length)"
+	fi
 	# Skip entirely if a complete copy is already on disk (size known).
 	if [ "${want}" -gt 0 ] && [ -f "${out}" ] \
 	   && [ "$(stat -c%s "${out}" 2>/dev/null || echo 0)" -ge "${want}" ]; then
@@ -48,6 +59,15 @@ download() {
 		if [ "${rc}" -eq 33 ] && [ "${want}" -gt 0 ] && [ "${after}" -ge "${want}" ]; then
 			return 0
 		fi
+		# Clean transfer and the file is non-empty: the server closed the
+		# body on its own, which for these snapshots means "done" even if the
+		# advertised size was unavailable.  Never loop on a no-op.
+		if [ "${rc}" -eq 0 ] && [ "${after}" -gt 0 ] && [ "${after}" -eq "${size}" ]; then
+			if [ "${want}" -eq 0 ] || [ "${after}" -ge "${want}" ]; then
+				echo "   complete at ${after} bytes (server closed cleanly)"
+				return 0
+			fi
+		fi
 		# No forward progress three rounds in a row ⇒ the link is dead, stop
 		# instead of burning the whole job timeout on hopeless retries.
 		if [ "${after}" -le "${size}" ] && [ "${rc}" -ne 0 ]; then
@@ -65,17 +85,21 @@ download() {
 	return 1
 }
 
-# Grab the checksum manifest first and read the expected size of the SDK
-# tarball from its Content-Length, so `download` can tell "finished" from
-# "truncated" and stop the resume loop at exactly the right byte.
+# Grab the checksum manifest first; `download` reads its Content-Length so it
+# can tell "finished" from "truncated".  A resumed file that ends up the right
+# size but corrupt (segments stitched after several drops) is caught by the
+# sanity grep below, which drops the file and refetches from scratch.
 download "${base_url}/sha256sums" sha256sums
+if ! grep -q 'openwrt-sdk-.*Linux-x86_64\.tar\.zst' sha256sums 2>/dev/null; then
+	echo "WARNING: sha256sums looks truncated/corrupt, refetching from scratch" >&2
+	rm -f sha256sums
+	download "${base_url}/sha256sums" sha256sums
+fi
 test -s sha256sums
 archive="$(awk '/openwrt-sdk-.*Linux-x86_64\.tar\.zst$/ { print $2; exit }' sha256sums | sed 's/^\*//')"
 test -n "${archive}"
-archive_size="$(curl -sSI --http1.1 --max-time 30 "${base_url}/${archive}" \
-	| awk 'tolower($1)=="content-length:" { gsub(/\r/,"",$2); print $2; exit }')"
-echo "SDK tarball: ${archive} (${archive_size:-unknown} bytes)"
-download "${base_url}/${archive}" "${archive}" "${archive_size:-0}"
+echo "SDK tarball: ${archive}"
+download "${base_url}/${archive}" "${archive}"
 grep "[ *]${archive}$" sha256sums | sha256sum -c -
 tar --zstd -xf "${archive}"
 sdk_dir="$(find "${work_dir}" -maxdepth 1 -type d -name 'openwrt-sdk-*' | head -n 1)"
