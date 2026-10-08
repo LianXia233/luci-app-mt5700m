@@ -23,7 +23,8 @@ Two kinds of route, declared in the table itself (`Route::display` /
   `sim.pin_status`, `sim.pin_apply`, `system.nic_rate_set`,
   `system.power_control_set`, `system.factory_reset`, `modem.reset`,
   `modem.imei_set`, `network.radio_set`, `network.syscfg_set`,
-  `system.thermal_set`, `system.fota_start`, `system.fota_abort`,
+  `system.thermal_set`, `system.led_set`, `system.thermal_thresholds_set`,
+  `system.thermal_log_set`, `system.fota_start`, `system.fota_abort`,
   `modem.nr_capability_set`) — an explicit user action that
   performs a live read; it may fail with a modem error, which the UI surfaces.
   It must never fail with a parameter/internal error (asserted by the registry
@@ -90,6 +91,11 @@ Two kinds of route, declared in the table itself (`Route::display` /
 | `system.service_mode` | `{mode: "serial"\|"network"}` — how the daemon reaches the modem, recorded once at startup (`core::modem`); replaces the pages' `AT+CONNECT?` probe |
 | `system.thermal` | `{enabled, caMimoSwitch, interval, logSwitch: {consoleLog, fileLog}, thresholds: [...], currentLevel}` — `^THERMAUTOFUN?` / `^THERMLDLOGSW?` / `^THERMLDAUTOPARA?` / `^THERMLDAUTOSTATUS?` (the level is the 6th status field, decoded here); a query that did not answer leaves its fields absent |
 | `system.thermal_set` | `{applied: true}` — `{enabled, caMimoSwitch?, interval}` → `^THERMAUTOFUN=<on>,<caMimo>,<interval>`; the interval range is validated here |
+| `system.led` | `{led?: bool}` — `^LEDSWITCH?`, the status LED; `{}` when the query did not answer, so the page keeps the switch where the user left it |
+| `system.led_set` | `{applied: true, led}` — `{enabled: bool}` → `^LEDSWITCH=<0\|1>`; stored by the module, takes effect after restart |
+| `system.network_time` | `{time?: "…"}` — `^NWTIME?`, the string exactly as the modem formatted it (the LuCI page only strips quotes); absent when there is no time line, i.e. no registration |
+| `system.thermal_thresholds_set` | `{applied: true, thresholds}` — `{thresholds: [i64; 9]}` → `^THERMLDAUTOPARA=<9 values>`; the ladder rule (9 values, 0–150 °C, rising triggers, each recovery below its own trigger) is enforced here and nowhere else |
+| `system.thermal_log_set` | `{applied: true, serial, file}` — `{serial: bool, file: bool}` → `^THERMLDLOGSW=<serial>,<file>` |
 | `system.fota` | `{running, phase: "idle"\|"running"\|"done"\|"error", step, progress, state, stateName, total, received, error?}` — the upgrade flow's state from the **task registry plus the published snapshot**, never an AT access, so a page reload (or its 1 s poll) cannot queue behind the download it is reporting on |
 | `system.fota_start` | `{started: true}` — `{url}`; the address rules (`http://` only, empty rejected, trailing slash added, quote guard) are validated here and the module submits its `fota.system` task, which runs the whole flow: `ATE0`, `^FOTAMODE=0,1,0,1`, `^FOTAOEMDL="…"`, then the state machine (`^FOTASTATE?` every 1 s, `^FOTADLQ` progress on 30, resume on 31 at most once per 5 s, `^FWUP` on 40). Rejects with `BUSY` while a flow runs |
 | `system.fota_abort` | `{aborted}` — cancels the flow task; `{aborted: false}` when none ran. The WebUI's page has no cancel button (UI unchanged), so this is the terminal/API escape hatch |

@@ -29,6 +29,26 @@ pub fn required_num(params: &Value, key: &str) -> Result<i64, BackendError> {
     num(params, key).ok_or_else(|| missing(key))
 }
 
+/// Integer list parameter, or `None` when absent, not an array, or containing
+/// anything that is not a number.
+///
+/// Used by the threshold-table write, which takes nine values the modem itself
+/// orders — a partially-parsed list would silently shift the remaining rungs of
+/// the thermal ladder, so anything but a list of integers is rejected.
+pub fn num_list(params: &Value, key: &str) -> Option<Vec<i64>> {
+    let arr = params.get(key).and_then(|v| v.as_arr())?;
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        out.push(item.as_i64()?);
+    }
+    Some(out)
+}
+
+/// Integer list parameter, or a client error naming the missing field.
+pub fn required_num_list(params: &Value, key: &str) -> Result<Vec<i64>, BackendError> {
+    num_list(params, key).ok_or_else(|| missing(key))
+}
+
 /// Boolean parameter, or a client error naming the missing field.
 pub fn required_bool(params: &Value, key: &str) -> Result<bool, BackendError> {
     boolean(params, key).ok_or_else(|| missing(key))
@@ -81,5 +101,29 @@ mod tests {
         // Whitespace is not a value.
         let blank = obj(&[("operation", json::str_val("  "))]);
         assert!(required_text(&blank, "operation").is_err());
+    }
+
+    #[test]
+    fn num_list_reads_every_item_or_none() {
+        let nine: Vec<Value> = [60, 70, 65, 80, 75, 90, 85, 100, 95]
+            .iter()
+            .map(|n| json::num_val(*n))
+            .collect();
+        let p = obj(&[("thresholds", Value::Arr(nine.clone()))]);
+        assert_eq!(
+            num_list(&p, "thresholds"),
+            Some(vec![60, 70, 65, 80, 75, 90, 85, 100, 95])
+        );
+        assert_eq!(num_list(&p, "missing"), None);
+
+        // A single non-numeric entry must not yield a short list: the modem's
+        // threshold ladder is positional, so a shifted list is worse than an
+        // outright rejection.
+        let mixed = obj(&[("thresholds",
+            Value::Arr(vec![json::num_val(60), json::str_val("70")]))]);
+        assert_eq!(num_list(&mixed, "thresholds"), None);
+        let not_array = obj(&[("thresholds", json::str_val("60,70"))]);
+        assert_eq!(num_list(&not_array, "thresholds"), None);
+        assert!(required_num_list(&not_array, "thresholds").is_err());
     }
 }

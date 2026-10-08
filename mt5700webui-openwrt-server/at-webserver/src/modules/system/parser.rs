@@ -65,6 +65,42 @@ pub fn parse_power_control(raw: &str) -> Option<bool> {
     body.split(',').next()?.trim().parse::<i64>().ok().map(|n| n == 1)
 }
 
+/// `^LEDSWITCH: <0|1>` -> whether the module's status LED is enabled.
+///
+/// The page read this field as text and only compared it against `"1"`, so a
+/// modem answering anything else leaves the dropdown where it was.
+pub fn parse_ledswitch(raw: &str) -> Option<bool> {
+    let body = raw
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("^LEDSWITCH:"))?
+        .trim();
+    let v = body.split(',').next()?.trim().parse::<i64>().ok()?;
+    match v {
+        1 => Some(true),
+        0 => Some(false),
+        _ => None,
+    }
+}
+
+/// `^NWTIME: …` -> the timestamp as the network published it.
+///
+/// Returned **verbatim** (minus the quotes some firmwares wrap it in and the
+/// surrounding whitespace): the page displayed this string as-is and had no
+/// interpretation to move into the module. `None` when the modem does not
+/// answer with a time line — a registration-less modem has none.
+pub fn parse_nwtime(raw: &str) -> Option<String> {
+    let body = raw
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("^NWTIME:"))?
+        .trim();
+    let text = body.trim_matches('"').trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.to_string())
+    }
+}
+
 /// Split a vendor payload into numbers, accepting spaces and commas.
 fn numbers(body: &str) -> Vec<i64> {
     body.split(|c: char| c == ',' || c.is_whitespace())
@@ -194,6 +230,30 @@ mod tests {
         assert_eq!(parse_power_control("^TDPMCFG: 1\nOK"), Some(true));
         assert_eq!(parse_power_control("^TDPMCFG: 0\nOK"), Some(false));
         assert_eq!(parse_power_control("OK"), None);
+    }
+
+    #[test]
+    fn led_switch_read() {
+        assert_eq!(parse_ledswitch("^LEDSWITCH: 1\r\n\r\nOK"), Some(true));
+        assert_eq!(parse_ledswitch("^LEDSWITCH: 0\r\nOK"), Some(false));
+        // An out-of-range answer keeps the page's own value.
+        assert_eq!(parse_ledswitch("^LEDSWITCH: 2"), None);
+        assert_eq!(parse_ledswitch("+CME ERROR: 3"), None);
+    }
+
+    #[test]
+    fn network_time_is_passed_through_verbatim() {
+        assert_eq!(
+            parse_nwtime("^NWTIME: 2025/08/15 12:00:00\r\nOK").as_deref(),
+            Some("2025/08/15 12:00:00")
+        );
+        // Some firmwares quote the timestamp; the page stripped quotes too.
+        assert_eq!(
+            parse_nwtime("^NWTIME: \"2025/08/15 12:00:00\"").as_deref(),
+            Some("2025/08/15 12:00:00")
+        );
+        assert_eq!(parse_nwtime("^NWTIME: "), None);
+        assert_eq!(parse_nwtime("OK"), None);
     }
 
     #[test]

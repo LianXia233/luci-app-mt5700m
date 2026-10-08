@@ -13,6 +13,7 @@ use crate::transport::client::{self, AtError, AtOutcome, Mode, Settings};
 // historical local names so call sites and their tests stay readable.
 use crate::modules::ca::{commands as ca_commands, parser as ca_parser};
 use crate::modules::qos::{commands as qos_commands, parser as qos_parser, state::QosState};
+use crate::modules::system::commands as system_commands;
 use crate::modules::system::parser::parse_chiptemp;
 use crate::modules::system::state::TemperatureState;
 use crate::modules::network::parser::{
@@ -726,28 +727,21 @@ fn set_5g_access_mode(settings: &Settings, preset: &str) -> i32 {
     rc
 }
 
-fn valid_thermal_thresholds(args: &[String]) -> bool {
-    if args.len() != 9 {
-        return false;
-    }
-    let mut values = [0i64; 9];
-    for (i, a) in args.iter().enumerate() {
+/// Parse `advanced-set thermal-thresholds` arguments into the nine values the
+/// modem takes, or `None` when they are rejected (exit 64).
+///
+/// The rule itself moved to `system::commands` so the API route, this CLI verb
+/// and the WebUI cannot drift apart — the modem's ladder is one fact, kept in
+/// one place. Here we only turn strings into numbers.
+fn parse_thermal_thresholds(args: &[String]) -> Option<Vec<i64>> {
+    let mut values = Vec::with_capacity(args.len());
+    for a in args {
         match a.parse::<i64>() {
-            Ok(v) if (0..=150).contains(&v) => values[i] = v,
-            _ => return false,
+            Ok(v) => values.push(v),
+            Err(_) => return None,
         }
     }
-    // value[2] <= value[1] etc. means the shell awk exits 1 on violations:
-    // v2>v1, v4>v2, v6>v4, v8>v6 must hold, and v3<v2, v5<v4, v7<v6, v9<v8.
-    // awk indices are 1-based: value[2] > value[1] etc.
-    values[1] > values[0]
-        && values[3] > values[1]
-        && values[5] > values[3]
-        && values[7] > values[5]
-        && values[2] < values[1]
-        && values[4] < values[3]
-        && values[6] < values[5]
-        && values[8] < values[7]
+    system_commands::valid_thermal_thresholds(&values).then_some(values)
 }
 
 /// Send one SMS through the unified `sms.send` route on the daemon.
@@ -1315,7 +1309,7 @@ fn cmd_advanced_set(settings: &Settings, args: &[String]) -> i32 {
             _ => EXIT_USAGE,
         },
         "led" => match get(0) {
-            "0" | "1" => run_at(settings, &format!("AT^LEDSWITCH={}", get(0))),
+            "0" | "1" => run_at(settings, &system_commands::ledswitch(get(0) == "1")),
             _ => EXIT_USAGE,
         },
         "usb-mode" => {
@@ -1396,13 +1390,13 @@ fn cmd_advanced_set(settings: &Settings, args: &[String]) -> i32 {
             if !matches!(serial, "0" | "1") || !matches!(file, "0" | "1") {
                 return EXIT_USAGE;
             }
-            run_at(settings, &format!("AT^THERMLDLOGSW={},{}", serial, file))
+            run_at(settings, &system_commands::thermldlogsw(serial == "1", file == "1"))
         }
         "thermal-thresholds" => {
-            if !valid_thermal_thresholds(rest) {
+            let Some(values) = parse_thermal_thresholds(rest) else {
                 return EXIT_USAGE;
-            }
-            run_at(settings, &format!("AT^THERMLDAUTOPARA={}", rest.join(",")))
+            };
+            run_at(settings, &system_commands::thermldautopara(&values))
         }
         "carrier-aggregation" => match get(0) {
             "0" | "1" => run_at(settings, &format!("AT^NRRCCAPCFG=3,{}", get(0))),
@@ -1912,6 +1906,25 @@ mod tests {
             "AT^NRFREQLOCK=2,0,1,\"78\",\"643456\",\"0\",\"10\""
         );
         assert!(build_nr_lock_command("1", "78", "643456", "9", "").is_none());
+    }
+
+    #[test]
+    fn thermal_thresholds_contract() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<String>>();
+        let ok = &["60", "70", "65", "80", "75", "90", "85", "100", "95"];
+        let values = parse_thermal_thresholds(&s(ok)).expect("a valid ladder");
+        assert_eq!(
+            system_commands::thermldautopara(&values),
+            "AT^THERMLDAUTOPARA=60,70,65,80,75,90,85,100,95"
+        );
+        // The shell rejected these before the rewrite and still must: wrong
+        // count, a non-number, out of range, and a broken ladder.
+        assert!(parse_thermal_thresholds(&s(&ok[..8])).is_none());
+        assert!(parse_thermal_thresholds(&s(&["60", "x", "65", "80", "75", "90", "85", "100", "95"])).is_none());
+        assert!(parse_thermal_thresholds(&s(&["60", "151", "65", "80", "75", "90", "85", "100", "95"])).is_none());
+        assert!(parse_thermal_thresholds(&s(&["60", "60", "65", "80", "75", "90", "85", "100", "95"])).is_none());
+        assert_eq!(system_commands::thermldlogsw(true, false), "AT^THERMLDLOGSW=1,0");
+        assert_eq!(system_commands::ledswitch(true), "AT^LEDSWITCH=1");
     }
 
     #[test]

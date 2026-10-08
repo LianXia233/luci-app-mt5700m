@@ -11,12 +11,13 @@ use crate::core::error::BackendError;
 use crate::core::json::Value;
 use crate::core::task::Priority;
 use crate::modules::system::commands::{
-    self, CHIPTEMP, FACTORY_RESET, NIC_RATES, TDPCIELANCFG_QUERY, TDPMCFG_QUERY,
-    THERMAUTOFUN_QUERY, THERMLDAUTOPARA_QUERY, THERMLDAUTOSTATUS_QUERY, THERMLDLOGSW_QUERY,
+    self, CHIPTEMP, FACTORY_RESET, LEDSWITCH_QUERY, NIC_RATES, NWTIME_QUERY,
+    TDPCIELANCFG_QUERY, TDPMCFG_QUERY, THERMAUTOFUN_QUERY, THERMLDAUTOPARA_QUERY,
+    THERMLDAUTOSTATUS_QUERY, THERMLDLOGSW_QUERY, valid_thermal_thresholds,
 };
 use crate::modules::system::parser::{
-    parse_chiptemp, parse_nic_rate, parse_power_control, parse_thermautofun, parse_thermlevel,
-    parse_thermlogsw, parse_thermthresholds,
+    parse_chiptemp, parse_ledswitch, parse_nic_rate, parse_nwtime, parse_power_control,
+    parse_thermautofun, parse_thermlevel, parse_thermlogsw, parse_thermthresholds,
 };
 use crate::modules::system::state::{DeviceControlState, TemperatureState, ThermalState};
 use crate::scheduler::channel::run_in_task;
@@ -193,6 +194,81 @@ pub fn set_thermal(
         )));
     }
     ctx.action(&commands::thermautofun(enabled, ca_mimo, interval))?;
+    Ok(())
+}
+
+/// Read the module's status LED (`^LEDSWITCH?`).
+///
+/// A live read rather than a cached fact. An unanswered query is an error
+/// *here*; the `system.led` route turns that into an absent field so the page
+/// keeps the switch where the user left it.
+pub fn read_led(ctx: &RefreshCtx) -> Result<bool, BackendError> {
+    let text = ctx.read(
+        LEDSWITCH_QUERY,
+        CTRL_AT_TIMEOUT,
+        CTRL_QUEUED_TIMEOUT,
+        Priority::Normal,
+    )?;
+    // Same shape the other on-demand readers report (`^SYSCFGEX?`, `^SETMODE?`,
+    // `+CPIN?`): keep the raw frame so the operator sees what came back.
+    parse_ledswitch(&text).ok_or_else(|| {
+        BackendError::AtRejected(format!(
+            "^LEDSWITCH? answered an unknown shape: {}",
+            text.trim()
+        ))
+    })
+}
+
+/// Write the status LED (`^LEDSWITCH=<0|1>`).
+///
+/// The module stores the setting; it takes effect after a restart, which is
+/// what the page's confirmation dialog has always said.
+pub fn set_led(ctx: &RefreshCtx, on: bool) -> Result<(), BackendError> {
+    ctx.action(&commands::ledswitch(on))?;
+    Ok(())
+}
+
+/// Read the network-published time (`^NWTIME?`).
+///
+/// Returns the string the page used to slice out of the frame. A modem without
+/// registration has no time line; that is an error here, and the route answers
+/// `{}` so the card renders its own placeholder instead of a stale time.
+pub fn read_network_time(ctx: &RefreshCtx) -> Result<String, BackendError> {
+    let text = ctx.read(
+        NWTIME_QUERY,
+        CTRL_AT_TIMEOUT,
+        CTRL_QUEUED_TIMEOUT,
+        Priority::Normal,
+    )?;
+    parse_nwtime(&text).ok_or_else(|| {
+        BackendError::AtRejected(format!(
+            "^NWTIME? answered an unknown shape: {}",
+            text.trim()
+        ))
+    })
+}
+
+/// Write the nine thermal thresholds (`^THERMLDAUTOPARA=…`).
+///
+/// The rule the page and the CLI both applied before sending now lives here, so
+/// neither frontend has to keep a copy of the modem's ladder.
+pub fn set_thermal_thresholds(ctx: &RefreshCtx, values: &[i64]) -> Result<(), BackendError> {
+    if !valid_thermal_thresholds(values) {
+        return Err(BackendError::InvalidParameter(
+            "温度阈值需要 9 个 0-150°C 的值，且触发温度逐级升高、每一级恢复温度低于其触发温度".to_string(),
+        ));
+    }
+    ctx.action(&commands::thermldautopara(values))?;
+    Ok(())
+}
+
+/// Write the two thermal log switches (`^THERMLDLOGSW=<serial>,<file>`).
+pub fn set_thermal_log(
+    ctx: &RefreshCtx,
+    serial: bool,
+    file: bool,
+) -> Result<(), BackendError> {
+    ctx.action(&commands::thermldlogsw(serial, file))?;
     Ok(())
 }
 
