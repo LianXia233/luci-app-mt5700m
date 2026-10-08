@@ -9,7 +9,7 @@ std-only 零第三方依赖，不依赖 Python 运行时，也不用 cargo 索�
 
 | 入口 | 行为 |
 | --- | --- |
-| `/usr/bin/at-webserver` | WebSocket AT daemon（WebUI 后端，:8765） |
+| `/usr/bin/at-webserver` | WebSocket AT 守护进程（WebUI 后端，:8765） |
 | `/usr/sbin/mt5700m-at`（symlink） | LuCI shell 后端：子命令与输出契约和原 shell 版逐条对齐，LuCI 前端零改动 |
 
 ## 文件结构
@@ -29,15 +29,15 @@ std-only 零第三方依赖，不依赖 Python 运行时，也不用 cargo 索�
 ## 连接模式
 
 > v2.6 彻底重构：`UBUS` 模式与 `ubus-at-daemon` 已移除。LuCI 的 `mt5700m-at` 通过本地
-> 控制套接字（`/var/run/at-webserver.sock`）复用 daemon 独占的串口，`sms-tool_q` 也已
+> 控制套接字（`/var/run/at-webserver.sock`）复用守护进程独占的串口，`sms-tool_q` 也已
 > 移除（短信改为进程内纯 Rust PDU 编码）。
 
 | connection_type | 说明 | URC 推送 | 定时锁频调度器 |
 | --- | --- | --- | --- |
-| `SERIAL`（默认） | daemon 独占 PCUI 串口（`TIOCEXCL`）；LuCI 与 WebUI 共用 | 原生（来电/新短信/存储满/信号变化） | 可用 |
+| `SERIAL`（默认） | 守护进程独占 PCUI 串口（`TIOCEXCL`）；LuCI 与 WebUI 共用 | 原生（来电/新短信/存储满/信号变化） | 可用 |
 | `NETWORK` | 直连模组网络 AT 端口（host:20249） | 原生 | 可用 |
 
-串口由 daemon 独占打开。`serial_port=auto` 时开机自动扫描 `/dev/ttyUSB*` 按 VID/PID
+串口由守护进程独占打开。`serial_port=auto` 时开机自动扫描 `/dev/ttyUSB*` 按 VID/PID
 （`3466:3301`）+ 接口类型（`ff:06:12`）识别 PCUI，必要时以 `AT` 应答探测兜底；也可手动
 指定路径，或运行 `mt5700m-at port set <path|auto>` 一键选择。
 

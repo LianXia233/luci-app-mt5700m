@@ -1,9 +1,9 @@
-# Module guide: adding a feature
+# 模块指南：新增一个功能
 
-A feature is a module. It is never a new parser in a frontend, a new branch in
-`daemon.rs`, or a second copy of an existing decoder.
+一个功能就是一个模块。它绝不是前端里的一个新解析器、`daemon.rs` 里的
+一个新分支，也不是某个已有解码器的第二份拷贝。
 
-## 1. Layout
+## 1. 目录布局
 
 ```text
 src/modules/<name>/
@@ -15,16 +15,16 @@ src/modules/<name>/
 └── api.rs        routes() + text renderers for the CLI
 ```
 
-## 2. Steps
+## 2. 步骤
 
-1. **Commands** — put every AT literal the domain needs in `commands.rs`.
-   Nothing else in the module may contain an AT string.
-2. **Parser** — decode the response into a struct in `state.rs`. Tests go in
-   `parser.rs` (one per variant: happy path, vendor variant, error/absent).
-3. **State** — `to_json()` is the wire contract; keep the field names existing
-   consumers already read. If the CLI must print text, add `to_text()` here so
-   JSON and text can never disagree.
-4. **Service** — read with
+1. **命令** —— 把该领域需要的每一条 AT 字面量放进 `commands.rs`。
+   模块内其他地方不得出现任何 AT 字符串。
+2. **解析器** —— 把响应解码成 `state.rs` 里的结构体。测试放在
+   `parser.rs`（每种变体一个：正常路径、厂商变体、错误/缺失）。
+3. **状态** —— `to_json()` 就是线上契约；字段名沿用已有
+   消费方正在读取的那些。如果 CLI 必须打印文本，就在这里加 `to_text()`，
+   这样 JSON 与文本永远不会互相矛盾。
+4. **服务** —— 用下面的方式读取：
 
    ```rust
    ctx.read(cmd, at_timeout, queued_timeout, Priority::Low)?  // background
@@ -33,25 +33,25 @@ src/modules/<name>/
    ctx.action(cmd)?                                           // write
    ```
 
-   then publish with `ctx.store(TOPIC, EVENT, &state.to_json())` or fall back
-   with `ctx.stale(TOPIC, EVENT)`. Never touch `AtArbiter`, a tty or a socket.
-5. **Spawn** — call `run_in_task` from `spawn(tasks)`; register the job in
-   `modules::spawn_all`. Pick the period/TTL pair that matches the topic's
-   freshness promise.
-6. **API** — add `Route`s and register them in `api/registry.rs::routes()`.
-7. **Wire** — `mod.rs` (docs), `modules/mod.rs` (module + spawn), registry
-   (routes). That is the whole registration surface.
+   然后用 `ctx.store(TOPIC, EVENT, &state.to_json())` 发布，或用
+   `ctx.stale(TOPIC, EVENT)` 回退。绝不触碰 `AtArbiter`、tty 或套接字。
+5. **Spawn** —— 从 `spawn(tasks)` 里调用 `run_in_task`；在
+   `modules::spawn_all` 中注册该任务。挑选与该主题的
+   新鲜度承诺相匹配的周期/TTL 组合。
+6. **API** —— 添加 `Route` 并在 `api/registry.rs::routes()` 中注册。
+7. **接线** —— `mod.rs`（文档）、`modules/mod.rs`（模块 + spawn）、registry
+   （路由）。这就是全部的注册面。
 
-## 3. Checklist before committing
+## 3. 提交前检查清单
 
-* No AT literal outside `commands.rs`; no `crate::serial`, `crate::scheduler::arbiter`
-  or `std::net`/`std::fs` tty access in a module.
-* Every new response shape has a unit test with a real modem reply captured
-  from the field (truncated/odd variants included).
+* `commands.rs` 之外没有 AT 字面量；模块内没有 `crate::serial`、
+  `crate::scheduler::arbiter` 或 `std::net`/`std::fs` 的 tty 访问。
+* 每一种新的响应形状都有一个单元测试，样本是现场抓取的真实
+  调制解调器应答（含被截断的/异常的变体）。
 * `python3 scripts/rs-static-check.py mt5700webui-openwrt-server/at-webserver/src`
-  (module tree, `crate::` paths, call arity, local calls, trait impls, struct
-  fields, enum variants, stacked derives, unimported module-qualified calls and
-  overlapping closures on one local) and `cargo test` are clean; both run in
-  CI, and the checker's checks are themselves mutation-tested (see the "Errors &
-  dead ends" list in `migration.md`).
-* Frontend diff contains **no** AT strings and no new business rule.
+  （模块树、`crate::` 路径、调用元数、局部调用、trait 实现、结构体
+  字段、枚举变体、堆叠 derive、未导入的模块限定调用，以及同一个局部变量上
+  重叠的闭包）与 `cargo test` 均为干净；两者都在 CI 中运行，且该
+  检查器自身的检查也经过变异测试（见 `migration.md` 的「Errors &
+  dead ends」清单）。
+* 前端 diff 中**不**含 AT 字符串，也不含新的业务规则。

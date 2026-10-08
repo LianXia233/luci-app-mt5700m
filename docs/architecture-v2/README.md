@@ -1,6 +1,6 @@
-# MT5700M architecture v2
+# MT5700M 架构 v2
 
-One backend, two independent frontends:
+一个后端，两个彼此独立的前端：
 
 ```text
 LuCI ──rpc/ucode──┐
@@ -8,32 +8,31 @@ LuCI ──rpc/ucode──┐
 WebUI ──WebSocket─┘
 ```
 
-The backend owns the modem. Frontends own pixels: they render domain JSON,
-send named API calls, and keep only UI-local state (active tab, dialog, form
-contents, loading flags).
+后端拥有调制解调器。前端只拥有像素：它们渲染领域 JSON、
+发送具名的 API 调用，并只保留 UI 局部状态（当前标签页、弹窗、表单
+内容、加载标志）。
 
-## Documents
+## 文档
 
-| File | Contents |
+| 文件 | 内容 |
 | ---- | -------- |
-| [architecture.md](architecture.md) | Layers, module tree, dependency rules, what may depend on what |
-| [data-flow.md](data-flow.md) | The AT → Parser → Domain → Cache → API → UI pipeline, event bus, task lifecycle, single-AT-owner sequence |
-| [api-contract.md](api-contract.md) | Route table, envelopes per transport, compatibility guarantees (CLI/ucode/WebSocket) |
-| [module-guide.md](module-guide.md) | Recipe: add a feature as a module (State/Commands/Parser/Service/API) |
-| [migration.md](migration.md) | What moved in this refactor, what is verified, what remains |
+| [architecture.md](architecture.md) | 分层、模块树、依赖规则，以及谁可以依赖谁 |
+| [data-flow.md](data-flow.md) | AT → Parser → Domain → Cache → API → UI 流水线、事件总线、任务生命周期、单一 AT 所有者时序 |
+| [api-contract.md](api-contract.md) | 路由表、各传输层的信封、兼容性保证（CLI/ucode/WebSocket） |
+| [module-guide.md](module-guide.md) | 配方：把一个功能作为模块加入（State/Commands/Parser/Service/API） |
+| [migration.md](migration.md) | 本次重构迁走了什么、什么已被验证、还剩什么 |
 
-## The five rules
+## 五条规则
 
-1. **One AT owner.** The daemon's `serial::manager` holds the tty (TIOCEXCL).
-   Every other process reaches the modem through the control socket.
-2. **One implementation per capability.** A parser, a cache, an API handler or
-   a retry policy exists once, in the module that owns the domain.
-3. **Modules talk through interfaces, not internals.** `AtChannel` for AT,
-   `RefreshCtx` for cache+bus, `ApiCtx`/`Route` for the API, cached topics for
-   cross-module data. No module touches the serial port, the arbiter, another
-   module's private items or a frontend format.
-4. **One state source.** The daemon's `StateCache` + `EventBus` is the only
-   business state; frontends may not derive it from AT text.
-5. **UI is frozen.** Layout, styles, copy, routes and interaction flows are
-   unchanged by construction: the refactor moves *where data comes from*, never
-   what is drawn.
+1. **唯一 AT 所有者。** 守护进程的 `serial::manager` 持有 tty（TIOCEXCL）。
+   其他所有进程都通过控制套接字访问调制解调器。
+2. **每种能力只有一份实现。** 解析器、缓存、API 处理器或
+   重试策略都只存在一份，位于拥有该领域的模块内。
+3. **模块之间通过接口通信，而不是内部实现。** AT 用 `AtChannel`，
+   缓存 + 总线用 `RefreshCtx`，API 用 `ApiCtx`/`Route`，跨模块数据用
+   已缓存主题。任何模块都不得触碰串口、仲裁器、另一个
+   模块的私有成员或某种前端格式。
+4. **唯一状态源。** 守护进程的 `StateCache` + `EventBus` 是唯一的
+   业务状态；前端不得从 AT 文本推导状态。
+5. **UI 冻结。** 布局、样式、文案、页面路由与交互流程在构造上保持不变：
+   重构只改变*数据从哪来*，绝不改变画什么。
