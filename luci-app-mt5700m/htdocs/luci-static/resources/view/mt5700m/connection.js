@@ -26,7 +26,7 @@ return view.extend({
 		var previousManager = this.manager || {};
 		this.managerError = '';
 		// 模块设置区块读统一路由（Auto dial / Interface+DMZ / PDP 表 / 直通），
-		// `advanced connection-settings` 的五段文本帧与前端那份第二份解析随本刀
+		// `advanced connection-settings` 的五段文本帧与前端那份第二份解析随本批
 		// 消失。单条路由取不到时按旧行为降级（控件回落默认值 / 禁用）。
 		var settings = Promise.all([
 			api.route('network.autodial'),

@@ -18,7 +18,7 @@ return view.extend({
 	load: function() {
 		// 请求发起即返回，不阻塞首屏；render() 等 pending 填充。
 		//
-		// 本刀切掉最后一根 CLI 文本帧：22 段 `mt5700m-at system` 改由 15 条
+		// 本批切掉最后一根 CLI 文本帧：22 段 `mt5700m-at system` 改由 15 条
 		// display / on-demand 路由承担，同一批 AT 应答的第二份 JS 解码随之消失
 		// —— SIM PIN 码位数、温控阶梯这类规则现在只有后端一份。
 		// 单条路由取不到时按旧行为降级（该行留空 / 回落默认值），而不是整页报错。
