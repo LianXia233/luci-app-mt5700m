@@ -23,7 +23,7 @@
 //!     bounded by the arbiter.
 //!
 //! The manager is deliberately thread-light: task work is spawned per task,
-//! the AT channel is a single arbiter (see `at_queue`), and no UI path ever
+//! the AT channel is a single arbiter (see `scheduler::arbiter`), and no UI path ever
 //! blocks waiting for the modem — callers either read the cache or receive a
 //! `task_id` and observe events.
 

@@ -135,14 +135,19 @@ remaining-work）。
 luci-app-mt5700m/            OpenWrt 软件包（LuCI 前端 + ucode + init 脚本）
   htdocs/luci-static/resources/
     mt5700m/                 api.js / parser.js / components.js / style.css
-    view/mt5700m/            7 个标签页视图
+    view/mt5700m/            各标签页视图（status / connection / network / sms /
+                             system / advanced / terminal / settings）
 mt5700webui-openwrt-server/
   at-webserver/src/          Rust 后端（std-only，零第三方依赖）
-    read_gate.rs             ★ 读命令缓存闸门
-    daemon.rs                JSON-RPC / control socket / WS 接入
-    at_queue.rs              AT 仲裁器（优先级 + 去重 + 占位预算）
-    state_cache.rs           StateCache（SWR/TTL）
-    task_manager.rs          任务生命周期与周期调度
+    daemon.rs                组合根：JSON-RPC / control socket / WS 接入
+    scheduler/gate.rs        ★ 读命令缓存闸门
+    scheduler/arbiter.rs     AT 仲裁器（优先级 + 去重 + 占位预算）
+    scheduler/jobs.rs        任务生命周期与周期调度
+    state/cache.rs           StateCache（SWR/TTL）
+    state/bus.rs             EventBus（主题订阅 / 合并推送）
+    core/                    错误模型 / JSON / 运行时 / 任务原语 / 频段表
+    modules/<name>/          11 个领域模块（commands/parser/state/service/api）
+    serial/ · transport/ · api/   串口独占 / 传输层 / 路由 registry
   semi-tcpweb/               WebUI 前端（React + Semi Design）
 docs/async-architecture.md   异步化架构设计
 docs/architecture-v2/        架构 v2 设计（api-contract / data-flow / migration）

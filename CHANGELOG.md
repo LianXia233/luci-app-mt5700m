@@ -1,6 +1,24 @@
 # Changelog
 
+## [Unreleased]
 
+### Docs
+
+- **修正文档与代码的模块路径漂移**：架构 v2 把后端重组为
+  `core/` / `scheduler/` / `state/` / `serial/` / `transport/` / `modules/`
+  分层，但 README「目录结构」与 `docs/async-architecture.md`「模块职责」
+  两处仍列着重构前的扁平文件名，照文档在仓库里找不到任何文件。现按真实
+  布局重写，并同步修掉代码注释与文档里的同批残留引用（纯注释/文档改动，
+  零行为影响）：
+  - `read_gate.rs` → `scheduler/gate.rs`、`at_queue.rs` → `scheduler/arbiter.rs`、
+    `state_cache.rs` → `state/cache.rs`、`task_manager.rs` → `scheduler/jobs.rs`、
+    `event_bus.rs` → `state/bus.rs`、`device_monitor.rs` → `serial/presence.rs`；
+    `snapshot.rs` 的后台采集职责已并入 `scheduler/jobs.rs` 的周期任务与
+    模块 `service.rs`，表内改记为 `state/refresh.rs`（`RefreshCtx`）。
+  - `docs/async-architecture.md` 的 grep 清单来源 `src/cli.rs src/snapshot.rs`
+    → `src/api/cli.rs src/modules/*/commands.rs`；`state/bus.rs`、`state/cache.rs`、
+    `scheduler/gate.rs`、`scheduler/jobs.rs`、`daemon.rs` 中指向已消失文件的
+    注释一并更正。
 
 ---
 

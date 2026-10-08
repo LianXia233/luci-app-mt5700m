@@ -62,7 +62,7 @@ pub struct StateCache {
 /// Default per-topic TTLs (matched to the periodic refresh cadence).
 ///
 /// TTL 必须 ≥ 采集周期，否则缓存永远 stale。周期按 2026-10-04 设备实测
-/// 慢命令耗时放宽（见 snapshot.rs）：signal 15 s / registration 20 s /
+/// 慢命令耗时放宽（见 scheduler/jobs.rs 的周期任务定义）：signal 15 s / registration 20 s /
 /// network 30 s / cell 120 s / endc·txpower 300 s / nr_txpower 180 s。
 /// temperature 特殊：mt5700m-manager 每 15 s 通过 `mt5700m-at temperature`
 /// （缓存优先）刷新温度缓存，TTL 必须大到两次采集之间始终命中缓存，

@@ -67,8 +67,8 @@ pub const TOPIC_BEAM: &str = "beam";
 pub const TOPIC_ENDC: &str = "endc";
 pub const TOPIC_TXPOWER: &str = "txpower";
 pub const TOPIC_NR_TXPOWER: &str = "nr_txpower";
-/// Interface byte counters + the shared traffic history (see snapshot.rs
-/// `collect_netrate`). Same physical source LuCI reads via
+/// Interface byte counters + the shared traffic history (see
+/// `modules/traffic/netrate.rs`). Same physical source LuCI reads via
 /// `mt5700m-traffic`, so both UIs agree on one number.
 pub const TOPIC_NETRATE: &str = "netrate";
 /// Prefix for the read-gate's per-command raw cache (`raw:AT+CPIN?`).

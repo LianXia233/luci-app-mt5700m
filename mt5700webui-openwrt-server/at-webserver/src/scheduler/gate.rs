@@ -218,7 +218,7 @@ pub fn is_read_command(command: &str) -> bool {
         "AT^SYSINFOEX", // 系统信息扩展（无参查询，代价高）
         "AT^DSFLOWQRY", // 数据流统计
         "AT^FOTADLQ",   // FOTA 下载进度
-        // 信号强度。3GPP 标准读命令，**没有 ? 后缀**。at_queue.rs 里的
+        // 信号强度。3GPP 标准读命令，**没有 ? 后缀**。scheduler/arbiter.rs 里的
         // 网速测量（spec_fast("AT+CSQ")）和 LuCI 信号格都依赖它。
         // 实测漏判时每次刷新都真发一条 AT。
         "AT+CSQ",
@@ -549,14 +549,14 @@ mod tests {
         }
     }
 
-    /// 全量反查：后端 cli.rs / snapshot.rs 里真实下发的每一条读命令，
+    /// 全量反查：后端 api/cli.rs 与各模块 commands.rs 里真实下发的每一条读命令，
     /// 都必须被判读。
     ///
     /// 这条测试是「漏一条就回归」的最后一道防线。上面几条是点状的
     /// 已知用例；这条是集合级的——新增读命令若忘了加白名单或加 `?`，
     /// 立刻在这里失败，而不是等到实机表现为「页面偶尔不显示数据」。
     ///
-    /// 清单来源：`grep -ohE '"AT[+^&][^"]*"' src/cli.rs src/snapshot.rs`
+    /// 清单来源：`grep -ohE '"AT[+^&][^"]*"' src/api/cli.rs src/modules/*/commands.rs`
     /// （只收录纯查询形式，剔除所有 `=` 赋值 / 动作命令）。
     /// 改动AT 调用点后请重新 grep 同步本清单。
     #[test]

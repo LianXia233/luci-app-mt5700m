@@ -1542,7 +1542,7 @@ mod tests {
     fn control_send_with_no_transport_errors() {
         // Serial not connected => daemon reports ok=false with an error.
         //
-        // 刻意用**写命令** `AT+CFUN=0`：读命令会被 read_gate 闸门拦下
+        // 刻意用**写命令** `AT+CFUN=0`：读命令会被缓存闸门（scheduler/gate.rs）拦下
         // （返回 pending 占位），那样就测不到「无传输时报错」这条路径了。
         let mut req = std::collections::BTreeMap::new();
         req.insert("cmd".to_string(), json::str_val("send"));
@@ -1761,7 +1761,7 @@ mod tests {
         });
         // 无 auth_key -> 拒绝
         //
-        // 用写命令 `AT+CFUN=0` 作载体：读命令会被 read_gate 闸门拦成
+        // 用写命令 `AT+CFUN=0` 作载体：读命令会被缓存闸门（scheduler/gate.rs）拦成
         // pending（success=true），那样就断不出「无传输 -> success=false」
         // 这条路径了。本测试关注的是鉴权，不是读命令的缓存行为。
         let resp = handle_rpc_request(

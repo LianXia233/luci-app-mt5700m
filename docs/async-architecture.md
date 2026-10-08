@@ -61,15 +61,18 @@
 
 | 模块 | 职责 |
 |:---|:---|
-| `runtime.rs` | 轻量线程运行时工具（`spawn_thread` / `next_id` / `now_ms`），std-only 低依赖，保持静态链接与 OpenWrt 交叉编译稳定 |
-| `error.rs` | 统一错误模型 `BackendError`：机器可读 `code` + 人类可读 `message` + `retryable`；禁止打印 IMEI/IMSI/短信内容等敏感数据 |
-| `task.rs` | 任务模型：生命周期、`Priority` 档次、超时/重试策略、JSON 序列化 |
-| `task_manager.rs` | 任务调度中心：注册/跟踪/取消/超时/周期任务，发布 `task.*` 生命周期事件 |
-| `at_queue.rs` | **AtArbiter**：单执行线程串行化全部 AT，优先级/去重/超时/重试/独占/协作取消/背压 |
-| `state_cache.rs` | **StateCache（SWR）**：signal/network/registration/temperature/traffic/cell/sim/modem/usb |
-| `event_bus.rs` | **EventBus**：主题订阅/发布，高频遥测 100ms 合并（coalescing），task/usb/modem/sms/scan 即时直推 |
-| `snapshot.rs` | 后台状态采集器：周期抓取快照写入 StateCache，开机预热 |
-| `device_monitor.rs` | USBNotify 热插拔监视：缓存失效、取消无效任务、重连传输层、推事件 |
+| `core/runtime.rs` | 轻量线程运行时工具（`spawn_thread` / `next_id` / `now_ms`），std-only 低依赖，保持静态链接与 OpenWrt 交叉编译稳定 |
+| `core/error.rs` | 统一错误模型 `BackendError`：机器可读 `code` + 人类可读 `message` + `retryable`；禁止打印 IMEI/IMSI/短信内容等敏感数据 |
+| `core/task.rs` | 任务模型：生命周期、`Priority` 档次、超时/重试策略、JSON 序列化 |
+| `core/radio.rs` | 全后端唯一的 ARFCN → 频段表 |
+| `scheduler/jobs.rs` | 任务调度中心（`TaskManager`）：注册/跟踪/取消/超时/周期任务（周期抓取快照写入 StateCache、开机预热），发布 `task.*` 生命周期事件 |
+| `scheduler/arbiter.rs` | **AtArbiter**：单执行线程串行化全部 AT，优先级/去重/超时/重试/独占/协作取消/背压 |
+| `scheduler/gate.rs` | **读命令缓存闸门**：读命令命中 raw 缓存即零 AT 返回，写命令直通 |
+| `scheduler/plan.rs` | 昼夜频段锁定计划：按时间应用 `^LTEFREQLOCK` / `^NRFREQLOCK` |
+| `state/cache.rs` | **StateCache（SWR）**：signal/network/registration/temperature/traffic/cell/sim/modem/usb |
+| `state/bus.rs` | **EventBus**：主题订阅/发布，高频遥测 100ms 合并（coalescing），task/usb/modem/sms/scan 即时直推 |
+| `state/refresh.rs` | **RefreshCtx**：模块 service 共用的刷新上下文（AT + 缓存 + 总线），退避/陈旧回退/占空比让行策略只此一份 |
+| `serial/presence.rs` | **设备监视器**：USB 热插拔监督（在位 / 模式变化 → 缓存失效、取消无效任务、重连传输层、推事件） |
 | `daemon.rs` | 接线层：HTTP/控制套接字/WebSocket→「读缓存 / 下发任务」，WebSocket 事件推送 |
 
 ## 4. Task Scheduler 设计
@@ -194,9 +197,9 @@ connect → 可选 { action: subscribe, topics:[...] } → 服务端只推订阅
 - `paramless_queries_count_as_read` —— 无参查询判读
 - `paramless_actions_stay_write` —— `AT^CELLSCAN` / `AT&F0` 等动作仍判写
 - `all_backend_read_commands_are_classified_as_read` —— **全量反查**：清单来自
-  `grep -ohE '"AT[+^&][^"]*"' src/cli.rs src/snapshot.rs`，新增读命令忘加白名单
+  `grep -ohE '"AT[+^&][^"]*"' src/api/cli.rs src/modules/*/commands.rs`，新增读命令忘加白名单
   会立刻测试失败，而不是等到实机表现为「页面偶尔不显示数据」。这条测试当场
-  抓出漏判的 `AT+CSQ`（信号强度，at_queue网速测量依赖它）与 `AT^SYSINFOEX`。
+  抓出漏判的 `AT+CSQ`（信号强度，arbiter 网速测量依赖它）与 `AT^SYSINFOEX`。
 - `non_cid_param_variants_stay_write` —— `AT^NRRCCAPCFG=5,1,0`（真赋值）
   不得被 `AT^NRRCCAPQRY=`（查询）的前缀规则误收。
 
