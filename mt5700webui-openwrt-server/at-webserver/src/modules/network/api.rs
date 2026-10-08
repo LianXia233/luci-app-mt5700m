@@ -54,6 +54,11 @@ pub fn routes() -> Vec<Route> {
         Route::display("network.autodial", autodial),
         Route::display("network.usb_mode", usb_mode),
         Route::display("network.interface_cfg", interface_cfg),
+        // The advanced page's two interface writes. SETMODE=7 (MBIM) stays
+        // rejected — the CLI verb marked it temporarily unsupported and the
+        // page's own selector never offered it.
+        Route::on_demand("network.usb_mode_set", usb_mode_set),
+        Route::on_demand("network.interface_mode_set", interface_mode_set),
         Route::display("network.pdp_contexts", pdp_contexts),
         // 定时锁频：配置在 UCI 里（`scheduler::plan` 每 15 s 读一次生效），
         // 读路由给页面快照，写路由只落盘不碰模组 —— LuCI 的 `AT+SCHED*`
@@ -153,6 +158,34 @@ fn interface_cfg(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
         Ok(st) => Ok(st.to_json()),
         Err(_) => Ok(crate::modules::network::state::InterfaceCfgState::default().to_json()),
     }
+}
+
+/// Set the USB network-driver profile (`AT^SETMODE=<0-6|8>`).
+///
+/// SETMODE=7 (MBIM) stays rejected: the CLI verb marked it temporarily
+/// unsupported and the page's own selector never offered it.
+fn usb_mode_set(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+    let mode = required_num(params, "mode")?;
+    if !(0..=8).contains(&mode) || mode == 7 {
+        return Err(BackendError::InvalidParameter(
+            "network.usb_mode_set needs mode 0-6 or 8 (7 = MBIM, temporarily unsupported)"
+                .to_string(),
+        ));
+    }
+    ctx.refresh().action(&commands::set_mode(mode as u8))?;
+    Ok(applied_json())
+}
+
+/// Set the interface operating mode (`AT^TDCFG="infcfg","mode",<1|2>`).
+fn interface_mode_set(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+    let mode = required_num(params, "mode")?;
+    let command = commands::tdcfg_mode(mode).ok_or_else(|| {
+        BackendError::InvalidParameter(
+            "network.interface_mode_set needs mode 1 or 2".to_string(),
+        )
+    })?;
+    ctx.refresh().action(&command)?;
+    Ok(applied_json())
 }
 
 /// PDP context table (`+CGDCONT?` + `+CGACT?`) — `{contexts: [...]}`.

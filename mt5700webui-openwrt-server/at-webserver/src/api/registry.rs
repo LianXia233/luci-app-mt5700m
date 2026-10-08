@@ -289,6 +289,8 @@ mod tests {
             "network.direct_ip_set" => pairs(&[("enabled", Value::Bool(true))]),
             "network.postroute_set" => pairs(&[("mode", json::num_val(2))]),
             "network.dmz_set" => pairs(&[("host", json::str_val("0"))]),
+            "network.usb_mode_set" => pairs(&[("mode", json::num_val(4))]),
+            "network.interface_mode_set" => pairs(&[("mode", json::num_val(1))]),
             "network.syscfg_set" => pairs(&[
                 ("acqorder", json::str_val("080302")),
                 ("band", json::str_val("3FFFFFFF")),

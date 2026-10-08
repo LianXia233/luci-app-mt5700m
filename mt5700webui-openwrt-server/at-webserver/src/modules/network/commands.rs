@@ -522,6 +522,14 @@ pub fn tdcfg_postroute(mode: i64) -> Option<String> {
     }
 }
 
+/// `AT^TDCFG="infcfg","mode",<mode>` — interface operating mode (1|2).
+pub fn tdcfg_mode(mode: i64) -> Option<String> {
+    match mode {
+        1 | 2 => Some(format!("AT^TDCFG=\"infcfg\",\"mode\",{mode}")),
+        _ => None,
+    }
+}
+
 /// `AT^TDCFG="infcfg","dmz","<host>"` — host `0` disables, same command.
 pub fn tdcfg_dmz(host: &str) -> Option<String> {
     if !valid_dmz_host(host) {
@@ -689,6 +697,14 @@ mod tests {
         let items = [item(Some(3), Some(1850), Some(900), None)];
         assert!(lock_command_for(LockKind::Lte, 2, 0, &items).is_none());
         assert!(lte_lock_command("2", "3", "1850", "900").is_none());
+    }
+
+    #[test]
+    fn tdcfg_mode_shape() {
+        assert_eq!(tdcfg_mode(1).as_deref(), Some("AT^TDCFG=\"infcfg\",\"mode\",1"));
+        assert_eq!(tdcfg_mode(2).as_deref(), Some("AT^TDCFG=\"infcfg\",\"mode\",2"));
+        assert_eq!(tdcfg_mode(0), None);
+        assert_eq!(tdcfg_mode(3), None);
     }
 
     #[test]

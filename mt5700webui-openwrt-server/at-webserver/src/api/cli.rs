@@ -1304,17 +1304,21 @@ fn cmd_advanced_set(settings: &Settings, args: &[String]) -> i32 {
         "usb-mode" => {
             // SETMODE=7 (MBIM) is marked temporarily unsupported.
             match get(0) {
-                "0" | "1" | "2" | "3" | "4" | "5" | "6" | "8" => {
-                    run_at(settings, &format!("AT^SETMODE={}", get(0)))
-                }
+                "0" | "1" | "2" | "3" | "4" | "5" | "6" | "8" => run_at(
+                    settings,
+                    &network_commands::set_mode(get(0).parse::<u8>().unwrap_or(0)),
+                ),
                 _ => EXIT_USAGE,
             }
         }
         "interface-mode" => match get(0) {
-            "1" | "2" => run_at(
-                settings,
-                &format!("AT^TDCFG=\"infcfg\",\"mode\",{}", get(0)),
-            ),
+            "1" | "2" => match get(0).parse::<i64>() {
+                Ok(mode) => match network_commands::tdcfg_mode(mode) {
+                    Some(cmd) => run_at(settings, &cmd),
+                    None => EXIT_USAGE,
+                },
+                Err(_) => EXIT_USAGE,
+            },
             _ => EXIT_USAGE,
         },
         "postroute" => {

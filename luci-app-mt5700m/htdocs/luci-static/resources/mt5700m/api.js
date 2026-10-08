@@ -207,7 +207,6 @@ function cachedSnapshot() {
 
 /* ---------- AT 子命令速记 ---------- */
 
-function atHardware()          { return atSafe([ 'advanced', 'hardware' ]); }
 function atCommand(cmd)        { return at([ 'command', cmd ]); }
 
 /* ---------- 累计流量 / 实时速率（单后端） ---------- */
@@ -290,6 +289,5 @@ return baseclass.extend({
 	cachedSnapshot: cachedSnapshot,
 	route: route,
 	routeCall: routeCall,
-	atHardware: atHardware,
 	atCommand: atCommand,
 });

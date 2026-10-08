@@ -402,6 +402,83 @@ function settingsRouteAnswers(f) {
 	};
 }
 
+/* -------------------------------------------------- 高级设置页（advanced）
+ *
+ * `advanced hardware` 的 8 段读帧与 5 条读路由载荷的双形态。TDPCIELANCFG
+ * 样本带 `,0` 尾巴（姊妹项目 mock-modem 同款形态，旧正则只取首字段）；
+ * THERMAUTOFUN 用空格分隔（parse_thermautofun 单测样本同款，旧正则
+ * `[,\s]+` 两种都认）。tdcfg 直接引用 SETTINGS_FACTS 的同一段真相。
+ */
+const ADVANCED_FACTS = {
+	setmode: '4',
+	// 主样本用冒号紧跟形态（旧正则可解析）证明「迁移无漂移」；SETTINGS_FACTS
+	// 的 tdcfg 是 Mode 带空格形态（连接页不读 Mode，无影响），advanced 页把它
+	// 留给 prove 的盲区组单独点名（Mode : x → 旧正则不识别，有意修复）。
+	tdcfg: 'Mode: 1\nPostRoute: 1\nDmz: 192.168.8.100',
+	tdpcielancfg: '2,0',
+	tdpmcfg: '1,0,0,0',
+	ledswitch: '1',
+	tdsimhp: '1',
+	scichg: '0',
+	thermautofun: '1 0 30'
+};
+
+function advancedFacts(overrides) {
+	return Object.assign({}, ADVANCED_FACTS, overrides || {});
+}
+
+function advancedFrame(f) {
+	return textFrame([
+		[ 'USB mode', 'AT^SETMODE?', '^SETMODE: ' + f.setmode ],
+		[ 'Interface mode', 'AT^TDCFG?', f.tdcfg ],
+		[ 'NIC speed', 'AT^TDPCIELANCFG?', '^TDPCIELANCFG: ' + f.tdpcielancfg ],
+		[ 'PCIe controller', 'AT^TDPMCFG?', '^TDPMCFG: ' + f.tdpmcfg ],
+		[ 'LED', 'AT^LEDSWITCH?', '^LEDSWITCH: ' + f.ledswitch ],
+		[ 'SIM hotplug', 'AT^TDSIMHP?', '^TDSIMHP: ' + f.tdsimhp ],
+		[ 'SIM slot', 'AT^SCICHG?', '^SCICHG: ' + f.scichg ],
+		[ 'Thermal control', 'AT^THERMAUTOFUN?', '^THERMAUTOFUN: ' + f.thermautofun ]
+	]);
+}
+
+/* 5 条读路由的载荷。解析规则对齐 Rust 侧：parse_usb_mode（无前缀数字行也认）、
+ * parse_interface_cfg（Mode/PostRoute/Dmz 宽松键序）、device_control 的首字段
+ * 语义（TDPCIELANCFG 首字段 = PHY profile，TDPMCFG 首字段 = 开关）、
+ * parse_thermautofun（前三个数字 = enabled/caMimo/interval）。缺席键不出现，
+ * 与 Rust 的 Option 字段一致。 */
+function advancedRouteResults(f) {
+	const cfg = settingsRouteResults({ tdcfg: f.tdcfg }).interface_cfg;
+	const nicFields = String(f.tdpcielancfg).split(',');
+	const pmFields = String(f.tdpmcfg).split(',');
+	const deviceControl = {};
+	if (digits(nicFields[0])) deviceControl.nic_rate = Number(nicFields[0]);
+	if (digits(pmFields[0])) deviceControl.power_control = pmFields[0] === '1';
+	const thermParts = String(f.thermautofun).split(/[,\s]+/).filter(Boolean);
+	const thermal = {};
+	if (thermParts.length >= 3) {
+		thermal.enabled = thermParts[0] === '1';
+		thermal.caMimoSwitch = thermParts[1] === '1';
+		thermal.interval = Number(thermParts[2]);
+	}
+	return {
+		usb_mode: digits(String(f.setmode)) ? { mode: Number(f.setmode) } : {},
+		interface_cfg: cfg,
+		device_control: deviceControl,
+		sim_slot: { slot: Number(f.scichg), hotplug: f.tdsimhp === '1' },
+		thermal: thermal
+	};
+}
+
+function advancedRouteAnswers(f) {
+	const r = advancedRouteResults(f);
+	return {
+		'route:network.usb_mode': r.usb_mode,
+		'route:network.interface_cfg': r.interface_cfg,
+		'route:system.device_control': r.device_control,
+		'route:sim.slot': r.sim_slot,
+		'route:system.thermal': r.thermal
+	};
+}
+
 /* ------------------------------------------------------- 系统页（system）
  *
  * `mt5700m-at system` 的 22 段读帧。与 sessionFacts 同一套模式：事实对象 →
@@ -562,6 +639,7 @@ module.exports = {
 	SENSORS, SENSOR_KEYS,
 	sessionFacts, advancedSessionFrame, sessionPayload,
 	SETTINGS_FACTS, settingsFacts, connectionSettingsFrame, settingsRouteResults, settingsRouteAnswers,
+	ADVANCED_FACTS, advancedFacts, advancedFrame, advancedRouteResults, advancedRouteAnswers,
 	SYSTEM_FACTS, systemFacts, systemCliFrame,
 	SYSTEM_ROUTES, systemRouteResults, systemRouteAnswers,
 };

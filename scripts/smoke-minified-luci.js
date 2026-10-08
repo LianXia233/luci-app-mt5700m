@@ -24,7 +24,12 @@
  *     （modem.get … system.fota），10 条写入走 network.radio_set / sim.slot_set /
  *     modem.reset / system.factory_reset / sim.pin_apply / modem.imei_set /
  *     system.led_set / sim.activation_set / system.thermal_thresholds_set +
- *     system.thermal_log_set，仅保留 FOTA 三步动词。
+ *     system.thermal_log_set，仅保留 FOTA 三步动词；
+ *   - 高级设置页：零 CLI —— 8 段 hardware 读帧已切成 5 条读路由
+ *     （network.usb_mode / network.interface_cfg / system.device_control /
+ *     sim.slot / system.thermal），6 条写入走 network.usb_mode_set /
+ *     system.power_control_set / system.nic_rate_set / network.interface_mode_set /
+ *     sim.hotplug_set / system.thermal_set。
  * 断言路由调用面、页面上的关键文字（盘面读数、无线偏好下拉、会话侧栏、概览页的
  * APN/QCI/速率/号码、系统页的身份/温度/运营商）与写路径（短信发送、清空计数、
  * 连接页三条写入抽样、系统页四条写入）。退出码 0 = 通过。
@@ -276,6 +281,46 @@ async function connectionPage() {
 }
 
 /* ------------------------------------------------------------ 系统页 */
+async function advancedPage() {
+	// 不挂 atHardware、不喂 at:advanced 帧：新页 load() 只走 5 条读路由，
+	// 任何残留的 CLI 读帧调用都会在这里直接崩掉（这本身就是断言）。
+	const api = lib.makeApi(fixtures.advancedRouteAnswers(fixtures.ADVANCED_FACTS));
+	const side = lib.loadSide(read, api, RES + '/view/mt5700m/advanced.js');
+	side.view.load();
+	const holder = side.view.render();
+	await side.view.contentReady;
+	for (let i = 0; i < 20; i++) await lib.tick();
+	const at = api.calls.filter((c) => c.kind === 'at').map((c) => c.args.join(' '));
+	check('高级设置页：零 CLI 调用（8 段读帧已切成路由）', sameJson(at, []), JSON.stringify(at));
+	const routes = api.calls.filter((c) => c.kind === 'route').map((c) => c.name);
+	check('高级设置页：5 条读路由（顺序即 load() 的 Promise.all）',
+		sameJson(routes, [ 'network.usb_mode', 'network.interface_cfg', 'system.device_control', 'sim.slot', 'system.thermal' ]),
+		JSON.stringify(routes));
+	const selects = lib.collect(holder, (n) => n.tagName === 'SELECT').map((n) => String(n.value));
+	check('高级设置页：控件取值来自路由载荷（USB 4 / PCIe 开 / PHY 2 / 接口模式 1 / 热插拔开 / 温控开 30s）',
+		sameJson(selects, [ '4', '1', '2', '1', '1', '1', '30' ]), JSON.stringify(selects));
+	check('高级设置页：SIM 槽读数来自 sim.slot 载荷', lib.textOf(holder).indexOf('External SIM') !== -1);
+	/* 写入抽样：一条本批新增（usb_mode_set）+ 一条复用系统页（thermal_set） */
+	api.calls.length = 0;
+	lib.pressButton(holder, 'Apply USB mode');
+	lib.modalButton(side.scope, 'Apply');
+	for (let i = 0; i < 6; i++) await lib.tick();
+	let calls = api.calls.filter((c) => c.kind === 'routeCall');
+	check('高级设置页：USB 模式走 network.usb_mode_set（零 CLI）',
+		calls.length === 1 && calls[0].name === 'network.usb_mode_set'
+		&& sameJson(calls[0].params, { mode: 4 }) && api.calls.every((c) => c.kind !== 'at'),
+		JSON.stringify(api.calls));
+	api.calls.length = 0;
+	lib.pressButton(holder, 'Apply thermal settings');
+	lib.modalButton(side.scope, 'Apply');
+	for (let i = 0; i < 6; i++) await lib.tick();
+	calls = api.calls.filter((c) => c.kind === 'routeCall');
+	check('高级设置页：温控走 system.thermal_set（enabled+interval 键序钉住）',
+		calls.length === 1 && calls[0].name === 'system.thermal_set'
+		&& sameJson(calls[0].params, { enabled: true, interval: 30 }),
+		JSON.stringify(api.calls));
+}
+
 async function systemPage() {
 	// 不挂 atSystem、不喂 at:system 帧：新页 load() 只走 15 条路由，
 	// 任何残留的 CLI 读帧调用都会在这里直接崩掉（这本身就是断言）。
@@ -351,7 +396,8 @@ async function systemPage() {
 	await statusPage();
 	await connectionPage();
 	await systemPage();
-	console.log(failures === 0 ? '\nSMOKE OK：压缩后的无线页 / 短信页 / 概览页 / 连接页 / 系统页照常读路由、照常发送' : '\nSMOKE FAIL：' + failures + ' 项');
+	await advancedPage();
+	console.log(failures === 0 ? '\nSMOKE OK：压缩后的无线页 / 短信页 / 概览页 / 连接页 / 系统页 / 高级设置页照常读路由、照常发送' : '\nSMOKE FAIL：' + failures + ' 项');
 	process.exit(failures === 0 ? 0 : 1);
 })().catch(function (err) {
 	console.error('渲染失败：' + (err && err.stack || err));
