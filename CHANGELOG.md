@@ -58,6 +58,12 @@
   `MINIFY_LUCI_FRONTEND=1 ./scripts/build-release.sh` 一键打开。
   WebUI（/5700 React bundle）为仓库内置 prebuilt 产物，本就不参与编译期压缩，
   维持不变。
+- **修复 release 构建的 SDK 下载偶发失败**：`build-release.sh` 下载
+  `downloads.openwrt.org` 的 SDK 时出现过
+  `curl: (92) HTTP/2 stream 1 was not closed cleanly: PROTOCOL_ERROR`，
+  直接中断发版。两处下载统一改用 curl 选项数组强制 HTTP/1.1 并加
+  `--retry-all-errors`（`--retry` 对协议错误默认不生效）、`--retry-delay 5`、
+  `--connect-timeout 30`；原先 `sha256sums` 那次下载连重试都没有，一并补上。
 
 ---
 

@@ -9,10 +9,21 @@ base_url="https://downloads.openwrt.org/snapshots/targets/mediatek/filogic"
 mkdir -p "${work_dir}" "${output_dir}"
 find "${output_dir}" -mindepth 1 -maxdepth 1 -delete
 cd "${work_dir}"
-curl -fsSLO "${base_url}/sha256sums"
+
+# SDK downloads from downloads.openwrt.org occasionally die mid-stream with
+#   curl: (92) HTTP/2 stream 1 was not closed cleanly: PROTOCOL_ERROR (err 1)
+# which aborted a release build outright.  `--retry` alone does NOT cover
+# this: curl classifies a protocol error as a non-transient failure.  Force
+# HTTP/1.1 (the CDN is reliable over 1.1 and the SDK tarball is ~300 MB, so
+# the multiplexing win is irrelevant) and add --retry-all-errors so a broken
+# stream is retried instead of ending the run.
+CURL_OPTS=(--http1.1 --fail --location --retry 5 --retry-all-errors
+           --retry-delay 5 --connect-timeout 30)
+
+curl -sS "${CURL_OPTS[@]}" -O "${base_url}/sha256sums"
 archive="$(awk '/openwrt-sdk-.*Linux-x86_64\.tar\.zst$/ { print $2; exit }' sha256sums | sed 's/^\*//')"
 test -n "${archive}"
-curl -fL --retry 5 "${base_url}/${archive}" -o "${archive}"
+curl -sS "${CURL_OPTS[@]}" -o "${archive}" "${base_url}/${archive}"
 grep "[ *]${archive}$" sha256sums | sha256sum -c -
 tar --zstd -xf "${archive}"
 sdk_dir="$(find "${work_dir}" -maxdepth 1 -type d -name 'openwrt-sdk-*' | head -n 1)"
