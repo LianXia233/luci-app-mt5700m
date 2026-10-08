@@ -58,12 +58,16 @@
   `MINIFY_LUCI_FRONTEND=1 ./scripts/build-release.sh` 一键打开。
   WebUI（/5700 React bundle）为仓库内置 prebuilt 产物，本就不参与编译期压缩，
   维持不变。
-- **修复 release 构建的 SDK 下载偶发失败**：`build-release.sh` 下载
-  `downloads.openwrt.org` 的 SDK 时出现过
-  `curl: (92) HTTP/2 stream 1 was not closed cleanly: PROTOCOL_ERROR`，
-  直接中断发版。两处下载统一改用 curl 选项数组强制 HTTP/1.1 并加
-  `--retry-all-errors`（`--retry` 对协议错误默认不生效）、`--retry-delay 5`、
-  `--connect-timeout 30`；原先 `sha256sums` 那次下载连重试都没有，一并补上。
+- **修复 release 构建的 SDK 下载失败**：发版时 `downloads.openwrt.org` 的
+  ~263 MB SDK 会在传输途中断流（`curl: (92) HTTP/2 PROTOCOL_ERROR`、
+  `curl: (18) transfer closed with N bytes remaining`），直接中断发版。
+  `build-release.sh` 改用断点续传循环 `download()`：`curl -C -` 让每轮保留
+  已下字节只补剩余部分（原来的 `--retry` 每次都从 0 重来，补不齐最后 20 MB）；
+  统一 `--http1.1` 绕开 HTTP/2 问题；未指定大小时自动取 `Content-Length`
+  作为期望值，据此判定「下载完成」而非「被截断」（否则 sha256sums 下完仍会
+  空转到轮次上限）；服务端正常收尾（rc=0 且字节未变）与 curl 33（文件已完整）
+  都按成功处理；连续 3 轮零推进才判定链路死亡；`sha256sums` 若续传后内容
+  不含 SDK 条目则清档重下。
 
 ---
 
