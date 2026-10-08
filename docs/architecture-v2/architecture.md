@@ -16,7 +16,7 @@ WebUI  WebSocket ─────────▶ daemon WS RPC                  �
 不存在第二个后端。历史上的 `mt5700m-manager` shell 脚本与
 `mt5700m-traffic` 计费守护进程保留为*系统辅助*，由 init/rpcd 胶水层调用；
 它们对 AT 可见的行为都经由守护进程转发（见
-[data-flow.md](data-flow.md) §6）。`mt5700m-traffic` 是流量历史文件的
+[data-flow.md]（data-flow.md 第 6 节）。`mt5700m-traffic` 是流量历史文件的
 唯一写入者，后端与 LuCI 都通过同一个 JSON 接口读取它。
 
 ## 2. 后端分层（自底向上）

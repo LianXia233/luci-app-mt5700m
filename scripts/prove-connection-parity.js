@@ -2,22 +2,22 @@
 'use strict';
 
 /*
- * 连接页一致性证明（连接设置刀：CLI 帧 + 7 条 CLI 写 → 4 条读路由 + 7 条写路由）
+ * 连接页一致性证明（连接设置批：CLI 帧 + 7 条 CLI 写 → 4 条读路由 + 7 条写路由）
  *
- * 这一刀切掉的是连接页自己的最后一段 CLI：`mt5700m-at advanced
+ * 本批切掉的是连接页自己的最后一段 CLI：`mt5700m-at advanced
  * connection-settings` 的五段读帧（Auto dial / Interface mode / PDP contexts /
  * PDP activation / Direct IP）与七条写入动词（pdp-set / pdp-state / pdp-remove /
  * advanced-set autodial|direct-ip|postroute|dmz）：
  *   - 读：4 条路由 network.autodial / network.interface_cfg /
  *     network.pdp_contexts / network.direct_ip（会话面板的 network.session
- *     在基线里已经是路由，本刀不动）；
+ *     在基线里已经是路由，本批不动）；
  *   - 写：七处 c.confirmRun([…argv]) 与 editPdp 的 api.at(['pdp-set',…]) 全部
  *     改成 c.confirmRoute(name, params) / api.routeCall(name, params)；
  *   - 删除：api.js 的 atConnectionSettings 速记、旧版对模块设置帧的第二份
- *     前端解析（autoMatch 正则 / parseContexts 调用随本刀离开连接页）。
+ *     前端解析（autoMatch 正则 / parseContexts 调用随本批离开连接页）。
  *
  * 用法：
- *   node scripts/prove-connection-parity.js [基线]   # 基线默认 7a02417（本刀之前）
+ *   node scripts/prove-connection-parity.js [基线]   # 基线默认 7a02417（本批之前）
  * 退出码 0 = 通过，1 = 不一致，2 = 基线选错了（基线里已经没有旧实现）。
  *
  * 关键设计：夹具（scripts/lib/at-fixtures.js）用**一份 SETTINGS_FACTS** 同时
@@ -82,8 +82,8 @@ const UCI = {
 
 /* ------------------------------------------------------------ 形态表 */
 /* facts 是会话侧（network.session 路由）的事实覆盖；settings 是连接设置侧
- * （本刀）的事实覆盖，缺席即默认 SETTINGS_FACTS。前五个形态沿用会话刀的
- * 五形态（回归钉），后三个是本刀新增的 settings 病态形态。 */
+ * （本批）的事实覆盖，缺席即默认 SETTINGS_FACTS。前五个形态沿用会话批的
+ * 五形态（回归钉），后三个是本批新增的 settings 病态形态。 */
 const FULL_NDIS = { ndis: true };
 const EMPTY_NDIS = { ndis: false };
 const SHAPES = [
@@ -211,8 +211,8 @@ const dmzOf = (r) => {
 
 /* ------------------------------------------------------------ 自检 */
 if (oldSource(VIEW).indexOf('api.atConnectionSettings()') === -1) {
-	console.error('基线 ' + BASELINE + ' 已经包含这一刀（connection.js 里没有 api.atConnectionSettings()）——没有旧管线可比较。\n'
-		+ '本刀的基线是 7a02417：\n  node scripts/prove-connection-parity.js 7a02417');
+	console.error('基线 ' + BASELINE + ' 已经包含本批（connection.js 里没有 api.atConnectionSettings()）——没有旧管线可比较。\n'
+		+ '本批的基线是 7a02417：\n  node scripts/prove-connection-parity.js 7a02417');
 	process.exit(2);
 }
 check('基线里旧侧确实读连接设置 CLI 帧 + 七条 CLI 写（atConnectionSettings / confirmRun / pdp-set）',
@@ -404,8 +404,8 @@ async function fireWrite(r, w) {
 			&& n.side.scope.window.pending.some((p) => p.delay === 900));
 	}
 
-	/* 「清空计数」在基线里已是路由（上一刀迁完）：两侧同走 network.flow_clear，
-	 * 这里钉住它没有被本刀破坏。 */
+	/* 「清空计数」在基线里已是路由（上一批迁完）：两侧同走 network.flow_clear，
+	 * 这里钉住它没有被本批破坏。 */
 	{
 		const shape = SHAPES[0];
 		const o = await render('old', shape);
@@ -417,7 +417,7 @@ async function fireWrite(r, w) {
 		lib.pressButton(n.holder, 'Clear counters');
 		lib.modalButton(n.side.scope, 'Apply');
 		for (let i = 0; i < 4; i++) await lib.tick();
-		check('「清空计数」两侧都走 network.flow_clear（上一刀成果未被本刀破坏）',
+		check('「清空计数」两侧都走 network.flow_clear（上一批成果未被本批破坏）',
 			o.side.api.calls.some((c) => c.kind === 'routeCall' && c.name === 'network.flow_clear')
 			&& n.side.api.calls.some((c) => c.kind === 'routeCall' && c.name === 'network.flow_clear'),
 			JSON.stringify([ o.side.api.calls, n.side.api.calls ]));

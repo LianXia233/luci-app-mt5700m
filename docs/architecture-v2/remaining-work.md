@@ -2,13 +2,13 @@
 
 > 基线：`main` = `6a4eabd`（PR #7 已合并）
 > 当前分支：`arena/d1c7aed1-luci-app-mt5700m`，头 = `a7ab0a3d`
-> 原始 20 条验收标准：**18 条已达成**，剩余 2 条见 §5
+> 原始 20 条验收标准：**18 条已达成**，剩余 2 条见第五节
 
-本文件每完成一刀都应就地更新，避免重复盘点。
+本文件每完成一批都应就地更新，避免重复盘点。
 
 ---
 
-## 〇、本刀已完成（2026-10-08，提交 `2643af75` + `a7ab0a3d`）
+## 〇、本批已完成（2026-10-08，提交 `2643af75` + `a7ab0a3d`）
 
 **系统页 6 条写入从 CLI 迁到路由**，保留 7 条（原因见下）。
 
@@ -28,12 +28,12 @@
 新增 `scripts/prove-system-parity.js`（**34 项**，`tag pre-system-route`），
 `scripts/smoke-minified-luci.js` 扩到 **28 项**（新增系统页 6 项）。
 
-### 第二刀 + 第三刀（2026-10-08，追加）
+### 第二批 + 第三批（2026-10-08，追加）
 
 **系统页余下 4 条写入 + 22 段读帧也全部迁完**，`system.js` 至此**零 CLI**
-（仅保留 FOTA 三步动词，见 §1.3）。
+（仅保留 FOTA 三步动词，见 1.3）。
 
-第二刀（4 条写入，后端能力先行补齐）：
+第二批（4 条写入，后端能力先行补齐）：
 
 | 原 CLI 动词 | 目标路由 | 等价性 |
 |---|---|---|
@@ -42,7 +42,7 @@
 | `advanced-set thermal-thresholds <9 值>` | `system.thermal_thresholds_set {thresholds}` | ✅ 九值 0–150 + 阶梯校验在后端（`valid_thermal_thresholds` 自 cli.rs 上移，一份实现） |
 | `advanced-set thermal-log <s> <f>` | `system.thermal_log_set {serial,file}` | ✅ 同为 `AT^THERMLDLOGSW=` |
 
-第三刀（读帧）：`api.atSystem()`（`mt5700m-at system`，22 段文本帧）删除，
+第三批（读帧）：`api.atSystem()`（`mt5700m-at system`，22 段文本帧）删除，
 改 15 条路由 —— `modem.get / system.version / sim.get / sim.number / sim.slot /
 sim.activation / qos.get / network.get / network.radio / system.temperature /
 system.thermal / system.led / system.network_time / system.fota_mode /
@@ -55,25 +55,25 @@ system.fota`；api.js 的 `atSystem` 速记一并删除。渲染逐字未变：
   （不喂 `at:system` 帧、不挂 `atSystem` 桩，残留调用会直接崩掉）；
 - `cargo test` 286 passed。
 
-三处 ⚠ 漂移风险已逐项取证排除（见 §1.3 表）。
+三处 ⚠ 漂移风险已逐项取证排除（见 1.3 表）。
 
-### 第四刀：连接页（2026-10-08，后端 `f441e65` + 前端本刀）
+### 第四批：连接页（2026-10-08，后端 `f441e65` + 前端本批）
 
 **连接设置 1 读帧 + 7 写全部迁完，`connection.js` 至此零 CLI**。
 
-后端（`f441e65`，施工图 §1.2 逐条执行）：`network.direct_ip` 读路由 +
+后端（`f441e65`，施工图 1.2 逐条执行）：`network.direct_ip` 读路由 +
 七条写路由（`pdp_set` / `pdp_remove` / `pdp_state` / `autodial_set` /
 `direct_ip_set` / `postroute_set` / `dmz_set`），命令串一律 commands.rs
 构造器产出（`safe_at_field` / `valid_cid` / `valid_pdp_type` /
 `valid_dmz_host` 自 cli.rs 上移，一份实现），cli.rs 薄转发（cid 的 `01`
 保真拒绝照旧）；`cargo test` 286 → **290**。
 
-前端（本刀）：`load()` 的设置区块改 `Promise.all` 四条路由
+前端（本批）：`load()` 的设置区块改 `Promise.all` 四条路由
 （autodial / interface_cfg / pdp_contexts / direct_ip），renderPage 以
 载荷映射替换帧解析；七处写入改 `routeCall` / `confirmRoute`；
 `api.js` 删 `atConnectionSettings` 速记。验证：
 
-- `prove-connection-parity.js` 重定位为「连接设置刀」证明（基线 `7a02417`，
+- `prove-connection-parity.js` 重定位为「连接设置批」证明（基线 `7a02417`，
   **58 项**）：8 形态整页逐字比对 + 七条写路径旧 argv vs 新 params 逐键
   断言 + 盲区形态有意差异组（PostRoute 冒号前带空格 → 旧正则盲区修复，
   证据：姊妹项目 luci-app-mt5700 的 dial.js 与 parse_interface_cfg 单测）；
@@ -88,7 +88,7 @@ system.fota`；api.js 的 `atSystem` 速记一并删除。渲染逐字未变：
 | 页面 | 调用点 | 说明 |
 |---|---|---|
 | `advanced.js` | 7 | 1 读帧 + 6 写 |
-| `connection.js` | 0 | **已清零**（连接设置 1 读帧 + 7 写全部迁完，见 §〇 第四刀） |
+| `connection.js` | 0 | **已清零**（连接设置 1 读帧 + 7 写全部迁完，见第四批） |
 | `system.js` | 3 | **3 条保留写**（FOTA 三步；4 条写入 + 22 段读帧已全部迁完，系统页零 CLI） |
 | `terminal.js` | 1 | **有意保留**：原始 AT 控制台是产品功能本身 |
 | `network.js` / `sms.js` / `status.js` / `settings.js` | 0 | 已清零 |
@@ -109,7 +109,7 @@ system.fota`；api.js 的 `atSystem` 速记一并删除。渲染逐字未变：
 
 > 施工图（下方保留）已按条执行：七条写路由 + `network.direct_ip` 读路由
 > 在后端补齐（构造器校验 + cli.rs 薄转发，`f441e65`），前端读写双切 +
-> `atConnectionSettings` 速记删除（本刀），详见 §〇 第四刀与
+> `atConnectionSettings` 速记删除（本批），详见第四批与
 > migration.md 对应切片。
 
 读侧现状：`network.autodial` / `network.pdp_contexts` / `network.session` /
@@ -129,7 +129,7 @@ system.fota`；api.js 的 `atSystem` 速记一并删除。渲染逐字未变：
 
 注意：`IPFILTERSWITCH` / `SETDIRECTIP` 动词目前仅存在于 `cli.rs`，
 commands.rs 需新增常量与构造器；`SETAUTODIAL_QUERY` 已有，写构造器需新增。
-可复用 `qos`/`system` 刀的模式：命令串一律由 commands.rs 构造器产出，
+可复用 `qos`/`system` 批次的模式：命令串一律由 commands.rs 构造器产出，
 cli.rs 改为薄转发（参照 `valid_thermal_thresholds` 上移先例）。
 
 前端读帧 `api.atConnectionSettings()`（`advanced connection-settings`）
@@ -137,13 +137,13 @@ cli.rs 改为薄转发（参照 `valid_thermal_thresholds` 上移先例）。
 `Promise.all([network.autodial, network.pdp_contexts, …])`）。
 **✅ 已执行（2026-10-08）**：`connection.js` 读写双切完成，4 条读路由 +
 7 条写路由；`prove-connection-parity.js` 58 项全绿（含盲区形态有意差异组，
-见 §〇 第四刀）。
+见第四批）。
 
 ### 1.3 `system.js` — 剩 3 处（3 条保留写，读帧已切完）
 
 #### 读帧：22 段的路由对照表（✅ 已切完，2026-10-08）
 
-本刀前补的后端能力已覆盖缺列；下表把每段钉到具体字段。
+本批前补的后端能力已覆盖缺列；下表把每段钉到具体字段。
 三处曾标 ⚠ 的渲染漂移风险已逐项取证排除：
 
 1. **订阅速率**：`qos.ambr_*_kbps` 给的就是 kbps 原值，页面对它调
@@ -157,7 +157,7 @@ cli.rs 改为薄转发（参照 `valid_thermal_thresholds` 上移先例）。
 | 段（AT） | 路由 | 字段 | 备注 |
 |---|---|---|---|
 | Identity（`ATI`） | `modem.get` | `manufacturer / model / revision / imei` | 页面 model 是硬编码 `MT5700M`，revision 取 Identity |
-| Version（`^VERSION?`） | `system.version` ✨ | `buildDate / software / hardware` | ✨ 本刀新增；此前 Rust 侧**无人读** `^VERSION?` |
+| Version（`^VERSION?`） | `system.version` ✨ | `buildDate / software / hardware` | ✨ 本批新增；此前 Rust 侧**无人读** `^VERSION?` |
 | SIM（`+CPIN?`） | `sim.get` | `status` | |
 | ICCID | `sim.get` | `iccid` | |
 | IMSI（`AT+CIMI`） | `sim.get` | `imsi` | |
@@ -170,7 +170,7 @@ cli.rs 改为薄转发（参照 `valid_thermal_thresholds` 上移先例）。
 | SIM activation（`^HVSST?`） | `sim.activation` ✨ | `active / slot` | `slot` 是页面回退用的第三字段 |
 | SIM slot（`^SCICHG?`） | `sim.slot` | `slot / hotplug` | |
 | Temperature（`^CHIPTEMP?`） | `system.temperature` | `peak / peak_sensor / average` | ✅ 后端过滤 0 / 65535 后取最大得 `peak`，与旧公式 `(max(raw)/10).toFixed(1)` 等价 |
-| FOTA mode（`^FOTAMODE?`） | `system.fota_mode` ✨ | `mode` | ✨ 本刀新增；`0,1,0,1` → “HTTP update mode”的译名保留在页面（UI 文案） |
+| FOTA mode（`^FOTAMODE?`） | `system.fota_mode` ✨ | `mode` | ✨ 本批新增；`0,1,0,1` → “HTTP update mode”的译名保留在页面（UI 文案） |
 | FOTA state / progress | `system.fota` | `state / stateName / total / received` | 替代 `^FOTASTATE?` + `^FOTADLQ` 两段的自算 percent |
 | Thermal status | `system.thermal` | `currentLevel` | 后端取第 6 字段，与页面一致 |
 | Thermal thresholds | `system.thermal` | `thresholds[]` | 页面用索引 0–8 |
@@ -180,7 +180,7 @@ cli.rs 改为薄转发（参照 `valid_thermal_thresholds` 上移先例）。
 
 FOTA 下载 / 续传 / 安装 —— 模块是「任务 + 观察 + 中止」形态，
 **迁移会改变交互，需产品决策**。
-（温控阈值 / 温控日志 / LED / SIM 激活四条已在第二刀迁到路由，
+（温控阈值 / 温控日志 / LED / SIM 激活四条已在第二批迁到路由，
 详见 migration.md。）
 
 ### 1.4 死导出（7 个）
@@ -236,7 +236,7 @@ FOTA 下载 / 续传 / 安装 —— 模块是「任务 + 观察 + 中止」形�
   `ARFCN→band` 职责不同，**不算重复实现**（可选：未来由路由下发标签）。
 - **任何 WebUI 改动都必须重建 bundle 并同步** `htdocs/5700/index.html` 的哈希引用。
   注意：该目录被 `.gitignore` 排除（CI 由 `scripts/build-release.sh` 折入软件包），
-  但远端存在**历史遗留的误提交副本**，推送时**不得删除**（见 §6.2）。
+  但远端存在**历史遗留的误提交副本**，推送时**不得删除**（见 6.2）。
 
 ---
 
@@ -244,12 +244,12 @@ FOTA 下载 / 续传 / 安装 —— 模块是「任务 + 观察 + 中止」形�
 
 | # | 问题 | 建议 |
 |---|---|---|
-| 1 | 6 个老证明默认基线是 `HEAD`，误用会自校验退出 2 | 像本刀这样把基线内嵌为 tag（已为 system 页示范：`pre-system-route`） |
+| 1 | 6 个老证明默认基线是 `HEAD`，误用会自校验退出 2 | 像本批这样把基线内嵌为 tag（已为 system 页示范：`pre-system-route`） |
 | 2 | 8/9 个证明在非完整克隆下无法运行（基线对象不在本地） | CI 用 `--unshallow` 后跑全部 10 个 |
-| 3 | 前端证明与 minify smoke **未进 CI** | 新增前端 job（见 §5 待办） |
+| 3 | 前端证明与 minify smoke **未进 CI** | 新增前端 job（见第五节） |
 | 4 | WebUI 无自动化测试 | 至少加「路由调用面」静态检查 |
 | 5 | `minify-luci-frontend.sh` 要求目标已是 htdocs 树 | 自检提示已存在，CI 用法见 ci.yml |
-| 6 | 沙箱每轮重克隆、`.git` 不持久 | **每个可验证阶段立即推送**；见 §6.2 的 API 推送工具 |
+| 6 | 沙箱每轮重克隆、`.git` 不持久 | **每个可验证阶段立即推送**；见 6.2 的 API 推送工具 |
 
 ---
 
@@ -285,7 +285,7 @@ GITHUB_TOKEN=<token> python3 tools/ghgit.py pushall --since <已推送的本地 
 1. **删除保护**：远端存在 5 个被 `.gitignore` 排除的文件
    （`htdocs/5700/`、`htdocs/cgi-bin/`、`root/usr/bin/`、`root/etc/init.d/at-webserver`），
    系历史遗留误提交。`ghgit.py` 默认**不删除**，需显式 `--allow-delete`。
-   本刀推送验证了这一点：本地 302 文件 vs 远端 306，「删除 5」是预期且被拦截的。
+   本批推送验证了这一点：本地 302 文件 vs 远端 306，「删除 5」是预期且被拦截的。
 2. **LF 换行**：所有提交文件强 LF，写盘通过 Python 转换后校验。
 
 ### 6.3 其它

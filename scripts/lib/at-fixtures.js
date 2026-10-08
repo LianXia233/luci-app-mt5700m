@@ -6,7 +6,7 @@
  * 这些 prove-*.js 脚本都要做同一件事：把「同一份调制解调器读数」写成两种形态 ——
  * 旧前端消费的 CLI 文本帧，和新前端消费的路由载荷 —— 然后比较两边的渲染。
  * mini 解码器（按 modules/<module>/parser.rs 的规则把 AT 应答解成领域值）与帧构造器
- * 因此集中在这里一份，避免每把刀各抄一遍。
+ * 因此集中在这里一份，避免每批各抄一遍。
  *
  * 这些解码器只是**测试夹具**：真正的解码在 Rust 里，脚本里的钉子（每个
  * prove-*.js 开头，样本取自对应的 Rust 单测）负责保证夹具与后端一致。
@@ -408,7 +408,7 @@ function settingsRouteAnswers(f) {
  * CLI 文本帧。prove-system-parity.js（渲染逐字比对）与 smoke-minified-luci.js
  * （压缩后冒烟）都从这里取帧，两处用到的读数不可能漂移。
  *
- * 这一刀只迁 6 条**写入**，读帧仍是 CLI（`api.atSystem()`），因此 FRAME 是**
+ * 本批只迁 6 条**写入**，读帧仍是 CLI（`api.atSystem()`），因此 FRAME 是**
  * 两侧共有的输入** —— 它同时也是「渲染结果必须逐字不变」的自变量。
  */
 const SYSTEM_FACTS = {

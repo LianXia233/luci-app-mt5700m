@@ -4,7 +4,7 @@
  * 迁移期一致性证明的公共桩（scripts/lib/luci-stub.js）
  *
  * 两个 prove-* 脚本都要把 LuCI 的 view/component 模块装进一个「够用的 DOM」
- * 里跑起来，再比较渲染结果。这里集中一份，避免每把刀各复制一套桩：
+ * 里跑起来，再比较渲染结果。这里集中一份，避免每批各复制一套桩：
  *
  *   - makeScope(api)      LuCI 全局（E/_/ui/dom/window/L/String.format）+ 记录调用的 api 桩
  *   - loadModule(src, s)  用 new Function 把模块源码在桩作用域里求值

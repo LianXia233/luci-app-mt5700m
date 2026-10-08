@@ -4,13 +4,13 @@
 /*
  * 系统页（system）一致性证明（LuCI 系统页 → 统一路由，10 条写入动词 + 22 段读帧全部消失）
  *
- * 第三刀切掉最后的 22 段 CLI 读帧：`mt5700m-at system` → 15 条 display /
+ * 第三批切掉最后的 22 段 CLI 读帧：`mt5700m-at system` → 15 条 display /
  * on-demand 路由（modem.get / system.version / sim.* / qos.get / network.* /
  * system.temperature / system.thermal / system.led / system.network_time /
  * system.fota_mode / system.fota）。旧 JS 里的第二份帧解析（22 段的切分规则）
  * 随之消失 —— 字段语义只剩后端一份。
  *
- *   第一刀（6 条写入）
+ *   第一批（6 条写入）
  *   - airplane      `mt5700m-at airplane <0|1>`      → network.radio_set {airplane}
  *   - sim-slot      `advanced-set sim-slot <v>`      → sim.slot_set {slot}
  *   - set-imei      `mt5700m-at set-imei <v>`        → modem.imei_set {imei}
@@ -18,13 +18,13 @@
  *   - sim-pin       `mt5700m-at sim-pin <op> a1 a2`  → sim.pin_apply {operation,pin,newPin}
  *   - factory-reset `mt5700m-at factory-reset`       → system.factory_reset
  *
- *   第二刀（4 条写入，后端能力本刀前已补齐）
+ *   第二批（4 条写入，后端能力本批前已补齐）
  *   - led                `advanced-set led <0|1>`          → system.led_set {enabled}
  *   - sim-activation     `advanced-set sim-activation`     → sim.activation_set {active}
  *   - thermal-thresholds `advanced-set thermal-thresholds` → system.thermal_thresholds_set {thresholds}
  *   - thermal-log        `advanced-set thermal-log`        → system.thermal_log_set {serial,file}
  *
- *   第三刀（本刀，读帧）
+ *   第三批（本批，读帧）
  *   - `api.atSystem()`（`mt5700m-at system` 的 22 段文本帧）→ 15 条路由，
  *     api.js 的 atSystem 速记一并删除。渲染必须逐字不变。
  *
@@ -187,7 +187,7 @@ function callNamed(side, name, args) {
 	const newRead = (rel) => newSource(rel);
 	const oldRead = (rel) => oldSource(rel);
 
-	/* 基线自检：基线必须还是 CLI 版本，否则这一刀已经做过了 */
+	/* 基线自检：基线必须还是 CLI 版本，否则本批已经做过了 */
 	const oldView = oldSource(VIEW);
 	if (!/sim-pin/.test(oldView) || !/factory-reset/.test(oldView)) {
 		console.error('基线 ' + BASELINE + ' 里已经没有旧 CLI 实现了（选错基线？）');

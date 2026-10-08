@@ -4,7 +4,7 @@
 /*
  * 无线偏好卡片一致性证明（LuCI 无线页，radio-preference 切片）
  *
- * 这一刀把无线页最后一块切 CLI 文本帧的代码（`mt5700m-at advanced radio` 的
+ * 本批把无线页最后一块切 CLI 文本帧的代码（`mt5700m-at advanced radio` 的
  * 五个段）改成统一路由，读写都走：
  *   - 读：`network.syscfg`（^SYSCFGEX?）、`network.c5goption`（^C5GOPTION?）、
  *     `modem.nr_capability`（^NRRCCAPQRY 的 3/2/5 三种查询）
@@ -15,7 +15,7 @@
  *     （最后一个调用者就在这五个段里）
  *
  * 用法：
- *   node scripts/prove-radio-parity.js [基线]    # 基线默认 HEAD，本刀之前是 4474436
+ *   node scripts/prove-radio-parity.js [基线]    # 基线默认 HEAD，本批之前是 4474436
  * 退出码 0 = 通过，1 = 不一致，2 = 基线选错了（基线里已经没有旧实现）。
  *
  * 脚本做四件事：
@@ -118,8 +118,8 @@ const old = lib.loadSide(oldSource, apiOld);
 const neu = lib.loadSide(newSource, apiNew);
 
 if (typeof old.api.atRadio !== 'function') {
-	console.error('基线 ' + BASELINE + ' 已经包含这一刀（api.js 里没有 atRadio）——没有旧管线可比较。\n'
-		+ '本刀的基线是 4474436：\n  node scripts/prove-radio-parity.js 4474436');
+	console.error('基线 ' + BASELINE + ' 已经包含本批（api.js 里没有 atRadio）——没有旧管线可比较。\n'
+		+ '本批的基线是 4474436：\n  node scripts/prove-radio-parity.js 4474436');
 	process.exit(2);
 }
 
@@ -323,7 +323,7 @@ function textOf(holder) {
 	check('新版加载时读三条无线偏好路由 + 原有六条',
 		[ 'network.syscfg', 'network.c5goption', 'modem.nr_capability' ].every(n => routes(apiNew).indexOf(n) !== -1),
 		JSON.stringify(routes(apiNew)));
-	check('删除的旧实现：api.js 的 atRadio、parser.js 的 matchValues（最后一个调用者本刀迁走）',
+	check('删除的旧实现：api.js 的 atRadio、parser.js 的 matchValues（最后一个调用者本批迁走）',
 		oldSource(RES + '/mt5700m/api.js').indexOf('function atRadio') !== -1
 		&& newSource(RES + '/mt5700m/api.js').indexOf('atRadio') === -1
 		&& oldSource(RES + '/mt5700m/parser.js').indexOf('function matchValues') !== -1

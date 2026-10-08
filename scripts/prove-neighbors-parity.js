@@ -4,7 +4,7 @@
 /*
  * 邻区卡片一致性证明（LuCI 无线页，item 9 的邻区切片）
  *
- * 这一刀把「邻区」从 LuCI 自己切 AT 文本帧，改成读后端路由：
+ * 本批把「邻区」从 LuCI 自己切 AT 文本帧，改成读后端路由：
  *   - 诊断区块的邻区卡片：`advanced radio-diagnostics` 帧的 ^MONNC 段 → `cell.neighbors`
  *   - SSB 面板的邻区卡片：载荷里的 arfcn 前端自己查表 → 用载荷自带的 band
  *   - 扫频弹窗的邻区卡片：cellscan 帧的 ^MONNC 段 → `cell.neighbors`
@@ -24,10 +24,10 @@
  *
  * 用法：
  *   node scripts/prove-neighbors-parity.js            # 基线 = HEAD（提交前跑）
- *   node scripts/prove-neighbors-parity.js 663f989    # 基线 = 某一刀之前的提交
- * 退出码 0 = 通过，1 = 不一致，2 = 基线选错了（基线里已经有这一刀）。
+ *   node scripts/prove-neighbors-parity.js 663f989    # 基线 = 某一批之前的提交
+ * 退出码 0 = 通过，1 = 不一致，2 = 基线选错了（基线里已经有本批）。
  *
- * 这是**迁移期**工具，不是 CI 检查：它把工作区与某个提交对比。本刀的基线是
+ * 这是**迁移期**工具，不是 CI 检查：它把工作区与某个提交对比。本批的基线是
  * `663f989`（邻区切片之前），提交后用这个参数仍可复跑整份证明。
  */
 
@@ -70,7 +70,7 @@ function loadSide(read) {
 
 /* ------------------------------------------ 后端解码契约（mini 解码器）
  *
- * 只复刻这一刀用到的路径：^MONNC → 领域值。规则逐条对应
+ * 只复刻本批用到的路径：^MONNC → 领域值。规则逐条对应
  * modules/cell/parser.rs（hex PCI、core::radio 频段表、NR 1/8 换算、
  * 哨兵值置空、空字段缺省），并由 RUST_PINS 的样本钉住。
  */
@@ -157,7 +157,7 @@ const SSB_PAYLOAD_NEW = JSON.parse(JSON.stringify(SSB_PAYLOAD_OLD));
 SSB_PAYLOAD_NEW.servingCell.band = arfcnToBand('NR', 636648);
 SSB_PAYLOAD_NEW.neighborCells[0].band = arfcnToBand('NR', 632448);
 
-// 诊断区块其余各行：两侧收到同一份路由载荷（本刀未改它们）
+// 诊断区块其余各行：两侧收到同一份路由载荷（本批未改它们）
 const SHARED_PAYLOADS = {
 	mcs: { uplink: { rat: 1, carriers: [ { index: 1, group: 1, rat: 'NR', mcs_table_index: 0, code0: 25, code1: 23 }, { index: 2, group: 1, rat: 'NR', mcs_table_index: 0, code0: 21, code1: 19 } ], avg_mcs: 22 },
 	       downlink: { rat: 1, carriers: [ { index: 1, group: 1, rat: 'NR', mcs_table_index: 0, code0: 18, code1: 16 } ], avg_mcs: 17 } },
@@ -207,8 +207,8 @@ for (const pin of RUST_PINS) {
 const before = loadSide(oldSource);
 const after = loadSide(newSource);
 if (typeof before.parser.parseMonnc !== 'function') {
-	console.error('基线 ' + BASELINE + ' 已经包含这一刀（parser.js 里没有 parseMonnc 了）——'
-		+ '没有可比较的旧管线。\n本刀的基线是 663f989：\n'
+	console.error('基线 ' + BASELINE + ' 已经包含本批（parser.js 里没有 parseMonnc 了）——'
+		+ '没有可比较的旧管线。\n本批的基线是 663f989：\n'
 		+ '  node scripts/prove-neighbors-parity.js 663f989');
 	process.exit(2);
 }
@@ -279,7 +279,7 @@ check('服务小区现在也读载荷（ARFCN:636648 / 十进制 PCI:506 / 模�
 	textOf(scan).indexOf('ARFCN:636648') !== -1 && textOf(scan).indexOf('PCI:506') !== -1 && textOf(scan).indexOf('n78') !== -1,
 	textOf(scan).slice(0, 100));
 // 扫频原文卡片：迁移前后都取不到（`section()` 的前缀规则要求 '===== <label>:' 前缀，
-// cli.rs 打的是 '===== Frequency scan: AT^CELLSCAN ====='）——既有缺陷，不在本刀范围。
+// cli.rs 打的是 '===== Frequency scan: AT^CELLSCAN ====='）——既有缺陷，不在本批范围。
 check('扫频原文段迁移前后同样解析为空（既有缺陷，未改动）',
 	before.parser.section(scanFrame, 'Frequency scan: AT^CELLSCAN') === '' && after.parser.section(scanFrame, 'Frequency scan: AT^CELLSCAN') === '');
 

@@ -4,7 +4,7 @@
 /*
  * 锁频面板一致性证明（LuCI 无线页，item 9 的锁频切片）
  *
- * 这一刀把锁频从「页面切 ^LTEFREQLOCK/^NRFREQLOCK 文本 + 提交 CLI 位置参数」
+ * 本批把锁频从「页面切 ^LTEFREQLOCK/^NRFREQLOCK 文本 + 提交 CLI 位置参数」
  * 改成「读 network.lock_get / 写 network.lock_apply」：
  *   - 面板回填与两行锁状态：帧里的文本段 → `network.lock_get` 载荷
  *   - 面板「Review and apply」与邻区卡片「Lock」：`['lock', rat, …]` CLI 位置
@@ -13,7 +13,7 @@
  *     JS 实现）随最后调用者一起删除
  *
  * 用法：
- *   node scripts/prove-lock-parity.js [基线]      # 基线默认 HEAD，本刀之前是 dfb4810
+ *   node scripts/prove-lock-parity.js [基线]      # 基线默认 HEAD，本批之前是 dfb4810
  * 退出码 0 = 通过，1 = 不一致，2 = 基线选错了（基线里已经没有旧实现）。
  *
  * 这个脚本做四件事：
@@ -117,8 +117,8 @@ const old = lib.loadSide(oldSource, lib.makeApi({}));
 const neu = lib.loadSide(newSource, lib.makeApi({}));
 
 if (typeof old.parser.collectFreqLock !== 'function') {
-	console.error('基线 ' + BASELINE + ' 已经包含这一刀（parser.js 里没有 collectFreqLock）——没有旧管线可比较。\n'
-		+ '本刀的基线是 dfb4810：\n  node scripts/prove-lock-parity.js dfb4810');
+	console.error('基线 ' + BASELINE + ' 已经包含本批（parser.js 里没有 collectFreqLock）——没有旧管线可比较。\n'
+		+ '本批的基线是 dfb4810：\n  node scripts/prove-lock-parity.js dfb4810');
 	process.exit(2);
 }
 
@@ -206,7 +206,7 @@ check('NR 面板逐字一致（多一个 SCS 字段）',
  *   新：api.routeCall('network.lock_apply', {rat, lock_type, items, verify})
  * 并断言新参数与用户填的四列一一对应。
  *
- * 面板的字段校验（哪些列必填、范围、条数上限）是 UI 行为，这一刀没有改：
+ * 面板的字段校验（哪些列必填、范围、条数上限）是 UI 行为，本批没有改：
  * 例如 NR 的 ARFCN/小区锁必须填 SCS，所以「不填 SCS」的用例只能从邻区卡片
  * 的 Lock 按钮走到（卡片不带 SCS，正是下面要证明的修复点）。
  */

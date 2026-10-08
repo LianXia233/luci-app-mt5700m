@@ -545,11 +545,11 @@ CLI 动词本身保留。`mt5700m-at status`、`advanced session` 与 `flow-clea
 
 ### 系统页面：22 段读帧切成 15 条路由（切片，2026-10-08）
 
-这是系统页的最后一刀，也是整个前端里**最大的一段 CLI 耦合**：`load()` 里那一次
+这是系统页的最后一批迁移，也是整个前端里**最大的一段 CLI 耦合**：`load()` 里那一次
 `api.atSystem()`（`mt5700m-at system`，22 段文本帧）换成了 15 条
 `api.route(...)` 的 `Promise.all`，`mt5700m/api.js` 的 `atSystem` 速记随之删除
 （没有第二个调用者）。旧 JS 里那份 22 段的切分/取值规则（SIM PIN 位数、
-温控阶梯、DSAMBR 字段序……）是这些语义的**第二份实现**，本刀后只剩后端一份。
+温控阶梯、DSAMBR 字段序……）是这些语义的**第二份实现**，本批后只剩后端一份。
 
 `renderPage` 的入参从 `{stdout, stderr}` 变成路由结果数组，但**渲染代码一行没动**：
 领域载荷在函数头部映射回与旧版同名同型的局部变量（`sim / iccid / imsi / phone /
@@ -572,7 +572,7 @@ buildDate / software / hardware / thermalLevel / thermalThresholds / thermalLog`
   内容从 22 段 AT 原文改为 `api.<route>` + JSON（15 条，照 network 页先例）。
   新版页面里不再出现任何 AT 应答原文。
 
-三处**渲染数值漂移风险**在动刀前逐项取证排除：
+三处**渲染数值漂移风险**在动工前逐项取证排除：
 
 1. 订阅速率 —— `qos.ambr_*_kbps` 就是 kbps 原值，页面 `parser.subscriptionRate`
    的 `/1000` 与旧帧 `^DSAMBR` 同源同算；
@@ -603,7 +603,7 @@ E 组改为断言 `atSystem` 在 system.js 与 api.js 两处都已消失；新�
 - 读：`network.autodial` / `network.interface_cfg` / `network.pdp_contexts` /
   `network.direct_ip` 四条路由替换 `api.atConnectionSettings()`（`load()` 里
   与 session 一起进 `Promise.all`）；前端那份第二解析（`autoMatch` 正则、
-  `parseContexts` 调用）随本刀离开连接页 —— `parser.js` 的死导出留给清理刀。
+  `parseContexts` 调用）随本批离开连接页 —— `parser.js` 的死导出留给清理批次。
 - 写：`pdp-set` / `pdp-state` / `pdp-remove` → `network.pdp_set` /
   `network.pdp_state` / `network.pdp_remove`，`advanced-set autodial` /
   `direct-ip` / `postroute` / `dmz` → `network.autodial_set` /
@@ -631,7 +631,7 @@ E 组改为断言 `atSystem` 在 system.js 与 api.js 两处都已消失；新�
    控件恢复可用 —— prove 脚本以「盲区形态」组单独点名断言（旧侧 Unavailable
    vs 新侧取值可用），DMZ 不受影响（`Dmz:` 冒号紧跟，旧正则认）。
 
-`scripts/prove-connection-parity.js` 重定位为「连接设置刀」证明（基线
+`scripts/prove-connection-parity.js` 重定位为「连接设置批」证明（基线
 `7a02417`，**58 项**）：8 个渲染形态（5 会话 + 3 设置病态）整页逐字比对 +
 控件取值 / DMZ 输入框单独断言；数据源组断言旧侧恰一条 `advanced
 connection-settings` 帧、新侧零 CLI 且 5 条路由顺序即 `load()` 的
