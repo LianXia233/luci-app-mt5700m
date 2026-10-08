@@ -57,14 +57,38 @@ system.fota`；api.js 的 `atSystem` 速记一并删除。渲染逐字未变：
 
 三处 ⚠ 漂移风险已逐项取证排除（见 §1.3 表）。
 
+### 第四刀：连接页（2026-10-08，后端 `f441e65` + 前端本刀）
+
+**连接设置 1 读帧 + 7 写全部迁完，`connection.js` 至此零 CLI**。
+
+后端（`f441e65`，施工图 §1.2 逐条执行）：`network.direct_ip` 读路由 +
+七条写路由（`pdp_set` / `pdp_remove` / `pdp_state` / `autodial_set` /
+`direct_ip_set` / `postroute_set` / `dmz_set`），命令串一律 commands.rs
+构造器产出（`safe_at_field` / `valid_cid` / `valid_pdp_type` /
+`valid_dmz_host` 自 cli.rs 上移，一份实现），cli.rs 薄转发（cid 的 `01`
+保真拒绝照旧）；`cargo test` 286 → **290**。
+
+前端（本刀）：`load()` 的设置区块改 `Promise.all` 四条路由
+（autodial / interface_cfg / pdp_contexts / direct_ip），renderPage 以
+载荷映射替换帧解析；七处写入改 `routeCall` / `confirmRoute`；
+`api.js` 删 `atConnectionSettings` 速记。验证：
+
+- `prove-connection-parity.js` 重定位为「连接设置刀」证明（基线 `7a02417`，
+  **58 项**）：8 形态整页逐字比对 + 七条写路径旧 argv vs 新 params 逐键
+  断言 + 盲区形态有意差异组（PostRoute 冒号前带空格 → 旧正则盲区修复，
+  证据：姊妹项目 luci-app-mt5700 的 dial.js 与 parse_interface_cfg 单测）；
+- `smoke-minified-luci.js` 33 → **38 项**（连接页零 CLI + 5 条读路由 +
+  三条写入抽样）；
+- `cargo test` **290/290**、`prove-system-parity.js` 回归全绿。
+
 ---
 
-## 一、LuCI 前端剩余 CLI 调用点：19 处
+## 一、LuCI 前端剩余 CLI 调用点：11 处
 
 | 页面 | 调用点 | 说明 |
 |---|---|---|
 | `advanced.js` | 7 | 1 读帧 + 6 写 |
-| `connection.js` | 8 | 1 读帧 + 7 写 |
+| `connection.js` | 0 | **已清零**（连接设置 1 读帧 + 7 写全部迁完，见 §〇 第四刀） |
 | `system.js` | 3 | **3 条保留写**（FOTA 三步；4 条写入 + 22 段读帧已全部迁完，系统页零 CLI） |
 | `terminal.js` | 1 | **有意保留**：原始 AT 控制台是产品功能本身 |
 | `network.js` / `sms.js` / `status.js` / `settings.js` | 0 | 已清零 |
@@ -81,7 +105,12 @@ system.fota`；api.js 的 `atSystem` 速记一并删除。渲染逐字未变：
 | SIM 热插拔写 | `sim.hotplug_set` 已存在 | ✅ 可直接迁移 |
 | 温控写 `AT^THERMAUTOFUN=` | `system.thermal_set` 已存在 | ✅ 可直接迁移 |
 
-### 1.2 `connection.js` — 8 处（1 读 + 7 写，施工图已核实 2026-10-08）
+### 1.2 `connection.js` — 0 处（✅ 已清零，2026-10-08；原 1 读 + 7 写）
+
+> 施工图（下方保留）已按条执行：七条写路由 + `network.direct_ip` 读路由
+> 在后端补齐（构造器校验 + cli.rs 薄转发，`f441e65`），前端读写双切 +
+> `atConnectionSettings` 速记删除（本刀），详见 §〇 第四刀与
+> migration.md 对应切片。
 
 读侧现状：`network.autodial` / `network.pdp_contexts` / `network.session` /
 `TDCFG_QUERY` / `CGDCONT_QUERY` / `CGACT_QUERY` 均已在 modules/network；
@@ -106,6 +135,9 @@ cli.rs 改为薄转发（参照 `valid_thermal_thresholds` 上移先例）。
 前端读帧 `api.atConnectionSettings()`（`advanced connection-settings`）
 在 7 条写齐后最后一并切换（settings 区块照 system.js 模式改
 `Promise.all([network.autodial, network.pdp_contexts, …])`）。
+**✅ 已执行（2026-10-08）**：`connection.js` 读写双切完成，4 条读路由 +
+7 条写路由；`prove-connection-parity.js` 58 项全绿（含盲区形态有意差异组，
+见 §〇 第四刀）。
 
 ### 1.3 `system.js` — 剩 3 处（3 条保留写，读帧已切完）
 

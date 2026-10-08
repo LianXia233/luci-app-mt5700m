@@ -594,3 +594,49 @@ E 组改为断言 `atSystem` 在 system.js 与 api.js 两处都已消失；新�
 保留的 3 条 FOTA 写动词不变；FOTA state / progress 两段读已并入
 `system.fota` 路由（`state / total / received`），页面的 percent 计算
 保持旧公式。
+
+### 连接页面：设置帧与七条写入切成 11 条路由（切片，2026-10-08）
+
+`advanced connection-settings` 的五段读帧与七条写入动词离开 `connection.js`，
+页面至此**零 CLI**（FOTA / 终端除外，本页本就没有）：
+
+- 读：`network.autodial` / `network.interface_cfg` / `network.pdp_contexts` /
+  `network.direct_ip` 四条路由替换 `api.atConnectionSettings()`（`load()` 里
+  与 session 一起进 `Promise.all`）；前端那份第二解析（`autoMatch` 正则、
+  `parseContexts` 调用）随本刀离开连接页 —— `parser.js` 的死导出留给清理刀。
+- 写：`pdp-set` / `pdp-state` / `pdp-remove` → `network.pdp_set` /
+  `network.pdp_state` / `network.pdp_remove`，`advanced-set autodial` /
+  `direct-ip` / `postroute` / `dmz` → `network.autodial_set` /
+  `network.direct_ip_set` / `network.postroute_set` / `network.dmz_set`。
+  校验全部搬进 `commands.rs` 构造器（cid 1–11、`safe_at_field`、
+  **尾部空字段必须省略**的 SETAUTODIAL 形态、postroute 的两笔串行且首笔
+  失败即止）；`cli.rs` 改薄转发（cid 的 `01` 保真拒绝照旧）。
+- 删除：`api.js` 的 `atConnectionSettings` 速记（定义 + 导出，均无第二个
+  调用者）。
+
+两处怪癖在载荷层原样仿制 + 一处**有意修复**（`prove-connection-parity.js`
+逐字比对覆盖）：
+
+1. **autoKnown**：旧 `autoMatch` 要求 `^SETAUTODIAL` 应答带 auth 字段，缩短
+   形态（`1,0,"IPV4V6"`）整行不识别、控件回落默认值 —— 载荷层 `authType`
+   缺席走进同一分支；
+2. **directIp / postRoute 的「值不在合法集就禁用」**：载荷缺席（`undefined`）
+   与旧帧解析失败（`''`）同一条路 —— 控件禁用、Apply 按钮隐藏、DMZ 输入框
+   回落空串；`Dmz: not cfg` 即 `enabled: false`（`parser.rs` 单测钉住）；
+3. **有意修复（不是漂移）**：真实抓包的 TDCFG 应答是 `PostRoute : 1` ——
+   冒号前带空格（`parse_interface_cfg` 单测样本与 doc 注释；姊妹项目
+   `luci-app-mt5700` 的 `dial.js` 用 `/PostRoute\s*:\s*(\d+)/` 两种形态都认）。
+   mt5700m 旧前端正则漏了冒号前的 `\s*`，真实设备上 Post-routing 控件**永远
+   Unavailable**（Apply post-routing 按钮从未出现过）。新链路把值解出来后
+   控件恢复可用 —— prove 脚本以「盲区形态」组单独点名断言（旧侧 Unavailable
+   vs 新侧取值可用），DMZ 不受影响（`Dmz:` 冒号紧跟，旧正则认）。
+
+`scripts/prove-connection-parity.js` 重定位为「连接设置刀」证明（基线
+`7a02417`，**58 项**）：8 个渲染形态（5 会话 + 3 设置病态）整页逐字比对 +
+控件取值 / DMZ 输入框单独断言；数据源组断言旧侧恰一条 `advanced
+connection-settings` 帧、新侧零 CLI 且 5 条路由顺序即 `load()` 的
+`Promise.all`；**七条写路径逐条驱动**（按压按钮 → 确认弹窗），旧侧断言
+CLI argv、新侧断言路由名 + params 逐键一致；盲区形态组单独点名差异。
+`scripts/smoke-minified-luci.js` 扩到 **38 项**：连接页不喂设置帧、不挂
+`atConnectionSettings` 桩，断言零 CLI + 5 条读路由 + 控件取值来自载荷 +
+三条写入抽样（autodial_set / pdp_set 弹窗 / dmz_set）。`cargo test` **290**。
