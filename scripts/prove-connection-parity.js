@@ -17,7 +17,7 @@
  *     前端解析（autoMatch 正则 / parseContexts 调用随本批离开连接页）。
  *
  * 用法：
- *   node scripts/prove-connection-parity.js [基线]   # 基线默认 7a02417（本批之前）
+ *   node scripts/prove-connection-parity.js [基线]   # 基线默认 pre-system-route tag（连接页迁移前）
  * 退出码 0 = 通过，1 = 不一致，2 = 基线选错了（基线里已经没有旧实现）。
  *
  * 关键设计：夹具（scripts/lib/at-fixtures.js）用**一份 SETTINGS_FACTS** 同时
@@ -51,7 +51,7 @@ const fixtures = require('./lib/at-fixtures');
 const REPO = path.resolve(__dirname, '..');
 const RES = 'luci-app-mt5700m/htdocs/luci-static/resources';
 const VIEW = RES + '/view/mt5700m/connection.js';
-const BASELINE = process.argv[2] || '7a02417';
+const BASELINE = process.argv[2] || 'pre-system-route';
 
 const oldSource = (rel) => cp.execSync('git show ' + BASELINE + ':' + rel, { cwd: REPO, maxBuffer: 64 * 1024 * 1024 }).toString();
 const newSource = (rel) => fs.readFileSync(path.join(REPO, rel), 'utf8');
@@ -212,7 +212,7 @@ const dmzOf = (r) => {
 /* ------------------------------------------------------------ 自检 */
 if (oldSource(VIEW).indexOf('api.atConnectionSettings()') === -1) {
 	console.error('基线 ' + BASELINE + ' 已经包含本批（connection.js 里没有 api.atConnectionSettings()）——没有旧管线可比较。\n'
-		+ '本批的基线是 7a02417：\n  node scripts/prove-connection-parity.js 7a02417');
+		+ '本批的基线是 pre-system-route tag（树与 7a02417 快照一致，远端可达）：\n  node scripts/prove-connection-parity.js pre-system-route');
 	process.exit(2);
 }
 check('基线里旧侧确实读连接设置 CLI 帧 + 七条 CLI 写（atConnectionSettings / confirmRun / pdp-set）',

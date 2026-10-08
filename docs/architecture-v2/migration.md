@@ -763,3 +763,34 @@ WebUI 信息页的实时网速开关是最后一个业务原始 AT 写
 
 **验收状态**：原始 20 条验收标准全部达成 —— pages 下唯一的原始 AT
 通道只剩终端页（产品功能本身，有意保留）。
+
+## CI 前端证明 job + 基线 tag 锚定（切片，2026-10-08）
+
+### 问题
+
+10 个 `prove-*-parity.js` 的基线分三类：2 个本地 tag、6 个脚本默认
+`HEAD`（自校验退出 2）、2 个本地重建 sha —— 而本地历史是浅重建
+（12 个提交，ghgit 按快照重建远端提交，本地 sha 远端**不存在**）。
+CI（此前无前端 job）既没有完整历史，也没有跑过任何 UI 证明。
+
+### 处置
+
+1. **基线 tag 锚定**（`tools/push-baseline-tag.py`）：把本地孤儿基线
+   `7a02417` / `cf7b688` 的树（各 301/300 文件）增量上传（blob 按 sha
+   复用，49/21 个需传）→ 平铺建远端根树 → orphan 提交 → 建
+   `refs/tags/pre-system-route` / `refs/tags/pre-advanced-route`。
+   CI 完整 checkout 后 `git show <tag>:…` 即可用；
+2. **prove-connection-parity 默认基线 tag 化**（`7a02417` →
+   `pre-system-route`，树一致、远端可达），prove-neighbors 的
+   「迁移期工具，不是 CI 检查」注释同步收官措辞；
+3. **ci.yml 新增 `frontend-proofs` job**：`fetch-depth: 0` +
+   `fetch-tags: true`，跑 10 个 prove（4 个 tag 默认/显式 + 6 个
+   远端原生 sha 显式传参）+ `smoke-minified-luci.js`；
+4. **基线快照兼容性验证**：`lib/luci-stub.js` 的 `loadSide` 旧侧全套
+   读基线（parser/components/页面同源），基线自带第六批删除的死函数
+   定义 —— 不存在「基线页面调工作区已删函数」的 ReferenceError 路径；
+   7 个远端原生基线提交经 API 实测全部可达。
+
+本地可验证面（tag 基线 + smoke）全绿：prove-advanced 37 /
+prove-system 48 / prove-connection 58；其余 7 个基线在浅历史下
+MISSING 属预存，CI 完整 checkout 后首跑验证。

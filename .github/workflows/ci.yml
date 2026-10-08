@@ -114,3 +114,33 @@ jobs:
           jq empty luci-app-mt5700m/root/usr/share/rpcd/acl.d/luci-app-mt5700m.json
       - name: Validate translations
         run: msgfmt --check --check-format -o /dev/null luci-app-mt5700m/po/zh_Hans/mt5700m.po
+
+  frontend-proofs:
+    # UI 不可变证明：同一份事实对象喂旧管线（基线快照的 CLI 文本帧）与
+    # 新管线（工作区的路由载荷），逐字比对渲染结果。基线 tag/提交必须
+    # 远端可达 —— pre-system-route / pre-advanced-route 两个 tag 由
+    # tools/push-baseline-tag.py 锚定为远端 orphan 提交（树 = 本地重建
+    # 快照），其余 8 个基线是远端原生历史提交。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: LuCI parity proofs (10 pages, fixed baselines)
+        run: |
+          set -e
+          # tag 基线（2 个锚定 tag + 1 个 tag 化默认值）
+          node scripts/prove-advanced-parity.js
+          node scripts/prove-system-parity.js
+          node scripts/prove-connection-parity.js
+          node scripts/prove-status-parity.js 8a8c501
+          # 远端原生提交基线（脚本默认 HEAD 会自校验退出 2，显式传入）
+          node scripts/prove-radio-parity.js 4474436
+          node scripts/prove-network-parity.js 24ed5ef
+          node scripts/prove-cellscan-parity.js fceb6ea
+          node scripts/prove-lock-parity.js dfb4810
+          node scripts/prove-neighbors-parity.js 663f989
+          node scripts/prove-sms-parity.js 812ba41
+      - name: Minified LuCI smoke (all pages, zero CLI)
+        run: node scripts/smoke-minified-luci.js

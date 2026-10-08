@@ -314,12 +314,16 @@ bundle 已重建并同步 `at-webserver/files/www/5700/`
 
 | # | 问题 | 建议 |
 |---|---|---|
-| 1 | 6 个老证明默认基线是 `HEAD`，误用会自校验退出 2 | 像本批这样把基线内嵌为 tag（已为 system 页示范：`pre-system-route`） |
-| 2 | 8/9 个证明在非完整克隆下无法运行（基线对象不在本地） | CI 用 `--unshallow` 后跑全部 10 个 |
-| 3 | 前端证明与 minify smoke **未进 CI** | 新增前端 job（见第五节） |
+| 1 | ~~6 个老证明默认基线是 `HEAD`，误用会自校验退出 2~~ | ✅ 部分完成：`pre-system-route` / `pre-advanced-route` 两个 tag 锚定为远端 orphan 提交（`tools/push-baseline-tag.py`，树 = 本地重建快照）；connection 默认基线 tag 化；CI 显式传参 |
+| 2 | ~~8/9 个证明在非完整克隆下无法运行~~ | ✅ CI 已解决：`frontend-proofs` job `fetch-depth: 0` + `fetch-tags: true`；7 个远端原生基线提交（8a8c501/4474436/24ed5ef/fceb6ea/dfb4810/663f989/812ba41）API 实测可达 |
+| 3 | ~~前端证明与 minify smoke 未进 CI~~ | ✅ 已完成（第八批）：ci.yml 新增 `frontend-proofs` job —— 10 个 prove（固定基线）+ smoke |
 | 4 | WebUI 无自动化测试 | 至少加「路由调用面」静态检查 |
 | 5 | `minify-luci-frontend.sh` 要求目标已是 htdocs 树 | 自检提示已存在，CI 用法见 ci.yml |
 | 6 | 沙箱每轮重克隆、`.git` 不持久 | **每个可验证阶段立即推送**；见 6.2 的 API 推送工具 |
+
+> 基线快照与工作区 shared 模块的兼容性已验证：`lib/luci-stub.js` 的
+> `loadSide` 对旧侧**全套读基线**（parser/components/页面同源自洽），
+> 基线快照自带第六批删除的死函数定义，不存在 ReferenceError 风险。
 
 ---
 
