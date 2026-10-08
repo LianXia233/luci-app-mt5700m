@@ -1,0 +1,1595 @@
+import type { ScanCell } from '@/services/scan';
+
+export const MOCK_SMS_CACHE_KEY = 'sms_sent_messages_cache_mock';
+
+export interface MockCommandResponse {
+  success: boolean;
+  /** Raw AT text for command answers, decoded object for `api.<route>` answers. */
+  data?: unknown;
+  error?: string;
+}
+
+interface MockLockItem {
+  band: number;
+  arfcn?: string;
+  scs?: number;
+  pci?: string;
+}
+
+interface MockLockConfig {
+  lockType: number;
+  mobility: number;
+  items: MockLockItem[];
+}
+
+interface MockPDPContext {
+  cid: number;
+  type: string;
+  apn: string;
+  address: string;
+  active: boolean;
+}
+
+interface MockReceivedSMS {
+  index: number;
+  pdu: string;
+  /** 演示数据里附带的解码结果，`api.sms.list` 直接返回（真机由后端解 PDU）。 */
+  number?: string;
+  time?: string;
+  text?: string;
+}
+
+export interface MockPDCPData {
+  id: number;
+  pduSessionId: number;
+  discardTimerLen: number;
+  avgDelay: number;
+  minDelay: number;
+  maxDelay: number;
+  highPriQueMaxBuffTime: number;
+  lowPriQueMaxBuffTime: number;
+  highPriQueBuffPktNums: number;
+  lowPriQueBuffPktNums: number;
+  ulPdcpRate: number;
+  dlPdcpRate: number;
+  ulDiscardCnt: number;
+  dlDiscardCnt: number;
+  timestamp1: number;
+  timestamp2: number;
+}
+
+export interface MockModemState {
+  cfun: number;
+  imei: string;
+  simSlot: number;
+  simHotPlug: boolean;
+  pinEnabled: boolean;
+  nicRate: number;
+  powerControl: boolean;
+  nrCa: boolean;
+  nrVonr: number;
+  nrDss: { rateMatchingLTE: number; additionalDMRS: number };
+  sysCfg: {
+    acqorder: string;
+    band: string;
+    roam: number;
+    srvdomain: number;
+    lteband: string;
+  };
+  therm: {
+    enabled: boolean;
+    caMimoSwitch: boolean;
+    interval: number;
+  };
+  imsOn: boolean;
+  smsFormat: number;
+  smsCenter: string;
+  smsStorage: { read: string; write: string; receive: string; total: number };
+  receivedSMS: MockReceivedSMS[];
+  sentSequence: number;
+  dial: {
+    enabled: number;
+    mode: number;
+    protocol: string;
+    apn: string;
+    username: string;
+    password: string;
+    authType: number;
+  };
+  usbMode: number;
+  interfaceMode: number;
+  postRoute: number;
+  dmzHost: string;
+  pdpContexts: MockPDPContext[];
+  /** 定时锁频 DTO（与后端 modules/network/schedule.rs 同形状）。 */
+  schedule: ReturnType<typeof createMockSchedule>;
+  lteLock: MockLockConfig;
+  nrLock: MockLockConfig;
+  option5g: {
+    nrSaSupportFlag: number;
+    nrDcMode: number;
+    gcAccessMode: number;
+  };
+  flow: {
+    lastDsTime: number;
+    lastTxFlow: number;
+    lastRxFlow: number;
+    totalDsTime: number;
+    totalTxFlow: number;
+    totalRxFlow: number;
+  };
+  metricTick: number;
+  fota: {
+    phase: 'idle' | 'checking' | 'downloading' | 'downloaded' | 'updating';
+    queryCount: number;
+    progress: number;
+    url: string;
+  };
+}
+
+const RECEIVED_SMS: MockReceivedSMS[] = [
+  {
+    index: 1,
+    pdu: '00000D91683108108300F00008628062801000231E6D4191CF7EDF8BA15DF24E8E4ECA65E596F670B981EA52A8523765B03002',
+    number: '8613800138000',
+    time: '26/08/26,08:01:00',
+    text: '流量统计已于今日零点自动刷新。',
+  },
+  {
+    index: 2,
+    pdu: '00000D91683108108300F00008628062905100231C8BBE59075DF26210529F63A5516500200035004700207F517EDC3002',
+    number: '8613800138000',
+    time: '26/08/26,09:15:00',
+    text: '设备已成功接入 5G 网络。',
+  },
+  {
+    index: 3,
+    pdu: '00000791680180F600086280526124002340672C67085957991052694F596D4191CF0020003100320038002E003600470042FF0C67096548671F81F300200030003800206708002000330031002065E53002',
+    number: '8610086',
+    time: '26/08/25,16:42:00',
+    text: '本月套餐剩余流量 128.6GB，有效期至 08 月 31 日。',
+  },
+  {
+    index: 4,
+    pdu: '00000D91683119325476F8000862804271820023345DE168C06E0553555DF27ECF53D152307FA491CCFF0C73B0573A91CD70B9770B00200035004700204FE153F7548C6E295EA63002',
+    number: '8613912345678',
+    time: '26/08/24,17:28:00',
+    text: '巡检清单已经发到群里，现场重点看 5G 信号和温度。',
+  },
+  {
+    index: 5,
+    pdu: '00000D91683119325476F8000862804281600023284ECA665A00200037002070B95230673A623F5DE168C0FF0C8BB05F975E266D4B8BD5753581113002',
+    number: '8613912345678',
+    time: '26/08/24,18:06:00',
+    text: '今晚 7 点到机房巡检，记得带测试电脑。',
+  },
+];
+
+const MOCK_SENT_MESSAGES = [
+  {
+    index: -101,
+    content: '收到，我会提前 10 分钟到。',
+    number: '13912345678',
+    time: '26/08/24,18:10:00',
+    type: 'sent',
+  },
+  {
+    index: -102,
+    content: '网络状态已确认，当前运行正常。',
+    number: '13800138000',
+    time: '26/08/26,09:18:00',
+    type: 'sent',
+  },
+];
+
+const ok = (data: string = 'OK'): MockCommandResponse => ({ success: true, data });
+
+const splitArguments = (raw: string): string[] => {
+  const values: string[] = [];
+  let current = '';
+  let quoted = false;
+
+  for (const char of raw) {
+    if (char === '"') {
+      quoted = !quoted;
+      continue;
+    }
+    if (char === ',' && !quoted) {
+      values.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  values.push(current.trim());
+  return values;
+};
+
+const toHex = (value: number): string => Math.max(0, Math.floor(value)).toString(16).toUpperCase();
+
+const formatLockResponse = (prefix: '^LTEFREQLOCK' | '^NRFREQLOCK', config: MockLockConfig): string => {
+  if (config.lockType === 0) return `${prefix}: 0\nOK`;
+  const lines = [`${prefix}: ${config.lockType}`, `${config.mobility},${config.items.length}`];
+  config.items.forEach((item) => {
+    if (prefix === '^LTEFREQLOCK') {
+      if (config.lockType === 3) lines.push(`${item.band}`);
+      else if (config.lockType === 1) lines.push(`${item.band},${item.arfcn || ''}`);
+      else lines.push(`${item.band},${item.arfcn || ''},${item.pci || ''}`);
+      return;
+    }
+    if (config.lockType === 3) lines.push(`${item.band}`);
+    else if (config.lockType === 1) lines.push(`${item.band},${item.arfcn || ''},${item.scs ?? 1}`);
+    else lines.push(`${item.band},${item.arfcn || ''},${item.scs ?? 1},${item.pci || ''}`);
+  });
+  lines.push('OK');
+  return lines.join('\n');
+};
+
+const updateLockConfig = (
+  raw: string,
+  type: 'LTE' | 'NR',
+  current: MockLockConfig,
+): MockLockConfig => {
+  const args = splitArguments(raw);
+  const lockType = Number(args[0]);
+  if (!Number.isFinite(lockType)) return current;
+  if (lockType === 0) return { lockType: 0, mobility: 0, items: [] };
+
+  const mobility = Number(args[1]) || 0;
+  const count = Number(args[2]) || 0;
+  const bands = (args[3] || '').split(',').map(Number);
+  const arfcns = (args[4] || '').split(',');
+  const scsOrPci = (args[5] || '').split(',');
+  const pcis = (args[6] || '').split(',');
+  const items: MockLockItem[] = [];
+
+  for (let index = 0; index < count; index += 1) {
+    if (!Number.isFinite(bands[index])) continue;
+    if (type === 'LTE') {
+      items.push({
+        band: bands[index],
+        ...(lockType !== 3 ? { arfcn: arfcns[index] || '' } : {}),
+        ...(lockType === 2 ? { pci: scsOrPci[index] || '' } : {}),
+      });
+    } else {
+      items.push({
+        band: bands[index],
+        ...(lockType !== 3
+          ? { arfcn: arfcns[index] || '', scs: Number(scsOrPci[index]) || 0 }
+          : {}),
+        ...(lockType === 2 ? { pci: pcis[index] || '' } : {}),
+      });
+    }
+  }
+
+  return { lockType, mobility, items };
+};
+
+const formatCMGL = (messages: MockReceivedSMS[]): string => {
+  if (messages.length === 0) return 'NO SMS';
+  const lines: string[] = [];
+  messages.forEach((message) => {
+    lines.push(`+CMGL: ${message.index},1,,${Math.floor(message.pdu.length / 2)}`);
+    lines.push(message.pdu);
+  });
+  lines.push('OK');
+  return lines.join('\n');
+};
+
+const formatPDPContexts = (state: MockModemState): string =>
+  [
+    ...state.pdpContexts
+      .sort((a, b) => a.cid - b.cid)
+      .map(
+        (context) =>
+          `+CGDCONT: ${context.cid},"${context.type}","${context.apn}","${context.address}",0,0`,
+      ),
+    'OK',
+  ].join('\n');
+
+const formatPDPActivation = (state: MockModemState): string =>
+  [
+    ...state.pdpContexts
+      .sort((a, b) => a.cid - b.cid)
+      .map((context) => `+CGACT: ${context.cid},${context.active ? 1 : 0}`),
+    'OK',
+  ].join('\n');
+
+// 演示模式里的下载推进：每次读进度往前走一格，和真机"边下边报"一致。
+// 后端 modules/system/fota.rs 是真实现，这里只是演示数据。
+const advanceMockDownload = (state: MockModemState): void => {
+  if (state.fota.phase !== 'downloading') return;
+  const increments = [17, 22, 26, 19, 16];
+  const increment = increments[Math.min(state.fota.queryCount, increments.length - 1)] || 18;
+  state.fota.queryCount += 1;
+  state.fota.progress = Math.min(100, state.fota.progress + increment);
+};
+
+/// 把演示状态码映射成后端 `system.fota` 的应答形状
+/// （{running, phase, step, progress, state, stateName, total, received}）。
+const mockFotaSnapshot = (
+  state: MockModemState,
+  code: number,
+  running: boolean,
+): Record<string, unknown> => {
+  const names: Record<number, string> = {
+    10: '等待下载',
+    11: '正在查询新版本',
+    12: '发现新版本',
+    13: '查询新版本失败',
+    14: '服务器无新版本',
+    20: '固件下载失败',
+    30: '下载中',
+    31: '下载已挂起',
+    40: '固件下载完成',
+    50: '正在升级',
+  };
+  let step = 1;
+  let phase = running ? 'running' : 'idle';
+  if (code === 30) {
+    advanceMockDownload(state);
+    step = 2;
+  } else if (code === 40) {
+    // 真机在这里刷写并重启；演示模式直接给完成态，页面照旧显示"正在升级"。
+    step = 4;
+    phase = 'done';
+    state.fota.phase = 'downloaded';
+  } else if (code === 50) {
+    step = 4;
+  }
+  return {
+    running: phase === 'running',
+    phase,
+    step,
+    progress: code === 40 ? 100 : state.fota.progress,
+    state: code,
+    stateName: names[code] || '未知状态',
+    total: 100,
+    received: code === 40 ? 100 : state.fota.progress,
+  };
+};
+
+const getFotaState = (state: MockModemState): number => {
+  if (state.fota.phase === 'idle') return 10;
+  if (state.fota.phase === 'checking') {
+    state.fota.queryCount += 1;
+    if (state.fota.queryCount === 1) return 11;
+    if (state.fota.queryCount === 2) return 12;
+    state.fota.phase = 'downloading';
+    return 30;
+  }
+  if (state.fota.phase === 'downloading') {
+    if (state.fota.progress >= 100) {
+      state.fota.phase = 'downloaded';
+      return 40;
+    }
+    return 30;
+  }
+  if (state.fota.phase === 'downloaded') return 40;
+  return 50;
+};
+
+// 演示用的定时锁频配置。真实环境下这份 JSON 由后端从 UCI 读出来
+// （at-webserver/src/schedconfig.go），这里照它的结构给一份，好让面板能显示。
+export const createMockSchedule = () => ({
+  enabled: true,
+  check_interval: 60,
+  timeout: 180,
+  unlock_lte: true,
+  unlock_nr: true,
+  toggle_airplane: true,
+  night: {
+    enabled: true,
+    start: '23:00',
+    end: '07:00',
+    lte: { type: 3, bands: '3,8', arfcns: '', scs_types: '', pcis: '' },
+    nr: { type: 2, bands: '78', arfcns: '633888', scs_types: '1', pcis: '100' },
+  },
+  day: {
+    enabled: true,
+    lte: { type: 0, bands: '', arfcns: '', scs_types: '', pcis: '' },
+    nr: { type: 1, bands: '41', arfcns: '504990', scs_types: '1', pcis: '' },
+  },
+  status: {
+    current_mode: '日间',
+    next_switch: '23:00',
+    switch_count: 3,
+    applied: true,
+  },
+});
+
+// 演示用的扫频结果，取手册 5.35 的样例（频段已按后端的换算规则转成十进制：
+// band 41 = 0x29，band 78 = 0x4E）。结构与后端 cell.scan_* 的 cells[] 完全一致
+// —— 解析 ^CELLSCAN 行是后端的事，演示模式直接给解码后的对象。
+export const MOCK_SCAN_RESULTS: ScanCell[] = [
+  { rat: 3, ratName: 'NR', plmn: '46000', freq: 504990, pci: 334, band: 41, lac: '5A01', cid: '1F23', rxlev: null, bsic: null, psc: null, scs: 1, rsrp: -85, rsrq: -5.5, sinr: 10, raw: '^CELLSCAN: 3,"46000",504990,334,29,5A01,1F23,,,,1,-85,-11,20,' },
+  { rat: 3, ratName: 'NR', plmn: '46000', freq: 633888, pci: 100, band: 78, lac: '5A01', cid: '1F24', rxlev: null, bsic: null, psc: null, scs: 1, rsrp: -95, rsrq: -6.5, sinr: 6, raw: '^CELLSCAN: 3,"46000",633888,100,4E,5A01,1F24,,,,1,-95,-13,12,' },
+  { rat: 3, ratName: 'NR', plmn: '46001', freq: 627264, pci: 201, band: 78, lac: '5A03', cid: '3F02', rxlev: null, bsic: null, psc: null, scs: 1, rsrp: -102, rsrq: -7.5, sinr: 2, raw: '^CELLSCAN: 3,"46001",627264,201,4E,5A03,3F02,,,,1,-102,-15,4,' },
+  { rat: 2, ratName: 'LTE', plmn: '46001', freq: 41332, pci: 177, band: 41, lac: '5A02', cid: '2F10', rxlev: -98, bsic: null, psc: null, scs: null, rsrp: null, rsrq: null, sinr: 7.5, raw: '^CELLSCAN: 2,"46001",41332,177,29,5A02,2F10,-98,,,,,,,60' },
+  { rat: 2, ratName: 'LTE', plmn: '46000', freq: 1850, pci: 55, band: 3, lac: '5A04', cid: '2F55', rxlev: -105, bsic: null, psc: null, scs: null, rsrp: null, rsrq: null, sinr: 4, raw: '^CELLSCAN: 2,"46000",1850,55,3,5A04,2F55,-105,,,,,,,32' },
+];
+
+/** 读取演示模式的附加参数，支持写在 ?a=b 或 #/path?a=b 两处。 */
+const mockParam = (name: string): string => {
+  if (typeof window === 'undefined') return '';
+  const search = new URLSearchParams(window.location.search).get(name);
+  if (search) return search;
+  const hashQuery = window.location.hash.includes('?')
+    ? window.location.hash.slice(window.location.hash.indexOf('?') + 1)
+    : '';
+  return new URLSearchParams(hashQuery).get(name) || '';
+};
+
+export const isMockModeEnabled = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  const searchEnabled = new URLSearchParams(window.location.search).get('mock') === '1';
+  const hashQuery = window.location.hash.includes('?')
+    ? window.location.hash.slice(window.location.hash.indexOf('?') + 1)
+    : '';
+  return searchEnabled || new URLSearchParams(hashQuery).get('mock') === '1';
+};
+
+export const seedMockSentMessages = (): void => {
+  if (typeof window === 'undefined' || !isMockModeEnabled()) return;
+  if (localStorage.getItem(MOCK_SMS_CACHE_KEY) === null) {
+    localStorage.setItem(MOCK_SMS_CACHE_KEY, JSON.stringify(MOCK_SENT_MESSAGES));
+  }
+};
+
+export const createMockModemState = (): MockModemState => ({
+  schedule: createMockSchedule(),
+  cfun: 1,
+  imei: '861234567890123',
+  simSlot: 0,
+  simHotPlug: true,
+  pinEnabled: false,
+  nicRate: 2,
+  powerControl: true,
+  nrCa: true,
+  nrVonr: 3,
+  nrDss: { rateMatchingLTE: 0, additionalDMRS: 0 },
+  sysCfg: {
+    acqorder: '08030201',
+    band: '3FFFFFFF',
+    roam: 1,
+    srvdomain: 2,
+    lteband: '7FFFFFFFFFFFFFFF',
+  },
+  therm: { enabled: true, caMimoSwitch: true, interval: 2 },
+  imsOn: true,
+  smsFormat: 0,
+  smsCenter: '+8613800138000',
+  smsStorage: { read: 'SM', write: 'SM', receive: 'SM', total: 50 },
+  receivedSMS: RECEIVED_SMS.map((message) => ({ ...message })),
+  sentSequence: 42,
+  dial: {
+    enabled: 1,
+    mode: 2,
+    protocol: 'IPV4V6',
+    apn: 'cmnet',
+    username: '',
+    password: '',
+    authType: 0,
+  },
+  usbMode: 1,
+  interfaceMode: 2,
+  postRoute: 1,
+  dmzHost: '192.168.8.100',
+  pdpContexts: [
+    { cid: 1, type: 'IPV4V6', apn: 'cmnet', address: '10.23.48.2', active: true },
+    { cid: 5, type: 'IPV4V6', apn: 'ims', address: '0.0.0.0', active: true },
+    { cid: 8, type: 'IP', apn: '3gnet', address: '10.23.48.3', active: false },
+  ],
+  lteLock: {
+    lockType: 2,
+    mobility: 0,
+    items: [{ band: 3, arfcn: '1650', pci: '101' }],
+  },
+  nrLock: {
+    lockType: 2,
+    mobility: 0,
+    items: [{ band: 78, arfcn: '636648', scs: 1, pci: '506' }],
+  },
+  option5g: { nrSaSupportFlag: 1, nrDcMode: 3, gcAccessMode: 2 },
+  flow: {
+    lastDsTime: 3600,
+    lastTxFlow: 38 * 1024 * 1024,
+    lastRxFlow: 1630 * 1024 * 1024,
+    totalDsTime: 12 * 86400 + 8 * 3600 + 26 * 60,
+    totalTxFlow: Math.floor(16.4 * 1024 * 1024 * 1024),
+    totalRxFlow: Math.floor(128.6 * 1024 * 1024 * 1024),
+  },
+  metricTick: 0,
+  fota: { phase: 'idle', queryCount: 0, progress: 0, url: '' },
+});
+
+export const createMockPDCPData = (sequence: number): MockPDCPData => {
+  const downlinkRates = [2850000, 4120000, 6380000, 5240000, 7810000, 4560000];
+  const uplinkRates = [380000, 640000, 910000, 720000, 1180000, 560000];
+  const index = sequence % downlinkRates.length;
+  const timestamp = Date.now();
+  return {
+    id: sequence + 1,
+    pduSessionId: 1,
+    discardTimerLen: 100,
+    avgDelay: 8 + (sequence % 4),
+    minDelay: 3,
+    maxDelay: 18 + (sequence % 6),
+    highPriQueMaxBuffTime: 4,
+    lowPriQueMaxBuffTime: 7,
+    highPriQueBuffPktNums: 2 + (sequence % 3),
+    lowPriQueBuffPktNums: 4 + (sequence % 5),
+    ulPdcpRate: uplinkRates[index],
+    dlPdcpRate: downlinkRates[index],
+    ulDiscardCnt: 0,
+    dlDiscardCnt: sequence % 11 === 0 ? 1 : 0,
+    timestamp1: timestamp,
+    timestamp2: timestamp,
+  };
+};
+
+/**
+ * 统一 API 路由的演示应答（`api.<route>`）：真机由后端注册表解码，
+ * 演示模式在这里给出同形状的对象，页面代码两条路径共用一套渲染。
+ */
+const MOCK_API_ROUTES: Record<string, unknown> = {
+  'api.modem.endc': { available: 1, plmnAvailable: 1, restricted: 1, established: 1 },
+  'api.registration.get': {
+    state: 1,
+    tac: '0000C3',
+    ci: '000000010000001A',
+    act: 11,
+    nssai: '01.010203',
+  },
+  'api.modem.txpower': { pusch: 21, pucch: 18, srs: 20, prach: 23 },
+  'api.modem.nr_txpower': {
+    carriers: [
+      { pusch: 23, pucch: 3, srs: 23, prach: 22, freq: 3549720 },
+      { pusch: 21, pucch: 2, srs: 20, prach: 21, freq: 2593330 },
+    ],
+  },
+  // modules/ca：^HFREQINFO? / ^CASCELLINFO? / ^MONSSC 的领域模型。
+  // 载波取手册 13.25 的 NR 样例（n41，2565 MHz），辅小区取 13.27/13.18 的
+  // 示例行 —— 下行频点对得上，所以信息页能把信号并进载波卡片。
+  'api.ca.get': {
+    carriers: [
+      {
+        radio: 'NR',
+        band: 'n41',
+        source: 'hfreqinfo',
+        dl_arfcn: '513000',
+        ul_arfcn: '513000',
+        dl_frequency_mhz: 2565,
+        ul_frequency_mhz: 2565,
+        dl_bandwidth_mhz: 100,
+        ul_bandwidth_mhz: 100,
+      },
+      {
+        radio: 'LTE',
+        band: 'B3',
+        source: 'lte_scell',
+        dl_arfcn: '1650',
+        ul_arfcn: '1850',
+        dl_frequency_mhz: 184,
+        ul_frequency_mhz: 174.5,
+        dl_bandwidth_mhz: 20,
+        ul_bandwidth_mhz: 20,
+      },
+    ],
+    secondary: [
+      { radio: 'NR', arfcn: 513000, pci: 100, rsrp: -70, rsrq: -20, sinr: -10, measType: 'SSB' },
+      {
+        radio: 'LTE',
+        index: 1,
+        pci: 417,
+        band: 3,
+        rssi: -60,
+        rsrp: -80,
+        rsrq: -5,
+        ulArfcn: 1850,
+        dlArfcn: 1650,
+        ulFreq: 174.5,
+        dlFreq: 184,
+        ulBandwidth: 20,
+        dlBandwidth: 20,
+      },
+    ],
+    carrier_count: 2,
+    ca_active: true,
+    dc_active: true,
+    nr_carrier_count: 1,
+    lte_carrier_count: 1,
+    lte_secondary_count: 1,
+    secondary_connection_count: 1,
+    ca_mode: 'EN-DC + CA',
+    ca_dl_bandwidth: 120,
+    ca_ul_bandwidth: 120,
+  },
+  'api.qos.get': {
+    active_cid: 1,
+    ambr_down_kbps: 20000,
+    ambr_up_kbps: 10000,
+    ambr_apn: 'cmnet',
+    qci: '9',
+  },
+  'api.network.pdp': {
+    addresses: [
+      { cid: 8, address: '10.101.2.15', family: 'IPv4' },
+      { cid: 9, address: '2008:2:2:1:ffff:ffff:ffff:ffff', family: 'IPv6' },
+    ],
+  },
+  // modules/network：AT^DHCP? / AT^DHCPV6? / AT^IPV6CAP? 的领域模型
+  'api.network.dhcp': {
+    ipv4: {
+      address: '10.101.2.15',
+      netmask: '255.255.255.0',
+      gateway: '10.101.2.1',
+      dhcp_server: '10.101.2.1',
+      primary_dns: '211.136.115.8',
+      secondary_dns: '211.136.115.9',
+    },
+    ipv6: {
+      address: '2409:8a00:1234::1',
+      netmask: '64',
+      gateway: '2409:8a00:1234::',
+      dhcp_server: '2409:8a00:1234::1',
+      primary_dns: '2400:3200::1',
+      secondary_dns: '2400:3200:baba::1',
+    },
+    ipv6_capability: 7,
+  },
+  // modules/modem：AT^MCS=1 / AT^MCS=0
+  'api.modem.mcs': {
+    downlink: {
+      rat: 'NR',
+      carriers: [
+        // group/rat 是后端按 ^MCS 行回填的分组信息（LuCI 的行标签用）。
+        { index: 1, group: 1, rat: 'NR', mcs_table_index: 0, code0: 25, code1: 23 },
+        { index: 2, group: 2, rat: 'LTE', mcs_table_index: 1, code0: 21, code1: 19 },
+      ],
+      avg_mcs: 23,
+    },
+    uplink: {
+      rat: 'NR',
+      carriers: [{ index: 1, group: 1, rat: 'NR', mcs_table_index: 0, code0: 18, code1: 16 }],
+      avg_mcs: 18,
+    },
+  },
+  // modules/network：锁频读数/写入（^LTEFREQLOCK?/^NRFREQLOCK?）
+  'api.network.lock_get': {
+    lock_type: 2,
+    mobility: 0,
+    items: [{ band: 3, arfcn: 1850, pci: 100 }],
+  },
+  'api.network.lock_apply': {
+    cycled_radio: true,
+    results: [{ rat: 'lte', applied: true }],
+  },
+  // modules/network：5G 接入模式
+  'api.network.c5goption': { nr_sa_support_flag: 1, nr_dc_mode: 1, gc_access_mode: 1 },
+  'api.network.c5goption_set': { applied: true, cycled_radio: true },
+  // modules/beam：NR SSB 波束报告
+  'api.beam.ssb': {
+    servingCell: {
+      arfcn: '636648',
+      cid: '1A2B3C',
+      pci: '506',
+      band: 78,
+      rsrp: 85,
+      sinr: 50,
+      ta: 1,
+      ssbs: [
+        { ssbId: 0, rsrp: 90 },
+        { ssbId: 1, rsrp: 80 },
+        { ssbId: 2, rsrp: 70 },
+        { ssbId: 3, rsrp: 60 },
+      ],
+    },
+    neighborCells: [
+      {
+        pci: '506',
+        arfcn: '632448',
+        band: 78,
+        rsrp: 88,
+        sinr: 45,
+        ssbs: [
+          { ssbId: 0, rsrp: 90 },
+          { ssbId: 1, rsrp: 80 },
+          { ssbId: 2, rsrp: 70 },
+        ],
+      },
+    ],
+  },
+  // modules/cell：邻区扫描
+  'api.cell.neighbors': {
+    cells: [
+      { type: 'LTE', arfcn: 1650, pci: 476, rsrp: '-85', rsrq: '-12', rxlev: '30', band: 3 },
+      { type: 'NR', arfcn: 636648, pci: 64, rsrp: '-70', rsrq: '-10', sinr: '20', band: 78 },
+    ],
+  },
+  // modules/network：IMS 注册状态（显示路由，未能应答就是空对象）
+  'api.network.ims': { enabled: 1, registered: 1 },
+  // 幂等写：详细 PS 注册上报
+  'api.network.registration_urc': { enabled: true },
+  // 写：清空模组侧的流量计数器
+  'api.traffic.clear': { cleared: true },
+};
+
+/**
+ * sim 路由的演示应答：真机由 modules/sim 解码 + 执行（+CPIN / ^SIMSQ /
+ * ^SCICHG / ^TDSIMHP / ^CLCK / ^CPWD 都由后端负责），演示模式从同一份
+ * 状态派生，`?simlock=pin|puk` 仍然能模拟一张被锁的卡。
+ */
+const mockApiParams = (commandLine: string, key: string): Record<string, unknown> => {
+  const body = commandLine.slice(key.length).trim();
+  if (!body) return {};
+  try {
+    return JSON.parse(body) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+};
+
+const mockSimApiResponse = (
+  commandLine: string,
+  state: MockModemState,
+): MockCommandResponse | null => {
+  const key = commandLine.split(/\s+/)[0];
+  if (!key.startsWith('api.sim.')) return null;
+  const params = mockApiParams(commandLine, key);
+  const simLock = mockParam('simlock');
+
+  switch (key) {
+    case 'api.sim.slot':
+      return { success: true, data: { slot: state.simSlot, hotplug: state.simHotPlug } };
+    case 'api.sim.slot_set': {
+      const slot = Number(params.slot) === 1 ? 1 : 0;
+      state.simSlot = slot;
+      return { success: true, data: { switched: true, slot } };
+    }
+    case 'api.sim.hotplug_set': {
+      const on = params.hotplug === true;
+      state.simHotPlug = on;
+      return { success: true, data: { applied: true, hotplug: on } };
+    }
+    case 'api.sim.pin_status': {
+      const code = simLock === 'pin' ? 'SIM PIN' : simLock === 'puk' ? 'SIM PUK' : 'READY';
+      const lock = simLock === 'pin' ? 'pin' : simLock === 'puk' ? 'puk' : 'ready';
+      return {
+        success: true,
+        data: {
+          code,
+          lock,
+          blocked: lock !== 'ready',
+          needsNewPin: lock === 'puk',
+          card: { status: simLock ? 2 : 11, dead: false, present: true },
+          pinEnabled: state.pinEnabled,
+        },
+      };
+    }
+    case 'api.sim.pin_apply': {
+      const operation = String(params.operation || '');
+      if (operation === 'verify' || operation === 'unblock') {
+        const expected = simLock === 'puk' ? '12345678' : '1234';
+        if (String(params.pin || '') !== expected) {
+          return {
+            success: false,
+            error: '模组拒绝指令: +CME ERROR: incorrect password',
+          };
+        }
+      }
+      if (operation === 'enable') state.pinEnabled = true;
+      if (operation === 'disable') state.pinEnabled = false;
+      return { success: true, data: { applied: true } };
+    }
+    default:
+      return null;
+  }
+};
+
+const mockStoragePlanes = (state: MockModemState) => {
+  const used = state.receivedSMS.length;
+  const plane = (name: string) => ({ name, used, total: state.smsStorage.total });
+  return {
+    read: plane(state.smsStorage.read),
+    write: plane(state.smsStorage.write),
+    receive: plane(state.smsStorage.receive),
+    storages: Array.from(
+      new Set([state.smsStorage.read, state.smsStorage.write, state.smsStorage.receive]),
+    ),
+  };
+};
+
+/**
+ * 演示用的分片统计，阈值和 modules/sms::pdu 一致：GSM 7bit 单条 160 字、
+ * 分片 153 字；UCS2 单条 70 字、分片 67 字。
+ */
+const mockSmsStats = (text: string) => {
+  const chars = text.length;
+  if (!text) return { encoding: '7bit' as const, chars: 0, parts: 0 };
+  const gsm7 = /^[\x20-\x7e\n\r\u00a1\u00a3-\u00a5\u00c7\u00d8\u00d9\u00e0-\u00e5\u00c6\u00e7\u00d6\u00dc\u00df\u00e9\u00ec\u00f1\u00f6\u00f8\u00fc]*$/.test(text);
+  if (gsm7) {
+    return { encoding: '7bit' as const, chars, parts: chars <= 160 ? 1 : Math.ceil(chars / 153) };
+  }
+  return { encoding: 'UCS2' as const, chars, parts: chars <= 70 ? 1 : Math.ceil(chars / 67) };
+};
+
+/**
+ * sms 路由的演示应答：状态形状与 modules/sms::state 一致（sms.status /
+ * sms.storage / sms.list / sms.send / sms.delete / sms.clear_all /
+ * sms.storage_set / sms.center_set / sms.ims_set / sms.analyze）。
+ */
+const mockSmsApiResponse = (
+  commandLine: string,
+  state: MockModemState,
+): MockCommandResponse | null => {
+  const key = commandLine.split(/\s+/)[0];
+  if (!key.startsWith('api.sms.')) return null;
+  const params = mockApiParams(commandLine, key);
+
+  switch (key) {
+    case 'api.sms.status':
+      return {
+        success: true,
+        data: {
+          enabled: true,
+          imsOn: state.imsOn,
+          center: state.smsCenter,
+          storage: mockStoragePlanes(state),
+        },
+      };
+    case 'api.sms.storage':
+      return { success: true, data: mockStoragePlanes(state) };
+    case 'api.sms.list':
+      return {
+        success: true,
+        data: {
+          messages: state.receivedSMS.map((message) => ({
+            index: message.index,
+            content: message.text ?? '',
+            number: message.number ?? '',
+            time: message.time ?? '',
+            type: 'received',
+          })),
+        },
+      };
+    case 'api.sms.send': {
+      const text = typeof params.text === 'string' ? params.text : '';
+      return { success: true, data: { sent: true, parts: mockSmsStats(text).parts } };
+    }
+    // USSD：真实现是后端 modules/sms/ussd.rs（打包 + 解 + 文案），
+    // 演示模式给出同样的形状，校验文案也照抄。
+    case 'api.sms.ussd_send': {
+      const code = String(params.code ?? '').trim();
+      if (!code) return { success: false, error: '请输入 USSD 代码，例如 *133#' };
+      if (code.length > 160) return { success: false, error: 'USSD 字符串最长 160 个字符' };
+      if (!/^[0-9*#+]+$/.test(code)) return { success: false, error: 'USSD 代码只能包含数字与 * # +' };
+      // 演示读数固定，方便核对页面渲染（真机由运营商决定）。
+      return {
+        success: true,
+        data: {
+          sent: true,
+          reply: {
+            m: 0,
+            mText: '网络无需回复',
+            text: code === '*133#' ? '您当前话费余额为 12.30 元' : `演示应答：${code}`,
+            needsReply: false,
+          },
+        },
+      };
+    }
+    case 'api.sms.ussd_cancel':
+      return { success: true, data: { cancelled: true } };
+    case 'api.sms.delete': {
+      const index = Number(params.index);
+      state.receivedSMS = state.receivedSMS.filter((message) => message.index !== index);
+      return { success: true, data: { deleted: true } };
+    }
+    case 'api.sms.clear_all': {
+      const cleared = mockStoragePlanes(state).storages;
+      state.receivedSMS = [];
+      return { success: true, data: { cleared } };
+    }
+    case 'api.sms.storage_set': {
+      const read = typeof params.read === 'string' ? params.read : state.smsStorage.read;
+      state.smsStorage = {
+        ...state.smsStorage,
+        read,
+        write: typeof params.write === 'string' ? params.write : read,
+        receive: typeof params.receive === 'string' ? params.receive : read,
+      };
+      return { success: true, data: { applied: true } };
+    }
+    case 'api.sms.center_set':
+      if (typeof params.number === 'string') state.smsCenter = params.number;
+      return { success: true, data: { applied: true } };
+    case 'api.sms.ims_set':
+      state.imsOn = params.enabled === true;
+      return { success: true, data: { applied: true } };
+    case 'api.sms.analyze':
+      return {
+        success: true,
+        data: mockSmsStats(typeof params.text === 'string' ? params.text : ''),
+      };
+    default:
+      return null;
+  }
+};
+
+/**
+ * system / modem / radio 路由的演示应答：网卡速率、电源开关、飞行模式、IMEI
+ * 都是页面会改的，演示状态跟着走，和真机的 modules/system + modules/modem 一致。
+ */
+const mockDeviceApiResponse = (
+  commandLine: string,
+  state: MockModemState,
+): MockCommandResponse | null => {
+  const key = commandLine.split(/\s+/)[0];
+  const handled =
+    key.startsWith('api.system.') ||
+    key.startsWith('api.modem.nr_capability') ||
+    key === 'api.modem.reset' ||
+    key === 'api.modem.imei_set' ||
+    key.startsWith('api.network.radio') ||
+    key.startsWith('api.network.syscfg') ||
+    key.startsWith('api.network.autodial') ||
+    key.startsWith('api.network.usb_mode') ||
+    key.startsWith('api.network.interface_cfg') ||
+    key.startsWith('api.network.pdp_contexts') ||
+    key.startsWith('api.network.schedule_');
+  if (!handled) return null;
+  const params = mockApiParams(commandLine, key);
+
+  switch (key) {
+    case 'api.system.service_mode':
+      return { success: true, data: { mode: 'network' } };
+    case 'api.system.device_control':
+      return {
+        success: true,
+        data: { nic_rate: state.nicRate, power_control: state.powerControl },
+      };
+    case 'api.system.nic_rate_set': {
+      const rate = Number(params.rate) === 1 ? 1 : 2;
+      state.nicRate = rate;
+      return { success: true, data: { applied: true, nic_rate: rate } };
+    }
+    case 'api.system.power_control_set': {
+      const on = params.enabled === true;
+      state.powerControl = on;
+      return { success: true, data: { applied: true, power_control: on } };
+    }
+    case 'api.system.factory_reset':
+      return { success: true, data: { restored: true } };
+    // FOTA：真实现是后端 modules/system/fota.rs 的任务（初始化 → 轮询状态机
+    // → 续传 → 刷写）。演示模式照着它的应答与校验文案来，页面看到的形状
+    // 与真机完全一致。
+    case 'api.system.fota': {
+      const state_ = getFotaState(state);
+      const running = state.fota.phase !== 'idle' && state.fota.phase !== 'downloaded';
+      return { success: true, data: mockFotaSnapshot(state, state_, running) };
+    }
+    case 'api.system.fota_start': {
+      const url = String(params.url || '').trim();
+      if (!url) return { success: false, error: '请设置 FOTA 服务器地址' };
+      if (!url.startsWith('http://')) return { success: false, error: '仅支持 http 协议' };
+      state.fota = {
+        phase: 'checking',
+        queryCount: 0,
+        progress: 0,
+        url: url.endsWith('/') ? url : `${url}/`,
+      };
+      return { success: true, data: { started: true } };
+    }
+    case 'api.system.fota_abort': {
+      const aborted = state.fota.phase !== 'idle';
+      if (aborted) state.fota.phase = 'idle';
+      return { success: true, data: { aborted } };
+    }
+    case 'api.modem.reset':
+      return { success: true, data: { rebooting: true } };
+    case 'api.modem.imei_set': {
+      const imei = String(params.imei || '');
+      if (!/^\d{15}$/.test(imei)) {
+        // 与后端一致：参数类错误在应答里就是那句校验文案（detail()），
+        // 不带 "参数无效: " 日志前缀。
+        return { success: false, error: 'IMEI必须是15位数字' };
+      }
+      state.imei = imei;
+      return { success: true, data: { applied: true, imei } };
+    }
+    case 'api.network.radio':
+      return { success: true, data: { airplane: state.cfun === 0, cfun: state.cfun } };
+    case 'api.network.radio_set': {
+      const airplane = params.airplane === true;
+      state.cfun = airplane ? 0 : 1;
+      return { success: true, data: { applied: true, airplane } };
+    }
+    case 'api.modem.nr_capability':
+      return {
+        success: true,
+        data: {
+          ca: state.nrCa,
+          vonr: state.nrVonr,
+          dss: { rateMatchingLTE: state.nrDss.rateMatchingLTE, additionalDMRS: state.nrDss.additionalDMRS },
+        },
+      };
+    case 'api.modem.nr_capability_set': {
+      if (typeof params.ca === 'boolean') state.nrCa = params.ca;
+      if (typeof params.vonr === 'number') state.nrVonr = params.vonr;
+      const dss = params.dss as { rateMatchingLTE?: number; additionalDMRS?: number } | undefined;
+      if (dss) {
+        state.nrDss = {
+          rateMatchingLTE: Number(dss.rateMatchingLTE) === 1 ? 1 : 0,
+          additionalDMRS: Number(dss.additionalDMRS) === 1 ? 1 : 0,
+        };
+      }
+      return { success: true, data: { applied: true } };
+    }
+    // 定时锁频：真实现是后端 modules/network/schedule.rs（UCI 映射 + 校验），
+    // 演示模式返回同一份 DTO，保存也只改演示状态。
+    case 'api.network.schedule_get':
+      return { success: true, data: state.schedule };
+    case 'api.network.schedule_set': {
+      const { enabled, status, ...rest } = params as Record<string, unknown>;
+      void enabled;
+      void status;
+      state.schedule = { ...state.schedule, ...rest } as typeof state.schedule;
+      return { success: true, data: { applied: true } };
+    }
+    case 'api.network.syscfg':
+      return { success: true, data: { ...state.sysCfg } };
+    case 'api.network.syscfg_set': {
+      if (typeof params.acqorder === 'string') state.sysCfg.acqorder = params.acqorder;
+      if (typeof params.band === 'string') state.sysCfg.band = params.band;
+      if (typeof params.roam === 'number') state.sysCfg.roam = params.roam;
+      if (typeof params.srvdomain === 'number') state.sysCfg.srvdomain = params.srvdomain;
+      if (typeof params.lteband === 'string') state.sysCfg.lteband = params.lteband;
+      return { success: true, data: { applied: true } };
+    }
+    // 拨号页的四条只读路由：形状与后端 modules/network 的 to_json 一致。
+    case 'api.network.autodial':
+      return {
+        success: true,
+        data: {
+          enable: state.dial.enabled,
+          dialMode: state.dial.mode,
+          protocol: state.dial.protocol,
+          apn: state.dial.apn,
+          username: state.dial.username,
+          password: state.dial.password,
+          authType: state.dial.authType,
+        },
+      };
+    case 'api.network.usb_mode':
+      return { success: true, data: { mode: state.usbMode } };
+    case 'api.network.interface_cfg':
+      return {
+        success: true,
+        data: {
+          mode: state.interfaceMode,
+          postRoute: state.postRoute,
+          dmz: { enabled: Boolean(state.dmzHost), host: state.dmzHost || '' },
+        },
+      };
+    case 'api.network.pdp_contexts':
+      return {
+        success: true,
+        data: {
+          contexts: state.pdpContexts.map((ctx) => ({
+            cid: ctx.cid,
+            type: ctx.type,
+            apn: ctx.apn,
+            pdp_addr: ctx.address,
+            active: ctx.active,
+          })),
+        },
+      };
+    case 'api.system.thermal':
+      return {
+        success: true,
+        data: {
+          enabled: state.therm.enabled,
+          caMimoSwitch: state.therm.caMimoSwitch,
+          interval: state.therm.interval,
+          logSwitch: { consoleLog: true, fileLog: false },
+          thresholds: [50, 60, 70, 80, 90, 100],
+          currentLevel: 2,
+        },
+      };
+    case 'api.system.thermal_set': {
+      if (typeof params.enabled === 'boolean') state.therm.enabled = params.enabled;
+      if (typeof params.caMimoSwitch === 'boolean') state.therm.caMimoSwitch = params.caMimoSwitch;
+      if (typeof params.interval === 'number') state.therm.interval = params.interval;
+      return { success: true, data: { applied: true } };
+    }
+    default:
+      return null;
+  }
+};
+
+const mockApiResponse = (
+  commandLine: string,
+  state: MockModemState,
+): MockCommandResponse | null => {
+  const key = commandLine.split(/\s+/)[0];
+  if (!key.startsWith('api.')) return null;
+  const dynamic =
+    mockSimApiResponse(commandLine, state) ??
+    mockSmsApiResponse(commandLine, state) ??
+    mockDeviceApiResponse(commandLine, state);
+  if (dynamic) return dynamic;
+  const data = MOCK_API_ROUTES[key];
+  if (data === undefined) return null;
+  return { success: true, data };
+};
+
+export const resolveMockATCommand = (
+  command: string,
+  state: MockModemState,
+): MockCommandResponse => {
+  const normalized = command.replace(/\x1A/g, '').trim();
+  const commandLine = normalized.split(/[\r\n]/)[0].trim();
+
+  // 统一 API 路由优先：`api.signal.get` 这类命令由后端注册表处理，
+  // 演示模式也必须给出解码后的对象而不是 AT 文本。
+  const api = mockApiResponse(commandLine, state);
+  if (api) return api;
+
+  if (commandLine === 'AT' || commandLine === 'ATE0') return ok();
+  if (commandLine === 'ATI') {
+    return ok('Manufacturer: Quectel\nModel: MT5700M-CN\nRevision: M5700MCNCBR02A02T1G\nOK');
+  }
+  if (commandLine === 'AT+CGMR') return ok('M5700MCNCBR02A02T1G\nOK');
+  if (commandLine === 'AT+CGSN') return ok(`${state.imei}\nOK`);
+  if (commandLine === 'AT+CONNECT?') return ok('+CONNECT: 0\nOK');
+  if (commandLine === 'AT+CSQ') return ok('+CSQ: 27,99\nOK');
+  if (commandLine === 'AT+CREG?') return ok('+CREG: 2,1,"5A01","1F23",7\nOK');
+  if (commandLine === 'AT+CGREG?') return ok('+CGREG: 2,1,"5A01","1F23",7\nOK');
+  if (commandLine === 'AT^NWTIME?') return ok('^NWTIME: 26/08/26,14:28:36+32,0\nOK');
+  // 演示模式下可以用 ?simlock=pin / puk 模拟一张被锁的卡，看解锁弹窗的效果。
+  const simLock = mockParam('simlock');
+  if (commandLine === 'AT+CPIN?') {
+    if (simLock === 'pin') return ok('+CPIN: SIM PIN\nOK');
+    if (simLock === 'puk') return ok('+CPIN: SIM PUK\nOK');
+    return ok('+CPIN: READY\nOK');
+  }
+  // 手册 6.6.3：11 表示卡初始化完成、可接入网络；2 表示卡被 PIN/PUK 锁定。
+  if (commandLine === 'AT^SIMSQ?') {
+    return ok(simLock ? '^SIMSQ: 1,2\nOK' : '^SIMSQ: 1,11\nOK');
+  }
+  if (commandLine.startsWith('AT+CPIN=')) {
+    // 手册 20.2：16 = incorrect password，CMEE=2 下回的是描述字符串
+    const args = commandLine.slice('AT+CPIN='.length).split(',').map((v) => v.trim().replace(/"/g, ''));
+    const expected = simLock === 'puk' ? '12345678' : '1234';
+    return args[0] === expected ? ok() : { success: false, error: '+CME ERROR: incorrect password' };
+  }
+
+  // 手册 13.27：NSA 辅连接服务小区，2CC；PCI 为十六进制。
+  // 两条频点都能对上 ^HFREQINFO 报的 NR 载波，信号会并进各自的载波卡片。
+  if (commandLine === 'AT^MONSSC') {
+    return ok('^MONSSC: NR,636648,64,-70,-20,-10,0\n^MONSSC: NR,633400,2,-68,-10,1,1\nOK');
+  }
+  // 手册 13.18：LTE CA 辅小区
+  if (commandLine === 'AT^CASCELLINFO?') {
+    return ok('^CASCELLINFO: 1,417,-60,-80,-5,3,23925,1650,8225,8675,5,5\nOK');
+  }
+  // 手册 11.7：查询应答比 URC 多一个 enable 字段
+  if (commandLine === 'AT^LENDC?') return ok('^LENDC: 1,1,1,1,1\nOK');
+  // 手册 5.27：第一个字段是上报模式，不是注册状态
+  if (commandLine === 'AT+C5GREG?') {
+    return ok('+C5GREG: 2,1,"0000C3","000000010000001A",11,4,"01.010203"\nOK');
+  }
+  // 手册 13.23：4G 下 stxpwr 填无效值 999
+  if (commandLine === 'AT^TXPOWER?') return ok('^TXPOWER: 999,21,18,20,23\nOK');
+  // 手册 13.24：每 5 个字段一个载波
+  if (commandLine === 'AT^NTXPOWER?') return ok('^NTXPOWER: 23,3,23,22,3549720,21,2,20,21,2593330\nOK');
+  // 手册 7.8.5：IPv6 用 16 个点分十进制字节表示
+  if (commandLine === 'AT+CGPADDR') {
+    return ok(
+      '+CGPADDR: 8,"10.101.2.15"\n' +
+        '+CGPADDR: 9,"32.8.0.2.0.2.0.1.255.255.255.255.255.255.255.255"\nOK',
+    );
+  }
+
+  // 定时锁频：真机是 `network.schedule_get`/`schedule_set` 两条路由，伪命令
+  // `AT+SCHED?`/`AT+SCHED=` 只是它们的别名（后端 daemon.rs），演示模式照做。
+  if (commandLine === 'AT+SCHED?') {
+    return ok(`+SCHED: ${JSON.stringify(state.schedule)}\r\nOK`);
+  }
+  if (commandLine.startsWith('AT+SCHED=')) {
+    try {
+      const payload = JSON.parse(commandLine.slice('AT+SCHED='.length));
+      if (payload && typeof payload === 'object') {
+        const { enabled, status, ...rest } = payload;
+        void enabled;
+        void status;
+        state.schedule = { ...state.schedule, ...rest };
+      }
+      return ok('+SCHED: OK\r\nOK');
+    } catch {
+      return { success: false, error: 'invalid schedule json' };
+    }
+  }
+
+  if (commandLine === 'AT^HCSQ?') {
+    return ok(
+      '^HCSQ: "LTE",54,24,45,155\n^HCSQ: "NR",58,165,22,65535\nOK',
+    );
+  }
+  if (commandLine === 'AT^EONS=2') return ok('^EONS: 1,46000,"CMCC","中国移动",3\nOK');
+  if (commandLine === 'AT^MONSC') {
+    return ok('^MONSC: NR,460,00,636648,0,10321,1FA,2F01,-82,-9\nOK');
+  }
+  if (commandLine === 'AT^HFREQINFO?') {
+    // 3CC 演示：NR n78 主载波 + NR n78 辅载波 + LTE B3 辅载波，
+    // 频点与 ^MONSSC / ^CASCELLINFO 一一对应，信号并进各自的载波卡片
+    return ok(
+      '^HFREQINFO: 1,7,78,636648,3549720,100000,650048,3750720,100000,78,633400,3501000,100000,633400,3501000,100000\n' +
+        '^HFREQINFO: 2,4,3,1650,184500,20000,19650,175000,20000\nOK',
+    );
+  }
+  if (commandLine === 'AT^DSAMBR=1' || commandLine === 'AT^DSAMBR=8') {
+    return ok('^DSAMBR: 8,500000,100000,"cmnet"\nOK');
+  }
+  if (commandLine === 'AT+CGEQOSRDP=8' || commandLine === 'AT+CGEQOSRDP=1') {
+    return ok('+CGEQOSRDP: 8,9,0,0,0,0,0,0,0,0,0,0\nOK');
+  }
+  if (commandLine === 'AT^DHCPV6?') {
+    return ok(
+      '^DHCPV6: 2409:8a1e:3a20:120::2,ffff:ffff:ffff:ffff::,fe80::1,fe80::1,2409:8088::a,2409:8088::b\nOK',
+    );
+  }
+  if (commandLine === 'AT^DHCP?') {
+    return ok('^DHCP: 0230170A,00FFFFFF,0130170A,0130170A,050505DF,1D1D1D77\nOK');
+  }
+  if (commandLine === 'AT^IPV6CAP?') return ok('^IPV6CAP: 7\nOK');
+  if (commandLine === 'AT^DSFLOWQRY') {
+    const bump = 4 * 1024 * 1024 + (state.metricTick % 4) * 1024 * 1024;
+    state.metricTick += 1;
+    state.flow.lastDsTime += 5;
+    state.flow.lastTxFlow = Math.floor(bump * 0.16);
+    state.flow.lastRxFlow = bump;
+    state.flow.totalDsTime += 5;
+    state.flow.totalTxFlow += state.flow.lastTxFlow;
+    state.flow.totalRxFlow += state.flow.lastRxFlow;
+    return ok(
+      `^DSFLOWQRY: ${toHex(state.flow.lastDsTime)},${toHex(state.flow.lastTxFlow)},${toHex(
+        state.flow.lastRxFlow,
+      )},${toHex(state.flow.totalDsTime)},${toHex(state.flow.totalTxFlow)},${toHex(
+        state.flow.totalRxFlow,
+      )}\nOK`,
+    );
+  }
+  if (commandLine === 'AT^DSFLOWCLR') {
+    state.flow = {
+      lastDsTime: 0,
+      lastTxFlow: 0,
+      lastRxFlow: 0,
+      totalDsTime: 0,
+      totalTxFlow: 0,
+      totalRxFlow: 0,
+    };
+    return ok();
+  }
+  if (commandLine === 'AT^CHIPTEMP?') {
+    const drift = state.metricTick % 3;
+    return ok(
+      `^CHIPTEMP: ${432 + drift},${445 + drift},${451 + drift},398,401,407,${
+        428 + drift
+      },431,${439 + drift},442,419,423\nOK`,
+    );
+  }
+  if (commandLine === 'AT^MCS=1') {
+    return ok('^MCS: 1,1,0,25,23,1,21,19\n^MCS: 2,0,0,18,17\nOK');
+  }
+  if (commandLine === 'AT^MCS=0') return ok('^MCS: 1,1,0,18,16,1,16,14\nOK');
+
+  if (commandLine === 'AT^LTEFREQLOCK?') {
+    return ok(formatLockResponse('^LTEFREQLOCK', state.lteLock));
+  }
+  if (commandLine === 'AT^NRFREQLOCK?') {
+    return ok(formatLockResponse('^NRFREQLOCK', state.nrLock));
+  }
+  if (commandLine.startsWith('AT^LTEFREQLOCK=')) {
+    state.lteLock = updateLockConfig(commandLine.slice('AT^LTEFREQLOCK='.length), 'LTE', state.lteLock);
+    return ok();
+  }
+  if (commandLine.startsWith('AT^NRFREQLOCK=')) {
+    state.nrLock = updateLockConfig(commandLine.slice('AT^NRFREQLOCK='.length), 'NR', state.nrLock);
+    return ok();
+  }
+  if (commandLine === 'AT^C5GOPTION?') {
+    const value = state.option5g;
+    return ok(`^C5GOPTION: ${value.nrSaSupportFlag},${value.nrDcMode},${value.gcAccessMode}\nOK`);
+  }
+  if (commandLine.startsWith('AT^C5GOPTION=')) {
+    const values = commandLine.slice('AT^C5GOPTION='.length).split(',').map(Number);
+    if (values.length >= 3) {
+      state.option5g = {
+        nrSaSupportFlag: values[0],
+        nrDcMode: values[1],
+        gcAccessMode: values[2],
+      };
+    }
+    return ok();
+  }
+  if (commandLine === 'AT^MONNC') {
+    return ok(
+      '^MONNC: LTE,1650,0065,-88,-10,46\n' +
+        '^MONNC: LTE,37900,012C,-96,-13,34\n' +
+        '^MONNC: NR,636648,01FA,-656,-72,112\n' +
+        '^MONNC: NR,632448,0087,-720,-88,80\nOK',
+    );
+  }
+  if (commandLine === 'AT^NRSSBID?') {
+    return ok(
+      '^NRSSBID: 636648,1A2B3C,506,85,50,1,0,90,1,80,2,70,3,60,255,32767,255,32767,255,32767,255,32767,1,506,632448,88,45,0,90,1,80,2,70,255,32767\nOK',
+    );
+  }
+
+  if (commandLine === 'AT^SETAUTODIAL?') {
+    const value = state.dial;
+    return ok(
+      `^SETAUTODIAL:${value.enabled},${value.mode},"${value.protocol}","${value.apn}","${value.username}","${value.password}",${value.authType}\nOK`,
+    );
+  }
+  if (commandLine.startsWith('AT^SETAUTODIAL=')) {
+    const args = splitArguments(commandLine.slice('AT^SETAUTODIAL='.length));
+    state.dial.enabled = Number(args[0]) || 0;
+    if (args[1] !== undefined && args[1] !== '') state.dial.mode = Number(args[1]) || 2;
+    if (args.length >= 7) {
+      state.dial.protocol = args[2] || state.dial.protocol;
+      state.dial.apn = args[3] || '';
+      state.dial.username = args[4] || '';
+      state.dial.password = args[5] || '';
+      state.dial.authType = Number(args[6]) || 0;
+    }
+    return ok();
+  }
+  if (commandLine === 'AT^SETMODE?') return ok(String(state.usbMode));
+  if (commandLine.startsWith('AT^SETMODE=')) {
+    state.usbMode = Number(commandLine.slice('AT^SETMODE='.length)) || 0;
+    return ok();
+  }
+  if (commandLine === 'AT^TDCFG?') {
+    return ok(
+      `Mode : ${state.interfaceMode}\nPostRoute : ${state.postRoute}\nDmz: ${
+        state.dmzHost || 'not cfg'
+      }\nOK`,
+    );
+  }
+  if (commandLine.startsWith('AT^TDCFG=')) {
+    const args = splitArguments(commandLine.slice('AT^TDCFG='.length));
+    const key = (args[1] || '').toLowerCase();
+    const value = args[2] || '';
+    if (key === 'mode') state.interfaceMode = Number(value) || 0;
+    if (key === 'postroute') state.postRoute = Number(value) || 0;
+    if (key === 'dmz') state.dmzHost = value === '0' ? '' : value;
+    return ok();
+  }
+  if (commandLine === 'AT+CGDCONT?') return ok(formatPDPContexts(state));
+  if (commandLine === 'AT+CGACT?') return ok(formatPDPActivation(state));
+  if (commandLine.startsWith('AT+CGDCONT=')) {
+    const args = splitArguments(commandLine.slice('AT+CGDCONT='.length));
+    const cid = Number(args[0]);
+    if (args.length === 1) {
+      state.pdpContexts = state.pdpContexts.filter((context) => context.cid !== cid);
+      return ok();
+    }
+    const existing = state.pdpContexts.find((context) => context.cid === cid);
+    const next: MockPDPContext = {
+      cid,
+      type: args[1] || 'IPV4V6',
+      apn: args[2] || '',
+      address: args[3] || '0.0.0.0',
+      active: existing?.active || false,
+    };
+    state.pdpContexts = [...state.pdpContexts.filter((context) => context.cid !== cid), next];
+    return ok();
+  }
+  if (commandLine.startsWith('AT+CGACT=')) {
+    const [active, cid] = commandLine.slice('AT+CGACT='.length).split(',').map(Number);
+    const context = state.pdpContexts.find((item) => item.cid === cid);
+    if (context) context.active = active === 1;
+    return ok();
+  }
+
+  if (commandLine === 'AT^SCICHG?') return ok(`^SCICHG: ${state.simSlot},${1 - state.simSlot}\nOK`);
+  if (commandLine.startsWith('AT^SCICHG=')) {
+    state.simSlot = Number(commandLine.slice('AT^SCICHG='.length).split(',')[0]) || 0;
+    return ok();
+  }
+  if (commandLine === 'AT^TDSIMHP?') return ok(`^TDSIMHP: ${state.simHotPlug ? 1 : 0}\nOK`);
+  if (commandLine.startsWith('AT^TDSIMHP=')) {
+    state.simHotPlug = commandLine.endsWith('=1');
+    return ok();
+  }
+  if (commandLine === 'AT+CLCK="SC",2') return ok(`+CLCK: ${state.pinEnabled ? 1 : 0}\nOK`);
+  if (/^AT\+CLCK="SC",[01],/.test(commandLine)) {
+    state.pinEnabled = commandLine.startsWith('AT+CLCK="SC",1,');
+    return ok();
+  }
+  if (commandLine === 'AT+CFUN?') return ok(`+CFUN: ${state.cfun}\nOK`);
+  if (commandLine.startsWith('AT+CFUN=')) {
+    state.cfun = Number(commandLine.slice('AT+CFUN='.length)) || 0;
+    return ok();
+  }
+  if (commandLine === 'AT^TDPCIELANCFG?') return ok(`^TDPCIELANCFG: ${state.nicRate}\nOK`);
+  if (commandLine.startsWith('AT^TDPCIELANCFG=')) {
+    state.nicRate = Number(commandLine.slice('AT^TDPCIELANCFG='.length)) || 1;
+    return ok();
+  }
+  if (commandLine === 'AT^TDPMCFG?') return ok(`^TDPMCFG: ${state.powerControl ? 1 : 0}\nOK`);
+  if (commandLine.startsWith('AT^TDPMCFG=')) {
+    state.powerControl = commandLine.endsWith('=1');
+    return ok();
+  }
+  if (commandLine === 'AT^NRRCCAPQRY=3') return ok(`^NRRCCAPQRY: 3,${state.nrCa ? 1 : 0}\nOK`);
+  if (commandLine === 'AT^NRRCCAPQRY=2') return ok(`^NRRCCAPQRY: 2,${state.nrVonr}\nOK`);
+  if (commandLine === 'AT^NRRCCAPQRY=5') {
+    return ok(
+      `^NRRCCAPQRY: 5,${state.nrDss.rateMatchingLTE},${state.nrDss.additionalDMRS}\nOK`,
+    );
+  }
+  if (commandLine.startsWith('AT^NRRCCAPCFG=3,')) {
+    state.nrCa = commandLine.endsWith(',1');
+    return ok();
+  }
+  if (commandLine.startsWith('AT^NRRCCAPCFG=2,')) {
+    state.nrVonr = Number(commandLine.split(',')[1]) || 0;
+    return ok();
+  }
+  if (commandLine.startsWith('AT^NRRCCAPCFG=5,')) {
+    const values = commandLine.split(',').slice(1).map(Number);
+    state.nrDss = { rateMatchingLTE: values[0] || 0, additionalDMRS: values[1] || 0 };
+    return ok();
+  }
+  if (commandLine === 'AT^SYSCFGEX?') {
+    const value = state.sysCfg;
+    return ok(
+      `^SYSCFGEX: "${value.acqorder}",${value.band},${value.roam},${value.srvdomain},${value.lteband},\nOK`,
+    );
+  }
+  if (commandLine.startsWith('AT^SYSCFGEX=')) {
+    const args = splitArguments(commandLine.slice('AT^SYSCFGEX='.length));
+    if (args.length >= 5) {
+      state.sysCfg = {
+        acqorder: args[0],
+        band: args[1],
+        roam: Number(args[2]) || 0,
+        srvdomain: Number(args[3]) || 0,
+        lteband: args[4],
+      };
+    }
+    return ok();
+  }
+  if (commandLine === 'AT^NTXPOWER?') {
+    return ok('^NTXPOWER: 23,21,20,19,3720,22,20,18,17,3550\nOK');
+  }
+  if (commandLine === 'AT^THERMAUTOFUN?') {
+    return ok(
+      `^THERMAUTOFUN: ${state.therm.enabled ? 1 : 0} ${
+        state.therm.caMimoSwitch ? 1 : 0
+      } ${state.therm.interval}\nOK`,
+    );
+  }
+  if (commandLine.startsWith('AT^THERMAUTOFUN=')) {
+    const values = commandLine.slice('AT^THERMAUTOFUN='.length).split(',').map(Number);
+    if (values.length >= 3) {
+      state.therm = {
+        enabled: values[0] === 1,
+        caMimoSwitch: values[1] === 1,
+        interval: values[2],
+      };
+    }
+    return ok();
+  }
+  if (commandLine === 'AT^THERMLDLOGSW?') return ok('^THERMLDLOGSW: 1 1\nOK');
+  if (commandLine === 'AT^THERMLDAUTOPARA?') return ok('^THERMLDAUTOPARA: 55,60,65,70,75,80\nOK');
+  if (commandLine === 'AT^THERMLDAUTOSTATUS?') return ok('^THERMLDAUTOSTATUS: 1,2,3,4,5,1\nOK');
+  if (commandLine.startsWith('AT^PHYNUM=IMEI,')) {
+    state.imei = commandLine.slice('AT^PHYNUM=IMEI,'.length).trim();
+    return ok();
+  }
+
+  if (commandLine === 'AT^IMSSWITCH?') return ok(`^IMSSWITCH: ${state.imsOn ? 1 : 0},0,0\nOK`);
+  if (commandLine.startsWith('AT^IMSSWITCH=')) {
+    state.imsOn = commandLine.slice('AT^IMSSWITCH='.length).startsWith('1');
+    return ok();
+  }
+  if (commandLine === 'AT+CMGF?') return ok(`+CMGF: ${state.smsFormat}\nOK`);
+  if (commandLine.startsWith('AT+CMGF=')) {
+    state.smsFormat = Number(commandLine.slice('AT+CMGF='.length)) || 0;
+    return ok();
+  }
+  if (commandLine === 'AT+CSCA?') return ok(`+CSCA: "${state.smsCenter}",145\nOK`);
+  if (commandLine.startsWith('AT+CSCA=')) {
+    const match = commandLine.match(/AT\+CSCA="([^"]+)"/);
+    if (match) state.smsCenter = match[1];
+    return ok();
+  }
+  if (commandLine === 'AT+CPMS?') {
+    const used = state.receivedSMS.length;
+    const storage = state.smsStorage;
+    return ok(
+      `+CPMS: "${storage.read}",${used},${storage.total},"${storage.write}",${used},${
+        storage.total
+      },"${storage.receive}",${used},${storage.total}\nOK`,
+    );
+  }
+  if (commandLine.startsWith('AT+CPMS=')) {
+    const values = splitArguments(commandLine.slice('AT+CPMS='.length)).filter(Boolean);
+    state.smsStorage = {
+      ...state.smsStorage,
+      read: values[0] || state.smsStorage.read,
+      write: values[1] || values[0] || state.smsStorage.write,
+      receive: values[2] || values[0] || state.smsStorage.receive,
+    };
+    return ok();
+  }
+  if (commandLine === 'AT+CMGL=4') return ok(formatCMGL(state.receivedSMS));
+  if (commandLine.startsWith('AT+CMGR=')) {
+    const index = Number(commandLine.slice('AT+CMGR='.length));
+    const message = state.receivedSMS.find((item) => item.index === index);
+    return message ? ok(`+CMGR: 1,,${Math.floor(message.pdu.length / 2)}\n${message.pdu}\nOK`) : ok('NO SMS');
+  }
+  if (commandLine === 'AT+CMGD=1,4') {
+    state.receivedSMS = [];
+    return ok();
+  }
+  if (commandLine.startsWith('AT+CMGD=')) {
+    const index = Number(commandLine.slice('AT+CMGD='.length).split(',')[0]);
+    state.receivedSMS = state.receivedSMS.filter((message) => message.index !== index);
+    return ok();
+  }
+  if (commandLine.startsWith('AT+CMGS=')) {
+    state.sentSequence += 1;
+    return ok(`+CMGS: ${state.sentSequence}\nOK`);
+  }
+
+  if (commandLine === 'AT^FOTASTATE?') return ok(`^FOTASTATE: ${getFotaState(state)}\nOK`);
+  if (commandLine.startsWith('AT^FOTAOEMDL=')) {
+    const match = commandLine.match(/AT\^FOTAOEMDL="([^"]+)"/);
+    state.fota = {
+      phase: 'checking',
+      queryCount: 0,
+      progress: 0,
+      url: match?.[1] || '',
+    };
+    return ok();
+  }
+  if (commandLine === 'AT^FOTADLQ') {
+    advanceMockDownload(state);
+    return ok(`^FOTADLQ: 100,${state.fota.progress}\nOK`);
+  }
+  if (commandLine === 'AT^FOTADL=1') {
+    state.fota.phase = 'downloading';
+    return ok();
+  }
+  if (commandLine === 'AT^FWUP') {
+    state.fota.phase = 'updating';
+    return ok();
+  }
+
+  if (
+    commandLine.startsWith('AT^PDCPDATAINFO=') ||
+    commandLine === 'AT^FOTAMODE=0,1,0,1' ||
+    commandLine === 'AT+CEUS=0' ||
+    commandLine === 'AT+CEUS=1' ||
+    commandLine === 'AT^IPFILTERSWITCH=0' ||
+    commandLine === 'AT^HVSST=1,0' ||
+    commandLine === 'AT^HVSST=1,1' ||
+    commandLine === 'AT^RESET' ||
+    commandLine === 'AT&F' ||
+    commandLine.startsWith('AT+CPIN=') ||
+    commandLine.startsWith('AT+CPWD=') ||
+    commandLine.startsWith('ATD') ||
+    commandLine === 'ATA' ||
+    commandLine === 'ATH' ||
+    commandLine === 'AT+CHUP'
+  ) {
+    return ok();
+  }
+
+  return ok(`MOCK: ${commandLine}\nOK`);
+};

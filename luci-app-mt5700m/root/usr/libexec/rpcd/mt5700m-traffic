@@ -1,0 +1,16 @@
+#!/bin/sh
+
+case "$1" in
+	list)
+		printf '%s\n' '{"summary":{}}'
+		;;
+	call)
+		case "$2" in
+			summary)
+				exec /usr/sbin/mt5700m-traffic json
+				;;
+			*) exit 1 ;;
+		esac
+		;;
+	*) exit 1 ;;
+esac

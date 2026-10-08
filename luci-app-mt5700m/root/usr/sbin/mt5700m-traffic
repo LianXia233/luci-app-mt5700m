@@ -1,0 +1,163 @@
+#!/bin/sh
+
+INTERFACES="${MT5700M_TRAFFIC_INTERFACES:-eth2}"
+SYS_CLASS_NET="${MT5700M_TRAFFIC_SYS_CLASS_NET:-/sys/class/net}"
+RUNTIME_DIR="${MT5700M_TRAFFIC_RUNTIME_DIR:-/tmp/mt5700m-traffic}"
+HISTORY_FILE="${MT5700M_TRAFFIC_HISTORY_FILE:-/etc/mt5700m/traffic-history}"
+RUNTIME_FILE="${RUNTIME_DIR}/history"
+INTERVAL="${MT5700M_TRAFFIC_INTERVAL:-30}"
+FLUSH_CYCLES="${MT5700M_TRAFFIC_FLUSH_CYCLES:-20}"
+
+umask 077
+
+valid_number() {
+	case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac
+}
+
+ensure_history() {
+	mkdir -p "${RUNTIME_DIR}" "${HISTORY_FILE%/*}"
+	if [ ! -f "${RUNTIME_FILE}" ]; then
+		if [ -s "${HISTORY_FILE}" ]; then
+			cp "${HISTORY_FILE}" "${RUNTIME_FILE}"
+		else
+			{
+				printf '%s\n' 'version 1'
+				for netdev in ${INTERFACES}; do
+					printf 'updated %s 1970-01-01 00:00\n' "${netdev}"
+					printf 'total %s 0 0\n' "${netdev}"
+				done
+			} > "${RUNTIME_FILE}"
+		fi
+	fi
+}
+
+flush_history() {
+	ensure_history
+	tmp="${HISTORY_FILE}.tmp.$$"
+	cp "${RUNTIME_FILE}" "${tmp}"
+	mv "${tmp}" "${HISTORY_FILE}"
+}
+
+update_history() {
+	netdev="$1"
+	rx_delta="$2"
+	tx_delta="$3"
+	day_key="$4"
+	month_key="${day_key%-*}"
+	stamp="$5"
+	tmp="${RUNTIME_FILE}.tmp.$$"
+
+	awk -v dev="${netdev}" -v rx="${rx_delta}" -v tx="${tx_delta}" \
+		-v day="${day_key}" -v month="${month_key}" -v stamp="${stamp}" '
+		BEGIN { have_updated=0; have_total=0; have_day=0; have_month=0 }
+		$1 == "updated" && $2 == dev { print "updated", dev, day, stamp; have_updated=1; next }
+		$1 == "total" && $2 == dev { print "total", dev, $3 + rx, $4 + tx; have_total=1; next }
+		$1 == "day" && $2 == dev && $3 == day { print "day", dev, day, $4 + rx, $5 + tx; have_day=1; next }
+		$1 == "month" && $2 == dev && $3 == month { print "month", dev, month, $4 + rx, $5 + tx; have_month=1; next }
+		{ print }
+		END {
+			if (!have_updated) print "updated", dev, day, stamp
+			if (!have_total) print "total", dev, rx, tx
+			if (!have_day) print "day", dev, day, rx, tx
+			if (!have_month) print "month", dev, month, rx, tx
+		}' "${RUNTIME_FILE}" > "${tmp}" && mv "${tmp}" "${RUNTIME_FILE}"
+}
+
+export_interface() {
+	netdev="$1"
+	awk -v netdev="${netdev}" '
+		BEGIN { rx_total=0; tx_total=0; updated_day="1970-01-01"; updated_time="00:00" }
+		$1 == "updated" && $2 == netdev { updated_day=$3; updated_time=$4; next }
+		$1 == "total" && $2 == netdev { rx_total=$3; tx_total=$4; next }
+		$1 == "day" && $2 == netdev { day_n++; day_date[day_n]=$3; day_rx[day_n]=$4; day_tx[day_n]=$5; next }
+		$1 == "month" && $2 == netdev { month_n++; month_date[month_n]=$3; month_rx[month_n]=$4; month_tx[month_n]=$5; next }
+		END {
+			split(updated_day, ud, "-"); split(updated_time, ut, ":")
+			printf "{\"name\":\"%s\",", netdev
+			printf "\"updated\":{\"date\":{\"year\":%d,\"month\":%d,\"day\":%d},\"time\":{\"hour\":%d,\"minute\":%d}},", ud[1],ud[2],ud[3],ut[1],ut[2]
+			printf "\"traffic\":{\"total\":{\"rx\":%.0f,\"tx\":%.0f},\"day\":[", rx_total,tx_total
+			for (i=1; i<=day_n; i++) { split(day_date[i], d, "-"); if (i>1) printf ","; printf "{\"date\":{\"year\":%d,\"month\":%d,\"day\":%d},\"rx\":%.0f,\"tx\":%.0f}", d[1],d[2],d[3],day_rx[i],day_tx[i] }
+			printf "],\"month\":["
+			for (i=1; i<=month_n; i++) { split(month_date[i], d, "-"); if (i>1) printf ","; printf "{\"date\":{\"year\":%d,\"month\":%d},\"rx\":%.0f,\"tx\":%.0f}", d[1],d[2],month_rx[i],month_tx[i] }
+			printf "]}}"
+		}' "${RUNTIME_FILE}"
+}
+
+export_json() {
+	ensure_history
+	printf '%s' '{"interfaces":['
+	first=1
+	for netdev in ${INTERFACES}; do
+		[ "${first}" = 1 ] || printf ','
+		export_interface "${netdev}"
+		first=0
+	done
+	printf '%s\n' ']}'
+}
+
+collect_interface() {
+	netdev="$1"
+	rx_file="${SYS_CLASS_NET}/${netdev}/statistics/rx_bytes"
+	tx_file="${SYS_CLASS_NET}/${netdev}/statistics/tx_bytes"
+	last_file="${RUNTIME_DIR}/last-${netdev}"
+
+	if [ ! -r "${rx_file}" ] || [ ! -r "${tx_file}" ]; then
+		rm -f "${last_file}"
+		return 0
+	fi
+
+	rx_now="$(cat "${rx_file}" 2>/dev/null || true)"
+	tx_now="$(cat "${tx_file}" 2>/dev/null || true)"
+	valid_number "${rx_now}" && valid_number "${tx_now}" || return 0
+
+	last_rx=''
+	last_tx=''
+	[ ! -r "${last_file}" ] || read -r last_rx last_tx < "${last_file}"
+	if valid_number "${last_rx}" && valid_number "${last_tx}"; then
+		[ "${rx_now}" -ge "${last_rx}" ] && rx_delta=$((rx_now - last_rx)) || rx_delta="${rx_now}"
+		[ "${tx_now}" -ge "${last_tx}" ] && tx_delta=$((tx_now - last_tx)) || tx_delta="${tx_now}"
+		year="$(date +%Y)"
+		if [ "${year}" -ge 2024 ] && { [ "${rx_delta}" -gt 0 ] || [ "${tx_delta}" -gt 0 ]; }; then
+			update_history "${netdev}" "${rx_delta}" "${tx_delta}" "$(date +%Y-%m-%d)" "$(date +%H:%M)"
+			DIRTY=1
+		fi
+	fi
+	printf '%s %s\n' "${rx_now}" "${tx_now}" > "${last_file}"
+}
+
+collect_daemon() {
+	ensure_history
+	cycles=0
+	DIRTY=0
+	trap 'flush_history; exit 0' INT TERM
+
+	while :; do
+		for netdev in ${INTERFACES}; do
+			collect_interface "${netdev}"
+		done
+		cycles=$((cycles + 1))
+		if [ "${cycles}" -ge "${FLUSH_CYCLES}" ]; then
+			if [ "${DIRTY}" = 1 ]; then
+				flush_history
+				DIRTY=0
+			fi
+			cycles=0
+		fi
+		sleep "${INTERVAL}" &
+		wait $! || true
+	done
+}
+
+case "${1:-}" in
+	daemon) collect_daemon ;;
+	json) export_json ;;
+	flush) flush_history ;;
+	update)
+		ensure_history
+		update_history "${2:-eth2}" "${3:-0}" "${4:-0}" "${5:-$(date +%Y-%m-%d)}" "${6:-$(date +%H:%M)}"
+		;;
+	*)
+		printf 'Usage: %s {daemon|json|flush}\n' "$0" >&2
+		exit 1
+		;;
+esac

@@ -1,0 +1,2631 @@
+/* ==========================================================================
+   Kawaii Minimal (可爱极简) Design System
+   Style: Kawaii Minimal
+   Background: #FFF7ED (warm white)
+   Card: #FFFFFF (pure white) with border-2 border-pink-200 (#FBCFE8)
+   Palette: Soft Pink (#F9A8D4 / #F472B6), Soft Purple (#A78BFA),
+            Soft Cyan (#67E8F9), Soft Yellow (#FDE68A)
+   Typography: font-sans font-medium (gray-800 / gray-500)
+   Roundness: rounded-2xl (16px), rounded-3xl (24px), rounded-full (9999px)
+   Interactions: Jelly bounce (hover:scale-105), Squishy press (active:scale-95),
+                 Spring easing cubic-bezier(0.34, 1.56, 0.64, 1)
+   Forbidden: No dark/black bg, no neon/glow, no fluorescent colors,
+              no harsh borders, no glassmorphism default, no gradient text
+   ========================================================================== */
+
+:root {
+  --app-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", "Helvetica Neue", Arial,
+    sans-serif;
+  --app-font-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+
+  /* Kawaii Minimal Color System */
+  --app-bg: #FFF7ED; /* Warm white */
+  --app-card: #FFFFFF; /* Pure white card */
+  --app-card-sub: #FFFDF9; /* Soft card secondary */
+  --app-surface: #FFFFFF;
+  --app-surface-2: #FFFBF5;
+  --app-surface-3: #FFF7ED;
+
+  /* Pastel Accent Colors */
+  --app-primary: #F472B6; /* soft pink */
+  --app-primary-hover: #EC4899;
+  --app-primary-active: #DB2777;
+  --app-primary-light: #FDF2F8;
+  --app-secondary: #A78BFA; /* soft purple */
+  --app-tertiary: #67E8F9; /* soft cyan */
+  --app-accent: #FDE68A; /* soft yellow */
+
+  /* Borders */
+  --app-border: #FBCFE8; /* border-pink-200 */
+  --app-border-light: #FDF2F8; /* border-pink-100 */
+  --app-border-strong: #F472B6;
+
+  /* Typography Colors (WCAG AA compliant) */
+  --app-text-1: #1F2937; /* gray-800 */
+  --app-text-2: #4B5563; /* gray-600 */
+  --app-text-3: #6B7280; /* gray-500 */
+  --app-text-muted: #9CA3AF; /* gray-400 */
+
+  /* Pastel Status Colors */
+  --app-success: #10B981;
+  --app-success-bg: #ECFDF5;
+  --app-warning: #F59E0B;
+  --app-warning-bg: #FFFBEB;
+  --app-danger: #F43F5E;
+  --app-danger-bg: #FFF1F2;
+  --app-info: #3B82F6;
+  --app-info-bg: #EFF6FF;
+
+  /* Layout dimensions */
+  --app-header-h: 62px;
+  --app-sider-w: 240px;
+  --app-gap: 20px;
+  --app-content-pad: clamp(16px, 2.5vw, 28px);
+  --app-content-max: 1480px;
+
+  /* Large rounded corners */
+  --app-radius-sm: 12px;
+  --app-radius-md: 16px; /* rounded-2xl */
+  --app-radius-lg: 24px; /* rounded-3xl */
+  --app-radius-full: 9999px; /* rounded-full */
+
+  /* Soft pastel shadows (no neon, no harsh black) */
+  --app-shadow-sm: 0 2px 6px -1px rgba(249, 168, 212, 0.16), 0 1px 3px 0 rgba(0, 0, 0, 0.03);
+  --app-shadow-md: 0 6px 20px -3px rgba(249, 168, 212, 0.18), 0 2px 6px -1px rgba(0, 0, 0, 0.03);
+  --app-shadow-lg: 0 12px 28px -4px rgba(249, 168, 212, 0.24), 0 4px 10px -2px rgba(0, 0, 0, 0.03);
+  --app-shadow-card: var(--app-shadow-md);
+  --app-shadow-raised: var(--app-shadow-lg);
+
+  /* ---------------------------------------------------------------------
+     Motion tokens (v3.1)
+     Previously every hover/active rule used `--app-transition-spring`, which
+     was `all 0.22s` — that asks the compositor to watch *every* animatable
+     property (width, height, margin, padding, border-color, …) on every
+     element, so a single hover triggered a burst of layout+paint work. On
+     the low-power SoCs this package targets that is the difference between
+     a smooth menu and a visibly janky one.
+
+     The fix is two-fold:
+       1. transitions name the properties they actually animate (transform,
+          opacity, background-color, color, border-color, box-shadow);
+       2. three named durations replace one magic number, so a decorative
+          ambient loop can be slowed without slowing button feedback.
+
+     --app-ease-spring keeps the original overshoot curve. It is correct for
+     transform-based feedback (scale/translate), where overshoot reads as
+     springiness. It is WRONG for colour cross-fades: overshooting an
+     interpolation between two pastel pinks makes the hue band visibly
+     reverse mid-transition. Colour therefore uses --app-ease-out.
+     --------------------------------------------------------------------- */
+  --app-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --app-ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+
+  --app-dur-fast: 0.12s;   /* press feedback — must feel instant */
+  --app-dur-base: 0.22s;   /* hover / state change — the workhorse */
+  --app-dur-slow: 0.36s;   /* drawer, scrim, larger surfaces */
+
+  /* Composite-only transitions: transform/opacity never trigger layout. */
+  --app-t-lift: transform var(--app-dur-base) var(--app-ease-spring);
+  --app-t-press: transform var(--app-dur-fast) var(--app-ease-spring);
+  --app-t-fade: opacity var(--app-dur-base) var(--app-ease-out);
+  --app-t-slide: transform var(--app-dur-slow) var(--app-ease-out);
+
+  /* Colour transitions: overshoot-free on purpose (see note above). */
+  --app-t-tint: background-color var(--app-dur-base) var(--app-ease-out),
+    color var(--app-dur-base) var(--app-ease-out),
+    border-color var(--app-dur-base) var(--app-ease-out);
+  --app-t-shadow: box-shadow var(--app-dur-base) var(--app-ease-out);
+
+  /* Compatibility alias. Kept because a few component styles still reference
+     it; new code should prefer the property-scoped tokens above. Unlike the
+     original `all 0.22s` this lists the properties actually seen in practice. */
+  --app-transition-spring: transform var(--app-dur-base) var(--app-ease-spring),
+    background-color var(--app-dur-base) var(--app-ease-out),
+    color var(--app-dur-base) var(--app-ease-out),
+    border-color var(--app-dur-base) var(--app-ease-out),
+    box-shadow var(--app-dur-base) var(--app-ease-out);
+}
+
+/* Ensure no dark/black backgrounds even if theme-mode attribute is toggled */
+body[theme-mode="dark"],
+body {
+  --semi-color-primary: var(--app-primary);
+  --semi-color-primary-hover: var(--app-primary-hover);
+  --semi-color-primary-active: var(--app-primary-active);
+  --semi-color-primary-disabled: #FBCFE8;
+  --semi-color-primary-light-default: #FDF2F8;
+  --semi-color-primary-light-hover: #FCE7F3;
+  --semi-color-primary-light-active: #FBCFE8;
+  --semi-color-danger: var(--app-danger);
+  --semi-color-danger-hover: #E11D48;
+  --semi-color-danger-active: #BE123C;
+  --semi-color-danger-light-default: #FFF1F2;
+  --semi-color-danger-light-hover: #FFE4E6;
+  --semi-color-danger-light-active: #FECDD3;
+  --semi-color-bg-0: var(--app-bg);
+  --semi-color-bg-1: var(--app-card);
+  --semi-color-bg-2: var(--app-surface-2);
+  --semi-color-bg-3: var(--app-surface-3);
+  --semi-color-bg-4: var(--app-bg);
+  --semi-color-border: var(--app-border);
+  --semi-color-text-0: var(--app-text-1);
+  --semi-color-text-1: var(--app-text-1);
+  --semi-color-text-2: var(--app-text-2);
+  --semi-color-text-3: var(--app-text-3);
+  --semi-color-nav-bg: var(--app-card);
+  --semi-shadow-elevated: var(--app-shadow-raised);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+html {
+  background: #FFF7ED; /* Warm white */
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  font-family: var(--app-font-sans);
+  font-weight: 500;
+  font-size: 13.5px;
+  line-height: 1.55;
+  background: #FFF7ED;
+  color: var(--app-text-1);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Background floating ambient bubbles */
+.app-viewport {
+  position: relative;
+  min-height: 100vh;
+  width: 100%;
+  background: #FFF7ED;
+  overflow-x: hidden;
+}
+
+.kawaii-ambient-mesh {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  overflow: hidden;
+}
+
+.kawaii-ambient-svg {
+  width: 100%;
+  height: 100%;
+  opacity: 0.85;
+}
+
+.kawaii-bubble-float {
+  animation: kawaii-float-subtle 16s ease-in-out infinite alternate;
+}
+
+/* 装饰动效降级（组件层 useAmbientMotion 授权关闭时附加）。
+   组件层已在不授权时直接不挂动画类，这里是第二道保险：即使某个类名因重构
+   漏改，`--static` 也会把 animation 清成 none，不会悄悄跑起来。 */
+.kawaii-bubble-float--static,
+.kawaii-cloud-float--static,
+.kawaii-ripple-1--static,
+.kawaii-ripple-2--static,
+.kawaii-ripple-3--static,
+.kawaii-p--static,
+.kawaii-p-rev--static {
+  animation: none !important;
+}
+
+.kawaii-bubble-float--1 { animation-duration: 18s; }
+.kawaii-bubble-float--2 { animation-duration: 22s; animation-delay: -5s; }
+.kawaii-bubble-float--3 { animation-duration: 26s; animation-delay: -10s; }
+.kawaii-bubble-float--4 { animation-duration: 20s; animation-delay: -15s; }
+
+@keyframes kawaii-float-subtle {
+  0% { transform: translateY(0px) scale(1); }
+  50% { transform: translateY(-20px) scale(1.05); }
+  100% { transform: translateY(15px) scale(0.98); }
+}
+
+/* App Shell Structure */
+.app-shell {
+  position: relative;
+  z-index: 1;
+  min-height: 100vh;
+  background: transparent;
+}
+
+/* Sider - Kawaii Minimal Warm White & Rounded-Full Nav */
+.app-sider {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow: hidden;
+  background: #FFFFFF;
+  border-right: 2px solid var(--app-border);
+  box-shadow: var(--app-shadow-sm);
+  z-index: 30;
+  transition: transform 0.25s var(--app-ease-spring);
+}
+
+.app-sider .semi-navigation {
+  padding: 12px 14px;
+  border: none !important;
+  background: transparent !important;
+}
+
+/* --------------------------------------------------------------------------
+   Nav items — 只作用于叶子项，必须排除 Semi 的分组父容器。
+
+   根因（2026-10-04 实测取证，tools/probe_nav_anim.py）：
+   `.semi-navigation-item` 同时命中**分组父容器**与叶子项。父容器的实测
+   class 是 `semi-navigation-sub-wrap semi-navigation-item semi-navigation-item-sub`，
+   叶子项是 `semi-navigation-item-normal semi-navigation-item`。父容器
+   （`系统模组设置模组升级`，实测 h=132px）包住自己的两个子项，于是同一套
+   规则在父容器上也生效：
+     · border-radius:9999px      → 132px 高的巨型胶囊
+     · :hover 粉底 + scale(1.03) → 罩住整组的粉色块（用户截图里的异常）
+     · :active scale(0.96)       → 整组一起被按扁
+   半-nav 组件库不保证 `.semi-navigation-item-sub` 一定存在（flat 模式下子项
+   也走同一个 wrapper），所以两条规则都以 `semi-navigation-item-normal` 为
+   命中条件——那是叶子项独有的修饰类，父容器绝不会带它。
+   -------------------------------------------------------------------------- */
+.app-sider .semi-navigation-item.semi-navigation-item-normal {
+  min-height: 42px;
+  margin: 4px 0;
+  border-radius: var(--app-radius-full) !important;
+  font-weight: 500;
+  transition: var(--app-t-tint);
+}
+
+/* 分组父容器（sub-wrap）只做排版，绝不参与 hover 缩放/高亮，否则整组会跟着动。
+   flex 布局由 Semi 内联样式控制，这里只清掉我们自己的视觉规则。 */
+.app-sider .semi-navigation-sub-wrap.semi-navigation-item {
+  min-height: 0;
+  margin: 10px 0 2px;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  transform: none !important;
+  transition: none;
+}
+
+.app-sider .semi-navigation-item.semi-navigation-item-normal:hover {
+  background: #FFF1F2 !important;
+  transform: scale(1.03);
+}
+
+.app-sider .semi-navigation-item.semi-navigation-item-normal:active {
+  transform: scale(0.96);
+}
+
+.app-sider .semi-navigation-item-selected {
+  background: #FDF2F8 !important;
+  color: #DB2777 !important;
+  font-weight: 600 !important;
+  box-shadow: 0 2px 8px rgba(244, 114, 182, 0.2);
+}
+
+.app-sider .semi-navigation-item-selected .semi-navigation-item-text,
+.app-sider .semi-navigation-item-selected .semi-navigation-item-icon {
+  color: #DB2777 !important;
+}
+
+.app-brand {
+  display: flex;
+  height: 74px;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 20px;
+  border-bottom: 2px solid var(--app-border);
+  background: #FFFFFF;
+}
+
+.app-brand-mark {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  transition: var(--app-t-tint);
+}
+
+.app-brand-mark:hover {
+  transform: scale(1.1) rotate(4deg);
+}
+
+.app-brand-copy {
+  min-width: 0;
+}
+
+.app-brand-title {
+  overflow: hidden;
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--app-text-1);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.app-brand-sub {
+  margin-top: 2px;
+  color: var(--app-text-3);
+  font-size: 11px;
+}
+
+/* Header */
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  height: var(--app-header-h);
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  background: #FFFFFF;
+  border-bottom: 2px solid var(--app-border);
+  box-shadow: var(--app-shadow-sm);
+}
+
+.app-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.app-header-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.2;
+}
+
+.app-header-eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--app-text-muted);
+}
+
+.app-header-name {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--app-text-1);
+}
+
+.app-header-page-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--app-text-1);
+}
+
+.app-header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Connection Pill in Header */
+.at-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  border-radius: var(--app-radius-full);
+  background: #FFFDF9;
+  border: 2px solid var(--app-border);
+  box-shadow: var(--app-shadow-sm);
+  transition: var(--app-t-tint);
+}
+
+.at-status--connected {
+  color: #059669;
+  background: var(--app-success-bg);
+  border-color: rgba(16, 185, 129, 0.4);
+}
+
+.at-status--connecting,
+.at-status--authenticating,
+.at-status--reconnecting {
+  color: #D97706;
+  background: var(--app-warning-bg);
+  border-color: rgba(245, 158, 11, 0.4);
+}
+
+.at-status--error,
+.at-status--idle,
+.at-status--disconnected {
+  color: var(--app-danger);
+  background: var(--app-danger-bg);
+  border-color: rgba(244, 63, 94, 0.35);
+}
+
+.at-status-label {
+  display: inline-block;
+}
+
+.at-status-label--compact {
+  display: none;
+}
+
+.app-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--app-radius-full);
+}
+
+.app-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 35;
+  background: rgba(31, 41, 55, 0.4);
+  backdrop-filter: blur(2px);
+}
+
+.app-conn-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: var(--app-radius-full);
+  background: #FFFDF9;
+  border: 2px solid var(--app-border);
+  box-shadow: var(--app-shadow-sm);
+  transition: var(--app-t-tint);
+}
+
+.app-conn-pill:hover {
+  transform: scale(1.05);
+  box-shadow: var(--app-shadow-md);
+}
+
+.app-footer {
+  padding: 12px var(--app-content-pad) 20px;
+  font-size: 12px;
+  color: var(--app-text-muted);
+  text-align: center;
+}
+
+/* Main Content Area */
+.app-main {
+  flex: 1;
+  padding: var(--app-content-pad);
+  max-width: var(--app-content-max);
+  margin: 0 auto;
+  width: 100%;
+}
+
+/* Kawaii Cards: rounded-3xl (24px), border-2 border-pink-200, bg-white, soft shadow */
+.page-card,
+.panel,
+.inner-panel {
+  position: relative;
+  background: #FFFFFF;
+  border: 2px solid var(--app-border);
+  border-radius: var(--app-radius-lg);
+  padding: 24px;
+  box-shadow: var(--app-shadow-md);
+  /* Vertical rhythm is owned by the *container* (.page-stack / .two-col /
+     .form-stack all set `gap`). An earlier revision also set margin-bottom
+     here, which stacked with the parent's gap and made every top-level card
+     40px apart — and inside .two-col the item stretched to full height while
+     the margin only pushed one way, so the two columns looked misaligned.
+     Containers without a gap fall back to this margin via the rule below. */
+  margin-bottom: 0;
+  transition: var(--app-t-tint);
+}
+
+/* Only when a card is NOT inside a gap-capable container do we need the
+   margin to separate it from its sibling. `:not()` keeps the good cases
+   (inside .page-stack / .two-col / .form-stack) free of the double gap. */
+.page-card:not(.page-stack > *):not(.two-col > *):not(.form-stack > *):not(.action-row > *),
+.panel:not(.page-stack > *):not(.two-col > *):not(.form-stack > *):not(.action-row > *) {
+  margin-bottom: var(--app-gap);
+}
+
+/* Cloud Lift on Card Hover */
+.page-card:hover,
+.panel:hover {
+  /* An information card is a large click-free surface; lifting it on hover
+     makes the whole block jump under the cursor and reads as a mis-click.
+     Shadow-only feedback is calmer and cheaper to composite. */
+  transform: none;
+  box-shadow: var(--app-shadow-lg);
+}
+
+.page-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+  padding-bottom: 14px;
+  border-bottom: 2px solid var(--app-border-light);
+}
+
+.page-card-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--app-text-1);
+}
+
+/* Layout grids */
+.two-col {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--app-gap);
+}
+
+.three-col {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--app-gap);
+}
+
+.four-col {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--app-gap);
+}
+
+/* Network Hero Section */
+/* Was `minmax(240px, .95fr) minmax(460px, 2.05fr)`, which has a hard 720px
+   floor (240 + 460 + gap). The available width is the viewport minus the
+   236px sider and the content padding, so between roughly 960px and 1010px of
+   viewport the two tracks no longer fit — and because `.app-viewport` sets
+   `overflow-x: hidden`, the overflow was silently *clipped* rather than
+   scrollable, hiding the right-hand column entirely.
+   `auto-fit` with a 320px floor lets the hero drop to one column the moment
+   it would otherwise overflow, at any viewport width. */
+.net-hero {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: var(--app-gap);
+  margin-bottom: 0;
+}
+
+.net-hero-primary,
+.net-hero-trend {
+  background: #FFFFFF;
+  border: 2px solid var(--app-border);
+  border-radius: var(--app-radius-lg);
+  padding: 24px;
+  box-shadow: var(--app-shadow-md);
+  transition: var(--app-t-tint);
+}
+
+.net-hero-primary:hover,
+.net-hero-trend:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--app-shadow-lg);
+}
+
+/* Kawaii Signal Tower Card & Meta */
+.kawaii-signal-tower-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  background: #FFFDF9;
+  border: 2px solid var(--app-border);
+  border-radius: var(--app-radius-lg);
+  box-shadow: var(--app-shadow-sm);
+  transition: var(--app-t-tint);
+}
+
+.kawaii-signal-tower-card:hover {
+  transform: scale(1.02);
+  box-shadow: var(--app-shadow-md);
+}
+
+.kawaii-tower-graphic {
+  width: 100%;
+  max-width: 180px;
+}
+
+.kawaii-tower-svg {
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.kawaii-ripple-1 { animation: kawaii-ripple 2s ease-out infinite; }
+.kawaii-ripple-2 { animation: kawaii-ripple 2s ease-out 0.4s infinite; }
+.kawaii-ripple-3 { animation: kawaii-ripple 2s ease-out 0.8s infinite; }
+
+@keyframes kawaii-ripple {
+  0% { opacity: 0.2; transform-origin: 58px 30px; transform: scale(0.9); }
+  50% { opacity: 1; }
+  100% { opacity: 0.3; transform-origin: 58px 30px; transform: scale(1.08); }
+}
+
+.kawaii-cloud-float {
+  animation: kawaii-cloud 4s ease-in-out infinite alternate;
+}
+
+@keyframes kawaii-cloud {
+  0% { transform: translateY(0px); }
+  100% { transform: translateY(-4px); }
+}
+
+.kawaii-bar-rect {
+  transition: var(--app-t-tint);
+}
+
+.kawaii-bar-item.is-active .kawaii-bar-rect {
+  animation: kawaii-jelly 1.5s var(--app-ease-spring) infinite alternate;
+}
+
+@keyframes kawaii-jelly {
+  0% { transform: scaleY(1); }
+  100% { transform: scaleY(1.04); }
+}
+
+.kawaii-tower-meta {
+  width: 100%;
+  text-align: center;
+}
+
+.kawaii-tower-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.kawaii-badge-pill {
+  padding: 4px 12px;
+  border-radius: var(--app-radius-full);
+  background: #FDF2F8;
+  color: #DB2777;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1.5px solid var(--app-border);
+}
+
+.kawaii-tower-percent {
+  font-size: 18px;
+  font-weight: 750;
+  color: #F472B6;
+}
+
+.kawaii-tower-desc {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--app-text-2);
+  font-weight: 500;
+}
+
+.kawaii-tower-metrics {
+  margin-top: 8px;
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--app-text-3);
+}
+
+/* Speed Dashboard & Data Stream */
+.speed-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.kawaii-datastream-container {
+  width: 100%;
+  padding: 10px 14px;
+  background: #FFFDF9;
+  border: 2px solid var(--app-border);
+  border-radius: var(--app-radius-md);
+  box-shadow: var(--app-shadow-sm);
+  overflow: hidden;
+}
+
+.kawaii-datastream-svg {
+  width: 100%;
+  height: 44px;
+  display: block;
+}
+
+.kawaii-stream-particles-dl .kawaii-p {
+  animation: kawaii-slide-right 3s linear infinite;
+}
+.kawaii-p-1 { animation-delay: 0s; }
+.kawaii-p-2 { animation-delay: 0.6s; }
+.kawaii-p-3 { animation-delay: 1.2s; }
+.kawaii-p-4 { animation-delay: 1.8s; }
+.kawaii-p-5 { animation-delay: 2.4s; }
+
+.kawaii-stream-particles-ul .kawaii-p-rev {
+  animation: kawaii-slide-left 3s linear infinite;
+}
+.kawaii-pr-1 { animation-delay: 0s; }
+.kawaii-pr-2 { animation-delay: 0.6s; }
+.kawaii-pr-3 { animation-delay: 1.2s; }
+.kawaii-pr-4 { animation-delay: 1.8s; }
+.kawaii-pr-5 { animation-delay: 2.4s; }
+
+@keyframes kawaii-slide-right {
+  0% { transform: translateX(-60px); opacity: 0; }
+  10% { opacity: 1; }
+  90% { opacity: 1; }
+  100% { transform: translateX(600px); opacity: 0; }
+}
+
+@keyframes kawaii-slide-left {
+  0% { transform: translateX(60px); opacity: 0; }
+  10% { opacity: 1; }
+  90% { opacity: 1; }
+  100% { transform: translateX(-600px); opacity: 0; }
+}
+
+/* Speed Stat Grid & Cards */
+.speed-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--app-gap);
+}
+
+.speed-stat-card {
+  padding: 22px;
+  background: #FFFFFF;
+  border: 2px solid var(--app-border);
+  border-radius: var(--app-radius-lg);
+  box-shadow: var(--app-shadow-md);
+  transition: var(--app-t-tint);
+}
+
+.speed-stat-card:hover {
+  transform: translateY(-3px) scale(1.02);
+  box-shadow: var(--app-shadow-lg);
+}
+
+.speed-stat-card--down {
+  border-color: #FBCFE8;
+  background: linear-gradient(180deg, #FFFFFF 0%, #FFFDFB 100%);
+}
+
+.speed-stat-card--up {
+  border-color: #DDD6FE;
+  background: linear-gradient(180deg, #FFFFFF 0%, #FAF8FF 100%);
+}
+
+.speed-stat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.speed-stat-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--app-text-1);
+}
+
+.speed-stat-val {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 32px;
+  font-weight: 800;
+  color: var(--app-text-1);
+  font-feature-settings: "tnum";
+}
+
+.speed-stat-unit {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--app-text-3);
+}
+
+/* Key Value pairs & Data Grids */
+.kv-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 20px;
+}
+
+.kv-grid--3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.kv-grid--4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+/* `columns={1}` on <Kv> used to emit `kv-grid--1`, which no rule defined, so
+   the grid silently stayed at two columns. */
+.kv-grid--single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.kv-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  background: #FFFDF9;
+  border: 1.5px solid var(--app-border-light);
+  border-radius: var(--app-radius-md);
+  transition: var(--app-t-tint);
+}
+
+.kv-item:hover {
+  transform: translateY(-1px);
+  border-color: var(--app-border);
+}
+
+.kv-k {
+  font-size: 11px;
+  color: var(--app-text-3);
+  font-weight: 600;
+}
+
+.kv-v {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--app-text-1);
+  word-break: break-all;
+}
+
+/* Radar Scanner */
+.kawaii-radar-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 24px;
+  background: #FFFDF9;
+  border: 2px solid var(--app-border);
+  border-radius: var(--app-radius-lg);
+  box-shadow: var(--app-shadow-sm);
+}
+
+.kawaii-radar-svg {
+  width: 100%;
+  max-width: 200px;
+  height: auto;
+}
+
+.kawaii-radar-svg.is-scanning .kawaii-radar-sweep-beam {
+  animation: kawaii-radar-spin 4s linear infinite;
+  transform-origin: 100px 100px;
+}
+
+@keyframes kawaii-radar-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.kawaii-radar-footer {
+  text-align: center;
+}
+
+.kawaii-radar-status {
+  display: inline-block;
+  padding: 6px 16px;
+  border-radius: var(--app-radius-full);
+  background: #FDF2F8;
+  color: #DB2777;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1.5px solid var(--app-border);
+}
+
+/* SMS Center */
+.sms-shell {
+  display: flex;
+  min-width: 0;
+  min-height: 560px;
+  flex: 1;
+  overflow: hidden;
+  background: #FFFFFF;
+  border: 2px solid var(--app-border);
+  border-radius: var(--app-radius-lg);
+  box-shadow: var(--app-shadow-md);
+}
+
+.sms-contacts {
+  display: flex;
+  width: 280px !important;
+  max-width: 40vw;
+  flex: 0 0 280px !important;
+  flex-direction: column;
+  background: #FFFDF9;
+  border-right: 2px solid var(--app-border);
+}
+
+.sms-contacts-head {
+  padding: 14px 18px;
+  border-bottom: 2px solid var(--app-border);
+  background: #FFFFFF;
+}
+
+.sms-contact {
+  padding: 12px 16px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--app-border-light);
+  transition: var(--app-t-tint);
+}
+
+.sms-contact:hover {
+  background: #FFF1F2;
+  transform: scale(1.01);
+}
+
+.sms-contact.active {
+  background: #FDF2F8;
+  box-shadow: inset 4px 0 0 #F472B6;
+}
+
+.sms-contact-name {
+  font-weight: 700;
+  color: var(--app-text-1);
+}
+
+.sms-thread {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  background: #FFFFFF;
+}
+
+.sms-thread-head {
+  padding: 14px 20px;
+  border-bottom: 2px solid var(--app-border);
+  background: #FFFFFF;
+}
+
+.sms-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.sms-bubble {
+  padding: 12px 18px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  border-radius: 20px 20px 20px 6px;
+  background: #FDF2F8;
+  border: 1.5px solid var(--app-border);
+  color: var(--app-text-1);
+  box-shadow: var(--app-shadow-sm);
+  transition: var(--app-t-tint);
+}
+
+.sms-bubble.sent {
+  border-radius: 20px 20px 6px 20px;
+  background: linear-gradient(135deg, #F472B6 0%, #EC4899 100%);
+  color: #FFFFFF;
+  border-color: transparent;
+  box-shadow: 0 4px 14px rgba(244, 114, 182, 0.35);
+}
+
+.sms-composer {
+  padding: 16px 20px;
+  border-top: 2px solid var(--app-border);
+  background: #FFFFFF;
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  min-width: 0;
+}
+
+/* The textarea takes all remaining width; the send button must not be
+   squeezed by it, otherwise the label clips on a narrow screen. */
+.sms-composer .semi-textarea-wrapper {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sms-composer .semi-button {
+  flex: 0 0 auto;
+}
+
+/* Semi-UI Component Overrides - Strict Kawaii Minimal Alignment */
+
+/* 1. Buttons: rounded-full, font-medium, transition-all, jelly bounce, squishy press */
+.semi-button {
+  border-radius: var(--app-radius-full) !important;
+  font-weight: 500 !important;
+  transition: var(--app-transition-spring) !important;
+  border: 2px solid transparent !important;
+}
+
+.semi-button:hover:not(.semi-button-disabled) {
+  transform: scale(1.05); /* Jelly Bounce */
+  box-shadow: var(--app-shadow-md);
+}
+
+.semi-button:active:not(.semi-button-disabled) {
+  transform: scale(0.95); /* Squishy Press */
+}
+
+.semi-button-primary.semi-button-solid:not(.semi-button-disabled) {
+  background: #F472B6 !important;
+  color: #FFFFFF !important;
+  border: none !important;
+}
+
+.semi-button-primary.semi-button-solid:not(.semi-button-disabled):hover {
+  background: #EC4899 !important;
+}
+
+.semi-button-danger.semi-button-solid:not(.semi-button-disabled) {
+  background: #F43F5E !important;
+  color: #FFFFFF !important;
+  border: none !important;
+}
+
+.semi-button-secondary,
+.semi-button-tertiary,
+.semi-button-light {
+  background: #FFFFFF !important;
+  border: 2px solid var(--app-border) !important;
+  color: var(--app-text-1) !important;
+}
+
+.semi-button-secondary:hover,
+.semi-button-tertiary:hover,
+.semi-button-light:hover {
+  background: #FFF1F2 !important;
+  border-color: var(--app-border-strong) !important;
+  color: #DB2777 !important;
+}
+
+/* 2. Inputs: rounded-2xl (16px), border-2 border-pink-200, focus:ring-4 focus:ring-pink-100 */
+.semi-input-wrapper,
+.semi-select,
+.semi-input-number,
+.semi-input-textarea-wrapper {
+  border-radius: var(--app-radius-md) !important;
+  border: 2px solid var(--app-border) !important;
+  background: #FFFFFF !important;
+  transition: var(--app-transition-spring) !important;
+  outline: none !important;
+}
+
+.semi-input-wrapper:hover,
+.semi-select:hover,
+.semi-input-number:hover,
+.semi-input-textarea-wrapper:hover {
+  border-color: var(--app-border-strong) !important;
+}
+
+.semi-input-wrapper-focus,
+.semi-select-focus,
+.semi-input-number-focus,
+.semi-input-textarea-wrapper-focus {
+  border-color: #F472B6 !important;
+  box-shadow: 0 0 0 4px #FCE7F3 !important; /* ring-4 ring-pink-100 */
+}
+
+/* 3. Dropdowns & Modals: rounded-3xl (24px), border-2 border-pink-200, shadow-lg */
+.semi-modal-content,
+.semi-popover-content,
+.semi-select-option-list-wrapper,
+.semi-dropdown-menu {
+  border-radius: var(--app-radius-lg) !important;
+  border: 2px solid var(--app-border) !important;
+  background: #FFFFFF !important;
+  box-shadow: var(--app-shadow-lg) !important;
+  padding: 8px !important;
+}
+
+.semi-select-option {
+  border-radius: var(--app-radius-full) !important;
+  margin: 2px 0 !important;
+  transition: var(--app-transition-spring) !important;
+}
+
+.semi-select-option:hover {
+  background: #FFF1F2 !important;
+  transform: scale(1.02);
+}
+
+.semi-select-option-selected {
+  background: #FDF2F8 !important;
+  color: #DB2777 !important;
+  font-weight: 600 !important;
+}
+
+/* 4. Tables */
+.page-card .semi-table {
+  background: transparent !important;
+}
+
+.page-card .semi-table-thead > .semi-table-row > .semi-table-row-head {
+  background: #FFFDF9 !important;
+  color: var(--app-text-2) !important;
+  font-weight: 700 !important;
+  border-bottom: 2px solid var(--app-border) !important;
+}
+
+.page-card .semi-table-tbody > .semi-table-row > .semi-table-row-cell {
+  background: transparent !important;
+  border-bottom: 1px solid var(--app-border-light) !important;
+}
+
+.page-card .semi-table-tbody > .semi-table-row:hover > .semi-table-row-cell {
+  background: #FFF1F2 !important;
+}
+
+/* 5. Terminal Console */
+.at-console-wrapper {
+  background: #FFFDF9;
+  border: 2px solid var(--app-border);
+  border-radius: var(--app-radius-lg);
+  padding: 16px;
+  box-shadow: var(--app-shadow-sm);
+}
+
+.at-console-output {
+  min-height: 240px;
+  max-height: 480px;
+  overflow-y: auto;
+  font-family: var(--app-font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  padding: 14px;
+  border-radius: var(--app-radius-md);
+  background: #FFFFFF;
+  border: 2px solid var(--app-border-light);
+  color: var(--app-text-1);
+}
+
+/* Reduced Motion Alternative 与全部断点驱动布局，都移到文件末尾的
+   「动效体系」/「统一响应式层」两节。
+   此前本文件存在两份 prefers-reduced-motion 块（此处一份、末尾一份）：
+   靠前那份会把所有动画压到 0.01ms——包括承载语义的状态反馈（色块切换、
+   数值变化），依赖动画确认操作结果的用户将得不到任何反馈。末尾那份
+   已改为分级处理（停用装饰性循环、保留状态变化），故此处不再重复。 */
+
+/* ==========================================================================
+   Page Layout & Widgets 补全
+   与 Kawaii Minimal 设计系统一致；补齐页面/组件引用的样式类，
+   修正缺失样式导致的排版异常（间距、对齐、溢出、空态）。
+   ========================================================================== */
+
+/* Content 区域：与 app-main 相同的居中布局（AppLayout 使用 <Content className="app-content">） */
+.app-content {
+  flex: 1;
+  padding: var(--app-content-pad);
+  max-width: var(--app-content-max);
+  margin: 0 auto;
+  width: 100%;
+  min-width: 0;
+}
+
+/* 页面垂直堆叠：统一页内区块间距 */
+.page-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--app-gap);
+  min-width: 0;
+}
+
+/* 表单堆叠 */
+.form-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* 操作按钮行：输入框 + 按钮并排，窄屏换行 */
+.action-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.mono {
+  font-family: var(--app-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- SectionHeader（widgets） ---------- */
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0 2px;
+  min-width: 0;
+}
+
+.section-header-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.section-header-marker {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 22px;
+  border-radius: var(--app-radius-full);
+  background: linear-gradient(180deg, #F472B6 0%, #A78BFA 100%);
+}
+
+.section-header-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--app-radius-md);
+  background: #FDF2F8;
+  color: #DB2777;
+  border: 1.5px solid var(--app-border);
+}
+
+.section-header-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--app-text-1);
+}
+
+.section-header-desc {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--app-text-3);
+}
+
+.section-header-extra {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---------- Field（widgets） ---------- */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* Default for <Field>. Semi renders Select/Input/InputNumber at an intrinsic
+   width, so a grid row mixing a 100%-wide Select with a bare Input came out
+   visibly ragged. One class fixes every field instead of per-call inline
+   widths. */
+.field--full > .semi-input-wrapper,
+.field--full > .semi-select,
+.field--full > .semi-input-number,
+.field--full > .semi-textarea-wrapper,
+.field--full > .semi-switch {
+  width: 100%;
+}
+
+.field-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-text-2);
+}
+
+.field-hint {
+  font-size: 11px;
+  color: var(--app-text-3);
+}
+
+/* ---------- Metric（widgets） ---------- */
+.metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.metric--center {
+  align-items: center;
+  text-align: center;
+}
+
+.metric-value {
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--app-text-1);
+  font-feature-settings: "tnum";
+  word-break: break-all;
+}
+
+.metric--lg .metric-value { font-size: 28px; }
+.metric--sm .metric-value { font-size: 16px; }
+
+.metric-label {
+  font-size: 11px;
+  color: var(--app-text-3);
+}
+
+.metric-hint {
+  font-size: 11px;
+  color: var(--app-text-muted);
+}
+
+.metric-tile {
+  padding: 14px 16px;
+  background: #FFFDF9;
+  border: 1.5px solid var(--app-border-light);
+  border-radius: var(--app-radius-md);
+}
+
+/* ---------- Kv（widgets 实际类名） ---------- */
+.kv-grid--dense {
+  gap: 10px 14px;
+}
+
+.kv-label {
+  font-size: 11px;
+  color: var(--app-text-3);
+  font-weight: 600;
+}
+
+.kv-value {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--app-text-1);
+  word-break: break-all;
+}
+
+/* ---------- Panel 变体 ---------- */
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--app-text-1);
+}
+
+.panel-head-extra {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.panel--accent {
+  border-left: 4px solid #F472B6;
+}
+
+/* Flat variant for Panels nested inside a PageCard: no box of its own, just a
+   heading rule. Prevents the card -> panel -> kv-item three-level border
+   nesting that made the information page read as boxes-inside-boxes. */
+.panel--flat {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+  margin-bottom: 0;
+}
+
+.panel--flat .panel-head {
+  font-size: 13.5px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+}
+
+.panel--flat:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+/* Semi Card 变体 ---------- */
+/* Semi renders the header as `row-reverse` with no wrapping, so a title plus
+   an <AutoRefresh> control (switch + label + number + "秒", ~210px) and two
+   buttons collide on a narrow viewport and the title gets crushed. Allow the
+   row to wrap and keep the action cluster right-aligned on the first line. */
+.page-card .semi-card-header-wrapper {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+.page-card .semi-card-header-extra,
+.page-card .semi-card-header-extra > .semi-space {
+  margin-left: auto;
+}
+.page-card--hero {
+  border-color: #FBCFE8;
+  background: linear-gradient(180deg, #FFFFFF 0%, #FFFDF9 100%);
+}
+
+.page-card--group {
+  background: #FFFDF9;
+}
+
+.page-card-hint {
+  margin-left: 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--app-text-3);
+}
+
+.page-card-footer {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 2px solid var(--app-border-light);
+}
+
+/* ---------- ConfigSelect ---------- */
+.config-select {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.config-select-current {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.config-select-current-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-text-2);
+}
+
+/* ---------- cell-list（窄屏列表替代表格） ---------- */
+.cell-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.cell-list-empty {
+  padding: 28px 16px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--app-text-muted);
+  background: #FFFDF9;
+  border: 1.5px dashed var(--app-border);
+  border-radius: var(--app-radius-md);
+}
+
+.cell-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  background: #FFFDF9;
+  border: 1.5px solid var(--app-border-light);
+  border-radius: var(--app-radius-md);
+  transition: var(--app-t-tint);
+}
+
+.cell-list-item:hover {
+  border-color: var(--app-border);
+  background: #FFFFFF;
+}
+
+.cell-list-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.cell-list-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13.5px;
+}
+
+.cell-list-sub {
+  font-size: 12px;
+  color: var(--app-text-3);
+  word-break: break-all;
+}
+
+/* ---------- AT Terminal ---------- */
+.at-console {
+  min-height: 240px;
+  max-height: 480px;
+  overflow-y: auto;
+  padding: 14px;
+  font-family: var(--app-font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  background: #FFFFFF;
+  border: 2px solid var(--app-border-light);
+  border-radius: var(--app-radius-md);
+  color: var(--app-text-1);
+}
+
+.at-console-empty {
+  display: grid;
+  place-items: center;
+  min-height: 200px;
+  color: var(--app-text-muted);
+  font-family: var(--app-font-sans);
+}
+
+.at-console-entry {
+  margin-bottom: 14px;
+}
+
+.at-console-cmd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--app-font-sans);
+}
+
+.at-console-cmd b {
+  font-size: 13px;
+  color: #DB2777;
+}
+
+.at-console-cmd time {
+  font-size: 11px;
+  color: var(--app-text-muted);
+}
+
+.at-console-prompt {
+  color: #F472B6;
+  font-weight: 700;
+}
+
+.at-console-res {
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: #FFFDF9;
+  border-radius: var(--app-radius-sm);
+  border: 1.5px solid var(--app-border-light);
+  color: var(--app-text-1);
+}
+
+.at-console-res--err {
+  background: #FFF1F2;
+  border-color: rgba(244, 63, 94, 0.35);
+  color: var(--app-danger);
+}
+
+/* Command input plus three buttons (send / clear / save). Without wrapping,
+   the buttons never reflow and the input is squeezed to roughly zero width on
+   a phone. `1 1 180px` lets it claim a full row on narrow screens and share
+   one with the buttons on wide ones. */
+.at-input-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.at-input-row .semi-input-wrapper {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+/* ---------- 网络状态页 ---------- */
+.net-hero-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.net-hero-details {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.signal-overview {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.signal-tower-wrapper {
+  flex: 0 0 auto;
+}
+
+.signal-overview-side {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.signal-overview-caption {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--app-text-1);
+}
+
+.signal-overview-note {
+  font-size: 11px;
+  color: var(--app-text-3);
+}
+
+/* Was a hard 2 columns, but every call site renders THREE <Metric> tiles —
+   so the third one always wrapped onto its own row and left the right-hand
+   cell empty. `auto-fit` sizes tiles to the width actually available: the
+   measured container is 485px inside the hero card, which fits three tracks
+   at a 130px floor (3x130 + 2x20 gap = 430px) but only two at 150px
+   (2x150 + 20 = 320px, with the third spilling). 130px is still wide enough
+   for the longest label ("RSRQ (dB)" / "参考信号接收功率") to stay on one
+   line, and it degrades to 2 then 1 columns as the card narrows. */
+.metric-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: var(--app-gap);
+}
+
+/* Was a hard 4 columns while only 2 <QualityBar> are ever rendered, so half
+   the row stayed permanently blank. auto-fit sizes the bars to the content
+   that actually exists. */
+.quality-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+}
+
+.net-operator-panel {
+  min-width: 0;
+}
+
+/* This box is a 2-column grid, but its only child besides the title is a
+   `<Kv columns={3}>`. That nested 3-column grid was confined to the FIRST
+   track, squeezing three key/value pairs into half the width while the right
+   half stayed empty. Let the nested grid span the full width instead. */
+.net-cell-params {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+  padding: 12px 14px;
+  background: #FFFDF9;
+  border-radius: var(--app-radius-md);
+  border: 1.5px solid var(--app-border-light);
+}
+
+.net-cell-params > .kv-grid,
+.net-cell-params > .kv-grid--3,
+.net-cell-params > .kv-grid--4 {
+  grid-column: 1 / -1;
+}
+
+.net-cell-params-title {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--app-text-2);
+}
+
+.carrier-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--app-gap);
+}
+
+.speed-datastream-banner {
+  width: 100%;
+}
+
+.speed-stat-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--app-radius-full);
+  background: #FDF2F8;
+  color: #DB2777;
+}
+
+.speed-stat-main {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.speed-stat-sub {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--app-text-3);
+}
+
+/* 7 temperature tiles in a hard 2-column grid always leaves the last row with
+   a single orphan. auto-fit lets the row fill itself. */
+.temp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--app-gap);
+}
+
+.temp-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  background: #FFFDF9;
+  border: 1.5px solid var(--app-border-light);
+  border-radius: var(--app-radius-md);
+}
+
+/* ---------- 图表（ui/charts.tsx / ui/LockEditor.tsx） ----------
+ *
+ * These components shipped with NO styles at all. Verified against the
+ * deployed bundle (live/dist5700/app.css): `sparkline`, `quality-bar`,
+ * `ring-gauge`, `lock-row` and `chart-empty` had zero matches, which is why
+ * the signal-quality bars and the seven temperature bars rendered at zero
+ * height (invisible) and the ring-gauge readout fell out of its dial.
+ *
+ * Layout contract taken from the JSX:
+ *   .ring-gauge > .ring-gauge-dial > (svg, b.ring-gauge-value) + span.label
+ *   .sparkline > .sparkline-canvas > (svg, i.sparkline-dot) + .sparkline-legend
+ * so the two `*-value` / `*-dot` nodes need absolute positioning to sit on
+ * top of their SVG. */
+.sparkline {
+  min-width: 0;
+}
+
+.sparkline-canvas {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.sparkline-svg {
+  display: block;
+  width: 100%;
+}
+
+.sparkline-dot {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: 7px;
+  height: 7px;
+  border-radius: var(--app-radius-full);
+  box-shadow: 0 0 0 2px #FFFFFF;
+}
+
+.chart-grid-line {
+  stroke: var(--app-border-light);
+  stroke-width: 0.5;
+}
+
+.sparkline-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 10px;
+}
+
+.sparkline-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--app-text-3);
+}
+
+.sparkline-legend-item b {
+  color: var(--app-text-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.sparkline-legend-swatch {
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+  flex: 0 0 auto;
+}
+
+.sparkline-legend-swatch--dashed {
+  background: none !important;
+  border-top: 2px dashed currentColor;
+}
+
+.chart-empty {
+  display: grid;
+  place-items: center;
+  font-size: 12.5px;
+  color: var(--app-text-muted);
+  background: #FFFDF9;
+  border: 1.5px dashed var(--app-border);
+  border-radius: var(--app-radius-md);
+}
+
+/* Horizontal meter: label + value on one line, filled track beneath. */
+.quality-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.quality-bar-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--app-text-3);
+}
+
+.quality-bar-head b {
+  font-size: 12.5px;
+  color: var(--app-text-1);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The track MUST carry an explicit height: the fill is a percentage of it,
+   so without one both render at 0 and the bar is invisible. */
+.quality-bar-track {
+  height: 8px;
+  border-radius: var(--app-radius-full);
+  background: #FDF2F8;
+  border: 1.5px solid var(--app-border-light);
+  overflow: hidden;
+}
+
+.quality-bar-fill {
+  height: 100%;
+  border-radius: var(--app-radius-full);
+  transition: width 0.25s var(--app-ease-spring);
+}
+
+/* Ring dial: the value is a sibling of the <svg>, so it needs the dial to be
+   a positioning context and the text to be pulled out of normal flow. */
+.ring-gauge {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ring-gauge-dial {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.ring-gauge-track {
+  fill: none;
+  stroke: #FDF2F8;
+}
+
+.ring-gauge-arc {
+  fill: none;
+  transition: stroke-dasharray 0.3s var(--app-ease-spring);
+}
+
+.ring-gauge-value {
+  position: absolute;
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--app-text-1);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.ring-gauge-label {
+  font-size: 11px;
+  color: var(--app-text-3);
+  text-align: center;
+}
+
+/* Lock editor row: band / ARFCN / PCI controls plus a delete button. Without
+   flex they stacked vertically and the 160px Select overflowed the card. */
+.lock-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  min-width: 0;
+}
+
+/* ---------- 系统信息页 ---------- */
+.system-summary-body {
+  min-width: 0;
+}
+
+.device-control-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--app-gap);
+}
+
+.device-control-item {
+  min-width: 0;
+}
+
+.device-control-item--wide {
+  grid-column: 1 / -1;
+}
+
+.device-maintenance-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+/* This rule only overrode the tracks; `display: grid` was inherited from
+   `.carrier-grid` because the JSX happens to apply both class names at once.
+   Declare it here so the rule stands on its own. */
+.capability-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.capability-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #FFFDF9;
+  border: 1.5px solid var(--app-border-light);
+  border-radius: var(--app-radius-md);
+}
+
+.capability-control-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--app-text-1);
+}
+
+.capability-switch-control {
+  flex: 0 0 auto;
+}
+
+/* ---------- 升级页 ---------- */
+.agree-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--app-text-3);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+.upgrade-steps {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--app-text-2);
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+/* ---------- 扫频横幅 ---------- */
+.scan-radar-banner {
+  margin: 16px 0 6px;
+}
+
+/* ---------- 短信中心 ---------- */
+.sms-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--app-gap);
+  min-width: 0;
+}
+
+.sms-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.sms-toolbar-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sms-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sms-contact-empty,
+.sms-thread-empty {
+  padding: 40px 16px;
+  text-align: center;
+  color: var(--app-text-muted);
+  font-size: 13px;
+}
+
+.sms-contact-list {
+  overflow-y: auto;
+  flex: 1;
+}
+
+.sms-contact-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sms-contact-time,
+.sms-contact-preview {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sms-message-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.sms-message-row.sent {
+  align-items: flex-end;
+}
+
+.sms-message-body {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sms-message-row.sent .sms-message-body {
+  flex-direction: row-reverse;
+}
+
+.sms-message-time {
+  font-size: 11px;
+  color: var(--app-text-muted);
+}
+
+.sms-message-delete {
+  flex: 0 0 auto;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.sms-message-row:hover .sms-message-delete {
+  opacity: 1;
+}
+
+.sms-batch-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px;
+  background: #FFFDF9;
+  border-top: 2px solid var(--app-border-light);
+}
+
+.sms-composer-hint {
+  font-size: 11px;
+  color: var(--app-text-muted);
+}
+
+/* 短信存储用量 */
+.storage-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.storage-usage-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #FFFDF9;
+  border: 1.5px solid var(--app-border-light);
+  border-radius: var(--app-radius-md);
+}
+
+.storage-usage-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--app-text-1);
+}
+
+/* 数据来源标注（累计统计面板）。流量口径必须对用户可见：网卡字节计数与
+   模组 PDCP 计数数量级不同，不标注会被当成「数字算错了」。 */
+.netrate-source {
+  display: block;
+  margin-top: 10px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--app-text-muted);
+}
+
+/* ==========================================================================
+   统一响应式层 —— 移动优先三档
+   与 src/styles/breakpoints.ts 保持一致（CSS 无法直接 import TS 常量，
+   这里是与该文件的契约；改一处必须同步另一处）：
+     >= 1024px  桌面：多列网格
+     768-1023   平板：两列
+     <  768     手机：单列纵向堆叠，表格转卡片式行布局
+     <  480     窄屏手机：仅个别组件微调
+   ========================================================================== */
+
+/* ---- 平板档：侧栏收窄、网格降列 ---- */
+@media (max-width: 1023px) {
+  .sms-contacts {
+    width: 220px !important;
+    flex-basis: 220px !important;
+    max-width: 46vw;
+  }
+}
+
+/* ---- 手机档：单列纵向堆叠 ---- */
+@media (max-width: 767px) {
+  /* 侧栏变抽屉 */
+  .app-sider--mobile {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 40;
+    width: 240px !important;
+    transform: translateX(-100%);
+  }
+
+  .app-sider--mobile.app-sider--open {
+    transform: translateX(0);
+    box-shadow: 0 10px 30px rgba(244, 114, 182, 0.3);
+  }
+
+  .app-header {
+    padding: 0 14px;
+  }
+
+  .at-status-label--full {
+    display: none;
+  }
+
+  .at-status-label--compact {
+    display: inline-block;
+  }
+
+  /* 所有网格塌为单列。auto-fit 的网格（.net-hero / .metric-row /
+     .quality-grid / .temp-grid / .capability-grid）本身已能自动降列，
+     这里只需处理仍是固定列数的那些。 */
+  .two-col,
+  .speed-stat-grid,
+  .carrier-grid,
+  .device-control-grid,
+  .capability-grid,
+  .metric-row,
+  .quality-grid,
+  .temp-grid,
+  .net-cell-params,
+  .net-hero {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* 键值表降为单列：此前 2~4 列的 .kv-grid 在任何断点都不会降到 1 列，
+     手机上 IPv6 地址这类长值只能挤在两列里换行。 */
+  .kv-grid,
+  .kv-grid--single,
+  .kv-grid--3,
+  .kv-grid--4 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* 短信主从布局：原来联系人栏固定 280px（max-width 40vw），在 375px 屏上
+     仍占 150px，会话线程只剩 ~193px，正文几乎不可读。改为上下堆叠。 */
+  .sms-shell {
+    flex-direction: column;
+    min-height: auto;
+  }
+
+  .sms-contacts {
+    width: 100% !important;
+    flex: 0 0 auto !important;
+    max-width: none;
+    max-height: 180px;
+    border-right: none;
+    border-bottom: 2px solid var(--app-border);
+  }
+
+  /* 卡片内边距收窄，避免单列下内容两侧留白过大 */
+  .page-card,
+  .panel,
+  .inner-panel,
+  .net-hero-primary,
+  .net-hero-trend {
+    padding: 16px;
+    border-radius: var(--app-radius-md);
+  }
+
+  /* 卡片间距同步收紧 */
+  :root {
+    --app-gap: 14px;
+  }
+}
+
+/* ---- 窄屏手机：个别组件微调 ---- */
+@media (max-width: 480px) {
+  /* 升级步骤在竖排时不再需要为序号预留左侧缩进 */
+  .upgrade-steps {
+    padding-left: 0;
+  }
+
+  /* 按钮行改为纵向，操作按钮全宽更易点按 */
+  .action-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .action-row .semi-button {
+    width: 100%;
+  }
+}
+
+/* ==========================================================================
+   动效体系 (v3.1)
+   --------------------------------------------------------------------------
+   本节集中处理「状态变化」类动画。此前的问题是三处：
+     1. 全站 transition 用 `all`，hover 时浏览器要监听 width/height/margin/
+        padding/border 等全部可动画属性，触发布局与重绘；
+     2. 图表类（环形仪表 / 质量条 / 曲线）数值变化时是「瞬跳」的，
+        看不到变化过程，也就无法判断数值是升还是降；
+     3. 数据加载期间只有空文本占位，没有骨架，无法区分
+        「正在加载」与「加载完成但确实没有数据」。
+
+   设计约束：
+     · 只对 transform / opacity / stroke-dashoffset / width 做动画。
+       stroke-dashoffset 与 width 虽然会触发绘制，但不会触发回流，
+       且是这类图表唯一能表达「进度增长」的属性。
+     · 所有 stagger 延迟用 CSS 变量，避免为每个组件写一条 @keyframes。
+     · 装饰性常驻动画（呼吸光晕）在 prefers-reduced-motion 与
+       移动端低电量场景下停用——见本节末尾的降级块。
+     ========================================================================== */
+
+/* ---- 环形仪表：指针增长 ---- */
+.ring-gauge-arc {
+  transition: stroke-dashoffset 0.7s var(--app-ease-out);
+}
+
+/* 首次挂载时从空环长到目标值。动画放在起始态 .ring-gauge--enter 上，
+   组件切到 --ready 后动画自然结束（fill: both 保持终态）。
+   周长由组件经 --ring-circumference 内联，不写死常量——size 变化时
+   写死值会让起点不是空环。 */
+.ring-gauge--enter .ring-gauge-arc {
+  animation: ring-gauge-sweep 0.9s var(--app-ease-out) both;
+}
+
+@keyframes ring-gauge-sweep {
+  from {
+    stroke-dashoffset: var(--ring-circumference, 251.33);
+  }
+}
+
+/* ---- 质量条 / 温度条：条宽过渡 ----
+   宽度动画本身不触发回流之外的布局重排，比 transform 方案更直观，
+   因为它就是「条有多长」的语义。 */
+.quality-bar-fill {
+  transition: width 0.65s var(--app-ease-out),
+    background-color var(--app-dur-base) var(--app-ease-out);
+}
+
+.quality-bar--enter .quality-bar-fill {
+  animation: quality-bar-grow 0.75s var(--app-ease-out) both;
+}
+
+/* 曲线生长结束后进入终态类；虚线序列不做生长（见 charts.tsx 注释） */
+.sparkline--enter .sparkline-line {
+  stroke-dashoffset: 0;
+}
+
+.sparkline--enter .sparkline-line:not([stroke-dasharray='5 4']) {
+  animation: sparkline-draw 0.9s var(--app-ease-out) both;
+}
+
+@keyframes quality-bar-grow {
+  from {
+    width: 0;
+  }
+}
+
+/* ---- 迷你曲线：描边逐段画出 + 采样点点亮 ----
+   用 stroke-dasharray/dashoffset 让路径「生长」，而不是整体淡入——
+   后者只能表达「出现了」，前者能表达「数据从左往右推进」。 */
+.sparkline-svg path,
+.sparkline-svg polyline {
+  transition: stroke-dashoffset 0.8s var(--app-ease-out),
+    opacity var(--app-dur-base) var(--app-ease-out);
+}
+
+.sparkline--enter .sparkline-line {
+  animation: sparkline-draw 0.9s var(--app-ease-out) both;
+}
+
+@keyframes sparkline-draw {
+  from {
+    stroke-dashoffset: var(--sparkline-length, 1000);
+  }
+}
+
+/* 采样点按序出现，用 --i 做 stagger；点越靠右越晚亮，符合「时间从左到右」
+   的直觉。--i 由组件按索引内联。 */
+.sparkline-dot {
+  opacity: 0;
+  transition: opacity var(--app-dur-base) var(--app-ease-out);
+  transition-delay: calc(var(--dot-i, 0) * 45ms + 180ms);
+}
+
+.sparkline--ready .sparkline-dot {
+  opacity: 1;
+}
+
+/* ---- 指标数值：变化时轻微抬升，暗示「这个数刚更新」 ---- */
+.metric-value {
+  transition: color var(--app-dur-base) var(--app-ease-out);
+}
+
+.metric--updated .metric-value {
+  animation: metric-tick 0.5s var(--app-ease-out);
+}
+
+@keyframes metric-tick {
+  0% {
+    transform: translateY(0);
+  }
+  35% {
+    transform: translateY(-3px);
+  }
+  100% {
+    transform: translateY(0);
+  }
+}
+
+/* ---- 状态徽标切换：颜色淡入而不是硬切 ----
+   跨色相淡入若用 overshoot 曲线，中途会出现色相回摆，
+   因此这里显式使用 --app-ease-out 而非 --app-ease-spring。 */
+.state-badge,
+.status-pill {
+  transition: background-color var(--app-dur-base) var(--app-ease-out),
+    color var(--app-dur-base) var(--app-ease-out),
+    border-color var(--app-dur-base) var(--app-ease-out);
+}
+
+/* ---- 加载骨架：区分「加载中」与「无数据」 ---- */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--app-surface-2);
+  border-radius: var(--app-radius-sm);
+}
+
+/* 单侧高光扫过。用 transform 而非 background-position，
+   前者走合成层，后者每帧重绘。 */
+.skeleton::after {
+  position: absolute;
+  inset: 0;
+  content: '';
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.72),
+    transparent
+  );
+  animation: skeleton-sweep 1.4s var(--app-ease-out) infinite;
+}
+
+@keyframes skeleton-sweep {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.skeleton-line {
+  height: 12px;
+  margin-bottom: 8px;
+}
+
+.skeleton-line--title {
+  height: 18px;
+  width: 40%;
+}
+
+/* 卡片级骨架：多行依次闪入，--i 做 stagger */
+.skeleton-card {
+  --skeleton-stagger: calc(var(--i, 0) * 70ms);
+  animation: skeleton-rise 0.4s var(--app-ease-out) both;
+  animation-delay: var(--skeleton-stagger);
+}
+
+@keyframes skeleton-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* ---- 空态与错误态：淡入，避免突兀 ----
+   类名对齐实际组件：空态在 Terminal.tsx / Dial.tsx / ScanPanel.tsx 里用的是
+   .at-console-empty 与 .cell-list-empty，图表空态由图表组件输出 .chart-empty。 */
+.cell-list-empty,
+.at-console-empty,
+.chart-empty {
+  animation: fade-in var(--app-dur-slow) var(--app-ease-out) both;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* ---- 按钮按下反馈：压缩到 0.96 比 scale(0.96) 更快一档 ----
+   按下反馈必须立刻出现，等待动画是「点了没反应」的观感主因。 */
+.action-row .semi-button:active,
+.semi-button:active {
+  transform: scale(0.96);
+  transition-duration: var(--app-dur-fast);
+}
+
+/* ======================================================================
+   无障碍与低功耗降级
+   之前只有一条全局 !important 规则把所有动画压到 0.01ms，但：
+     · 它也让「状态反馈」消失——色块闪一下才能确认点击生效，
+       对依赖动画确认操作结果的用户是有害的；
+     · 装饰性常驻动画（呼吸光晕、骨架扫光）即使在 reduce 下也应彻底
+       停用，而不是以 0.01ms 的频率空转。
+   这里改为分级处理。
+   ====================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  /* 1) 常驻循环动画彻底停用（含伪元素扫光） */
+  .kawaii-bubble-float,
+  .kawaii-ripple-1,
+  .kawaii-ripple-2,
+  .kawaii-ripple-3,
+  .kawaii-cloud,
+  .kawaii-jelly,
+  .kawaii-p-1,
+  .kawaii-p-2,
+  .kawaii-p-3,
+  .kawaii-p-4,
+  .kawaii-p-5,
+  .kawaii-pr-1,
+  .kawaii-pr-2,
+  .kawaii-pr-3,
+  .kawaii-pr-4,
+  .kawaii-pr-5,
+  .mt-svg-beacon-dot,
+  .mt-svg-pulse-ring-1,
+  .skeleton::after {
+    animation: none !important;
+  }
+
+  /* 2) 骨架保留静态底色：不闪烁，但用户仍看得出「这里本该有内容」 */
+  .skeleton::after {
+    display: none;
+  }
+
+  /* 3) 状态切换与图表数值仍然变化——去掉位移与缩放，只留颜色/宽度。
+        这些是「值变了」的语义，不是装饰，去掉等于丢失信息。 */
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* 覆盖上面的全局压缩：关键状态反馈恢复即时生效 */
+  .quality-bar-fill,
+  .ring-gauge-arc,
+  .state-badge,
+  .status-pill,
+  .metric--updated .metric-value,
+  .skeleton-card {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .sparkline-dot,
+  .cell-list-empty,
+  .at-console-empty,
+  .chart-empty {
+    animation: none !important;
+    opacity: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ======================================================================
+   移动端收敛：常驻装饰动画是纯 CPU 开销
+   小屏机（尤其是路由器上用的手机访问）电量与算力都有限，
+   装饰性动画在移动端一律停用，交互反馈保留。
+   ====================================================================== */
+@media (max-width: 767px) {
+  .kawaii-bubble-float,
+  .kawaii-ripple-1,
+  .kawaii-ripple-2,
+  .kawaii-ripple-3,
+  .kawaii-cloud,
+  .kawaii-jelly {
+    animation: none !important;
+  }
+
+  /* 采样点 stagger 保留但压缩上限：20 个点 × 45ms = 900ms 太慢 */
+  .sparkline-dot {
+    transition-delay: calc(min(var(--dot-i, 0), 6) * 30ms + 120ms);
+  }
+
+  .skeleton::after {
+    animation-duration: 2s;
+  }
+}
+
+/* 骨架容器：与 .metric-row 的 auto-fit 同策略——元素数量与列数不匹配时
+   不会留下永久空白格。 */
+.skeleton-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--app-gap);
+}
+
+@media (max-width: 767px) {
+  .skeleton-grid {
+    grid-template-columns: 1fr;
+  }
+}

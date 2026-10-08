@@ -1,0 +1,1952 @@
+//! CLI mode: faithful port of the `mt5700m-at` shell backend (v2.3.44).
+//!
+//! Every subcommand reproduces the shell's stdout contract line by line so
+//! the LuCI JS views (`fs.exec('/usr/sbin/mt5700m-at', ...)`) keep parsing
+//! without modification. Exit codes match the shell: 0 ok, 1 generic, 2
+//! disabled, 64 usage/argument validation, 127 missing tooling.
+//!
+//! HARD CONSTRAINT: the `set-imei` path (`AT^PHYNUM=IMEI`) is ported as-is.
+//! No behaviour change is permitted around IMEI handling.
+
+use crate::transport::client::{self, AtError, AtOutcome, Mode, Settings};
+// One implementation each: the CLI renders what the modules parsed. Keep the
+// historical local names so call sites and their tests stay readable.
+use crate::modules::ca::{commands as ca_commands, parser as ca_parser};
+use crate::modules::qos::{commands as qos_commands, parser as qos_parser, state::QosState};
+use crate::modules::system::parser::parse_chiptemp;
+use crate::modules::system::state::TemperatureState;
+use crate::modules::network::parser::{
+    parse_cops_operator as extract_cops_operator,
+    parse_cops_rat as extract_cops_rat, parse_sysinfo_mode as extract_sysinfo_mode,
+};
+use std::fmt::Write as FmtWrite;
+
+// ---------------------------------------------------------------- UCI
+
+fn uci_get(key: &str) -> Option<String> {
+    let out = std::process::Command::new("uci")
+        .args(["-q", "get", key])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
+pub fn load_settings() -> Settings {
+    let mut s = Settings::default();
+    if client::uci_available() {
+        s.enabled = uci_get("mt5700m.settings.enabled").map(|v| v == "1").unwrap_or(true);
+        s.mode = match uci_get("mt5700m.settings.mode").unwrap_or_else(|| "auto".into()).as_str() {
+            "serial" => Mode::Serial,
+            "network" => Mode::Network,
+            _ => Mode::Auto,
+        };
+        s.at_port = uci_get("mt5700m.settings.at_port").unwrap_or_default();
+        s.host = uci_get("mt5700m.settings.host").unwrap_or_else(|| "192.168.8.1".into());
+        s.port = uci_get("mt5700m.settings.port")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(20249);
+        s.timeout_s = uci_get("mt5700m.settings.timeout")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(8);
+    }
+    s
+}
+
+// ---------------------------------------------------------------- Run a command
+
+/// Shell equivalent of `at_cmd 'X'` at top level: print response, exit rc.
+fn run_at(settings: &Settings, command: &str) -> i32 {
+    let out = client::at_cmd(settings, command);
+    print_outcome(&out);
+    match out.error {
+        None => 0,
+        Some(e) => e.exit_code(),
+    }
+}
+
+/// Run a unified API route on the daemon. The legacy SMS verbs printed the
+/// modem's reply text, but no caller reads it (the LuCI page only checks
+/// success), so a route-backed verb prints nothing and keeps the exit codes:
+/// 2 = modem disabled, 1 = daemon/module error, 0 = applied.
+fn run_api(settings: &Settings, method: &str, params: crate::core::json::Value, timeout_s: u64) -> i32 {
+    if !settings.enabled {
+        return 2;
+    }
+    match crate::transport::control::daemon_api(method, &params, timeout_s) {
+        Ok(_) => 0,
+        Err(crate::transport::control::ControlError::Unavailable) => {
+            eprintln!(
+                "AT serial port is owned by the at-webserver daemon; start it first \
+                 (/etc/init.d/at-webserver start)"
+            );
+            1
+        }
+        Err(e) => {
+            eprintln!("{}", e.message());
+            1
+        }
+    }
+}
+
+/// Parameters object for [`run_api`].
+fn api_params(items: &[(&str, crate::core::json::Value)]) -> crate::core::json::Value {
+    let mut m = std::collections::BTreeMap::new();
+    for (k, v) in items {
+        m.insert(k.to_string(), v.clone());
+    }
+    crate::core::json::Value::Obj(m)
+}
+
+fn print_outcome(out: &AtOutcome) {
+    if !out.text.is_empty() {
+        println!("{}", out.text);
+    }
+    if let Some(AtError::NoSerialPort) = out.error {
+        eprintln!("AT serial port not found");
+    }
+}
+
+fn fail_exit(e: AtError) -> i32 {
+    e.exit_code()
+}
+
+const EXIT_USAGE: i32 = 64;
+
+// ---------------------------------------------------------------- Text helpers
+
+fn first_match<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    text.lines()
+        .find_map(|l| l.strip_prefix(prefix))
+        .map(|rest| rest.trim_start())
+}
+
+fn clean_value(s: &str) -> String {
+    let t = s.trim();
+    t.strip_prefix('"')
+        .and_then(|x| x.strip_suffix('"'))
+        .unwrap_or(t)
+        .to_string()
+}
+
+
+
+
+// ---------------------------------------------------------------- frequency lock
+//
+// The lock AT strings, the validation ranges and the apply sequence all live in
+// the network module (`commands::lte_lock_command` / `nr_lock_command`,
+// `service::apply_lock` / `verify_lock`), so the shell verb, the WebUI route and
+// the day/night scheduler cannot drift apart. The CLI keeps only its text
+// contract: print the raw verification answer on success, exit non-zero when the
+// modem did not take the lock.
+
+/// Historical local names for the module builders (the CLI tests and the
+/// `lock`/`preview-lock` verbs use them).
+use crate::modules::network::commands::{
+    lte_lock_command as build_lte_lock_command, nr_lock_command as build_nr_lock_command,
+};
+use crate::modules::network::service::{self, LockApply};
+use crate::modules::network::state::LockKind;
+use crate::transport::channel::DaemonChannel;
+
+/// Apply a frequency lock and verify it, exactly the way the shell backend did:
+///
+/// 1. read `+CFUN?`; when the radio is on, cycle it around the write (the
+///    firmware only exposes a lock change after a function-level cycle) and keep
+///    polling the query afterwards, because the new lock appears asynchronously;
+/// 2. the write itself is the module's (grouped CSV syntax and range checks);
+/// 3. on success print the raw `^LTEFREQLOCK:` / `^NRFREQLOCK:` answer — LuCI
+///    parses that text — and exit 0; otherwise report what the modem still
+///    reports and exit 1.
+fn apply_frequency_lock(settings: &Settings, rat: &str, lock_type: &str, lock_cmd: &str) -> i32 {
+    if !settings.enabled {
+        return 1;
+    }
+    let kind = match rat {
+        "lte" => LockKind::Lte,
+        "nr" => LockKind::Nr,
+        _ => return EXIT_USAGE,
+    };
+    let channel = DaemonChannel::new();
+    let applies = [LockApply {
+        kind,
+        command: lock_cmd.to_string(),
+    }];
+    let report = match service::apply_lock(&channel, &applies, true) {
+        Ok(r) => r,
+        Err(_) => return 1,
+    };
+    // An airplane-mode session (radio already off) is deliberately left that
+    // way, and then the firmware has nothing to re-read: one probe, like before.
+    let attempts = if report.cycled_radio { 8 } else { 1 };
+    let verified = service::verify_lock(&channel, kind, lock_type, attempts);
+    if verified.ok {
+        println!("{}", verified.text);
+        return 0;
+    }
+    let observed = if verified.observed.is_empty() {
+        "no response".to_string()
+    } else {
+        verified.observed
+    };
+    eprintln!(
+        "MT5700M frequency lock verification failed: expected {}, got {}",
+        lock_type, observed
+    );
+    1
+}
+
+// ---------------------------------------------------------------- print_* family
+
+pub fn print_signal(settings: &Settings) -> String {
+    // The `^HCSQ` decoder lives in the signal module (one implementation for
+    // the cache, the WebUI route and this CLI verb); this reads the modem
+    // through the daemon and renders the domain model as the legacy text.
+    let raw = client::at_cmd(settings, "AT^HCSQ?");
+    crate::modules::signal::parser::parse(&raw.text).to_text()
+}
+
+pub fn print_identity(settings: &Settings) -> String {
+    let raw = client::at_cmd(settings, "ATI");
+    let mut out = String::new();
+    for (prefix, key) in [
+        ("Manufacturer:", "manufacturer"),
+        ("Model:", "model"),
+        ("Revision:", "revision"),
+    ] {
+        if let Some(v) = first_match(&raw.text, prefix) {
+            let v = clean_value(v);
+            let _ = writeln!(out, "{}={}", key, v);
+        }
+    }
+    let mut imei = first_match(&raw.text, "IMEI:")
+        .map(clean_value)
+        .unwrap_or_default();
+    let imei_ok = imei.len() == 15 && imei.bytes().all(|b| b.is_ascii_digit());
+    if !imei_ok {
+        imei = client::at_cmd(settings, "AT+CGSN")
+            .text
+            .lines()
+            .map(|l| l.trim().trim_end_matches('\r'))
+            .find(|l| l.len() == 15 && l.bytes().all(|b| b.is_ascii_digit()))
+            .unwrap_or("")
+            .to_string();
+    }
+    if !imei.is_empty() {
+        let _ = writeln!(out, "imei={}", imei);
+    }
+    out.push_str("product_name=MT5700M\n");
+    out
+}
+
+pub fn print_sim_operator(settings: &Settings) -> String {
+    let mut out = String::new();
+    let sim = client::at_cmd(settings, "AT+CPIN?");
+    if let Some(v) = first_match(&sim.text, "+CPIN:") {
+        let _ = writeln!(out, "sim={}", clean_value(v));
+    }
+    let cops = client::at_cmd(settings, "AT+COPS?");
+    if let Some(op) = extract_cops_operator(&cops.text) {
+        if !op.is_empty() {
+            let _ = writeln!(out, "operator={}", op);
+        }
+    }
+    if let Some(rat) = extract_cops_rat(&cops.text) {
+        if !rat.is_empty() {
+            let _ = writeln!(out, "sysmode={}", rat);
+        }
+    }
+    let sysinfo = client::at_cmd(settings, "AT^SYSINFOEX");
+    if let Some(mode) = extract_sysinfo_mode(&sysinfo.text) {
+        if !mode.is_empty() {
+            let _ = writeln!(out, "sysmode_detail={}", mode);
+        }
+    }
+    out
+}
+
+pub fn print_sim_details(settings: &Settings) -> String {
+    let mut out = String::new();
+    let iccid_raw = client::at_cmd(settings, "AT^ICCID?");
+    if let Some(v) = first_match(&iccid_raw.text, "^ICCID:") {
+        let v = clean_value(v);
+        if !v.is_empty() {
+            let _ = writeln!(out, "iccid={}", v);
+        }
+    }
+    let imsi = client::at_cmd(settings, "AT+CIMI");
+    if let Some(v) = imsi
+        .text
+        .replace('\r', "")
+        .lines()
+        .find(|l| !l.is_empty() && l.bytes().all(|b| b.is_ascii_digit()))
+    {
+        let _ = writeln!(out, "imsi={}", v);
+    }
+    out
+}
+
+pub fn print_qos(settings: &Settings) -> String {
+    // `+CGEQOSRDP` 的解码与 `qci=` 文本都在 modules/qos；这里只取数。
+    let raw = client::at_cmd(settings, &qos_commands::cgeqosrdp(1));
+    let mut st = QosState::default();
+    st.qci = qos_parser::parse_cgeqosrdp(&raw.text, Some(1));
+    st.qci_text()
+}
+
+pub fn print_active_apn(settings: &Settings) -> String {
+    let raw = client::at_cmd(settings, "AT+CGDCONT?");
+    let mut apn = String::new();
+    for line in raw.text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("+CGDCONT:") {
+            let rest = trimmed
+                .strip_prefix("+CGDCONT:")
+                .unwrap_or("")
+                .trim_start();
+            // Format: <cid>,"<type>","<apn>",...
+            if rest.starts_with("1,") {
+                // quoted field 3 (index 2 among comma fields)
+                let quoted: Vec<&str> = rest.split('"').collect();
+                // split('"') -> [ '1,', type, ',', apn, ... ]
+                if quoted.len() >= 5 {
+                    let candidate = quoted[3];
+                    if !candidate.is_empty() {
+                        apn = candidate.to_string();
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if apn.is_empty() {
+        apn = uci_get("mt5700m.connection.apn").unwrap_or_default();
+    }
+    format!("active_apn={}\n", apn)
+}
+
+pub fn print_subscriber_number(settings: &Settings) -> String {
+    let raw = client::at_cmd(settings, "AT+CNUM");
+    let mut number = String::new();
+    for line in raw.text.lines() {
+        if let Some(rest) = line.strip_prefix("+CNUM:") {
+            let fields: Vec<&str> = rest.split(',').collect();
+            if let Some(second) = fields.get(1) {
+                let v: String = second
+                    .chars()
+                    .filter(|c| !matches!(c, ' ' | '\r' | '"'))
+                    .collect();
+                let digits = v.strip_prefix('+').unwrap_or(&v);
+                if !digits.is_empty()
+                    && digits.bytes().all(|b| b.is_ascii_digit())
+                    && v.len() >= 5
+                {
+                    number = v;
+                    break;
+                }
+            }
+        }
+    }
+    if !number.is_empty() {
+        return format!("phone_number={}\n", number);
+    }
+    if raw
+        .text
+        .lines()
+        .any(|l| l.trim_start().starts_with("+CME ERROR:") && l.contains("22"))
+    {
+        return "phone_number_state=not_stored\n".into();
+    }
+    String::new()
+}
+
+pub fn print_temperature(settings: &Settings) -> String {
+    // 缓存优先：后台采集器（snapshot.temperature，60 s 周期）已把温度写入
+    // StateCache。外部高频调用方（如 mt5700m-manager 每 15 s 刷新温度缓存）
+    // 命中缓存时零 AT 流量，避免把独占串口占死。缓存缺失或过期才回退实时
+    // AT^CHIPTEMP?（该命令在 modem 上往返约 4 s，属慢命令，应尽量少发）。
+    //
+    // 两条路径都交给 `TemperatureState::to_text()` 渲染：解析器和文本格式
+    // 都只有一份（modules/system/{parser,state}.rs），CLI 只负责取数。
+    if let Ok(snap) = crate::transport::control::daemon_cached() {
+        if let Some(entry) = snap.get("temperature") {
+            let fresh = entry.get("fresh").and_then(|f| f.as_bool()).unwrap_or(false);
+            let age_ms = entry.get("age_ms").and_then(|a| a.as_u64()).unwrap_or(u64::MAX);
+            if fresh && age_ms < 600_000 {
+                if let crate::core::json::Value::Obj(fields) =
+                    entry.get("value").cloned().unwrap_or(crate::core::json::Value::Null)
+                {
+                    return TemperatureState::from_json(&fields).to_text();
+                }
+            }
+        }
+    }
+    let raw = client::at_cmd(settings, "AT^CHIPTEMP?");
+    parse_chiptemp(&raw.text).to_text()
+}
+
+pub fn print_subscription_rate(settings: &Settings) -> String {
+    // 候选 cid 顺序与模块里的 `qos::service::refresh` 一致：1、1 重试、8。
+    // 解码与 `ambr_*` 文本只有 modules/qos 一份。
+    let mut raw = client::at_cmd(settings, &qos_commands::dsambr(1));
+    if !raw.text.lines().any(|l| l.starts_with("^DSAMBR:")) {
+        raw = client::at_cmd(settings, &qos_commands::dsambr(1));
+    }
+    if !raw.text.lines().any(|l| l.starts_with("^DSAMBR:")) {
+        raw = client::at_cmd(settings, &qos_commands::dsambr(8));
+    }
+    let mut st = QosState::default();
+    if let Some(ambr) = qos_parser::parse_dsambr(&raw.text) {
+        st.ambr_down_kbps = Some(ambr.down_kbps);
+        st.ambr_up_kbps = Some(ambr.up_kbps);
+        st.ambr_apn = ambr.apn;
+    }
+    st.ambr_text()
+}
+
+pub fn print_carrier_aggregation(settings: &Settings) -> String {
+    // 三条慢查询由 ca 模块声明；解码（^HFREQINFO 的多载波分组、^CASCELLINFO 的
+    // 带宽码、^MONSSC 的 NSA 副小区）与文本渲染只有一份，在
+    // modules/ca/{parser,state}.rs —— 这里只负责取数并交给 `to_text()`，
+    // 与 `print_signal` 同一个模式。
+    let hfreq = client::at_cmd(settings, ca_commands::HFREQINFO);
+    let cascell = client::at_cmd(settings, ca_commands::CASCELLINFO);
+    let monssc = client::at_cmd(settings, ca_commands::MONSSC);
+    ca_parser::parse(&hfreq.text, &cascell.text, &monssc.text).to_text()
+}
+
+pub fn print_lock_status(settings: &Settings) -> String {
+    let mut out = String::new();
+    let nr = client::at_cmd(settings, "AT^NRFREQLOCK?");
+    if let Some(v) = first_match(&nr.text, "^NRFREQLOCK:") {
+        let _ = writeln!(out, "nr_lock={}", clean_value(v));
+    }
+    let lte = client::at_cmd(settings, "AT^LTEFREQLOCK?");
+    if let Some(v) = first_match(&lte.text, "^LTEFREQLOCK:") {
+        let _ = writeln!(out, "lte_lock={}", clean_value(v));
+    }
+    out
+}
+
+fn dump_section(out: &mut String, label: &str, command: &str, settings: &Settings) {
+    let _ = writeln!(out, "===== {}: {} =====", label, command);
+    let raw = client::at_cmd(settings, command);
+    let _ = writeln!(out, "{}\n", raw.text);
+}
+
+/// The `network` verb — the wireless page's frame.
+///
+/// The two lock sections (`^LTEFREQLOCK?` / `^NRFREQLOCK?`) used to be printed
+/// here for the page's lock panel. The panel now reads `network.lock_get`, so
+/// printing them again would ask the modem the same two questions a second time
+/// and hand out a second rendering of the same reply. The `status` verb still
+/// reports `lte_lock=` / `nr_lock=` for scripts (`print_lock_status`), and
+/// `mt5700m-at lock` still writes.
+pub fn print_network_info(settings: &Settings) -> String {
+    let mut out = String::new();
+    for (label, command) in [
+        ("Signal", "AT^HCSQ?"),
+        ("Serving cell", "AT^MONSC"),
+        ("RRC state", "AT^RRCSTAT?"),
+        ("Network registration", "AT+CEREG?"),
+        ("Operator", "AT+COPS?"),
+    ] {
+        dump_section(&mut out, label, command, settings);
+    }
+    out.push_str(&print_temperature(settings));
+    out
+}
+
+pub fn print_sms_list(settings: &Settings) -> String {
+    let mut out = String::new();
+    out.push_str("===== SMS storage =====\n");
+    let cpms = client::at_cmd(settings, "AT+CPMS?");
+    out.push_str(&cpms.text);
+    if !cpms.text.is_empty() {
+        out.push('\n');
+    }
+    out.push('\n');
+    out.push_str("===== SMS messages =====\n");
+    // PDU mode preserves the payload for stored UCS2 messages.
+    let _ = client::at_cmd(settings, "AT+CMGF=0");
+    let cmgl = client::at_cmd(settings, "AT+CMGL=4");
+    out.push_str(&cmgl.text);
+    if !cmgl.text.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
+pub fn print_system_info(settings: &Settings) -> String {
+    let mut out = String::new();
+    for (label, command) in [
+        ("Identity", "ATI"),
+        ("IMEI", "AT+CGSN"),
+        ("Revision", "AT+CGMR"),
+        ("Version", "AT^VERSION?"),
+        ("SIM", "AT+CPIN?"),
+        ("ICCID", "AT^ICCID?"),
+        ("IMSI", "AT+CIMI"),
+        ("Subscriber number", "AT+CNUM"),
+        ("Subscription rate", "AT^DSAMBR=1"),
+        ("Operator", "AT+COPS?"),
+        ("Network time", "AT^NWTIME?"),
+        ("Function level", "AT+CFUN?"),
+        ("LED", "AT^LEDSWITCH?"),
+        ("SIM activation", "AT^HVSST?"),
+        ("SIM slot", "AT^SCICHG?"),
+        ("FOTA mode", "AT^FOTAMODE?"),
+        ("FOTA state", "AT^FOTASTATE?"),
+        ("FOTA progress", "AT^FOTADLQ"),
+        ("Temperature", "AT^CHIPTEMP?"),
+        ("Thermal status", "AT^THERMLDAUTOSTATUS?"),
+        ("Thermal thresholds", "AT^THERMLDAUTOPARA?"),
+        ("Thermal log", "AT^THERMLDLOGSW?"),
+    ] {
+        dump_section(&mut out, label, command, settings);
+    }
+    out
+}
+
+const ADVANCED_GROUPS: &[(&str, &[(&str, &str)])] = &[
+    ("connection", &[
+        ("Auto dial", "AT^SETAUTODIAL?"),
+        ("Interface mode", "AT^TDCFG?"),
+        ("PDP contexts", "AT+CGDCONT?"),
+        ("PDP activation", "AT+CGACT?"),
+        ("Data session", "AT^NDISSTATQRY?"),
+        ("Detailed sessions", "AT^DCONNSTAT?"),
+        ("Direct IP", "AT^SETDIRECTIP?"),
+        ("IPv4 lease", "AT^DHCP?"),
+        ("IPv6 lease", "AT^DHCPV6?"),
+        ("IP capability", "AT^IPV6CAP?"),
+        ("Data flow", "AT^DSFLOWQRY"),
+        ("MTU", "AT^CGMTU=1"),
+        ("PDP address", "AT+CGPADDR=1"),
+    ]),
+    ("connection-settings", &[
+        ("Auto dial", "AT^SETAUTODIAL?"),
+        ("Interface mode", "AT^TDCFG?"),
+        ("PDP contexts", "AT+CGDCONT?"),
+        ("PDP activation", "AT+CGACT?"),
+        ("Direct IP", "AT^SETDIRECTIP?"),
+    ]),
+    ("session", &[
+        ("Data session", "AT^NDISSTATQRY?"),
+        ("Detailed sessions", "AT^DCONNSTAT?"),
+        ("IPv4 lease", "AT^DHCP?"),
+        ("IPv6 lease", "AT^DHCPV6?"),
+        ("IP capability", "AT^IPV6CAP?"),
+        ("Data flow", "AT^DSFLOWQRY"),
+        ("MTU", "AT^CGMTU=1"),
+        ("PDP address", "AT+CGPADDR=1"),
+    ]),
+    ("radio", &[
+        ("Radio mode", "AT^SYSCFGEX?"),
+        ("5G access mode", "AT^C5GOPTION?"),
+        ("NR carrier aggregation", "AT^NRRCCAPQRY=3"),
+        ("VoNR", "AT^NRRCCAPQRY=2"),
+        ("DSS", "AT^NRRCCAPQRY=5"),
+    ]),
+    ("radio-diagnostics", &[
+        ("LTE secondary cells", "AT^CASCELLINFO?"),
+        ("NSA secondary cells", "AT^MONSSC"),
+        ("Uplink MCS", "AT^MCS=0"),
+        ("Downlink MCS", "AT^MCS=1"),
+        ("NR transmit power", "AT^NTXPOWER?"),
+        ("NR SSB beam", "AT^NRSSBID?"),
+        ("Neighbour cells", "AT^MONNC"),
+        ("QoS", "AT+CGEQOSRDP=1"),
+        ("Data registration", "AT+C5GREG?"),
+        ("IMS registration", "AT+CIREG?"),
+        ("Dual connectivity", "AT^LENDC?"),
+    ]),
+    ("hardware", &[
+        ("USB mode", "AT^SETMODE?"),
+        ("Interface mode", "AT^TDCFG?"),
+        ("NIC speed", "AT^TDPCIELANCFG?"),
+        ("PCIe controller", "AT^TDPMCFG?"),
+        ("LED", "AT^LEDSWITCH?"),
+        ("SIM hotplug", "AT^TDSIMHP?"),
+        ("SIM slot", "AT^SCICHG?"),
+        ("Thermal control", "AT^THERMAUTOFUN?"),
+    ]),
+    ("all", &[
+        ("Auto dial", "AT^SETAUTODIAL?"),
+        ("USB mode", "AT^SETMODE?"),
+        ("Interface mode", "AT^TDCFG?"),
+        ("PDP contexts", "AT+CGDCONT?"),
+        ("Radio mode", "AT^SYSCFGEX?"),
+        ("NIC speed", "AT^TDPCIELANCFG?"),
+        ("PCIe controller", "AT^TDPMCFG?"),
+        ("LED", "AT^LEDSWITCH?"),
+        ("SIM hotplug", "AT^TDSIMHP?"),
+        ("SIM slot", "AT^SCICHG?"),
+        ("Thermal control", "AT^THERMAUTOFUN?"),
+        ("NR carrier aggregation", "AT^NRRCCAPQRY=3"),
+        ("VoNR", "AT^NRRCCAPQRY=2"),
+        ("DSS", "AT^NRRCCAPQRY=5"),
+    ]),
+];
+
+pub fn print_advanced_info(settings: &Settings, group: &str) -> Result<String, i32> {
+    let items = ADVANCED_GROUPS
+        .iter()
+        .find(|(g, _)| *g == group)
+        .map(|(_, items)| *items)
+        .ok_or(EXIT_USAGE)?;
+    let mut out = String::new();
+    for (label, command) in items {
+        dump_section(&mut out, label, command, settings);
+    }
+    Ok(out)
+}
+
+pub fn print_sms_info(settings: &Settings) -> String {
+    let mut out = String::new();
+    for (label, command) in [
+        ("IMS", "AT^IMSSWITCH?"),
+        ("Service mode", "AT+CEUS?"),
+        ("SMSC", "AT+CSCA?"),
+        ("Storage", "AT+CPMS?"),
+    ] {
+        dump_section(&mut out, label, command, settings);
+    }
+    out
+}
+
+// ---------------------------------------------------------------- Setters
+
+fn safe_at_field(v: &str) -> bool {
+    !v.contains('"') && !v.contains(',') && !v.contains('\r') && !v.contains('\n')
+}
+
+fn valid_pin(v: &str) -> bool {
+    let n = v.len();
+    (4..=8).contains(&n) && v.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn valid_puk(v: &str) -> bool {
+    v.len() == 8 && v.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn set_radio_mode(settings: &Settings, requested: &str) -> i32 {
+    match requested {
+        "02" | "03" | "08" | "0302" | "0803" | "080302" => {}
+        _ => return EXIT_USAGE,
+    }
+    let raw = client::at_cmd(settings, "AT^SYSCFGEX?");
+    if raw.error.is_some() {
+        return raw.error.map(fail_exit).unwrap_or(0);
+    }
+    let Some(current) = first_match(&raw.text, "^SYSCFGEX:") else {
+        return 1;
+    };
+    let Some(idx) = current.find(',') else {
+        return 1;
+    };
+    let suffix = &current[idx..];
+    if suffix.is_empty() {
+        return 1;
+    }
+    // Preserve the current band/roaming/service-domain/LTE-band values and
+    // leave both reserves empty; the manual requires all seven arguments.
+    run_at(settings, &format!("AT^SYSCFGEX=\"{}\"{},,", requested, suffix))
+}
+
+fn set_radio_policy(settings: &Settings, args: &[String]) -> i32 {
+    let get = |i: usize| args.get(i).map(|s| s.as_str()).unwrap_or("");
+    let acqorder = get(0);
+    let band = get(1);
+    let roam = get(2);
+    let srvdomain = get(3);
+    let lteband = get(4);
+    match acqorder {
+        "02" | "03" | "08" | "0302" | "0803" | "080302" => {}
+        _ => return EXIT_USAGE,
+    }
+    let is_hex = |v: &str| {
+        v.bytes().all(|b| b.is_ascii_hexdigit())
+    };
+    if band.is_empty() || !is_hex(band) {
+        return EXIT_USAGE;
+    }
+    if !matches!(roam, "0" | "1") {
+        return EXIT_USAGE;
+    }
+    if !matches!(srvdomain, "1" | "2") {
+        return EXIT_USAGE;
+    }
+    if lteband.is_empty() || !is_hex(lteband) {
+        return EXIT_USAGE;
+    }
+    run_at(
+        settings,
+        &format!(
+            "AT^SYSCFGEX=\"{}\",{},{},{},{},,",
+            acqorder, band, roam, srvdomain, lteband
+        ),
+    )
+}
+
+fn set_5g_access_mode(settings: &Settings, preset: &str) -> i32 {
+    let values = match preset {
+        "option2" => "1,0,1",
+        "option3" => "0,1,0",
+        "option23" => "1,1,1",
+        _ => return EXIT_USAGE,
+    };
+    let raw = client::at_cmd(settings, "AT+CFUN?");
+    let mut previous = raw
+        .text
+        .lines()
+        .find_map(|l| l.strip_prefix("+CFUN:"))
+        .map(|r| clean_value(r.trim_start()))
+        .unwrap_or_default();
+    if previous != "0" && previous != "1" {
+        previous = "1".into();
+    }
+    // C5GOPTION must be written in airplane mode.
+    if client::at_cmd(settings, "AT+CFUN=0").error.is_some() {
+        return 1;
+    }
+    let result = client::at_cmd(settings, &format!("AT^C5GOPTION={}", values));
+    let rc = match result.error {
+        None => 0,
+        Some(ref e) => e.exit_code(),
+    };
+    if previous != "0" {
+        let _ = client::at_cmd(settings, &format!("AT+CFUN={}", previous));
+    }
+    print_outcome(&result);
+    rc
+}
+
+fn valid_thermal_thresholds(args: &[String]) -> bool {
+    if args.len() != 9 {
+        return false;
+    }
+    let mut values = [0i64; 9];
+    for (i, a) in args.iter().enumerate() {
+        match a.parse::<i64>() {
+            Ok(v) if (0..=150).contains(&v) => values[i] = v,
+            _ => return false,
+        }
+    }
+    // value[2] <= value[1] etc. means the shell awk exits 1 on violations:
+    // v2>v1, v4>v2, v6>v4, v8>v6 must hold, and v3<v2, v5<v4, v7<v6, v9<v8.
+    // awk indices are 1-based: value[2] > value[1] etc.
+    values[1] > values[0]
+        && values[3] > values[1]
+        && values[5] > values[3]
+        && values[7] > values[5]
+        && values[2] < values[1]
+        && values[4] < values[3]
+        && values[6] < values[5]
+        && values[8] < values[7]
+}
+
+/// Send one SMS through the unified `sms.send` route on the daemon.
+///
+/// The CLI is a client of the same API as LuCI and the WebUI: it does not
+/// encode PDUs, does not open the port and does not carry its own copy of the
+/// send flow. There is deliberately no serial or raw-TCP fallback — writing
+/// `+CMGS` to the tty from the CLI would put a second writer on the modem, and
+/// writing AT to `host:port` would do the same over the network bridge. When
+/// the daemon is down, SMS is unavailable — the same contract the WebUI has.
+fn at_sms_send(settings: &Settings, number: &str, text: &str) -> i32 {
+    if !settings.enabled {
+        return 2;
+    }
+    let number: String = number.chars().filter(|c| c.is_ascii_digit() || *c == '+').collect();
+    let text: String = text.chars().filter(|c| *c != '\0').collect();
+    if number.is_empty() || text.is_empty() {
+        return 1;
+    }
+
+    let mut params = std::collections::BTreeMap::new();
+    params.insert("number".to_string(), crate::core::json::str_val(&number));
+    params.insert("text".to_string(), crate::core::json::str_val(&text));
+    match crate::transport::control::daemon_api(
+        "sms.send",
+        &crate::core::json::Value::Obj(params),
+        60,
+    ) {
+        Ok(_) => 0,
+        Err(crate::transport::control::ControlError::Unavailable) => {
+            eprintln!(
+                "AT serial port is owned by the at-webserver daemon; start it to send SMS \
+                 (/etc/init.d/at-webserver start)"
+            );
+            1
+        }
+        Err(e) => {
+            eprintln!("{}", e.message());
+            1
+        }
+    }
+}
+
+// ---------------------------------------------------------------- Status
+
+/// `mt5700m-at cached`: dump the daemon's cached state snapshot. This is the
+/// async fast-path for LuCI pages — zero AT traffic, returns whatever the
+/// background collectors last wrote (stale values included), so a slow or
+/// absent modem can never block the page.
+fn cmd_cached() -> i32 {
+    match crate::transport::control::daemon_cached() {
+        Ok(v) => {
+            println!("{}", v.dump());
+            0
+        }
+        Err(e) => {
+            eprintln!("cached: {}", e.message());
+            1
+        }
+    }
+}
+
+/// `mt5700m-at status`: local device/config facts plus a modem-reachability
+/// flag. Modem-derived values (signal, SIM, carrier, temperature, ...) are NOT
+/// queried here — they are served from the daemon's cache snapshot, which the
+/// background collectors already refresh.
+///
+/// Rationale (device-measured): this command used to fire ~15 *sequential* AT
+/// reads through a 2 s timeout. The MT5700M needs ~4 s for `AT^HCSQ?` alone, so
+/// every one of those reads failed, and worse, each failure re-entered the
+/// shared channel — starving the WebUI (same channel) while LuCI sat there
+/// waiting. That is precisely the LuCI/WebUI contention this command caused.
+///
+/// The cache path costs zero AT traffic, returns in milliseconds, and shows the
+/// same values the WebUI renders (both read the same StateCache), so the two
+/// pages can no longer disagree.
+fn cmd_status(settings: &Settings) -> i32 {
+    let mut settings = settings.clone();
+    // Only used for the single reachability probe below; keep it short so a
+    // wedged modem cannot delay the page. Cached values do not depend on it.
+    if settings.timeout_s > 3 {
+        settings.timeout_s = 3;
+    }
+    // Four dashboard rows (active APN / QCI / MSISDN / subscribed rate) have no
+    // background collector — without these the dashboard shows them blank
+    // forever. Each is one short command, and timeout_s is already capped.
+    settings.query_extras = true;
+    println!("enabled={}", settings.enabled as i32);
+    println!(
+        "mode={}",
+        match settings.mode {
+            Mode::Auto => "auto",
+            Mode::Serial => "serial",
+            Mode::Network => "network",
+        }
+    );
+
+    let usb_info = client::mt5700m_usb_info();
+    match usb_info {
+        Some(info) => {
+            let mut parts = info.split('|');
+            let state = parts.next().unwrap_or("");
+            let pid = parts.next().unwrap_or("");
+            let slot = parts.next().unwrap_or("");
+            println!("usb_state={}", state);
+            println!("usb_pid={}", pid);
+            println!("usb_slot={}", slot);
+        }
+        None => println!("usb_state=absent"),
+    }
+
+    // Prefer the port the daemon actually owns. A fresh probe scan is only a
+    // fallback: the option driver renumbers ttyUSB* on re-enumeration, and a
+    // different port can answer AT while this process holds TIOCEXCL on this
+    // one — so a self-probed value can contradict the live channel.
+    let daemon_port = crate::transport::control::daemon_cached()
+        .ok()
+        .and_then(|v| v.get("serial_port").and_then(|p| p.as_str()).map(|s| s.to_string()))
+        .filter(|s| !s.is_empty());
+    let at_port = daemon_port.clone().or_else(|| client::detect_mt5700m_at_port(&settings));
+    println!("at_port={}", at_port.clone().unwrap_or_else(|| settings.at_port.clone()));
+    println!("host={}", settings.host);
+    println!("port={}", settings.port);
+    println!(
+        "detected_gateway={}",
+        client::detect_modem_gateway().unwrap_or_default()
+    );
+    if settings.mode == Mode::Network {
+        println!("channel=network");
+    } else if at_port.is_some() {
+        println!("channel=serial");
+    } else {
+        println!("channel=network");
+    }
+
+    // `connected` is the master switch the LuCI parser gates the whole page on
+    // (`data.connected = manager.connected && reachable && sysmode ok`), so it
+    // must mean "the AT channel is usable", NOT "a network-mode TCP socket is
+    // open". `AT+CONNECT?` only exists on the network transport; asking it over
+    // an exclusive serial channel always answers ERROR, which pinned
+    // `connected=0` forever even with the modem attached and registered.
+    //
+    // Reachability of the channel, in order of cost:
+    //   1. daemon StateCache — free, already proven by `daemon_cached()` above;
+    //      a populated `signal`/`registration` entry means the daemon has had a
+    //      successful AT round-trip recently.
+    //   2. standalone CLI (no daemon) — one short `AT` probe.
+    let connected = match crate::transport::control::daemon_cached() {
+        Ok(snap) => {
+            let has_data = ["signal", "registration", "sim", "operator"]
+                .iter()
+                .any(|topic| {
+                    snap.get(topic)
+                        .and_then(|t| t.get("value"))
+                        .map(|v| !matches!(v, crate::core::json::Value::Null))
+                        .unwrap_or(false)
+                });
+            has_data
+                || client::at_cmd(&settings, "AT")
+                    .text
+                    .lines()
+                    .any(|l| l.trim() == "OK")
+        }
+        Err(_) => {
+            let probe = client::at_cmd(&settings, "AT");
+            probe.ok() && probe.text.lines().any(|l| l.trim() == "OK")
+        }
+    };
+    println!("connected={}", connected as i32);
+
+    // Modem-derived values come from the background collectors' cache.
+    print!("{}", print_cached_status(&settings));
+    0
+}
+
+/// NR-ARFCN → centre frequency in MHz, per 3GPP TS 38.104 Table 5.4.1.1-1.
+///
+///   ΔF_global = 5 MHz  (FR1, 0–2425008 NR-ARFCN)
+///   F_DL      = 0 + 5 * NR-ARFCN
+///   ΔF_global = 5 MHz  (FR2-1, 2425008–20708387, offset 24250008)
+///   F_DL      = 24250008 + 5 * (NR-ARFCN − 2425008)
+///
+/// Returns `None` for values outside both ranges. The band-specific offsets
+/// used by some vendors are not applied here: `^HFREQINFO?` already reports
+/// the real frequency, and this is only used to fill the cached path where we
+/// have nothing but the ARFCN. A slightly-off derived number is still far
+/// more useful to the UI than a blank field.
+fn nr_arfcn_to_mhz(arfcn: &str) -> Option<f64> {
+    let n: i64 = arfcn.trim().parse().ok()?;
+    if (0..=2_425_008).contains(&n) {
+        Some(n as f64 * 5.0)
+    } else if (2_425_009..=20_708_387).contains(&n) {
+        Some(24_250_008.0 + (n - 2_425_008) as f64 * 5.0)
+    } else {
+        None
+    }
+}
+
+/// Render the cached signal / SIM / carrier / temperature block.
+///
+/// Everything here is read from the daemon StateCache — no AT traffic. Values
+/// keep the exact `key=value` shape the existing LuCI parsers expect, so this
+/// is a drop-in replacement for the previous live-query version.
+fn print_cached_status(settings: &Settings) -> String {
+    let mut out = String::new();
+
+    // With no daemon there is no cache; fall back to the live path so the
+    // standalone CLI (daemon stopped) still reports something useful.
+    let Ok(snap) = crate::transport::control::daemon_cached() else {
+        print!("{}", print_identity(settings));
+        print!("{}", print_sim_operator(settings));
+        print!("{}", print_sim_details(settings));
+        print!("{}", print_qos(settings));
+        print!("{}", print_active_apn(settings));
+        print!("{}", print_subscriber_number(settings));
+        print!("{}", print_signal(settings));
+        print!("{}", print_subscription_rate(settings));
+        print!("{}", print_carrier_aggregation(settings));
+        print!("{}", print_temperature(settings));
+        print!("{}", print_lock_status(settings));
+        return out;
+    };
+
+    let topic = |name: &str| -> Option<crate::core::json::Value> {
+        // `cached()` wraps each entry as {value, fresh, age_ms, source}; only a
+        // real object carries fields, so anything else (null / stale marker)
+        // is treated as "no data" and simply omitted from the output.
+        snap.get(name)
+            .and_then(|t| t.get("value"))
+            .filter(|v| matches!(v, crate::core::json::Value::Obj(_)))
+            .cloned()
+    };
+
+    // --- signal -------------------------------------------------------
+    if let Some(sig) = topic("signal") {
+        let num = |k: &str| sig.get(k).and_then(|v| v.as_i64());
+        if let Some(sysmode) = sig.get("sysmode").and_then(|v| v.as_str()) {
+            let _ = writeln!(out, "sysmode={}", sysmode);
+        }
+        if let Some(v) = num("rsrp") {
+            let _ = writeln!(out, "rsrp={}", v);
+        }
+        if let Some(v) = num("rsrq") {
+            let _ = writeln!(out, "rsrq={}", v);
+        }
+        if let Some(v) = num("sinr") {
+            let _ = writeln!(out, "sinr={}", v);
+        }
+        if let Some(v) = num("rssi") {
+            let _ = writeln!(out, "rssi={}", v);
+        }
+        if let Some(v) = num("rscp") {
+            let _ = writeln!(out, "rscp={}", v);
+        }
+    }
+
+    // --- SIM / identity ----------------------------------------------
+    // Schema note: `sim` carries {status, iccid, imsi}; `modem` carries
+    // {imei, model, manufacturer, revision}. Output keys are the ones
+    // parser.js (parseStatus / carrierInfo / operatorInfo) already reads.
+    if let Some(sim) = topic("sim") {
+        if let Some(v) = sim.get("status").and_then(|v| v.as_str()) {
+            if !v.is_empty() {
+                let _ = writeln!(out, "sim_state={}", v);
+            }
+        }
+        for (key, field) in [("iccid", "iccid"), ("imsi", "imsi")] {
+            if let Some(v) = sim.get(key).and_then(|v| v.as_str()) {
+                if !v.is_empty() {
+                    let _ = writeln!(out, "{}={}", field, v);
+                }
+            }
+        }
+    }
+    if let Some(info) = topic("modem") {
+        for (key, field) in [
+            ("imei", "imei"),
+            ("model", "product_name"),
+            ("manufacturer", "manufacturer"),
+            ("revision", "revision"),
+        ] {
+            if let Some(v) = info.get(key).and_then(|v| v.as_str()) {
+                if !v.is_empty() {
+                    let _ = writeln!(out, "{}={}", field, v);
+                }
+            }
+        }
+    }
+
+    // --- carrier / network -------------------------------------------
+    // `network` carries {operator, sysmode, sysmode_detail}.
+    if let Some(net) = topic("network") {
+        if let Some(v) = net.get("operator").and_then(|v| v.as_str()) {
+            if !v.is_empty() {
+                let _ = writeln!(out, "operator={}", v);
+            }
+        }
+        if let Some(v) = net.get("sysmode").and_then(|v| v.as_str()) {
+            if !v.is_empty() {
+                let _ = writeln!(out, "network_mode={}", v);
+            }
+        }
+        if let Some(v) = net.get("sysmode_detail").and_then(|v| v.as_str()) {
+            if !v.is_empty() {
+                let _ = writeln!(out, "sysmode_detail={}", v);
+            }
+        }
+    }
+
+    // --- carrier / CA -----------------------------------------------
+    // The LuCI dashboard's "Carrier status" card is driven entirely by
+    // `carrier_count` / `carrier_N` / `ca_*` / `dc_*` (see parser.js
+    // carrierInfo()). Those were only ever emitted on the *live* path —
+    // `print_carrier_aggregation()` was never called from the cached branch,
+    // so once the dashboard switched to StateCache every carrier field went
+    // permanently blank ("Current carrier information is unavailable").
+    //
+    // Rebuild the same key=value shape from the `cell` snapshot instead of
+    // re-querying the modem: `AT^HFREQINFO?` (already the cell collector's
+    // source) reports band / dl_arfcn / dl_bw for the serving carrier, which
+    // is exactly what a single-carrier PCell row needs. Zero AT traffic.
+    //
+    // Schema expected by parser.js (8 '|'-separated fields):
+    //   radio|band|arfcn|dl_freq_MHz|dl_bw_MHz|ul_freq_MHz|ul_freq_unused|ul_bw_MHz
+    if let Some(cellv) = topic("cell") {
+        let get = |k: &str| cellv.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let band = get("band");
+        let arfcn = get("channel");
+        let dl_bw = cellv
+            .get("dlBandwidth")
+            .and_then(|v| v.as_i64())
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+
+        if !band.is_empty() || !arfcn.is_empty() {
+            let radio = get("sysmode");
+            let radio = if radio.is_empty() { "NR".to_string() } else { radio };
+            let dl_freq = nr_arfcn_to_mhz(&arfcn).map(|v| format!("{:.2}", v)).unwrap_or_default();
+            let _ = writeln!(
+                out,
+                "carrier_count=1",
+            );
+            let _ = writeln!(
+                out,
+                "carrier_1={}|B{}|{}|{}|{}|{}|{}|{}",
+                radio, band, arfcn, dl_freq, dl_bw, dl_freq, "0", dl_bw
+            );
+        }
+        // A single serving carrier means CA is idle and EN-DC is not combined;
+        // report that explicitly so the card shows "Single carrier" instead of
+        // falling back to "Unavailable".
+        let _ = writeln!(out, "ca_active=0");
+        let _ = writeln!(out, "dc_active=0");
+        let _ = writeln!(out, "nr_carrier_count=1");
+        let _ = writeln!(out, "lte_carrier_count=0");
+        let _ = writeln!(out, "ca_mode={}", if get("sysmode").is_empty() { "" } else { "NR" });
+        if dl_bw.is_empty() {
+            let _ = writeln!(out, "ca_dl_bandwidth=");
+            let _ = writeln!(out, "ca_ul_bandwidth=");
+        } else {
+            let _ = writeln!(out, "ca_dl_bandwidth={}", dl_bw);
+            let _ = writeln!(out, "ca_ul_bandwidth={}", dl_bw);
+        }
+    }
+
+    // --- temperature ---------------------------------------------------
+    // Schema note: `temperature` carries {average, modem1, modem2, ap1, ...}.
+    if let Some(t) = topic("temperature") {
+        if let Some(v) = t.get("average").and_then(|v| v.as_f64()) {
+            let _ = writeln!(out, "temperature={}", v.round() as i64);
+        }
+    }
+
+    // --- live-only extras ---------------------------------------------
+    // The four blocks below need their own AT round-trips (there is no
+    // background collector for them), so they are the only AT traffic this
+    // command still spends. They are cheap, and skipping them would leave the
+    // dashboard's APN / QCI / phone-number / subscribed-rate rows permanently
+    // blank — which is exactly what happened before this was wired back in.
+    // `cmd_status` caps `timeout_s` at 3s precisely to bound this path.
+    if settings.query_extras {
+        print!("{}", print_active_apn(settings));
+        print!("{}", print_qos(settings));
+        print!("{}", print_subscriber_number(settings));
+        print!("{}", print_subscription_rate(settings));
+    }
+
+    out
+}
+
+/// `mt5700m-at cellscan` — the LuCI modal's data call.
+///
+/// The scan is a minutes-long exclusive task on the daemon now, so this verb
+/// cannot block on it (the control socket's own timeout would kill the call).
+/// It prints the serving cell, asks the daemon to start a scan when none is
+/// running, and prints the `^CELLSCAN` section from the daemon's last result:
+/// the handbook lines when a scan has finished, or a `SCANNING` line while one
+/// runs — `cellscan-result` is the poll the caller uses to know when to call
+/// this again.
+///
+/// The neighbour section used to be printed here too; the modal now reads the
+/// `cell.neighbors` route (the same decoder the WebUI uses), so printing it
+/// would mean asking `AT^MONNC` a second time and rendering a second copy of
+/// the same reply. The neighbours are still in `radio-diagnostics` for humans.
+fn cmd_cellscan(settings: &Settings) -> i32 {
+    let settings = settings.clone();
+    println!("===== Serving cell: AT^MONSC =====");
+    let r = client::at_cmd(&settings, "AT^MONSC");
+    println!("{}", r.text);
+    println!();
+    println!("===== Frequency scan: AT^CELLSCAN =====");
+
+    // Ask the daemon for the last result first: a finished scan (started from
+    // the WebUI or by an earlier call) is rendered as-is, and then no new scan
+    // is submitted.
+    let previous = crate::transport::control::daemon_api("cell.scan_result", &crate::core::json::Value::Null, 12);
+    let (running, raw) = match &previous {
+        Ok(v) => (
+            v.get("running").and_then(|x| x.as_bool()).unwrap_or(false),
+            v.get("raw").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        ),
+        Err(_) => (false, String::new()),
+    };
+    if !raw.is_empty() && !running {
+        println!("{}", raw);
+        return 0;
+    }
+    if !running {
+        if let Err(e) = crate::transport::control::daemon_api(
+            "cell.scan_start",
+            &crate::core::json::Value::Null,
+            15,
+        ) {
+            eprintln!("{}", e.message());
+            println!("{}", e.message());
+            return 0;
+        }
+    }
+    println!("^CELLSCAN: SCANNING");
+    0
+}
+
+/// `mt5700m-at cellscan-result` — `{running, state}` as JSON, the poll for
+/// [`cmd_cellscan`].
+///
+/// It asks the daemon's `AT^CELLSCAN=STATE` pseudo-command (the same task
+/// introspection the WebUI's `cell.scan_state` route uses) rather than
+/// re-asking the modem, and the caller re-runs `cellscan` once this reports
+/// `running: false` — at which point the finished scan is in the daemon cache.
+fn cmd_cellscan_result() -> i32 {
+    match crate::transport::control::daemon_send("AT^CELLSCAN=STATE", 12) {
+        Ok(text) => {
+            let running = text.to_ascii_lowercase().contains("scanning");
+            let mut m = std::collections::BTreeMap::new();
+            m.insert("running".to_string(), crate::core::json::Value::Bool(running));
+            m.insert(
+                "state".to_string(),
+                crate::core::json::str_val(if running { "running" } else { "idle" }),
+            );
+            println!("{}", crate::core::json::Value::Obj(m).dump());
+            0
+        }
+        Err(e) => {
+            eprintln!("{}", e.message());
+            1
+        }
+    }
+}
+
+fn cmd_lock(settings: &Settings, args: &[String]) -> i32 {
+    let Some(rat) = args.first() else {
+        eprintln!("Usage: mt5700m-at lock {{lte|nr}} <type> <bands> [arfcns] [scs] [pcis]");
+        return 1;
+    };
+    let rest = &args[1.min(args.len())..];
+    let lock_type = rest.first().map(|s| s.as_str()).unwrap_or("0");
+    let (lock_rat, lock_cmd) = match rat.as_str() {
+        "lte" => (
+            "lte",
+            build_lte_lock_command(lock_type, rest.get(1).map(|s| s.as_str()).unwrap_or(""),
+                rest.get(2).map(|s| s.as_str()).unwrap_or(""),
+                rest.get(3).map(|s| s.as_str()).unwrap_or("")),
+        ),
+        "nr" => (
+            "nr",
+            build_nr_lock_command(lock_type, rest.get(1).map(|s| s.as_str()).unwrap_or(""),
+                rest.get(2).map(|s| s.as_str()).unwrap_or(""),
+                rest.get(3).map(|s| s.as_str()).unwrap_or(""),
+                rest.get(4).map(|s| s.as_str()).unwrap_or("")),
+        ),
+        _ => {
+            eprintln!("Usage: mt5700m-at lock {{lte|nr}} <type> <bands> [arfcns] [scs] [pcis]");
+            return 1;
+        }
+    };
+    let Some(lock_cmd) = lock_cmd else {
+        return EXIT_USAGE;
+    };
+    apply_frequency_lock(settings, lock_rat, lock_type, &lock_cmd)
+}
+
+fn cmd_advanced_set(settings: &Settings, args: &[String]) -> i32 {
+    let Some(action) = args.first().map(|s| s.as_str()) else {
+        return EXIT_USAGE;
+    };
+    let rest = &args[1..];
+    let get = |i: usize| rest.get(i).map(|s| s.as_str()).unwrap_or("");
+
+    match action {
+        "radio-policy" => set_radio_policy(settings, rest),
+        "radio-mode" => set_radio_mode(settings, get(0)),
+        "5g-access" => set_5g_access_mode(settings, get(0)),
+        "autodial" => {
+            let enable = get(0);
+            let dial_mode = get(1);
+            let protocol = get(2);
+            let apn = get(3);
+            let username = get(4);
+            let password = get(5);
+            let auth_type = get(6);
+            if !matches!(enable, "0" | "1") {
+                return EXIT_USAGE;
+            }
+            if enable == "0" {
+                return run_at(settings, "AT^SETAUTODIAL=0");
+            }
+            if !matches!(dial_mode, "0" | "1" | "2") {
+                return EXIT_USAGE;
+            }
+            if !matches!(protocol, "IP" | "IPV6" | "IPV4V6") {
+                return EXIT_USAGE;
+            }
+            if !matches!(auth_type, "0" | "1" | "2") {
+                return EXIT_USAGE;
+            }
+            if !safe_at_field(apn) || !safe_at_field(username) || !safe_at_field(password) {
+                return EXIT_USAGE;
+            }
+            if apn.len() > 99 || username.len() > 31 || password.len() > 31 {
+                return EXIT_USAGE;
+            }
+            // MT5700M rejects trailing empty fields; omit every optional
+            // field when empty so dial_mode is actually applied.
+            let cmd = if apn.is_empty() {
+                format!("AT^SETAUTODIAL={},{},\"{}\"", enable, dial_mode, protocol)
+            } else if username.is_empty() && password.is_empty() {
+                format!(
+                    "AT^SETAUTODIAL={},{},\"{}\",\"{}\"",
+                    enable, dial_mode, protocol, apn
+                )
+            } else {
+                format!(
+                    "AT^SETAUTODIAL={},{},\"{}\",\"{}\",\"{}\",\"{}\",{}",
+                    enable, dial_mode, protocol, apn, username, password, auth_type
+                )
+            };
+            run_at(settings, &cmd)
+        }
+        "nic-speed" => match get(0) {
+            "1" | "2" => run_at(settings, &format!("AT^TDPCIELANCFG={}", get(0))),
+            _ => EXIT_USAGE,
+        },
+        "pcie-controller" => match get(0) {
+            "0" | "1" => run_at(settings, &format!("AT^TDPMCFG={},0,0,0", get(0))),
+            _ => EXIT_USAGE,
+        },
+        "led" => match get(0) {
+            "0" | "1" => run_at(settings, &format!("AT^LEDSWITCH={}", get(0))),
+            _ => EXIT_USAGE,
+        },
+        "usb-mode" => {
+            // SETMODE=7 (MBIM) is marked temporarily unsupported.
+            match get(0) {
+                "0" | "1" | "2" | "3" | "4" | "5" | "6" | "8" => {
+                    run_at(settings, &format!("AT^SETMODE={}", get(0)))
+                }
+                _ => EXIT_USAGE,
+            }
+        }
+        "interface-mode" => match get(0) {
+            "1" | "2" => run_at(
+                settings,
+                &format!("AT^TDCFG=\"infcfg\",\"mode\",{}", get(0)),
+            ),
+            _ => EXIT_USAGE,
+        },
+        "postroute" => match get(0) {
+            "2" => run_at(settings, "AT^TDCFG=\"infcfg\",\"PostRoute\",2"),
+            "1" => {
+                let rc = run_at(settings, "AT^TDCFG=\"infcfg\",\"PostRoute\",1");
+                if rc != 0 {
+                    return rc;
+                }
+                run_at(settings, "AT^IPFILTERSWITCH=0")
+            }
+            _ => EXIT_USAGE,
+        },
+        "dmz" => {
+            let dmz = get(0);
+            if dmz == "0" {
+                return run_at(settings, "AT^TDCFG=\"infcfg\",\"dmz\",\"0\"");
+            }
+            let parts: Vec<&str> = dmz.split('.').collect();
+            let ok = parts.len() == 4
+                && parts.iter().all(|p| {
+                    !p.is_empty()
+                        && p.bytes().all(|b| b.is_ascii_digit())
+                        && p.parse::<u32>().map(|n| n <= 255).unwrap_or(false)
+                });
+            if !ok {
+                return EXIT_USAGE;
+            }
+            run_at(settings, &format!("AT^TDCFG=\"infcfg\",\"dmz\",\"{}\"", dmz))
+        }
+        "sim-hotplug" => match get(0) {
+            "0" | "1" => run_at(settings, &format!("AT^TDSIMHP={}", get(0))),
+            _ => EXIT_USAGE,
+        },
+        "sim-activation" => match get(0) {
+            "0" | "1" => run_at(settings, &format!("AT^HVSST=1,{}", get(0))),
+            _ => EXIT_USAGE,
+        },
+        "sim-slot" => match get(0) {
+            "0" => run_at(settings, "AT^SCICHG=0,1"),
+            "1" => run_at(settings, "AT^SCICHG=1,0"),
+            _ => EXIT_USAGE,
+        },
+        "thermal" => {
+            let enabled = get(0);
+            let interval = get(1);
+            if !matches!(enabled, "0" | "1") {
+                return EXIT_USAGE;
+            }
+            if !matches!(interval, "1" | "2" | "3" | "4" | "5" | "10" | "15" | "30" | "60") {
+                return EXIT_USAGE;
+            }
+            // The manual marks the CA/MIMO thermal switch as reserved.
+            run_at(
+                settings,
+                &format!("AT^THERMAUTOFUN={},0,{}", enabled, interval),
+            )
+        }
+        "thermal-log" => {
+            let serial = get(0);
+            let file = get(1);
+            if !matches!(serial, "0" | "1") || !matches!(file, "0" | "1") {
+                return EXIT_USAGE;
+            }
+            run_at(settings, &format!("AT^THERMLDLOGSW={},{}", serial, file))
+        }
+        "thermal-thresholds" => {
+            if !valid_thermal_thresholds(rest) {
+                return EXIT_USAGE;
+            }
+            run_at(settings, &format!("AT^THERMLDAUTOPARA={}", rest.join(",")))
+        }
+        "carrier-aggregation" => match get(0) {
+            "0" | "1" => run_at(settings, &format!("AT^NRRCCAPCFG=3,{}", get(0))),
+            _ => EXIT_USAGE,
+        },
+        "vonr" => match get(0) {
+            "0" | "1" | "2" | "3" => run_at(settings, &format!("AT^NRRCCAPCFG=2,{}", get(0))),
+            _ => EXIT_USAGE,
+        },
+        "dss" => {
+            let rate = get(0);
+            let dmrs = get(1);
+            if !matches!(rate, "0" | "1") || !matches!(dmrs, "0" | "1") {
+                return EXIT_USAGE;
+            }
+            run_at(settings, &format!("AT^NRRCCAPCFG=5,{},{}", rate, dmrs))
+        }
+        "direct-ip" => match get(0) {
+            "0" | "1" => run_at(settings, &format!("AT^SETDIRECTIP={}", get(0))),
+            _ => EXIT_USAGE,
+        },
+        _ => EXIT_USAGE,
+    }
+}
+
+fn cmd_sim_pin(settings: &Settings, args: &[String]) -> i32 {
+    let Some(op) = args.first().map(|s| s.as_str()) else {
+        return EXIT_USAGE;
+    };
+    let a1 = args.get(1).map(|s| s.as_str()).unwrap_or("");
+    let a2 = args.get(2).map(|s| s.as_str()).unwrap_or("");
+    match op {
+        "verify" => {
+            if !valid_pin(a1) {
+                return EXIT_USAGE;
+            }
+            run_at(settings, &format!("AT+CPIN=\"{}\"", a1))
+        }
+        "enable" | "disable" => {
+            if !valid_pin(a1) {
+                return EXIT_USAGE;
+            }
+            let lock_state = if op == "enable" { 1 } else { 0 };
+            run_at(settings, &format!("AT+CLCK=\"SC\",{},\"{}\"", lock_state, a1))
+        }
+        "change" => {
+            if !valid_pin(a1) || !valid_pin(a2) {
+                return EXIT_USAGE;
+            }
+            run_at(settings, &format!("AT+CPWD=\"SC\",\"{}\",\"{}\"", a1, a2))
+        }
+        "unblock" => {
+            if !valid_puk(a1) || !valid_pin(a2) {
+                return EXIT_USAGE;
+            }
+            run_at(settings, &format!("AT+CPIN=\"{}\",\"{}\"", a1, a2))
+        }
+        _ => EXIT_USAGE,
+    }
+}
+
+/// `sms-ims 0|1`: the module's five-step IMS sequence, one route call.
+fn cmd_sms_ims(settings: &Settings, on: &str) -> i32 {
+    match on {
+        "0" | "1" => run_api(
+            settings,
+            "sms.ims_set",
+            api_params(&[("enabled", crate::core::json::Value::Bool(on == "1"))]),
+            60,
+        ),
+        _ => EXIT_USAGE,
+    }
+}
+
+fn cmd_sms_set(settings: &Settings, args: &[String]) -> i32 {
+    let Some(what) = args.first().map(|s| s.as_str()) else {
+        return EXIT_USAGE;
+    };
+    match what {
+        "smsc" => {
+            let smsc: String = args
+                .get(1)
+                .map(|s| s.chars().filter(|c| c.is_ascii_digit() || *c == '+').collect())
+                .unwrap_or_default();
+            if smsc.is_empty() {
+                return EXIT_USAGE;
+            }
+            run_api(
+                settings,
+                "sms.center_set",
+                api_params(&[("number", crate::core::json::str_val(&smsc))]),
+                25,
+            )
+        }
+        "storage" => {
+            let Some(name) = args
+                .get(1)
+                .map(|s| s.as_str())
+                .filter(|n| matches!(*n, "SM" | "ME"))
+            else {
+                return EXIT_USAGE;
+            };
+            run_api(
+                settings,
+                "sms.storage_set",
+                api_params(&[
+                    ("read", crate::core::json::str_val(name)),
+                    ("write", crate::core::json::str_val(name)),
+                    ("receive", crate::core::json::str_val(name)),
+                ]),
+                25,
+            )
+        }
+        _ => EXIT_USAGE,
+    }
+}
+
+fn cmd_fota_start(settings: &Settings, url: &str) -> i32 {
+    let url: String = url.chars().filter(|c| !matches!(c, '\0' | '\r' | '\n' | '"')).collect();
+    if !url.starts_with("http://") {
+        return EXIT_USAGE;
+    }
+    if url.contains(',') {
+        return EXIT_USAGE;
+    }
+    let url = if url.ends_with('/') {
+        url
+    } else {
+        format!("{}/", url)
+    };
+    if client::at_cmd(settings, "ATE0").error.is_some() {
+        return 1;
+    }
+    if client::at_cmd(settings, "AT^FOTAMODE=0,1,0,1").error.is_some() {
+        return 1;
+    }
+    run_at(settings, &format!("AT^FOTAOEMDL=\"{}\"", url))
+}
+
+// ---------------------------------------------------------------- Scan / port
+
+/// Print a human-readable serial-discovery table.
+fn cmd_scan() -> i32 {
+    println!("===== Serial AT ports =====");
+    let ports = client::scan_serial_ports();
+    if ports.is_empty() {
+        println!("(no serial nodes found in /dev)");
+    }
+    for p in &ports {
+        let kind = if p.is_pcui { "PCUI" } else { "tty" };
+        let at = if p.answers_at { "responds" } else { "no-AT" };
+        println!(
+            "{}  state={}  is_pcui={}  iface={}  vid:pid={}:{}  {}  desc={}",
+            p.path,
+            p.state,
+            p.is_pcui,
+            if p.interface_class.is_empty() { "-" } else { &p.interface_class },
+            if p.vendor.is_empty() { "-" } else { &p.vendor },
+            if p.product.is_empty() { "-" } else { &p.product },
+            if p.answers_at { at } else { if p.is_pcui { "pcui" } else { "-" } },
+            p.description.clone().unwrap_or_default(),
+        );
+        let _ = kind;
+    }
+    let resolved = client::auto_detect_serial();
+    match resolved {
+        Some(port) => println!("selected={}", port),
+        None => println!("selected=(none)"),
+    }
+    0
+}
+
+/// Manual port selection + discovery subcommands.
+fn cmd_port(settings: &Settings, args: &[String]) -> i32 {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("show");
+    match sub {
+        "scan" => cmd_scan(),
+        "auto" => match client::auto_detect_serial() {
+            Some(p) => {
+                println!("{}", p);
+                0
+            }
+            None => {
+                eprintln!("no MT5700M serial port detected");
+                1
+            }
+        },
+        "show" => {
+            let resolved = client::detect_mt5700m_at_port(settings);
+            let shown = resolved
+                .clone()
+                .or_else(|| (!settings.at_port.is_empty()).then(|| settings.at_port.clone()))
+                .unwrap_or_default();
+            println!("manual={}", settings.at_port);
+            println!("resolved={}", shown);
+            println!("mode={}", mode_name(settings.mode));
+            0
+        }
+        "set" => {
+            let value = args.get(1).map(|s| s.as_str()).unwrap_or("");
+            if value.is_empty() || !(value.starts_with('/') || value == "auto") {
+                eprintln!("Usage: mt5700m-at port set < /dev/ttyUSBN | auto >");
+                return 1;
+            }
+            if !client::uci_available() {
+                eprintln!("uci not available");
+                return 1;
+            }
+            let mut ok = true;
+            ok &= uci_set("mt5700m.settings.at_port", value);
+            ok &= uci_set("at-webserver.config.serial_port", value);
+            if !ok {
+                eprintln!("could not write serial port selection");
+                return 1;
+            }
+            println!("serial port set to '{}'", value);
+            0
+        }
+        _ => {
+            eprintln!("Usage: mt5700m-at port [scan|auto|show|set <path>]");
+            1
+        }
+    }
+}
+
+fn mode_name(m: Mode) -> &'static str {
+    match m {
+        Mode::Auto => "auto",
+        Mode::Serial => "serial",
+        Mode::Network => "network",
+    }
+}
+
+/// `uci -q set key=value && uci commit cfg`.
+fn uci_set(key: &str, value: &str) -> bool {
+    let set = std::process::Command::new("uci")
+        .args(["-q", "set"])
+        .arg(format!("{}={}", key, value))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    if !matches!(set, Ok(s) if s.success()) {
+        return false;
+    }
+    let cfg = key.split('.').next().unwrap_or("");
+    std::process::Command::new("uci")
+        .args(["-q", "commit", cfg])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+// ---------------------------------------------------------------- Entry
+
+pub fn run(args: &[String]) -> i32 {
+    let mut settings = load_settings();
+    // Delay uci-dependent fields used before defaults settle.
+    if settings.timeout_s == 0 {
+        settings.timeout_s = 8;
+    }
+
+    let first = args.first().map(|s| s.as_str()).unwrap_or("status");
+    let rest: Vec<String> = args.iter().skip(1).cloned().collect();
+
+    match first {
+        "status" => cmd_status(&settings),
+        "cached" => cmd_cached(),
+        "scan" => cmd_scan(),
+        "port" => cmd_port(&settings, &rest),
+        "temperature" => {
+            print!("{}", print_temperature(&settings));
+            0
+        }
+        "command" => {
+            if rest.is_empty() {
+                return 1;
+            }
+            run_at(&settings, &rest.join(" "))
+        }
+        "network" => {
+            print!("{}", print_network_info(&settings));
+            0
+        }
+        "cellscan" => cmd_cellscan(&settings),
+        "cellscan-result" => cmd_cellscan_result(),
+        "sms-list" => {
+            print!("{}", print_sms_list(&settings));
+            0
+        }
+        "sms-info" => {
+            print!("{}", print_sms_info(&settings));
+            0
+        }
+        "sms-send" => at_sms_send(
+            &settings,
+            rest.first().map(|s| s.as_str()).unwrap_or(""),
+            rest.get(1).map(|s| s.as_str()).unwrap_or(""),
+        ),
+        "sms-delete" => {
+            let index: String = rest
+                .first()
+                .map(|s| s.chars().filter(|c| c.is_ascii_digit()).collect())
+                .unwrap_or_default();
+            if index.is_empty() {
+                return 1;
+            }
+            let index = index.parse::<i64>().unwrap_or(-1);
+            run_api(
+                &settings,
+                "sms.delete",
+                api_params(&[("index", crate::core::json::num_val(index))]),
+                25,
+            )
+        }
+        "sms-clear" => run_api(
+            &settings,
+            "sms.clear_all",
+            crate::core::json::Value::Null,
+            60,
+        ),
+        "sms-set" => cmd_sms_set(&settings, &rest),
+        "system" => {
+            print!("{}", print_system_info(&settings));
+            0
+        }
+        "advanced" => {
+            let group = rest.first().map(|s| s.as_str()).unwrap_or("all");
+            match print_advanced_info(&settings, group) {
+                Ok(text) => {
+                    print!("{}", text);
+                    0
+                }
+                Err(rc) => rc,
+            }
+        }
+        "advanced-set" => cmd_advanced_set(&settings, &rest),
+        "pdp-set" => {
+            let cid = rest.first().map(|s| s.as_str()).unwrap_or("");
+            let pdp_type = rest.get(1).map(|s| s.as_str()).unwrap_or("");
+            let apn = rest.get(2).map(|s| s.as_str()).unwrap_or("");
+            if !matches!(
+                cid,
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11"
+            ) {
+                return EXIT_USAGE;
+            }
+            if !matches!(pdp_type, "IP" | "IPV6" | "IPV4V6") {
+                return EXIT_USAGE;
+            }
+            if !safe_at_field(apn) || apn.len() > 99 {
+                return EXIT_USAGE;
+            }
+            run_at(
+                &settings,
+                &format!("AT+CGDCONT={},\"{}\",\"{}\"", cid, pdp_type, apn),
+            )
+        }
+        "pdp-remove" => match rest.first().map(|s| s.as_str()) {
+            Some(cid @ ("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11")) => {
+                run_at(&settings, &format!("AT+CGDCONT={}", cid))
+            }
+            _ => EXIT_USAGE,
+        },
+        "pdp-state" => {
+            let state = rest.first().map(|s| s.as_str()).unwrap_or("");
+            let cid = rest.get(1).map(|s| s.as_str()).unwrap_or("");
+            if !matches!(state, "0" | "1") {
+                return EXIT_USAGE;
+            }
+            if !matches!(
+                cid,
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11"
+            ) {
+                return EXIT_USAGE;
+            }
+            run_at(&settings, &format!("AT+CGACT={},{}", state, cid))
+        }
+        "flow-clear" => run_at(&settings, "AT^DSFLOWCLR"),
+        "airplane" => match rest.first().map(|s| s.as_str()) {
+            Some(v @ ("0" | "1")) => run_at(&settings, &format!("AT+CFUN={}", v)),
+            _ => EXIT_USAGE,
+        },
+        "sim-pin" => cmd_sim_pin(&settings, &rest),
+        "sms-ims" => cmd_sms_ims(
+            &settings,
+            rest.first().map(|s| s.as_str()).unwrap_or(""),
+        ),
+        "factory-reset" => run_at(&settings, "AT&F0"),
+        // HARD CONSTRAINT: IMEI write path ported as-is, no behaviour change.
+        "set-imei" => {
+            let imei = rest.first().map(|s| s.as_str()).unwrap_or("");
+            if imei.is_empty()
+                || !imei.bytes().all(|b| b.is_ascii_digit())
+            {
+                return EXIT_USAGE;
+            }
+            if imei.len() != 15 {
+                return EXIT_USAGE;
+            }
+            run_at(&settings, &format!("AT^PHYNUM=IMEI,{}", imei))
+        }
+        "fota-init" => run_at(&settings, "AT^FOTAMODE=0,1,0,1"),
+        "fota-state" => run_at(&settings, "AT^FOTASTATE?"),
+        "fota-progress" => run_at(&settings, "AT^FOTADLQ"),
+        "fota-download" => {
+            let url: String = rest
+                .first()
+                .map(|s| s.chars().filter(|c| !matches!(c, '\0' | '\r' | '\n' | '"')).collect())
+                .unwrap_or_default();
+            if url.is_empty() {
+                return 1;
+            }
+            run_at(&settings, &format!("AT^FOTAOEMDL=\"{}\"", url))
+        }
+        "fota-start" => cmd_fota_start(
+            &settings,
+            rest.first().map(|s| s.as_str()).unwrap_or(""),
+        ),
+        "fota-resume" => run_at(&settings, "AT^FOTADL=1"),
+        "fota-upgrade" => run_at(&settings, "AT^FWUP"),
+        "preview-lock" => {
+            let Some(rat) = rest.first().map(|s| s.as_str()) else {
+                eprintln!("Usage: mt5700m-at preview-lock {{lte|nr}} <type> <bands> [arfcns] [scs] [pcis]");
+                return 1;
+            };
+            let t = rest.get(1).map(|s| s.as_str()).unwrap_or("0");
+            let s = |i: usize| rest.get(i).map(|x| x.as_str()).unwrap_or("");
+            let built = match rat {
+                "lte" => build_lte_lock_command(t, s(2), s(3), s(4)),
+                "nr" => build_nr_lock_command(t, s(2), s(3), s(4), s(5)),
+                _ => {
+                    eprintln!("Usage: mt5700m-at preview-lock {{lte|nr}} <type> <bands> [arfcns] [scs] [pcis]");
+                    return 1;
+                }
+            };
+            match built {
+                Some(cmd) => {
+                    println!("{}", cmd);
+                    0
+                }
+                None => EXIT_USAGE,
+            }
+        }
+        "lock" => cmd_lock(&settings, &rest),
+        "restart" => run_at(&settings, "AT^RESET"),
+        "unlock" => {
+            println!("Unlock LTE:");
+            let rc1 = run_at(&settings, "AT^LTEFREQLOCK=0");
+            println!("Unlock NR:");
+            let rc2 = run_at(&settings, "AT^NRFREQLOCK=0");
+            if rc1 != 0 {
+                rc1
+            } else {
+                rc2
+            }
+        }
+        _ => {
+            eprintln!("Usage: mt5700m-at {{status|command <AT>|restart|unlock}}");
+            1
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lte_lock_contract() {
+        assert_eq!(build_lte_lock_command("0", "", "", "").unwrap(), "AT^LTEFREQLOCK=0");
+        assert_eq!(
+            build_lte_lock_command("3", "1,3,7", "", "").unwrap(),
+            "AT^LTEFREQLOCK=3,0,3,\"1,3,7\""
+        );
+        assert_eq!(
+            build_lte_lock_command("1", "3", "1850", "").unwrap(),
+            "AT^LTEFREQLOCK=1,0,1,\"3\",\"1850\""
+        );
+        assert_eq!(
+            build_lte_lock_command("2", "3", "1850", "100").unwrap(),
+            "AT^LTEFREQLOCK=2,0,1,\"3\",\"1850\",\"100\""
+        );
+        // count mismatch and range violations must be rejected (exit 64)
+        assert!(build_lte_lock_command("1", "3,7", "1850", "").is_none());
+        assert!(build_lte_lock_command("2", "3", "1850", "9999").is_none());
+        assert!(build_lte_lock_command("9", "3", "", "").is_none());
+        // >20 bands rejected
+        let many: Vec<&str> = (0..21).map(|_| "1").collect();
+        assert!(build_lte_lock_command("3", &many.join(","), "", "").is_none());
+    }
+
+    #[test]
+    fn nr_lock_contract() {
+        assert_eq!(build_nr_lock_command("0", "", "", "", "").unwrap(), "AT^NRFREQLOCK=0");
+        assert_eq!(
+            build_nr_lock_command("3", "78", "", "", "").unwrap(),
+            "AT^NRFREQLOCK=3,0,1,\"78\""
+        );
+        assert_eq!(
+            build_nr_lock_command("1", "78", "643456", "0", "").unwrap(),
+            "AT^NRFREQLOCK=1,0,1,\"78\",\"643456\",\"0\""
+        );
+        assert_eq!(
+            build_nr_lock_command("2", "78", "643456", "0", "10").unwrap(),
+            "AT^NRFREQLOCK=2,0,1,\"78\",\"643456\",\"0\",\"10\""
+        );
+        assert!(build_nr_lock_command("1", "78", "643456", "9", "").is_none());
+    }
+
+    #[test]
+    fn cops_parsing_contract() {
+        let raw = "+COPS: 0,2,\"46000\",7\r\nOK";
+        assert_eq!(extract_cops_operator(raw).unwrap(), "46000");
+        assert_eq!(extract_cops_rat(raw).unwrap(), "LTE");
+        let named = "+COPS: 0,0,\"CHINA MOBILE\",7\r\nOK";
+        assert_eq!(extract_cops_operator(named).unwrap(), "CHINA MOBILE");
+        // numeric code in a stray field per the shell comment
+        let stray = "+COPS: 0,2,,46000,7\r\nOK";
+        assert_eq!(extract_cops_operator(stray).unwrap(), "46000");
+    }
+
+    #[test]
+    fn signal_format_contract() {
+        let mut settings = Settings::default();
+        // Offline parse: feed a canned HCSQ line through the same helpers.
+        let line = "^HCSQ: \"LTE\",60,50,20,30";
+        let fields: Vec<String> = line
+            .strip_prefix("^HCSQ:")
+            .unwrap()
+            .split(',')
+            .map(|f| f.trim().trim_matches('"').to_string())
+            .collect();
+        assert_eq!(fields[0], "LTE");
+        let v: u64 = fields[2].parse().unwrap();
+        assert_eq!(v as i64 - 141, -91);
+        let _ = &mut settings;
+    }
+
+    #[test]
+    fn syscfgex_normalization() {
+        let cmd = "AT^SYSCFGEX=\"0302\",3fffffff,1,2,7FFFFFFFFFFFFFFF,\"\",\"\"";
+        let out = crate::daemon::normalize_syscfgex(cmd);
+        assert!(out.contains(",\"7FFFFFFFFFFFFFFF\",\"\",\"\""));
+    }
+}

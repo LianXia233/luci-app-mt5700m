@@ -1,0 +1,69 @@
+#!/bin/sh
+# mt5700webui：初始化 AT WebServer 配置并启用服务
+#
+# 说明（v2.6 重构）：
+# - WebUI 前端（www/5700）由 Rust 后端 /usr/bin/at-webserver 提供服务
+#   （单二进制双入口：作为 at-webserver 运行是 WebSocket daemon，
+#   经 /usr/sbin/mt5700m-at symlink 调用是 LuCI shell 后端）
+# - 后端默认 SERIAL 模式：daemon 独占 AT 串口（TIOCEXCL），WebUI 走
+#   WebSocket，LuCI 的 mt5700m-at 走本地控制套接字，共用同一条串口。
+#   serial_port=auto 表示开机自动扫描 /dev/ttyUSB* 选出 MT5700M PCUI 端口；
+#   如需手动指定改为具体路径（如 /dev/ttyUSB1）。
+# - 已移除对 ubus-at-daemon 与 sms-tool_q 的依赖，不需要安装这两个包。
+# - 本脚本只在配置缺失时写入默认值，不覆盖用户已有配置
+
+# 后端文件存在性检查：OpenWrt 构建可能把 /usr/bin/at-webserver 装成 0644，
+# 故用 -f 而非 -x；同时恢复可执行位。
+[ -f /usr/bin/at-webserver ] || exit 0
+chmod 0755 /usr/bin/at-webserver 2>/dev/null
+
+# LuCI shell 后端入口：同名分发（argv[0] basename = mt5700m-at -> cli 模式）
+[ -e /usr/sbin/mt5700m-at ] || ln -sf /usr/bin/at-webserver /usr/sbin/mt5700m-at 2>/dev/null
+
+# 升级清理：移除 3.x 时代的 Python 后端残留
+rm -f /usr/bin/at-webserver.py 2>/dev/null
+
+. /lib/functions.sh
+
+# 此 ImmortalWrt 的 uci 在新建 section 前要求配置文件已存在，否则
+# `uci set <cfg>.<sec>=<type>` / `uci batch` 会报 "Entry not found"。
+uci -q show at-webserver >/dev/null 2>&1 || touch /etc/config/at-webserver
+
+# 配置段不存在时补默认值
+if ! uci -q show at-webserver >/dev/null 2>&1 || [ -z "$(uci -q get at-webserver.config)" ]; then
+	uci -q batch <<-EOF
+		set at-webserver.config=at-webserver
+		set at-webserver.config.enabled=1
+		set at-webserver.config.connection_type=SERIAL
+		set at-webserver.config.serial_port=auto
+		set at-webserver.config.serial_baudrate=115200
+		set at-webserver.config.serial_timeout=10
+		set at-webserver.config.network_host=192.168.8.1
+		set at-webserver.config.network_port=20249
+		set at-webserver.config.network_timeout=10
+		set at-webserver.config.websocket_port=8765
+		commit at-webserver
+	EOF
+fi
+
+# 确保关键键存在（升级场景可能缺少 SERIAL 相关项）
+if [ -z "$(uci -q get at-webserver.config.connection_type)" ]; then
+	uci -q set at-webserver.config.connection_type=SERIAL
+	uci -q commit at-webserver
+fi
+if [ -z "$(uci -q get at-webserver.config.serial_port)" ]; then
+	uci -q set at-webserver.config.serial_port=auto
+	uci -q commit at-webserver
+fi
+
+# 启用服务：procd 只运行 /etc/rc.d 中有链接的 init 脚本
+/etc/init.d/at-webserver enable
+
+# 提示：旧版依赖的 ubus-at-daemon / sms-tool_q 已不再需要；若残留运行，
+# 停用 ubus-at-daemon 以免与独占串口的 daemon 争抢 AT 口。
+if [ -x /etc/init.d/ubus-at-daemon ]; then
+	/etc/init.d/ubus-at-daemon stop 2>/dev/null
+	/etc/init.d/ubus-at-daemon disable 2>/dev/null
+fi
+
+exit 0
