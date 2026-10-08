@@ -682,3 +682,53 @@ down to one (`advanced connection-settings`, which is the read half of the
 dialing settings the page still writes through `advanced-set`); the remaining
 CLI call sites are `system.js` 1, `advanced.js` 1, `connection.js` 1,
 `terminal.js` 1 (deliberate).
+
+### System page writes move to routes (slice, 2026-10-08)
+
+The system page's six remaining CLI **writes** now dispatch through the module
+registry. The 22-section read frame (`mt5700m-at system`) is untouched, and
+seven writes deliberately stay on CLI verbs — see below.
+
+| old CLI verb | route | equivalence |
+| ------------ | ----- | ----------- |
+| `airplane <0\|1>` | `network.radio_set {airplane}` | same `AT+CFUN`; the page's `0\|1` becomes the domain boolean |
+| `advanced-set sim-slot <v>` | `sim.slot_set {slot}` | **deliberate difference** — the module runs the vendor's full switch sequence, the CLI only sent `AT^SCICHG` |
+| `set-imei <v>` | `modem.imei_set {imei}` | same `AT^PHYNUM=IMEI`; the 15-digit rule lives in the module, once |
+| `restart` | `modem.reset` | same `AT^RESET` (`commands::RESET`) |
+| `sim-pin <op> a1 a2` | `sim.pin_apply {operation,pin,newPin}` | five operations map one-to-one; `newPin` is `""` where the UI hides the field, exactly what the CLI passed |
+| `factory-reset` | `system.factory_reset` | `AT&F` vs the CLI's `AT&F0` — `&F` defaults to profile 0, so no behaviour change |
+
+`components.js` already factored the write-confirmation modal into
+`confirmAction`, so this slice did the same for the `danger` + custom-delay
+variant: `runConfirmedAction` is now the only implementation, with
+`runConfirmed` (CLI verbs) and the new `runConfirmedRoute` (routes) as its two
+thin callers. The modal's DOM, wording, button order and the
+recovery-delay behaviours cannot fork.
+
+Seven writes stay on CLI verbs on purpose: `advanced-set led`,
+`advanced-set sim-activation`, `advanced-set thermal-thresholds`,
+`advanced-set thermal-log` (the backend has no write for `^LEDSWITCH`,
+`^HVSST=`, `^THERMLDAUTOPARA=` or `^THERMLDLOGSW=` yet — see
+[remaining-work.md](remaining-work.md) item 1), and `fota-start` /
+`fota-resume` / `fota-upgrade`, where the module's shape is "start a task, then
+observe it" while the page drives a three-step download/resume/install flow;
+converting that is a product decision, not a refactor step.
+
+`scripts/prove-system-parity.js` (baseline tag `pre-system-route`, 34 checks)
+renders six read frames — a full frame, SIM needs PIN, number not stored,
+FOTA install-complete, all thermal sections missing, and airplane mode — and
+requires every line byte-identical, because this slice did not touch parsing.
+The twelve mapping checks pin **both** sides at once: what the old page put on
+the command line *and* what the new one sends, so a route with wrong parameters
+fails even though nothing else changed. Seven further checks assert the
+retained verbs were **not** migrated.
+
+`scripts/smoke-minified-luci.js` gained a system-page block (22 → 28 checks):
+it drives the four hazard-free writes (airplane, SIM slot, restart, factory
+reset) on the *minified* tree and asserts exactly one `routeCall` each.
+
+Note for whoever takes the read frame: `pre-system-route` is a **tag**, not a
+hard-coded SHA. The other proofs default to a SHA of their pre-slice commit,
+which cannot survive a fresh clone in a sandbox — the offset in
+`scripts/lib/at-fixtures.js` (`SYSTEM_FACTS` / `systemCliFrame`) now feeds both
+this proof and the smoke test, so the two cannot drift.
