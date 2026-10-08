@@ -280,8 +280,12 @@ check('服务小区现在也读载荷（ARFCN:636648 / 十进制 PCI:506 / 模�
 	textOf(scan).slice(0, 100));
 // 扫频原文卡片：迁移前后都取不到（`section()` 的前缀规则要求 '===== <label>:' 前缀，
 // cli.rs 打的是 '===== Frequency scan: AT^CELLSCAN ====='）——既有缺陷，不在本批范围。
-check('扫频原文段迁移前后同样解析为空（既有缺陷，未改动）',
-	before.parser.section(scanFrame, 'Frequency scan: AT^CELLSCAN') === '' && after.parser.section(scanFrame, 'Frequency scan: AT^CELLSCAN') === '');
+// 第六批死导出清理后，工作区 parser 已无 section 导出：新侧断言翻转为「解析路径已移除」
+// 的回归钉子（邻区改读 neighbors 载荷，不再经过任何帧文本抽取）。
+check('扫频原文段：旧侧 section() 因前缀规则解析为空（既有缺陷，未改动）',
+	before.parser.section(scanFrame, 'Frequency scan: AT^CELLSCAN') === '');
+check('扫频原文段：新侧无 section 解析路径（第六批死导出清理，邻区走 neighbors 载荷）',
+	typeof after.parser.section === 'undefined');
 
 /* 4) 回退与 NONE：与旧管线逐字一致 */
 console.log('\n回退与 NONE 场景');
