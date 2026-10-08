@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 660" width="720" height="660" role="img" aria-labelledby="arch-title arch-desc">
+  <title id="arch-title">at-webserver 分层架构</title>
+  <desc id="arch-desc">单一守护进程 at-webserver 持有独占 AT 通道，LuCI（ucode + TCP RPC）与 WebUI（React + WebSocket）两个前端各自独立接入且零共享；进程内自底向上分为设备核心、调度与状态、领域模块、接入层四层，依赖方向严格向下。</desc>
+  <style>
+    :root {
+      --surface: #F7F7F8;
+      --surface-muted: #EFEFF2;
+      --text: #171717;
+      --text-muted: #52525B;
+      --border: #D8D8DC;
+      --brand: #0FDC78;
+      --brand-soft: #E5FFF2;
+      --brand-text: #004D26;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --surface: #171717;
+        --surface-muted: #262626;
+        --text: #E5E5E5;
+        --text-muted: #A1A1AA;
+        --border: #454545;
+        --brand: #32F08C;
+        --brand-soft: #004D26;
+        --brand-text: #E5FFF2;
+      }
+    }
+    text { font-family: "SF Pro Text", "PingFang SC", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    .th { fill: var(--text); font-size: 14px; font-weight: 500; }
+    .ts { fill: var(--text-muted); font-size: 12px; }
+    .arr { fill: none; stroke: var(--text-muted); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+    rect.boundary { fill: var(--surface-muted); stroke: var(--border); stroke-dasharray: 6 4; }
+    rect.cap { fill: var(--surface); stroke: var(--border); }
+    g.c-neutral > rect { fill: var(--surface); stroke: var(--border); }
+    g.c-brand > rect { fill: var(--brand-soft); stroke: var(--brand); }
+    g.c-brand > .th { fill: var(--brand-text); }
+    g.c-brand > .ts { fill: var(--brand-text); }
+    g.c-ext > rect { fill: var(--surface); stroke: var(--text-muted); stroke-dasharray: 4 3; }
+  </style>
+  <defs>
+    <marker id="ar-arch" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto">
+      <path d="M1 1 L7 4 L1 7 Z" fill="var(--text-muted)"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="720" height="660" fill="var(--surface)"/>
+
+  <rect class="boundary" x="60" y="166" width="600" height="358" rx="12"/>
+  <text class="th" x="84" y="194">at-webserver 守护进程（组合根）</text>
+
+  <g class="c-neutral">
+    <rect x="84" y="208" width="552" height="52" rx="8"/>
+    <text class="th" x="108" y="232">接入层 · transport / api</text>
+    <text class="ts" x="108" y="250">WS 服务端 · TCP RPC / 控制套接字 · URC 分发 · CLI 转发</text>
+  </g>
+  <g class="c-neutral">
+    <rect x="84" y="288" width="552" height="52" rx="8"/>
+    <text class="th" x="108" y="312">领域模块 · modules</text>
+    <text class="ts" x="108" y="330">11 个领域模块（signal / network / cell / sim / modem / sms …）</text>
+  </g>
+  <g class="c-brand">
+    <rect x="84" y="368" width="552" height="52" rx="8"/>
+    <text class="th" x="108" y="392">调度与状态 · scheduler / state</text>
+    <text class="ts" x="108" y="410">AT 仲裁器 · 任务管理 · 读缓存闸门 · StateCache · EventBus</text>
+  </g>
+  <g class="c-neutral">
+    <rect x="84" y="448" width="552" height="52" rx="8"/>
+    <text class="th" x="108" y="472">设备核心 · serial / core</text>
+    <text class="ts" x="108" y="490">独占 tty · USB 在位监控 · 错误模型 · JSON · 运行时</text>
+  </g>
+
+  <g class="c-ext">
+    <rect x="120" y="40" width="200" height="52" rx="8"/>
+    <text class="th" x="220" y="64" text-anchor="middle">LuCI 前端</text>
+    <text class="ts" x="220" y="82" text-anchor="middle">ucode 插件 · views</text>
+  </g>
+  <g class="c-ext">
+    <rect x="400" y="40" width="200" height="52" rx="8"/>
+    <text class="th" x="500" y="64" text-anchor="middle">WebUI 前端</text>
+    <text class="ts" x="500" y="82" text-anchor="middle">React · Semi Design</text>
+  </g>
+  <g class="c-ext">
+    <rect x="210" y="558" width="300" height="60" rx="8"/>
+    <text class="th" x="360" y="584" text-anchor="middle">MT5700 调制解调器</text>
+    <text class="ts" x="360" y="604" text-anchor="middle">USB / tty 串口</text>
+  </g>
+
+  <path class="arr" d="M220 92 L220 166" marker-end="url(#ar-arch)"/>
+  <path class="arr" d="M500 92 L500 166" marker-end="url(#ar-arch)"/>
+  <path class="arr" d="M360 524 L360 558" marker-end="url(#ar-arch)"/>
+
+  <rect class="cap" x="232" y="116" width="128" height="26" rx="8"/>
+  <text class="ts" x="296" y="133" text-anchor="middle">TCP RPC（nc）</text>
+  <rect class="cap" x="512" y="116" width="96" height="26" rx="8"/>
+  <text class="ts" x="560" y="133" text-anchor="middle">WebSocket</text>
+  <text class="ts" x="374" y="546">AT 指令 / URC</text>
+</svg>

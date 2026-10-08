@@ -57,6 +57,8 @@
 - **状态单向流**：Modem → State Collector → StateCache → EventBus → UI。
 - **任务单向流**：UI → Task Request → Scheduler → Worker → Result → Event → UI。
 
+![at-webserver 分层架构](architecture-v2/layered-architecture.svg)
+
 ## 3. 模块职责
 
 | 模块 | 职责 |
@@ -114,6 +116,11 @@ Cache Expired ──► 立即返回旧值，同时后台刷新（SWR），绝�
 后台刷新完成后：`Cache Update → EventBus → WebSocket → 前端自动更新`。
 
 写操作（APN/PDP/频段/重启/SIM）会**主动使受影响缓存失效**，再后台重取。
+
+上述读取逻辑在后端的落点就是 `scheduler/gate.rs` 的**读命令缓存闸门**：
+读命令先过闸门，写命令原样直通仲裁器。
+
+![读命令缓存闸门：读走缓存，写直通](architecture-v2/read-gate-flow.svg)
 
 ## 7. EventBus 设计
 

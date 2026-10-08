@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 508" width="720" height="508" role="img" aria-labelledby="gate-title gate-desc">
+  <title id="gate-title">读命令缓存闸门：读走缓存，写直通</title>
+  <desc id="gate-desc">读命令进入缓存闸门后按缓存状态分三支：未过期直接命中（零 AT）、已过期立即返回旧值并异步刷新（SWR）、从未采集则提交单飞后台采集并返回占位；写命令不经过闸门，原样直通 AT 仲裁器与 tty。</desc>
+  <style>
+    :root {
+      --surface: #F7F7F8;
+      --surface-muted: #EFEFF2;
+      --text: #171717;
+      --text-muted: #52525B;
+      --border: #D8D8DC;
+      --brand: #0FDC78;
+      --brand-soft: #E5FFF2;
+      --brand-text: #004D26;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --surface: #171717;
+        --surface-muted: #262626;
+        --text: #E5E5E5;
+        --text-muted: #A1A1AA;
+        --border: #454545;
+        --brand: #32F08C;
+        --brand-soft: #004D26;
+        --brand-text: #E5FFF2;
+      }
+    }
+    text { font-family: "SF Pro Text", "PingFang SC", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    .th { fill: var(--text); font-size: 14px; font-weight: 500; }
+    .ts { fill: var(--text-muted); font-size: 12px; }
+    .arr { fill: none; stroke: var(--text-muted); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+    .dec { fill: var(--surface); stroke: var(--border); }
+    g.c-neutral > rect { fill: var(--surface); stroke: var(--border); }
+    g.c-brand > rect { fill: var(--brand-soft); stroke: var(--brand); }
+    g.c-brand > .th { fill: var(--brand-text); }
+    g.c-brand > .ts { fill: var(--brand-text); }
+  </style>
+  <defs>
+    <marker id="ar-gate" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto">
+      <path d="M1 1 L7 4 L1 7 Z" fill="var(--text-muted)"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="720" height="508" fill="var(--surface)"/>
+
+  <g class="c-neutral">
+    <rect x="250" y="40" width="220" height="40" rx="20"/>
+    <text class="th" x="360" y="65" text-anchor="middle">读命令请求（AT^X?）</text>
+  </g>
+  <path class="arr" d="M360 80 L360 108" marker-end="url(#ar-gate)"/>
+
+  <g class="c-brand">
+    <rect x="200" y="108" width="320" height="56" rx="8"/>
+    <text class="th" x="360" y="132" text-anchor="middle">读命令缓存闸门</text>
+    <text class="ts" x="360" y="151" text-anchor="middle">命中即零 AT；未命中只提交后台采集</text>
+  </g>
+  <path class="arr" d="M360 164 L360 195" marker-end="url(#ar-gate)"/>
+
+  <path class="dec" d="M350.4 196.95 L259.6 225.05 Q250 228 259.6 230.95 L350.4 259.05 Q360 262 369.6 259.05 L460.4 230.95 Q470 228 460.4 225.05 L369.6 196.95 Q360 194 350.4 196.95 Z"/>
+  <text class="th" x="360" y="234" text-anchor="middle">缓存命中？</text>
+
+  <path class="arr" d="M255 228 L135 228 L135 296" marker-end="url(#ar-gate)"/>
+  <path class="arr" d="M360 261 L360 296" marker-end="url(#ar-gate)"/>
+  <path class="arr" d="M465 228 L585 228 L585 296" marker-end="url(#ar-gate)"/>
+
+  <g class="c-neutral">
+    <rect x="40" y="296" width="190" height="68" rx="8"/>
+    <text class="th" x="135" y="324" text-anchor="middle">未过期：直接命中</text>
+    <text class="ts" x="135" y="344" text-anchor="middle">零 AT · µs 级返回</text>
+  </g>
+  <g class="c-neutral">
+    <rect x="265" y="296" width="190" height="68" rx="8"/>
+    <text class="th" x="360" y="324" text-anchor="middle">已过期：返回旧值</text>
+    <text class="ts" x="360" y="344" text-anchor="middle">SWR + 异步后台刷新</text>
+  </g>
+  <g class="c-neutral">
+    <rect x="490" y="296" width="190" height="68" rx="8"/>
+    <text class="th" x="585" y="324" text-anchor="middle">未采集：单飞采集</text>
+    <text class="ts" x="585" y="344" text-anchor="middle">返回占位，完成后推事件</text>
+  </g>
+
+  <line x1="40" y1="400" x2="680" y2="400" stroke="var(--border)" stroke-width="1"/>
+
+  <g class="c-neutral">
+    <rect x="40" y="420" width="640" height="48" rx="8"/>
+    <text class="th" x="360" y="449" text-anchor="middle">写命令（AT^X=…）→ 直通 AT 仲裁器 → tty，不做缓存拦截</text>
+  </g>
+</svg>

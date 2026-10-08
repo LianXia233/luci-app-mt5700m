@@ -35,6 +35,12 @@ WebUI  WebSocket ─────────▶ daemon WS RPC                  �
 依赖方向**向下**。模块绝不会向上触达 `daemon`、
 `transport` 或 `api`；是守护进程把模块接进来，模块不会反过来调用它。
 
+![at-webserver 分层架构](layered-architecture.svg)
+
+上图：单一守护进程持有独占 AT 通道，LuCI（ucode + TCP RPC）与 WebUI
+（React + WebSocket）各自独立接入、零共享；进程内四层自上而下依次为
+接入层、领域模块、调度与状态、设备核心。
+
 ## 3. 模块契约
 
 每个模块都是一个目录，含同样的五个文件外加 `mod.rs`：

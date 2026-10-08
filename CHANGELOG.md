@@ -20,6 +20,17 @@
     `scheduler/gate.rs`、`scheduler/jobs.rs`、`daemon.rs` 中指向已消失文件的
     注释一并更正。
 
+- **补两张架构图（SVG，纯文档新增）**：原文档只有 ASCII 框图，无法直观看出
+  「谁持有 AT 通道」与「读/写路径在哪分流」。新增矢量图并嵌入相应章节，
+  随主题自适应明暗自适应，可无损缩放：
+
+  | 文件 | 内容 | 引用位置 |
+  |:--|:--|:--|
+  | `docs/architecture-v2/layered-architecture.svg` | 分层架构：守护进程独占 AT，LuCI/WebUI 双前端零共享，进程内四层依赖向下 | README「系统拓扑」、`architecture-v2/architecture.md` §2、`async-architecture.md` §2 |
+  | `docs/architecture-v2/read-gate-flow.svg` | 读命令缓存闸门三分支（零 AT / SWR / 单飞采集）与写命令直通对比 | `async-architecture.md` §6 |
+
+  两张图均内联样式、无外部依赖，遵循仓库 LF 约束；纯文档改动，零代码影响。
+
 ---
 
 ## [3.2.0] - 2026-10-08

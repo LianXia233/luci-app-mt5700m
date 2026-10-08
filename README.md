@@ -122,6 +122,8 @@ remaining-work）。
 双前端共用统一后端通道。Rust 后端 `at-webserver` 独占 AT 串口
 （`TIOCEXCL` + 常驻描述符），彻底避免传统工具在 Web 与后台同时调用时的 TTY 串口锁死。
 
+![at-webserver 分层架构](docs/architecture-v2/layered-architecture.svg)
+
 > **v3.0.0 起**：AT 串口由 Rust 后端直接用 termios ioctl 配置
 > （`TCGETS`/`TCSETS`/`TCFLSH`），**不再依赖 BusyBox `stty` applet**
 > （OpenWrt 镜像普遍不内置），并统一 `O_NONBLOCK` + `VMIN=1`/`VTIME=0`。
