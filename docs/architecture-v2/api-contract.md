@@ -49,6 +49,7 @@ API 就是边界。前端只知道路由名和领域 JSON；它们对 AT 命令�
 | `network.syscfg_set` | `{applied: true}` — `{acqorder, band, roam, srvdomain, lteband}` → 七参数的 `AT^SYSCFGEX` 写；已知 acqorder 列表、十六进制 band 掩码以及漫游/服务域取值范围都在这里校验（即 CLI `set-radio-policy` 的规则） |
 | `network.autodial` | `{enable, dialMode, protocol, apn, username, password, authType}` — `^SETAUTODIAL?`；自动拨号关闭时固件会省略 mode，模块改用 `^NDISSTATQRY?` 补齐（`dialMode: 1` = 调制解调器自行拨号）；状态读不到时应答 `{}`，这样只读的拨号页保持它当前显示的内容 |
 | `network.usb_mode` | `{mode}` — `^SETMODE?` |
+| `network.usb_mode_set` | `{applied: true}` — `{mode}` → `AT^SETMODE=<mode>`；0–6 与 8 在这里校验，7（MBIM）保持拒绝（CLI 动词标注的「暂不支持」，页面下拉也从未提供） |
 | `network.interface_cfg` | `{mode, postRoute, dmz: {enabled, host}}` — 一次 `^TDCFG?` 读取同时应答拨号页的两张卡片（过去这条命令要发两次）；`Dmz: not cfg` 即 `enabled: false` |
 | `network.pdp_contexts` | `{contexts: [{cid, type, apn, pdp_addr, active}]}` — `+CGDCONT?` 与 `+CGACT?` 按 cid 连接，只取 cid 1–20（0 是调制解调器自身的上下文） |
 | `network.session` | `{ipv4: {connected, address, gateway, dns}, ipv6: {connected, address, dns}, capability?, mtu?, maximum_down?, maximum_up?, flow: {current_duration, current_tx, current_rx, total_duration, total_tx, total_rx}, sessions: [{cid, apn, ipv4, ipv6, type, ethernet}]}` — 一次聚合 `^NDISSTATQRY?`/`^DHCP?`/`^DHCPV6?`/`^IPV6CAP?`/`^DSFLOWQRY`/`^CGMTU=1`/`+CGPADDR`/`^DCONNSTAT?`（十六进制小端解码发生在这里，而不是页面里）；满 9 字段的 NDIS 应答由它判定连通，固件空应答退回「有没有地址」；整份不可用时返回 `null`，页面渲染为空卡。概览页的「移动 IP」卡与连接页的会话面板同读这一条 |
@@ -61,6 +62,7 @@ API 就是边界。前端只知道路由名和领域 JSON；它们对 AT 命令�
 | `network.direct_ip_set` | `{applied: true}` — `{enabled}` → `AT^SETDIRECTIP=<0\|1>` |
 | `network.postroute_set` | `{applied, filterCleared}` — `{mode: 1\|2}` → `AT^TDCFG="infcfg","PostRoute",<mode>`；mode=1 追加 `AT^IPFILTERSWITCH=0`（两笔串行，首笔失败即止） |
 | `network.dmz_set` | `{applied: true}` — `{host}` → `AT^TDCFG="infcfg","dmz","<host>"`；`"0"` 即关闭（同一串），四段 IPv4 每段 ≤255 且禁止空段在这里校验 |
+| `network.interface_mode_set` | `{applied: true}` — `{mode: 1\|2}` → `AT^TDCFG="infcfg","mode",<mode>`；取值白名单在这里校验（构造器 `tdcfg_mode`，与 `tdcfg_postroute` 同款） |
 | `network.schedule_get` | `{enabled, check_interval, timeout, unlock_lte, unlock_nr, toggle_airplane, night: {enabled, start, end, lte, nr}, day: {enabled, lte, nr}, status: {current_mode, next_switch, switch_count, applied}}` — 来自 UCI 的昼夜频段锁定配置（`schedule_*`），带类型且已嵌套，外加 applier 的实时状态。不访问调制解调器，因此即使调制解调器已死也能应答 |
 | `network.schedule_set` | `{applied: true}` — 校验（HH:MM 时间窗、interval ≥10 s、timeout ≥30 s、锁类型 0–3）后写 `uci set at-webserver.config.schedule_*` + `commit`；applier 每 15 s 重读。`enabled`（LuCI 总开关）与 `status` 在此只读，因此没有调用方能把自己锁在该功能之外 |
 | `cell.neighbors` | `{cells: [{type, arfcn, pci, rsrp, rsrq, sinr, rxlev, band}]}` — 按需 `AT^MONNC`；十六进制 PCI 转十进制、NR 的 1/8 单位换算、"no measurement" 哨兵值（255/32767/-1256/-348/-188，被丢弃因此字段缺失）以及 ARFCN→band 编号全部在这里。`band` 来自 `core::radio::arfcn_to_band`，即后端唯一的频段表；`band` 缺失意味着该 ARFCN 落在所有已列频段之外 |

@@ -640,3 +640,52 @@ CLI argv、新侧断言路由名 + params 逐键一致；盲区形态组单独�
 `scripts/smoke-minified-luci.js` 扩到 **38 项**：连接页不喂设置帧、不挂
 `atConnectionSettings` 桩，断言零 CLI + 5 条读路由 + 控件取值来自载荷 +
 三条写入抽样（autodial_set / pdp_set 弹窗 / dmz_set）。`cargo test` **290**。
+
+### 高级设置页：hardware 读帧与六条写入切成 11 条路由（切片，2026-10-08）
+
+`advanced hardware` 的八段读帧与六条 `advanced-set` 写入离开
+`advanced.js`，页面至此**零 CLI**（本页没有拨号表单也没有 FOTA，一次到位）：
+
+- 读：`network.usb_mode` / `network.interface_cfg` / `system.device_control` /
+  `sim.slot` / `system.thermal` 五条路由替换 `api.atHardware()`（`load()` 里
+  进 `Promise.all`）。八段帧里 LED 页面不读，不需要路由；
+  `system.device_control` 一条覆盖 NIC + PCIe 两段。PCIe / PHY / SIM 热插拔 /
+  温控四条写入直接复用系统页批次与 SIM 模块已有的路由
+  （`system.power_control_set` / `system.nic_rate_set` / `sim.hotplug_set` /
+  `system.thermal_set`），本批后端只新增两条：
+  `network.usb_mode_set`（`AT^SETMODE=<mode>`，0–6 与 8 白名单、
+  **7 = MBIM 保持拒绝**）与 `network.interface_mode_set`
+  （`AT^TDCFG="infcfg","mode",<mode>`，构造器 `tdcfg_mode` 与
+  `tdcfg_postroute` 同款 Option 白名单）；`cli.rs` 的对应动词改薄转发。
+- 删除：`api.js` 的 `atHardware` 速记（唯一调用者就是本页）。
+
+三处怪癖在载荷层原样仿制 + 两处**有意修复**（`prove-advanced-parity.js`
+逐字比对覆盖，基线 tag `pre-advanced-route`）：
+
+1. **USB mode 两级 fallback**：旧版 `^SETMODE:` 正则失败后还会找「单独数字
+   行」，再失败默认 `'4'` —— Rust `parse_usb_mode` 同样认无前缀数字行，
+   载荷缺席（`{}`）走同一默认；
+2. **温控短应答**：`^THERMAUTOFUN:` 不足三字段时旧正则不匹配 → 温控默认
+   开 / 2 s —— 载荷层 `enabled`/`interval` 缺席走进同一分支（`enabled:
+   false` 是明确的「关」，不回落）；
+3. **PHY 首字段 0**：`^TDPCIELANCFG: 0,0`（姊妹项目 mock-modem 的实测形态）
+   首字段 0 不在下拉选项集（1|2），两侧同样原样保真 '0'；
+4. **有意修复（不是漂移）**：真实抓包的 TDCFG 应答 `Mode : 1` 冒号前带空格
+   —— 旧正则 `/Mode:\s*(\d+)/` 漏了冒号前的 `\s*`，接口模式控件在真实设备
+   上**永远无选中**（与连接页 PostRoute 同款；姊妹项目 `luci-app-mt5700`
+   两种形态都认）。新链路把值解出来后控件恢复可用 —— prove 盲区组单独
+   点名断言；
+5. **有意修复（不是漂移）**：PCIe 写命令旧 CLI 动词实发四字段
+   `AT^TDPMCFG=<v>,0,0,0`，新路由统一到 `system::commands::tdpmcfg` 的短
+   形态 `AT^TDPMCFG=<v>`（注释声明 modem 两者都收、页面统一短形态，与
+   姊妹项目一致）—— 两条通道同命令不同形态的既有漂移就此收口。
+
+`scripts/prove-advanced-parity.js`（**37 项**）：5 个渲染形态整页逐字比对 +
+七个控件取值断言（Technical details 折叠块抹平后比对，A2 组单独断言块仍在、
+旧倾倒 8 段 AT 帧原文、新倾倒 5 条路由载荷）；数据源组断言旧侧恰一条
+`advanced hardware` 帧、新侧零 CLI 且 5 条路由顺序即 `load()` 的
+`Promise.all`；**六条写路径逐条驱动**，旧侧断言 CLI argv、新侧断言路由名 +
+params 逐键一致。`scripts/smoke-minified-luci.js` 扩到 **45 项**：高级设置页
+不喂 hardware 帧、不挂 atHardware 桩，断言零 CLI + 5 条读路由 + 控件取值 +
+两条写入抽样（usb_mode_set / thermal_set）。`cargo test` **291**（+1
+`tdcfg_mode` 形态测试）。

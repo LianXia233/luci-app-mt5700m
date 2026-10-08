@@ -81,19 +81,51 @@ system.fota`；api.js 的 `atSystem` 速记一并删除。渲染逐字未变：
   三条写入抽样）；
 - `cargo test` **290/290**、`prove-system-parity.js` 回归全绿。
 
+### 第五批：高级设置页（2026-10-08，后端本批 + 前端本批）
+
+**hardware 1 读帧 + 6 写全部迁完，`advanced.js` 至此零 CLI**（本页无拨号
+表单无 FOTA，一次到位）。后端仅新增 `network.usb_mode_set` /
+`network.interface_mode_set` 两条写路由（构造器 `tdcfg_mode` + cli.rs 薄
+转发），PCIe / PHY / SIM 热插拔 / 温控四条复用系统页与 SIM 模块已有路由；
+前端读写双切 + `atHardware` 速记删除。验证：`prove-advanced-parity.js`
+**37 项**（新脚本，基线 tag `pre-advanced-route`；Mode 冒号空格盲区与
+PCIe 写命令短形态两个有意差异组单独点名）、`smoke` 38 → **45 项**、
+`cargo test` 290 → **291**（+1 `tdcfg_mode` 形态测试）。
+
 ---
 
-## 一、LuCI 前端剩余 CLI 调用点：11 处
+## 一、LuCI 前端剩余 CLI 调用点：4 处
 
 | 页面 | 调用点 | 说明 |
 |---|---|---|
-| `advanced.js` | 7 | 1 读帧 + 6 写 |
+| `advanced.js` | 0 | **已清零**（hardware 1 读帧 + 6 写全部迁完，见 1.1） |
 | `connection.js` | 0 | **已清零**（连接设置 1 读帧 + 7 写全部迁完，见第四批） |
 | `system.js` | 3 | **3 条保留写**（FOTA 三步；4 条写入 + 22 段读帧已全部迁完，系统页零 CLI） |
 | `terminal.js` | 1 | **有意保留**：原始 AT 控制台是产品功能本身 |
 | `network.js` / `sms.js` / `status.js` / `settings.js` | 0 | 已清零 |
 
-### 1.1 `advanced.js` — 7 处（1 读 + 6 写）
+### 1.1 `advanced.js` — 0 处（✅ 已清零，2026-10-08；原 1 读 + 6 写）
+
+> 施工图（下方保留）已按条执行：`network.usb_mode_set` /
+> `network.interface_mode_set` 两条写路由本批新增（构造器校验 + cli.rs
+> 薄转发），PCIe/PHY/SIM 热插拔/温控四条直接复用已有路由；前端读写双切 +
+> `atHardware` 速记删除（本批），migration.md 对应切片。
+
+| 位置 | 现状 | 结论 |
+|---|---|---|
+| `atHardware()` 读帧 | 8 段（USB/接口/NIC/PCIe/LED/SIM 热插拔/卡槽/温控） | 除 **LED** 外全部已有路由，缺 `^LEDSWITCH?` 读 |
+| USB 模式写 `AT^SETMODE=` | 只有读路由 | 需后端新增写路由 |
+| PCIe 控制器写 `AT^TDPMCFG=` | `system.power_control_set` 已存在 | ✅ 可直接迁移 |
+| PHY 档位写 `AT^TDPCIELANCFG=` | `system.nic_rate_set` 同命令 | ✅ 可直接迁移 |
+| 接口模式写 `AT^TDCFG="infcfg","mode"` | 只有读 | 需后端新增写路由 |
+| SIM 热插拔写 | `sim.hotplug_set` 已存在 | ✅ 可直接迁移 |
+| 温控写 `AT^THERMAUTOFUN=` | `system.thermal_set` 已存在 | ✅ 可直接迁移 |
+
+**✅ 已执行（2026-10-08）**：读侧 5 条路由（LED 段页面不读，不需要路由；
+`system.device_control` 一条覆盖 NIC + PCIe 两段），写侧 6 条路由
+（`usb_mode_set` / `interface_mode_set` 新增，其余四条复用）；
+`prove-advanced-parity.js` 37 项全绿（含 Mode 冒号空格盲区与 PCIe 写命令
+短形态两个有意差异组，见第五批）；`smoke` 45 项。
 
 | 位置 | 现状 | 结论 |
 |---|---|---|
