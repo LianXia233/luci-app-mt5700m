@@ -48,7 +48,7 @@ return view.extend({
 				if ((operation.value === 'unblock' ? !/^\d{8}$/.test(firstValue) : !/^\d{4,8}$/.test(firstValue)) || ((operation.value === 'change' || operation.value === 'unblock') && !/^\d{4,8}$/.test(secondValue)))
 					return ui.addNotification(null, E('p', {}, _('PIN must contain 4–8 digits; PUK must contain exactly 8 digits.')), 'warning');
 				ui.hideModal();
-				api.at([ 'sim-pin', operation.value, firstValue, secondValue ]).then(function() { window.location.reload(); }, function(err) { ui.addNotification(null, E('p', {}, err.message || String(err)), 'danger'); });
+				api.routeCall('sim.pin_apply', { operation: operation.value, pin: firstValue, newPin: secondValue }).then(function() { window.location.reload(); }, function(err) { ui.addNotification(null, E('p', {}, err.message || String(err)), 'danger'); });
 			} }, _('Apply')) ])
 		]);
 	},
@@ -93,7 +93,7 @@ return view.extend({
 				if (!/^\d{15}$/.test(value) || value === currentImei)
 					return ui.addNotification(null, E('p', {}, _('Enter a different 15-digit IMEI.')), 'warning');
 				ui.hideModal();
-				c.confirmRun(_('Write device identity'), _('This unsupported operation can prevent network registration. Continue only when restoring the identity printed on the module label.'), [ 'set-imei', value ], true);
+				c.confirmRoute(_('Write device identity'), _('This unsupported operation can prevent network registration. Continue only when restoring the identity printed on the module label.'), 'modem.imei_set', { imei: value }, true);
 			} }, _('Review change')) ])
 		]);
 	},
@@ -105,7 +105,7 @@ return view.extend({
 			c.formRow(_('Type RESET to confirm'), confirm),
 			E('div', { 'class': 'right' }, [ E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')), ' ', E('button', { 'class': 'btn cbi-button-negative', 'click': function() {
 				if (confirm.value !== 'RESET') return ui.addNotification(null, E('p', {}, _('Confirmation text does not match.')), 'warning');
-				ui.hideModal(); api.at([ 'factory-reset' ]).then(function() { ui.addNotification(null, E('p', {}, _('Factory reset accepted. The module will restart.'))); }, function(err) { ui.addNotification(null, E('p', {}, err.message || String(err)), 'danger'); });
+				ui.hideModal(); api.routeCall('system.factory_reset').then(function() { ui.addNotification(null, E('p', {}, _('Factory reset accepted. The module will restart.'))); }, function(err) { ui.addNotification(null, E('p', {}, err.message || String(err)), 'danger'); });
 			} }, _('Restore factory settings')) ])
 		]);
 	},
@@ -190,14 +190,14 @@ return view.extend({
 					E('h3', { 'class': 'mt-card-title' }, _('SIM and radio')),
 					E('p', { 'class': 'mt-card-desc' }, _('Daily SIM and radio controls defined by the MT5700M AT command manual.')),
 					c.stateRow(_('Current radio state'), functionLevel === '0' ? _('Airplane mode') : _('Online')),
-					c.actionBar(c.btn(functionLevel === '0' ? _('Resume mobile radio') : _('Enter airplane mode'), function() { c.runConfirmed(_('Change radio function'), functionLevel === '0' ? _('Resume mobile registration and data service?') : _('Airplane mode immediately disconnects mobile data and voice service.'), [ 'airplane', functionLevel === '0' ? '1' : '0' ], functionLevel !== '0'); })),
+					c.actionBar(c.btn(functionLevel === '0' ? _('Resume mobile radio') : _('Enter airplane mode'), function() { c.runConfirmedRoute(_('Change radio function'), functionLevel === '0' ? _('Resume mobile registration and data service?') : _('Airplane mode immediately disconnects mobile data and voice service.'), 'network.radio_set', { airplane: functionLevel !== '0' }, functionLevel !== '0'); })),
 					c.formRow(_('Module status LED'), ledSelect),
 					c.actionBar(c.btn(_('Apply LED setting'), function() { c.confirmRun(_('Module status LED'), _('The LED setting is stored by the module and takes effect after restart.'), [ 'advanced-set', 'led', ledSelect.value ], true); })),
 					c.actionBar(c.btn(_('Manage SIM PIN'), function() { self.showPinManager(sim); })),
 					c.formRow(_('SIM activation'), simEnabled),
 					c.actionBar(c.btn(_('Apply SIM activation'), function() { c.confirmRun(_('SIM activation'), simEnabled.value === '1' ? _('Activate the physical SIM for network registration?') : _('Deactivating the SIM immediately removes mobile service.'), [ 'advanced-set', 'sim-activation', simEnabled.value ], simEnabled.value === '0'); })),
 					c.formRow(_('Active SIM slot'), simSlot),
-					c.actionBar(c.btn(_('Switch SIM slot'), function() { c.confirmRun(_('Switch SIM slot'), _('The MT5700M will detach from the network while changing the physical SIM path.'), [ 'advanced-set', 'sim-slot', simSlot.value ], true); }))
+					c.actionBar(c.btn(_('Switch SIM slot'), function() { c.confirmRoute(_('Switch SIM slot'), _('The MT5700M will detach from the network while changing the physical SIM path.'), 'sim.slot_set', { slot: Number(simSlot.value) }, true); }))
 				])
 			]),
 			E('section', { 'class': 'mt-card', 'style': 'margin-top:14px' }, [
@@ -228,7 +228,7 @@ return view.extend({
 					E('button', { 'class': 'btn cbi-button', 'click': function() { window.location.reload(); } }, _('Refresh status')),
 					E('button', { 'class': 'btn cbi-button', 'disabled': fotaState === '31' ? null : 'disabled', 'click': function() { c.runConfirmed(_('Resume download'), _('Resume the paused firmware download?'), [ 'fota-resume' ], false); } }, _('Resume Download')),
 					E('button', { 'class': 'btn cbi-button-negative', 'disabled': fotaState === '40' ? null : 'disabled', 'click': function() { c.runConfirmed(_('Install firmware'), _('The modem will restart. Do not disconnect power until installation is complete.'), [ 'fota-upgrade' ], true); } }, _('Install update')),
-					E('button', { 'class': 'btn cbi-button-negative', 'click': function() { c.runConfirmed(_('Restart Module'), _('This will restart the MT5700M module and temporarily interrupt 5G connectivity.'), [ 'restart' ], true, 24000); } }, _('Restart Module'))
+					E('button', { 'class': 'btn cbi-button-negative', 'click': function() { c.runConfirmedRoute(_('Restart Module'), _('This will restart the MT5700M module and temporarily interrupt 5G connectivity.'), 'modem.reset', null, true, 24000); } }, _('Restart Module'))
 				])
 			]),
 			c.details(_('Technical details'), null, E('pre', { 'class': 'mt-raw' }, raw || _('No response.')))
