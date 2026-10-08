@@ -143,4 +143,9 @@ jobs:
           node scripts/prove-neighbors-parity.js 663f989
           node scripts/prove-sms-parity.js 812ba41
       - name: Minified LuCI smoke (all pages, zero CLI)
-        run: node scripts/smoke-minified-luci.js
+        run: |
+          # smoke 喂的是压缩树（与发布一致的 minified 代码）；static-checks
+          # job 已验证 minify 脚本本身，这里复用其产物跑行为证明。
+          cp -a luci-app-mt5700m/htdocs /tmp/htdocs-min
+          bash scripts/minify-luci-frontend.sh /tmp/htdocs-min
+          node scripts/smoke-minified-luci.js
