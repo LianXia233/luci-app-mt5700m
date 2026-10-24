@@ -19,6 +19,24 @@
 
 ---
 
+> ## ⚠️ 项目当前状态 · 请先阅读
+>
+> 本项目处于**持续重构与适配阶段**（架构 v2 演进中），**不是稳定发布版**：
+>
+> - **尚未完成 MT5700M 实机全量验证**。后端改动以随附 AT 手册 / 协议文档为准绳，
+>   以单元测试与前端等价证明（`cargo test` 374 passed、10 个 `prove-*-parity.js`、
+>   `smoke-minified-luci.js`、CI `static-checks` + `frontend-proofs`）为验收；
+>   但**未构建发布 IPK、未在真实模组上完成串口 / 拨号 / 短信 / FOTA 联调**。
+> - **可能存在尚未发现的 Bug、遗留代码与兼容性问题**；部分功能、配置或接口仍在
+>   调整，后续可能进行修改或变更（演进项见 [`docs/architecture-v2/`](docs/architecture-v2/)）。
+> - 部分硬件相关能力**有意暂不接线**（如高精度授时 `AT^HPTCFG`：AT 手册 2 参数与
+>   厂商指南 3 参数冲突、须重启生效、与自有 NTP 模块解耦，无真机复验前不实现，
+>   详见 [`docs/at-command-audit.md`](docs/at-command-audit.md)）。
+> - **不建议用于生产环境或关键业务。** 在完成真机验证与充分测试之前，请谨慎使用，
+>   不要将当前代码视为稳定版本。
+
+---
+
 | 属性维度 | 说明与工程规范 |
 |:--|:--|
 | **软件包名** | `luci-app-mt5700m`（单包内嵌 LuCI 前端、独立 WebUI 与 Rust 后端） |
@@ -150,7 +168,7 @@ mt5700webui-openwrt-server/
     state/cache.rs           StateCache（SWR/TTL）
     state/bus.rs             EventBus（主题订阅 / 合并推送）
     core/                    错误模型 / JSON / 运行时 / 任务原语 / 频段表
-    modules/<name>/          11 个领域模块（commands/parser/state/service/api）
+    modules/<name>/          13 个领域模块（commands/parser/state/service/api）
     serial/ · transport/ · api/   串口独占 / 传输层 / 路由 registry
   semi-tcpweb/               WebUI 前端（React + Semi Design）
 docs/async-architecture.md   异步化架构设计
@@ -245,7 +263,7 @@ MT5700M_READ_GATE=0 mt5700m-at command 'AT^DHCP?'
 ## 开发
 
 ```sh
-# 后端测试（292 个用例）
+# 后端测试（374 个用例）
 cd mt5700webui-openwrt-server/at-webserver && cargo test
 
 # WebUI 构建
@@ -270,9 +288,14 @@ RUSTFLAGS="-C linker=<rust-lld> -C linker-flavor=ld.lld" \
 ## 安全声明
 
 - 本项目**不**上传任何 SIM 隐私或遥测数据，全部在本机处理。
-- v3.1.0 的异步化改造与全部验证脚本**未下发任何 IMEI 命令**。
-  ⚠️ WebUI `pages/system/Info.tsx` 仍保留 IMEI 写入入口（连点 5 次隐藏入口），
-  这是**遗留红线隐患**，待移除。
+- 历次改造与全部验证脚本 / 自动化测试**未下发任何 IMEI 写入命令**；IMEI 仅通过
+  只读 `AT+CGSN` 与 `modem` 路由读取。
+- ⚠️ **IMEI 写入入口仍保留（红线，待评估移除）**：WebUI
+  `pages/system/Info.tsx`（连点 5 次的隐藏入口）与 LuCI `view/mt5700m/system.js`
+  均可下发 `modem.imei_set`。两处已加法规 / 高风险二次确认、后端强制 15 位数字校验，
+  但底层 `AT^PHYNUM=IMEI` 属手册未记录的写入命令（见
+  [`docs/at-command-audit.md`](docs/at-command-audit.md) §3），模组不认时按「不支持」
+  明确失败。仍列为主线安全隐患，待决定何时移除。
 
 ## License
 
