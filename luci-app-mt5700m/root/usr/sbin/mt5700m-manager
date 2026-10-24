@@ -6,6 +6,7 @@ STATE_DIR="${MT5700M_MANAGER_STATE:-/var/run/mt5700m}"
 LOG_FILE="${MT5700M_MANAGER_LOG:-/tmp/mt5700m-manager.log}"
 USB_HELPER="${MT5700M_USB_HELPER:-/usr/share/mt5700m/usb.sh}"
 AT_HELPER="${MT5700M_AT_HELPER:-/usr/sbin/mt5700m-at}"
+DNS_SCRIPT="${MT5700M_DNS_SCRIPT:-/usr/share/mt5700m/dns.sh}"
 TEMP_CACHE="${STATE_DIR}/temperature"
 INTERFACE='MT5700M'
 INTERFACE6='MT5700Mv6'
@@ -273,8 +274,26 @@ effective_policy() {
 	esac
 }
 
+apply_dns_config() {
+	local now last
+	[ -x "${DNS_SCRIPT}" ] || return 0
+	if "${DNS_SCRIPT}" apply >/dev/null 2>&1; then
+		rm -f "${STATE_DIR}/dns_error_logged" 2>/dev/null || true
+		return 0
+	fi
+	# The monitor runs every 15 s; a persistent failure must not fill the log.
+	now="$(date +%s 2>/dev/null || echo 0)"
+	last="$(cat "${STATE_DIR}/dns_error_logged" 2>/dev/null || echo 0)"
+	case "${last}" in ''|*[!0-9]*) last=0 ;; esac
+	if [ $((now - last)) -ge 300 ]; then
+		log_message 'DNS apply failed; see /var/run/mt5700m/dns.state'
+		printf '%s\n' "${now}" > "${STATE_DIR}/dns_error_logged" 2>/dev/null || true
+	fi
+	return 1
+}
+
 ensure_network() {
-	local netdev="$1" pdp_type dns current_dns
+	local netdev="$1" pdp_type
 	CONFIG_CHANGED=0
 	FIREWALL_CHANGED=0
 	pdp_type="$(config_value pdp_type ipv4v6)"
@@ -294,19 +313,10 @@ ensure_network() {
 	else
 		set_if_changed "network.${INTERFACE}.proto" 'dhcp'
 	fi
-	dns="$(uci -q get mt5700m.connection.dns_list 2>/dev/null || true)"
-	current_dns="$(uci -q get network.${INTERFACE}.dns 2>/dev/null || true)"
-	if [ -n "${dns}" ]; then
-		set_if_changed "network.${INTERFACE}.peerdns" '0'
-		if [ "${current_dns}" != "${dns}" ]; then
-			delete_if_present "network.${INTERFACE}.dns"
-			for dns in ${dns}; do uci -q add_list "network.${INTERFACE}.dns=${dns}"; done
-			CONFIG_CHANGED=1
-		fi
-	else
-		delete_if_present "network.${INTERFACE}.dns"
-		delete_if_present "network.${INTERFACE}.peerdns"
-	fi
+	# DNS is owned by one place: /usr/share/mt5700m/dns.sh, called below.
+	# The legacy connection.dns_list block that used to live here wrote only
+	# the IPv4 interface and fought the new settings; the migration in
+	# uci-defaults imports it once and the script applies both families.
 
 	if [ "${pdp_type}" = 'ip' ]; then
 		delete_if_present "network.${INTERFACE6}"
@@ -334,6 +344,10 @@ ensure_network() {
 		uci -q commit firewall
 		/etc/init.d/firewall reload >/dev/null 2>&1 || true
 	fi
+	# Re-read the saved DNS settings on every pass and apply them to both
+	# interfaces. The script is idempotent: it only commits/reloads when the
+	# effective values differ, so a healthy tick costs a few UCI reads.
+	apply_dns_config || true
 }
 
 interface_up() {

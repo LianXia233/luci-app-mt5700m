@@ -41,7 +41,7 @@ pub fn refresh(ctx: &RefreshCtx) -> Result<TemperatureState, BackendError> {
     // A missing or busy modem is "no answer this tick", not a failure: the
     // temperature card is on every dashboard and a display route must always
     // answer (see `Route::display`).
-    let text = match ctx.read(CHIPTEMP, AT_TIMEOUT, QUEUED_TIMEOUT, Priority::Low) {
+    let text = match ctx.read(CHIPTEMP, AT_TIMEOUT, QUEUED_TIMEOUT, Priority::Maintenance) {
         Ok(text) => text,
         Err(_) => String::new(),
     };
@@ -78,7 +78,7 @@ pub fn read_device_control(ctx: &RefreshCtx) -> Result<DeviceControlState, Backe
         TDPCIELANCFG_QUERY,
         CTRL_AT_TIMEOUT,
         CTRL_QUEUED_TIMEOUT,
-        Priority::Normal,
+        Priority::Polling,
     ));
     if let Some(text) = nic {
         st.nic_rate = parse_nic_rate(&text);
@@ -87,7 +87,7 @@ pub fn read_device_control(ctx: &RefreshCtx) -> Result<DeviceControlState, Backe
         TDPMCFG_QUERY,
         CTRL_AT_TIMEOUT,
         CTRL_QUEUED_TIMEOUT,
-        Priority::Normal,
+        Priority::Polling,
     ));
     if let Some(text) = power {
         st.power_control = parse_power_control(&text);
@@ -136,7 +136,7 @@ pub fn read_thermal(ctx: &RefreshCtx) -> Result<ThermalState, BackendError> {
         THERMAUTOFUN_QUERY,
         CTRL_AT_TIMEOUT,
         CTRL_QUEUED_TIMEOUT,
-        Priority::Normal,
+        Priority::Polling,
     ));
     if let Some((enabled, ca_mimo, interval)) = fun.as_deref().and_then(parse_thermautofun) {
         st.enabled = Some(enabled);
@@ -147,7 +147,7 @@ pub fn read_thermal(ctx: &RefreshCtx) -> Result<ThermalState, BackendError> {
         THERMLDLOGSW_QUERY,
         CTRL_AT_TIMEOUT,
         CTRL_QUEUED_TIMEOUT,
-        Priority::Normal,
+        Priority::Polling,
     ));
     if let Some((console, file)) = log.as_deref().and_then(parse_thermlogsw) {
         st.console_log = Some(console);
@@ -157,7 +157,7 @@ pub fn read_thermal(ctx: &RefreshCtx) -> Result<ThermalState, BackendError> {
         THERMLDAUTOPARA_QUERY,
         CTRL_AT_TIMEOUT,
         CTRL_QUEUED_TIMEOUT,
-        Priority::Normal,
+        Priority::Polling,
     ));
     if let Some(thresholds) = para.as_deref().and_then(parse_thermthresholds) {
         st.thresholds = thresholds;
@@ -166,7 +166,7 @@ pub fn read_thermal(ctx: &RefreshCtx) -> Result<ThermalState, BackendError> {
         THERMLDAUTOSTATUS_QUERY,
         CTRL_AT_TIMEOUT,
         CTRL_QUEUED_TIMEOUT,
-        Priority::Normal,
+        Priority::Polling,
     ));
     if let Some(level) = status.as_deref().and_then(parse_thermlevel) {
         st.current_level = Some(level);
@@ -210,7 +210,7 @@ pub fn read_led(ctx: &RefreshCtx) -> Result<bool, BackendError> {
         LEDSWITCH_QUERY,
         CTRL_AT_TIMEOUT,
         CTRL_QUEUED_TIMEOUT,
-        Priority::Normal,
+        Priority::Polling,
     )?;
     // Same shape the other on-demand readers report (`^SYSCFGEX?`, `^SETMODE?`,
     // `+CPIN?`): keep the raw frame so the operator sees what came back.
@@ -241,7 +241,7 @@ pub fn read_network_time(ctx: &RefreshCtx) -> Result<String, BackendError> {
         NWTIME_QUERY,
         CTRL_AT_TIMEOUT,
         CTRL_QUEUED_TIMEOUT,
-        Priority::Normal,
+        Priority::Polling,
     )?;
     parse_nwtime(&text).ok_or_else(|| {
         BackendError::AtRejected(format!(
@@ -260,7 +260,7 @@ pub fn read_version(ctx: &RefreshCtx) -> Result<VersionState, BackendError> {
         VERSION_QUERY,
         CTRL_AT_TIMEOUT,
         CTRL_QUEUED_TIMEOUT,
-        Priority::Normal,
+        Priority::Polling,
     )?;
     parse_version(&text).ok_or_else(|| {
         BackendError::AtRejected(format!(
@@ -279,7 +279,7 @@ pub fn read_fota_mode(ctx: &RefreshCtx) -> Result<String, BackendError> {
         FOTAMODE_QUERY,
         CTRL_AT_TIMEOUT,
         CTRL_QUEUED_TIMEOUT,
-        Priority::Normal,
+        Priority::Polling,
     )?;
     parse_fotamode(&text).ok_or_else(|| {
         BackendError::AtRejected(format!(
@@ -322,7 +322,7 @@ pub fn spawn(tasks: &TaskManager) {
         "system.temperature",
         PERIOD,
         crate::modules::IDLE_KEEPALIVE,
-        Priority::Low,
+        Priority::Maintenance,
         Some(Duration::from_secs(15)),
         Box::new(|ctx| run_in_task(ctx, |r| refresh(r).map(|st| st.to_json()))),
     );

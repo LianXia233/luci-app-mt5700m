@@ -403,7 +403,7 @@ fn pdp(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
         CGPADDR,
         Duration::from_secs(8),
         Duration::from_secs(10),
-        crate::core::task::Priority::Interactive,
+        crate::core::task::Priority::Control,
     )?;
     let addresses: Vec<Value> = parse_cgpaddr(&raw).iter().map(|a| a.to_json()).collect();
     let mut m = std::collections::BTreeMap::new();
@@ -418,7 +418,7 @@ fn read_lease(refresh: &RefreshCtx<'_>, command: &str) -> Result<String, Backend
         command,
         Duration::from_secs(8),
         Duration::from_secs(10),
-        Priority::Normal,
+        Priority::Polling,
     )
 }
 

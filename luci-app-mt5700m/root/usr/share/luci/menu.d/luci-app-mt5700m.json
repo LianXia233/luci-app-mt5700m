@@ -45,6 +45,11 @@
 		"order": 50,
 		"action": { "type": "view", "path": "mt5700m/system" }
 	},
+	"admin/modem/mt5700m/time": {
+		"title": "Time & DNS",
+		"order": 55,
+		"action": { "type": "view", "path": "mt5700m/time" }
+	},
 	"admin/modem/mt5700m/terminal": {
 		"action": { "type": "view", "path": "mt5700m/terminal" }
 	},

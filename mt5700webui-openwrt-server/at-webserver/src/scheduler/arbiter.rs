@@ -1,12 +1,19 @@
 //! AT request queue / arbiter — the single choke point to the modem.
 //!
 //! Every AT exchange in the backend (WebSocket command path, LuCI control
-//! socket, background collectors, scans, band-lock scheduler) must go
+//! socket, background collectors, scans, band-lock scheduler, SMS) must go
 //! through this arbiter. It guarantees:
 //!
-//!   * **one command at a time** (single executor thread — no serial
-//!     contention, no interleaved responses),
-//!   * **priority scheduling** (user actions beat background refreshes),
+//!   * **one transaction at a time** — a single executor thread, and a
+//!     response (or a verified safe abort) must finish before the next write;
+//!   * **25 ms wire pacing** — the start of every AT write is separated from
+//!     the previous one by at least [`crate::scheduler::pacer::MIN_SEND_GAP`],
+//!     enforced here and again in the transport (SMS multi-step writes);
+//!   * **strict P0..P4 priority** — SMS (P0), key control (P1), user query
+//!     (P2), routine polling (P3), maintenance (P4);
+//!   * **SMS transaction isolation** — while an SMS transaction is open, only
+//!     P0 requests may start. An in-flight non-SMS transaction is never
+//!     interrupted; the SMS waits for it to reach a safe boundary;
 //!   * **request deduplication** (N identical reads -> 1 AT exchange),
 //!   * **per-request timeout** (a slow AT can never freeze the backend),
 //!   * **queue deadline / backpressure** (requests that wait too long fail
@@ -16,13 +23,17 @@
 //!   * **exclusive access** (scan/flash/reboot own the channel; ordinary
 //!     requests queue and expire cleanly),
 //!   * **cooperative cancellation** (a cancel flag can inject an abort
-//!     token on the wire for interruptible commands like scan).
+//!     token on the wire for interruptible commands like scan),
+//!   * **an audit trail** with id/priority/enqueue/send/finish/result for
+//!     every request (served by `scheduler.audit`).
 
 use crate::core::channel::SmsPart;
 use crate::core::error::BackendError;
-use crate::core::runtime::now_ms;
+use crate::core::runtime::{next_id, now_ms};
 use crate::core::task::Priority;
-use std::collections::{BinaryHeap, HashMap};
+use crate::scheduler::pacer;
+use std::cell::Cell;
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -120,11 +131,11 @@ fn ui_query_timeout(upper: &str) -> Duration {
     let secs: u64 = match base {
         // Fast, well-behaved queries.
         "AT" | "AT+CSQ" | "AT+CEREG?" | "AT+CREG?" | "AT+C5GREG?" | "AT+CPIN?"
-        | "AT+CIMI" | "ATI" | "AT+CGMR" | "AT+CGSN" | "AT^ICCID?" | "AT^SIMSTATE?" => 6,
+        | "AT+CIMI" | "ATI" | "AT+CGMR" | "AT+CGSN" | "AT^ICCID?" | "AT^SIMSQ?" => 6,
         // Signal: ~4 s observed.
         "AT^HCSQ?" | "AT^HCSQ" => 10,
         // Carrier / frequency: ~3.4 s observed.
-        "AT^HFREQINFO?" | "AT^HFREQINFO" | "AT+COPS?" | "AT^COPS?" => 12,
+        "AT^HFREQINFO?" | "AT^HFREQINFO" | "AT+COPS?" => 12,
         // Temperature measured 6.4 s end-to-end under load.
         "AT^CHIPTEMP?" | "AT^CHIPTEMP" => 8,
         // Slow / frequently unsupported: bounded so one page load cannot walk
@@ -169,39 +180,48 @@ pub struct AtRequestSpec {
     pub payload: AtPayload,
     /// Human-readable purpose for logs.
     pub label: String,
+    /// SMS-class request. Set automatically for `AT+CMGS` payloads and for
+    /// any command issued inside an SMS transaction; never set by callers
+    /// that merely want a higher priority.
+    pub sms: bool,
 }
 
 impl AtRequestSpec {
+    fn base(command: &str) -> Self {
+        AtRequestSpec {
+            command: command.to_string(),
+            priority: Priority::UserQuery,
+            timeout: Duration::from_secs(5),
+            queued_timeout: Duration::from_secs(10),
+            exclusive: false,
+            dedup_key: None,
+            retry: RetryPolicy::none(),
+            cancel: None,
+            abort_wire: None,
+            payload: AtPayload::None,
+            label: String::new(),
+            sms: false,
+        }
+    }
+
     /// Fast read-only query (3 s AT timeout, 3 s queue budget, dedup + retry).
     ///
     /// Only safe for commands that genuinely answer inside 3 s. The MT5700M
     /// answers `AT^HCSQ?` in ~4 s and `AT^CHIPTEMP?` in ~6 s, so callers that
     /// may hit those must use [`AtRequestSpec::ui_query`] instead.
     pub fn fast_query(command: &str) -> Self {
-        AtRequestSpec {
-            command: command.to_string(),
-            priority: Priority::High,
-            timeout: Duration::from_secs(3),
-            queued_timeout: Duration::from_secs(3),
-            exclusive: false,
-            dedup_key: Some(command.to_string()),
-            retry: RetryPolicy::queries(),
-            cancel: None,
-            abort_wire: None,
-            payload: AtPayload::None,
-            label: format!("query {}", command),
-        }
+        let mut s = Self::base(command);
+        s.priority = Priority::UserQuery;
+        s.timeout = Duration::from_secs(3);
+        s.queued_timeout = Duration::from_secs(3);
+        s.dedup_key = Some(command.to_string());
+        s.retry = RetryPolicy::queries();
+        s.label = format!("query {}", command);
+        s
     }
 
     /// Read-only query issued on behalf of a *user-visible* page (LuCI or the
     /// WebUI), sized from the MT5700M's measured command latencies.
-    ///
-    /// Why this exists: both frontends read the modem through this one arbiter,
-    /// so a budget that is too small for the modem does not merely fail that one
-    /// read — the request is retried while holding the channel, which starves
-    /// every other consumer (the other frontend included) and is exactly how
-    /// the pages ended up blank. Sizing per command keeps each read inside one
-    /// channel visit.
     ///
     /// Rules, all derived from device measurements:
     ///   * the AT timeout covers the command's *observed* response time with
@@ -214,95 +234,73 @@ impl AtRequestSpec {
     ///     LuCI *and* the WebUI collapse into a single AT exchange.
     pub fn ui_query(command: &str) -> Self {
         let upper = command.trim().to_ascii_uppercase();
-        let timeout = ui_query_timeout(&upper);
-        AtRequestSpec {
-            command: command.to_string(),
-            priority: Priority::High,
-            timeout,
-            queued_timeout: Duration::from_secs(20),
-            exclusive: false,
-            dedup_key: Some(command.to_string()),
-            retry: RetryPolicy::none(),
-            cancel: None,
-            abort_wire: None,
-            payload: AtPayload::None,
-            label: format!("ui query {}", command),
-        }
+        let mut s = Self::base(command);
+        s.priority = Priority::UserQuery;
+        s.timeout = ui_query_timeout(&upper);
+        s.queued_timeout = Duration::from_secs(20);
+        s.dedup_key = Some(command.to_string());
+        s.retry = RetryPolicy::none();
+        s.label = format!("ui query {}", command);
+        s
     }
 
-    /// Interactive user action (5 s AT timeout, 10 s queue budget, no dedup).
+    /// Interactive user action (5 s AT timeout, generous queue budget, no
+    /// dedup). P1: dial/disconnect/radio/recovery and manual writes.
+    ///
+    /// The queue budget covers an SMS transaction ahead of it (SMS is bounded
+    /// to tens of seconds) without dropping the key operation.
     pub fn interactive(command: &str) -> Self {
-        AtRequestSpec {
-            command: command.to_string(),
-            priority: Priority::Interactive,
-            timeout: Duration::from_secs(5),
-            queued_timeout: Duration::from_secs(10),
-            exclusive: false,
-            dedup_key: None,
-            retry: RetryPolicy::none(),
-            cancel: None,
-            abort_wire: None,
-            payload: AtPayload::None,
-            label: format!("action {}", command),
-        }
+        let mut s = Self::base(command);
+        s.priority = Priority::Control;
+        s.timeout = Duration::from_secs(5);
+        s.queued_timeout = Duration::from_secs(60);
+        s.label = format!("control {}", command);
+        s
     }
 
     /// Long-running exclusive operation with abort injection (scan etc.).
     pub fn long_exclusive(command: &str, timeout: Duration, abort_wire: &[u8]) -> Self {
-        AtRequestSpec {
-            command: command.to_string(),
-            priority: Priority::Critical,
-            timeout,
-            queued_timeout: timeout + Duration::from_secs(5),
-            exclusive: true,
-            dedup_key: None,
-            retry: RetryPolicy::none(),
-            cancel: None,
-            abort_wire: Some(abort_wire.to_vec()),
-            payload: AtPayload::None,
-            label: format!("exclusive {}", command),
-        }
+        let mut s = Self::base(command);
+        s.priority = Priority::Control;
+        s.timeout = timeout;
+        s.queued_timeout = timeout + Duration::from_secs(5);
+        s.exclusive = true;
+        s.abort_wire = Some(abort_wire.to_vec());
+        s.label = format!("exclusive {}", command);
+        s
     }
 
-    /// Background refresh query (lowest pressure on the channel).
+    /// Background refresh query (P3 by default; callers may lower it to P4).
     pub fn background(command: &str) -> Self {
-        AtRequestSpec {
-            command: command.to_string(),
-            priority: Priority::Background,
-            timeout: Duration::from_secs(5),
-            queued_timeout: Duration::from_secs(8),
-            exclusive: false,
-            dedup_key: Some(command.to_string()),
-            retry: RetryPolicy::queries(),
-            cancel: None,
-            abort_wire: None,
-            payload: AtPayload::None,
-            label: format!("background {}", command),
-        }
+        let mut s = Self::base(command);
+        s.priority = Priority::Polling;
+        s.timeout = Duration::from_secs(5);
+        s.queued_timeout = Duration::from_secs(8);
+        s.dedup_key = Some(command.to_string());
+        s.retry = RetryPolicy::queries();
+        s.label = format!("background {}", command);
+        s
     }
 
-    /// Interactive SMS send (long timeout; the CMGS transaction can take a
-    /// while on a busy network). The parts are the module's encoded PDUs.
+    /// SMS send: a P0 multi-phase `AT+CMGS` transaction (long timeout; the
+    /// CMGS transaction can take a while on a busy network). The parts are
+    /// the module's encoded PDUs.
     pub fn sms_send(parts: Vec<SmsPart>) -> Self {
-        AtRequestSpec {
-            command: "AT+CMGS".to_string(),
-            priority: Priority::Interactive,
-            timeout: Duration::from_secs(30),
-            queued_timeout: Duration::from_secs(15),
-            exclusive: false,
-            dedup_key: None,
-            retry: RetryPolicy::none(),
-            cancel: None,
-            abort_wire: None,
-            payload: AtPayload::SMS { parts },
-            label: "action sms".to_string(),
-        }
+        let mut s = Self::base("AT+CMGS");
+        s.priority = Priority::Sms;
+        s.timeout = Duration::from_secs(30);
+        s.queued_timeout = Duration::from_secs(15);
+        s.payload = AtPayload::SMS { parts };
+        s.label = "sms send".to_string();
+        s.sms = true;
+        s
     }
 }
 
 pub type AtResult = Result<String, BackendError>;
 
 struct QueuedRequest {
+    id: u64,
     seq: u64,
     spec: AtRequestSpec,
     tx: std::sync::mpsc::SyncSender<AtResult>,
@@ -334,6 +332,14 @@ impl Ord for HeapItem {
     }
 }
 
+/// How long an SMS transaction may pause ordinary traffic before the
+/// dispatcher stops honouring the hold. SMS operations are bounded (each AT
+/// step has a timeout; the whole flow is single-digit to tens of seconds),
+/// so reaching this ceiling means the owner thread is stuck. Ordinary
+/// requests must not be blocked forever: the hold is ignored (and recorded)
+/// while the stuck transaction eventually times out on its own.
+const SMS_HOLD_MAX: Duration = Duration::from_secs(180);
+
 struct QueueState {
     heap: BinaryHeap<HeapItem>,
     /// dedup_key -> waiters sharing the canonical execution.
@@ -342,6 +348,122 @@ struct QueueState {
     exclusive_active: bool,
     seq: u64,
     stop: bool,
+    /// Tokens of open SMS transactions (one per owning thread).
+    sms_tokens: HashSet<u64>,
+    /// Number of open SMS transactions (nested leases share one token).
+    sms_hold_count: usize,
+    sms_hold_started: Option<Instant>,
+    sms_hold_expired_logged: bool,
+}
+
+// The SMS transaction token is bound to the thread that opened it: the SMS
+// service runs synchronously on a route/CLI thread, and marking *every*
+// request submitted while a transaction is open as P0 would let unrelated
+// callers hijack the guard. A thread-local makes ownership explicit without
+// threading a token through every module signature.
+thread_local! {
+    static SMS_TOKEN: Cell<Option<u64>> = Cell::new(None);
+}
+
+fn current_sms_token() -> Option<u64> {
+    SMS_TOKEN.with(|c| c.get())
+}
+
+// ------------------------------------------------------------------ audit
+
+/// One scheduler audit row. Times are Unix milliseconds; `wait_ms` and
+/// `duration_ms` are derived. Served by `scheduler.audit` and used by the
+/// automated 25 ms/priority acceptance tests.
+#[derive(Debug, Clone)]
+pub struct AuditRecord {
+    pub id: u64,
+    pub label: String,
+    pub priority: &'static str,
+    pub priority_label: &'static str,
+    pub sms: bool,
+    pub enqueued_at_ms: u64,
+    pub started_at_ms: Option<u64>,
+    pub finished_at_ms: Option<u64>,
+    pub result: Option<&'static str>,
+    pub error: Option<String>,
+    pub attempts: u32,
+}
+
+impl AuditRecord {
+    pub fn to_json(&self) -> crate::core::json::Value {
+        use crate::core::json::{num_val, str_val, Value};
+        let mut m = std::collections::BTreeMap::new();
+        m.insert("task_id".to_string(), num_val(self.id));
+        m.insert("label".to_string(), str_val(&self.label));
+        m.insert("priority".to_string(), str_val(self.priority));
+        m.insert("priority_class".to_string(), str_val(self.priority_label));
+        m.insert("sms".to_string(), Value::Bool(self.sms));
+        m.insert("enqueued_at".to_string(), num_val(self.enqueued_at_ms));
+        if let Some(t) = self.started_at_ms {
+            m.insert("sent_at".to_string(), num_val(t));
+            m.insert(
+                "wait_ms".to_string(),
+                num_val(t.saturating_sub(self.enqueued_at_ms)),
+            );
+        }
+        if let Some(t) = self.finished_at_ms {
+            m.insert("finished_at".to_string(), num_val(t));
+            if let Some(s) = self.started_at_ms {
+                m.insert("duration_ms".to_string(), num_val(t.saturating_sub(s)));
+            }
+        }
+        if let Some(r) = self.result {
+            m.insert("result".to_string(), str_val(r));
+        }
+        if let Some(e) = &self.error {
+            m.insert("error".to_string(), str_val(e));
+        }
+        m.insert("attempts".to_string(), num_val(self.attempts as i64));
+        Value::Obj(m)
+    }
+}
+
+struct AuditLog {
+    rows: HashMap<u64, AuditRecord>,
+    order: VecDeque<u64>,
+    capacity: usize,
+}
+
+impl AuditLog {
+    fn new(capacity: usize) -> Self {
+        AuditLog {
+            rows: HashMap::new(),
+            order: VecDeque::new(),
+            capacity,
+        }
+    }
+
+    fn insert(&mut self, record: AuditRecord) {
+        if self.order.len() >= self.capacity {
+            if let Some(old) = self.order.pop_front() {
+                self.rows.remove(&old);
+            }
+        }
+        self.order.push_back(record.id);
+        self.rows.insert(record.id, record);
+    }
+
+    fn update<F: FnOnce(&mut AuditRecord)>(&mut self, id: u64, f: F) {
+        if let Some(r) = self.rows.get_mut(&id) {
+            f(r);
+        }
+    }
+
+    fn snapshot(&self, limit: usize) -> crate::core::json::Value {
+        use crate::core::json::Value;
+        let mut out = Vec::new();
+        for id in self.order.iter().rev().take(limit) {
+            if let Some(r) = self.rows.get(id) {
+                out.push(r.to_json());
+            }
+        }
+        Value::Arr(out)
+    }
 }
 
 pub struct AtArbiter {
@@ -353,15 +475,12 @@ pub struct AtArbiter {
     busy: AtomicBool,
     transport: Arc<dyn AtTransport>,
     max_queue: usize,
+    audit: Mutex<AuditLog>,
+    /// Total AT transactions started, for diagnostics.
+    executed: AtomicU64,
 }
 
 /// Share of a one-second window that background collectors may occupy.
-///
-/// The remainder is reserved for user traffic from both frontends. Measured
-/// collector demand on this modem sums to well above 100% of the channel, so
-/// an unbounded scheduler starves interactive reads outright; a duty ceiling
-/// converts that starvation into a slightly staler background cache, which
-/// the SWR pages tolerate by design.
 const BACKGROUND_DUTY_LIMIT_PCT: u64 = 60;
 
 /// One-second sliding window over channel occupancy, in milliseconds.
@@ -378,12 +497,6 @@ impl DutyWindow {
         }
     }
 
-    /// Record `ms` of channel occupancy and report whether the window's duty
-    /// cycle has reached [`BACKGROUND_DUTY_LIMIT_PCT`].
-    ///
-    /// The first call only anchors the clock, so a freshly started daemon does
-    /// not read as "infinitely idle" (which would let collectors run flat out
-    /// for the first second).
     fn record_and_check(&self, ms: u64) -> bool {
         let now = now_ms();
         let prev = self.last_tick_ms.load(Ordering::Relaxed);
@@ -392,8 +505,6 @@ impl DutyWindow {
             return false;
         }
         self.busy_ms.fetch_add(ms, Ordering::Relaxed);
-        // Only evaluate once the window is at least a full second wide,
-        // otherwise a burst of fast commands would look like 100% duty.
         let elapsed = now.saturating_sub(prev);
         const WINDOW_MS: u64 = 1000;
         if elapsed < WINDOW_MS {
@@ -409,28 +520,14 @@ impl DutyWindow {
 /// one AT channel per daemon, so occupancy is inherently a global quantity.
 static DUTY: DutyWindow = DutyWindow::new();
 
-/// True when background refresh has consumed more than its share of the
-/// channel recently, i.e. user traffic is being crowded out.
-///
-/// Collectors check this *before* claiming the channel and skip the cycle when
-/// it returns true. Skipping is the right response rather than queueing: a
-/// queued collector still adds latency and can blow its own queue deadline,
-/// and the data it would fetch is background data the pages already hold.
 pub fn channel_budget_exhausted() -> bool {
     DUTY.record_and_check(0)
 }
 
-/// True when user traffic has been rejected under channel pressure. Latched so
-/// collectors can throttle even if the overload was brief.
 pub fn channel_user_starved() -> bool {
     USER_STARVED.load(Ordering::Relaxed)
 }
 
-/// Clear the starvation latch once a user-visible request has been served.
-///
-/// Without this the collectors would throttle forever after a single busy
-/// moment; clearing on the next successful user read lets them resume as soon
-/// as the channel is genuinely free again.
 pub fn clear_channel_starvation() {
     USER_STARVED.store(false, Ordering::Relaxed);
 }
@@ -446,12 +543,18 @@ impl AtArbiter {
                 exclusive_active: false,
                 seq: 0,
                 stop: false,
+                sms_tokens: HashSet::new(),
+                sms_hold_count: 0,
+                sms_hold_started: None,
+                sms_hold_expired_logged: false,
             }),
             cond: Condvar::new(),
             stop: AtomicBool::new(false),
             busy: AtomicBool::new(false),
             transport,
             max_queue: 256,
+            audit: Mutex::new(AuditLog::new(1024)),
+            executed: AtomicU64::new(0),
         });
         let runner = arbiter.clone();
         crate::core::runtime::spawn_thread("at-arbiter", move || runner.executor_loop());
@@ -468,28 +571,133 @@ impl AtArbiter {
         self.cond.notify_all();
     }
 
+    // ---------------------------------------------------------- SMS guard
+
+    /// Open an SMS transaction on the current thread. While it is open the
+    /// dispatcher only starts P0 requests; every request issued by this
+    /// thread is automatically P0/SMS-class. Dropping the returned guard
+    /// closes the transaction and wakes the queue.
+    pub fn sms_transaction(self: &Arc<Self>) -> crate::core::channel::SmsTransaction {
+        // Nested guard: the outer guard owns the hold.
+        if let Some(token) = current_sms_token() {
+            let q = self.queue.lock().unwrap_or_else(|p| p.into_inner());
+            if q.sms_tokens.contains(&token) {
+                return crate::core::channel::SmsTransaction::inactive();
+            }
+        }
+        let token = next_id();
+        {
+            let mut q = self.queue.lock().unwrap_or_else(|p| p.into_inner());
+            q.sms_tokens.insert(token);
+            if q.sms_hold_count == 0 {
+                q.sms_hold_started = Some(Instant::now());
+                q.sms_hold_expired_logged = false;
+            }
+            q.sms_hold_count += 1;
+            let mut audit = self.audit.lock().unwrap_or_else(|p| p.into_inner());
+            audit.insert(AuditRecord {
+                id: token,
+                label: "sms.transaction".into(),
+                priority: Priority::Sms.name(),
+                priority_label: Priority::Sms.label(),
+                sms: true,
+                enqueued_at_ms: now_ms(),
+                started_at_ms: Some(now_ms()),
+                finished_at_ms: None,
+                result: None,
+                error: None,
+                attempts: 0,
+            });
+        }
+        SMS_TOKEN.with(|c| c.set(Some(token)));
+        self.cond.notify_all();
+        let this = self.clone();
+        crate::core::channel::SmsTransaction::new(move || this.end_sms_transaction(token))
+    }
+
+    fn end_sms_transaction(&self, token: u64) {
+        {
+            let mut q = self.queue.lock().unwrap_or_else(|p| p.into_inner());
+            if !q.sms_tokens.remove(&token) {
+                return;
+            }
+            q.sms_hold_count = q.sms_hold_count.saturating_sub(1);
+            if q.sms_hold_count == 0 {
+                q.sms_hold_started = None;
+                q.sms_hold_expired_logged = false;
+            }
+        }
+        if current_sms_token() == Some(token) {
+            SMS_TOKEN.with(|c| c.set(None));
+        }
+        {
+            let mut audit = self.audit.lock().unwrap_or_else(|p| p.into_inner());
+            audit.update(token, |r| {
+                r.finished_at_ms = Some(now_ms());
+                r.result = Some("released");
+            });
+        }
+        self.cond.notify_all();
+    }
+
+    /// True when at least one SMS transaction is open (diagnostics/UI).
+    pub fn sms_hold_active(&self) -> bool {
+        let q = self.queue.lock().unwrap_or_else(|p| p.into_inner());
+        q.sms_hold_count > 0
+    }
+
+    /// Open-transaction age in milliseconds (None when idle).
+    pub fn sms_hold_age_ms(&self) -> Option<u64> {
+        let q = self.queue.lock().unwrap_or_else(|p| p.into_inner());
+        q.sms_hold_started
+            .map(|t| t.elapsed().as_millis() as u64)
+    }
+
+    // ---------------------------------------------------------- submit
+
     /// Submit a request; returns a channel that resolves with the result.
     /// Never blocks the caller beyond a brief mutex acquire.
-    pub fn submit(&self, spec: AtRequestSpec) -> std::sync::mpsc::Receiver<AtResult> {
+    pub fn submit(&self, mut spec: AtRequestSpec) -> std::sync::mpsc::Receiver<AtResult> {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        let mut q = self.queue.lock().unwrap();
 
-        // Backpressure: refuse once the queue is saturated.
-        if q.heap.len() >= self.max_queue && !spec.exclusive {
-            // A *user-visible* request being refused means the background
-            // collectors are overrunning the channel. Latch it so they can
-            // back off; otherwise the page stays blank indefinitely while the
-            // collectors keep winning every arbitration round.
-            if spec.priority.rank() >= crate::core::task::Priority::High.rank() {
+        // SMS class: a CMGS payload is always P0; a command issued inside an
+        // SMS transaction (owner thread) is upgraded to P0 as well and never
+        // deduplicated against ordinary traffic.
+        let sms_owned = matches!(spec.payload, AtPayload::SMS { .. })
+            || current_sms_token()
+                .map(|t| {
+                    self.queue
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .sms_tokens
+                        .contains(&t)
+                })
+                .unwrap_or(false);
+        if sms_owned {
+            spec.priority = Priority::Sms;
+            spec.sms = true;
+            spec.dedup_key = None;
+        }
+
+        let mut q = self.queue.lock().unwrap_or_else(|p| p.into_inner());
+
+        // Backpressure: refuse once the queue is saturated. SMS (P0) is
+        // exempt: it is bounded by its transaction and must not be dropped
+        // behind a backlog of polling.
+        if q.heap.len() >= self.max_queue && !spec.exclusive && !spec.sms {
+            if spec.priority.is_user_visible() {
                 USER_STARVED.store(true, Ordering::Relaxed);
             }
             let _ = tx.send(Err(BackendError::Busy));
             return rx;
         }
 
-        // Exclusive arbitration: only one exclusive request at a time.
+        // Exclusive arbitration: only one exclusive request at a time. A
+        // long exclusive must not start while SMS is pending or a transaction
+        // is open — the SMS would wait behind a scan for minutes.
         if spec.exclusive {
-            if q.exclusive_active {
+            let sms_waiting = q.sms_hold_count > 0 || q.heap.iter().any(|h| h.0.spec.sms);
+            if q.exclusive_active || sms_waiting {
                 let _ = tx.send(Err(BackendError::Busy));
                 return rx;
             }
@@ -497,22 +705,47 @@ impl AtArbiter {
         }
 
         // Deduplication: identical in-flight reads share one execution.
-        if let Some(key) = spec.dedup_key.clone() {
-            if let Some(waiters) = q.dedup.get_mut(&key) {
-                waiters.push(tx);
-                return rx;
+        if !spec.sms {
+            if let Some(key) = spec.dedup_key.clone() {
+                if let Some(waiters) = q.dedup.get_mut(&key) {
+                    waiters.push(tx);
+                    return rx;
+                }
+                q.dedup.insert(key, Vec::new());
             }
-            q.dedup.insert(key, Vec::new());
         }
 
         let seq = q.seq;
         q.seq += 1;
+        let id = next_id();
+        let priority = spec.priority;
+        let sms = spec.sms;
+        let label = spec.label.clone();
         q.heap.push(HeapItem(QueuedRequest {
+            id,
             seq,
             spec,
             tx,
             enqueued_at: Instant::now(),
         }));
+        drop(q);
+
+        {
+            let mut audit = self.audit.lock().unwrap_or_else(|p| p.into_inner());
+            audit.insert(AuditRecord {
+                id,
+                label,
+                priority: priority.name(),
+                priority_label: priority.label(),
+                sms,
+                enqueued_at_ms: now_ms(),
+                started_at_ms: None,
+                finished_at_ms: None,
+                result: None,
+                error: None,
+                attempts: 0,
+            });
+        }
         // Notify the executor; the condvar lives on the arbiter, not in the
         // queue state (the executor waits on the same pair).
         self.cond.notify_one();
@@ -529,59 +762,104 @@ impl AtArbiter {
         self.busy.load(Ordering::SeqCst)
     }
 
+    // ---------------------------------------------------------- executor
+
     fn executor_loop(self: Arc<Self>) {
         loop {
             if self.stop.load(Ordering::SeqCst) {
                 return;
             }
-            // Pop the next request (or wait).
             let item: QueuedRequest = {
-                let mut q = self.queue.lock().unwrap();
+                let mut q = self.queue.lock().unwrap_or_else(|p| p.into_inner());
                 loop {
                     if self.stop.load(Ordering::SeqCst) {
                         return;
                     }
-                    match q.heap.peek() {
-                        None => {
-                            let (guard, _) = self
-                                .cond
-                                .wait_timeout(q, Duration::from_secs(1))
-                                .unwrap();
-                            q = guard;
-                        }
-                        Some(_) => break q.heap.pop().unwrap().0,
+                    let sms_hold = Self::sms_hold_effective(&mut q, &self.audit);
+                    if let Some(req) = pop_ready(&mut q, sms_hold) {
+                        break req;
                     }
+                    let (guard, _) = self
+                        .cond
+                        .wait_timeout(q, Duration::from_millis(100))
+                        .unwrap_or_else(|p| p.into_inner());
+                    q = guard;
                 }
             };
             self.execute(item);
         }
     }
 
+    /// Whether the dispatcher must restrict itself to P0 right now.
+    ///
+    /// A hold older than [`SMS_HOLD_MAX`] is treated as stuck and ignored so
+    /// ordinary traffic cannot be blocked forever. The owner's requests still
+    /// carry their own timeouts, so the stuck transaction terminates on its
+    /// own; this is not a wire abort.
+    fn sms_hold_effective(q: &mut QueueState, audit: &Mutex<AuditLog>) -> bool {
+        if q.sms_hold_count == 0 {
+            return false;
+        }
+        let expired = q
+            .sms_hold_started
+            .map(|t| t.elapsed() > SMS_HOLD_MAX)
+            .unwrap_or(false);
+        if expired && !q.sms_hold_expired_logged {
+            q.sms_hold_expired_logged = true;
+            let mut a = audit.lock().unwrap_or_else(|p| p.into_inner());
+            a.insert(AuditRecord {
+                id: next_id(),
+                label: "sms.hold.expired".into(),
+                priority: Priority::Sms.name(),
+                priority_label: Priority::Sms.label(),
+                sms: true,
+                enqueued_at_ms: now_ms(),
+                started_at_ms: Some(now_ms()),
+                finished_at_ms: Some(now_ms()),
+                result: Some("expired"),
+                error: Some(format!(
+                    "SMS transaction held the channel for more than {}s; ordinary dispatch resumed",
+                    SMS_HOLD_MAX.as_secs()
+                )),
+                attempts: 0,
+            });
+        }
+        !expired
+    }
+
     fn execute(self: &Arc<Self>, req: QueuedRequest) {
         self.busy.store(true, Ordering::SeqCst);
+        self.executed.fetch_add(1, Ordering::Relaxed);
+
         // Fail fast when the caller cancelled while queued.
         if req_cancelled(&req.spec) {
-            self.finish(req, Err(BackendError::TaskCancelled));
+            self.finish(req, Err(BackendError::TaskCancelled), 0);
             return;
         }
 
         // Queue deadline: a request that waited too long is dropped (Busy)
         // so a flood of page refreshes cannot pile up behind a scan.
         if req.enqueued_at.elapsed() > req.spec.queued_timeout {
-            // Same signal as the queue-depth rejection: the channel is
-            // oversubscribed and a user page is being turned away.
-            if req.spec.priority.rank() >= crate::core::task::Priority::High.rank() {
+            if req.spec.priority.is_user_visible() {
                 USER_STARVED.store(true, Ordering::Relaxed);
             }
-            self.finish(req, Err(BackendError::Busy));
+            self.finish(req, Err(BackendError::Busy), 0);
             return;
         }
+
+        self.audit
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .update(req.id, |r| r.started_at_ms = Some(now_ms()));
 
         let started = Instant::now();
         let mut attempts = 0;
         let max = req.spec.retry.max_retries;
         loop {
             attempts += 1;
+            // Contract: at least 25 ms between the starts of any two AT
+            // writes, enforced backend-wide before the transport is called.
+            pacer::wait_turn();
             let result = self.run_once(&req.spec);
             let terminal = result
                 .as_ref()
@@ -589,24 +867,28 @@ impl AtArbiter {
                 .map(|e| !(req.spec.retry.retryable)(e))
                 .unwrap_or(true);
             if terminal || attempts > max {
-                // Charge the channel for every millisecond it was actually
-                // held, retries included. This is what the collectors' duty
-                // budget is measured against.
                 DUTY.record_and_check(started.elapsed().as_millis() as u64);
-                // A served user-visible read proves the channel has room, so
-                // let the collectors resume.
-                if result.is_ok() && req.spec.priority.rank() >= crate::core::task::Priority::High.rank()
-                {
+                if result.is_ok() && req.spec.priority.is_user_visible() {
                     clear_channel_starvation();
                 }
-                self.finish(req, result);
+                let label = if result.is_ok() { "ok" } else { "error" };
+                let error = result.as_ref().err().map(|e| e.message());
+                self.audit
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .update(req.id, |r| {
+                        r.attempts = attempts;
+                        r.result = Some(label);
+                        r.error = error;
+                    });
+                self.finish(req, result, attempts);
                 return;
             }
             // Transient fault: back off, then re-run.
             std::thread::sleep(req.spec.retry.base_backoff);
             if req_cancelled(&req.spec) {
                 DUTY.record_and_check(started.elapsed().as_millis() as u64);
-                self.finish(req, Err(BackendError::TaskCancelled));
+                self.finish(req, Err(BackendError::TaskCancelled), attempts);
                 return;
             }
         }
@@ -638,22 +920,109 @@ impl AtArbiter {
 
     /// Deliver the result to the canonical caller and any dedup waiters,
     /// then clear exclusive/dedup state.
-    fn finish(&self, req: QueuedRequest, result: AtResult) {
+    fn finish(&self, req: QueuedRequest, result: AtResult, attempts: u32) {
         if req.spec.exclusive {
-            let mut q = self.queue.lock().unwrap();
+            let mut q = self.queue.lock().unwrap_or_else(|p| p.into_inner());
             q.exclusive_active = false;
             self.cond.notify_all();
         }
         if let Some(key) = &req.spec.dedup_key {
-            let mut q = self.queue.lock().unwrap();
-            if let Some(waiters) = q.dedup.remove(key) {
-                for w in waiters {
+            let mut q = self.queue.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(waiters) = q.dedup.get_mut(key) {
+                for w in waiters.drain(..) {
                     let _ = w.send(result.clone());
                 }
+                q.dedup.remove(key);
             }
         }
+        self.audit
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .update(req.id, |r| {
+                r.finished_at_ms = Some(now_ms());
+                r.attempts = attempts;
+            });
         let _ = req.tx.send(result);
         self.busy.store(false, Ordering::SeqCst);
+        // A held SMS request may have completed while non-SMS work waits;
+        // wake the dispatcher even though no new request arrived.
+        self.cond.notify_all();
+    }
+
+    // ---------------------------------------------------------- diagnostics
+
+    /// Newest-first audit rows (bounded by `limit`).
+    pub fn audit_json(&self, limit: usize) -> crate::core::json::Value {
+        self.audit
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .snapshot(limit)
+    }
+
+    /// Scheduler metrics for the diagnostics page.
+    pub fn status_json(&self) -> crate::core::json::Value {
+        use crate::core::json::{num_val, str_val, Value};
+        let q = self.queue.lock().unwrap_or_else(|p| p.into_inner());
+        let mut m = std::collections::BTreeMap::new();
+        m.insert("queued".to_string(), num_val(q.heap.len() as i64));
+        m.insert("max_queue".to_string(), num_val(self.max_queue as i64));
+        m.insert("sms_hold".to_string(), Value::Bool(q.sms_hold_count > 0));
+        m.insert("sms_holds".to_string(), num_val(q.sms_hold_count as i64));
+        m.insert(
+            "sms_hold_age_ms".to_string(),
+            match q.sms_hold_started {
+                Some(t) => num_val(t.elapsed().as_millis() as u64),
+                None => Value::Null,
+            },
+        );
+        m.insert(
+            "min_send_gap_ms".to_string(),
+            num_val(pacer::MIN_SEND_GAP.as_millis() as u64),
+        );
+        m.insert(
+            "since_last_send_ms".to_string(),
+            match pacer::global().since_last_ms() {
+                Some(v) => num_val(v),
+                None => Value::Null,
+            },
+        );
+        m.insert(
+            "executed".to_string(),
+            num_val(self.executed.load(Ordering::Relaxed) as i64),
+        );
+        m.insert(
+            "exclusive_active".to_string(),
+            Value::Bool(q.exclusive_active),
+        );
+        m.insert("busy".to_string(), Value::Bool(self.busy()));
+        m.insert(
+            "priority_levels".to_string(),
+            Value::Arr(
+                [Priority::Sms, Priority::Control, Priority::UserQuery, Priority::Polling, Priority::Maintenance]
+                    .iter()
+                    .map(|p| str_val(p.name()))
+                    .collect(),
+            ),
+        );
+        Value::Obj(m)
+    }
+}
+
+/// Pop the next request the dispatcher may start.
+///
+/// While an SMS transaction is open (or a P0 request is already queued), the
+/// top of the heap is the only candidate, and it must be P0. Non-SMS requests
+/// are *not* removed, so they keep their queue deadline and run as soon as
+/// the guard is released.
+fn pop_ready(q: &mut QueueState, sms_hold: bool) -> Option<QueuedRequest> {
+    let sms_pending = q.heap.iter().any(|h| h.0.spec.sms);
+    if sms_hold || sms_pending {
+        match q.heap.peek() {
+            Some(top) if top.0.spec.sms => q.heap.pop().map(|h| h.0),
+            _ => None,
+        }
+    } else {
+        q.heap.pop().map(|h| h.0)
     }
 }
 
@@ -682,6 +1051,8 @@ mod tests {
         connected: bool,
         /// How long an interruptible (exclusive/scan) call blocks before OK.
         interruptible_block: Mutex<Duration>,
+        /// Start timestamps of every send, for pacing/ordering assertions.
+        starts: Mutex<Vec<(String, Instant)>>,
     }
 
     impl FakeTransport {
@@ -692,6 +1063,7 @@ mod tests {
                 calls: Mutex::new(0),
                 connected: true,
                 interruptible_block: Mutex::new(Duration::from_millis(20)),
+                starts: Mutex::new(Vec::new()),
             })
         }
 
@@ -710,14 +1082,25 @@ mod tests {
         fn set_interruptible_block(&self, d: Duration) {
             *self.interruptible_block.lock().unwrap() = d;
         }
+
+        fn start_log(&self) -> Vec<(String, Instant)> {
+            self.starts.lock().unwrap().clone()
+        }
+
+        fn reset_starts(&self) {
+            self.starts.lock().unwrap().clear();
+        }
     }
 
     impl AtTransport for FakeTransport {
         fn send(&self, command: &str, timeout: Duration) -> AtResult {
             *self.calls.lock().unwrap() += 1;
+            self.starts
+                .lock()
+                .unwrap()
+                .push((command.to_string(), Instant::now()));
             let delay = *self.delay.lock().unwrap();
             std::thread::sleep(delay.min(timeout));
-            // A delay at/over the AT timeout means the modem never answered.
             if delay >= timeout {
                 return Err(BackendError::AtTimeout);
             }
@@ -731,12 +1114,16 @@ mod tests {
 
         fn send_interruptible(
             &self,
-            _command: &str,
+            command: &str,
             timeout: Duration,
             cancel: &AtomicBool,
             _abort: Option<&[u8]>,
         ) -> AtResult {
             *self.calls.lock().unwrap() += 1;
+            self.starts
+                .lock()
+                .unwrap()
+                .push((command.to_string(), Instant::now()));
             let block = *self.interruptible_block.lock().unwrap();
             let mut waited = Duration::ZERO;
             let step = Duration::from_millis(5);
@@ -758,6 +1145,17 @@ mod tests {
         fn connected(&self) -> bool {
             self.connected
         }
+
+        fn send_sms_pdu(&self, parts: &[SmsPart]) -> AtResult {
+            *self.calls.lock().unwrap() += 1;
+            self.starts.lock().unwrap().push((
+                format!("SMS:{}", parts.first().map(|p| p.hex.as_str()).unwrap_or("")),
+                Instant::now(),
+            ));
+            let delay = *self.delay.lock().unwrap();
+            std::thread::sleep(delay);
+            Ok("+CMGS: 1\r\nOK".into())
+        }
     }
 
     fn spec_fast(cmd: &str) -> AtRequestSpec {
@@ -769,7 +1167,6 @@ mod tests {
         let t = FakeTransport::new();
         t.set_delay(Duration::from_millis(30));
         let arbiter = AtArbiter::new(t.clone());
-        // 8 identical reads -> exactly one AT exchange
         let mut rxs = Vec::new();
         for _ in 0..8 {
             rxs.push(arbiter.submit(spec_fast("AT+CSQ")));
@@ -784,31 +1181,47 @@ mod tests {
     }
 
     #[test]
+    fn deliver_results_to_all_dedup_waiters() {
+        let t = FakeTransport::new();
+        t.set_delay(Duration::from_millis(5));
+        let arbiter = AtArbiter::new(t.clone());
+        let a = arbiter.submit(spec_fast("AT+CPIN?"));
+        let b = arbiter.submit(spec_fast("AT+CPIN?"));
+        assert_eq!(a.recv_timeout(Duration::from_secs(2)).unwrap().unwrap(), "OK");
+        assert_eq!(b.recv_timeout(Duration::from_secs(2)).unwrap().unwrap(), "OK");
+        arbiter.stop();
+    }
+
+    #[test]
     fn priority_preempts_background() {
         let t = FakeTransport::new();
         t.set_delay(Duration::from_millis(20));
         let arbiter = AtArbiter::new(t.clone());
-        // enqueue a background first, then an interactive — interactive wins
-        let bg = arbiter.submit(AtRequestSpec::background("AT+COPS?"));
-        let hi = arbiter.submit(spec_fast("AT+CSQ"));
-        let _ = hi.recv_timeout(Duration::from_secs(2)).unwrap();
-        let _ = bg.recv_timeout(Duration::from_secs(2)).unwrap();
-        // order of execution: the fast/high request ran first
+        // Hold the channel with one background request so the next two queue.
+        let first = arbiter.submit(AtRequestSpec::background("AT+COPS?"));
+        std::thread::sleep(Duration::from_millis(5));
+        let bg = arbiter.submit(AtRequestSpec::background("AT+CGMR"));
+        let hi = arbiter.submit(AtRequestSpec::interactive("AT+CFUN?"));
+        let _ = hi.recv_timeout(Duration::from_secs(3)).unwrap();
+        let _ = bg.recv_timeout(Duration::from_secs(3)).unwrap();
+        let _ = first.recv_timeout(Duration::from_secs(3)).unwrap();
+        let log = t.start_log();
+        let order: Vec<&str> = log.iter().map(|(c, _)| c.as_str()).collect();
+        let hi_pos = order.iter().position(|c| *c == "AT+CFUN?").unwrap();
+        let bg_pos = order.iter().position(|c| *c == "AT+CGMR").unwrap();
+        assert!(hi_pos < bg_pos, "P1 must run before P3: {:?}", order);
         arbiter.stop();
-        // (ordering asserted implicitly: both complete; executor ran high first)
-        assert!(true);
     }
 
     #[test]
     fn retry_on_timeout_then_success() {
         let t = FakeTransport::new();
-        t.set_delay(Duration::from_secs(5)); // modem never answers in time
+        t.set_delay(Duration::from_secs(5));
         let arbiter = AtArbiter::new(t.clone());
         let mut spec = spec_fast("AT+CSQ");
-        spec.timeout = Duration::from_millis(300); // 3 quick attempts fit the window
+        spec.timeout = Duration::from_millis(300);
         let rx = arbiter.submit(spec);
-        // attempt 1 times out, retried; still times out -> AtTimeout
-        let res = rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        let res = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(matches!(res, Err(BackendError::AtTimeout)));
         assert_eq!(t.call_count(), 3, "2 retries after the first attempt");
         arbiter.stop();
@@ -854,21 +1267,18 @@ mod tests {
     fn queue_deadline_backpressure() {
         let t = FakeTransport::new();
         t.set_delay(Duration::from_millis(5));
-        // Hold the channel with a long exclusive so queued reads expire.
         t.set_interruptible_block(Duration::from_secs(2));
         let arbiter = AtArbiter::new(t.clone());
-        // occupy the channel with a long exclusive
         let _ex = arbiter.submit(AtRequestSpec::long_exclusive(
             "AT^CELLSCAN",
             Duration::from_secs(3),
             b"abcd\r",
         ));
-        std::thread::sleep(Duration::from_millis(30));
-        // a fast query with a tiny queue budget must fail with Busy
+        std::thread::sleep(Duration::from_millis(80));
         let mut spec = spec_fast("AT+CSQ");
         spec.queued_timeout = Duration::from_millis(60);
         let rx = arbiter.submit(spec);
-        let res = rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        let res = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(matches!(res, Err(BackendError::Busy)));
         arbiter.stop();
     }
@@ -878,13 +1288,12 @@ mod tests {
         let t = FakeTransport::new();
         t.set_delay(Duration::from_millis(5));
         let arbiter = AtArbiter::new(t.clone());
-        // block the channel
         let _ex = arbiter.submit(AtRequestSpec::long_exclusive(
             "AT^CELLSCAN",
             Duration::from_secs(1),
             b"abcd\r",
         ));
-        std::thread::sleep(Duration::from_millis(30));
+        std::thread::sleep(Duration::from_millis(80));
         let cancel = Arc::new(AtomicBool::new(true));
         let mut spec = spec_fast("AT+CSQ");
         spec.cancel = Some(cancel);
@@ -897,12 +1306,6 @@ mod tests {
     #[test]
     fn interruptible_aborts_on_cancel() {
         let t = FakeTransport::new();
-        // The task must still be in flight when the cancel flag flips. The
-        // default interruptible block is only 20ms, and the test used to wait
-        // 15ms before cancelling — a 5ms margin that a loaded host (all tests
-        // run in parallel) loses routinely, letting the task complete first and
-        // the assertion fail. Hold the transport long enough that the ordering
-        // is guaranteed rather than lucky.
         t.set_interruptible_block(Duration::from_millis(600));
         let arbiter = AtArbiter::new(t.clone());
         let cancel = Arc::new(AtomicBool::new(false));
@@ -913,14 +1316,167 @@ mod tests {
         );
         spec.cancel = Some(cancel.clone());
         let rx = arbiter.submit(spec);
-        // Let the arbiter actually dispatch the task before cancelling, so the
-        // abort is exercised on the in-flight path rather than the queued one.
-        std::thread::sleep(Duration::from_millis(30));
+        std::thread::sleep(Duration::from_millis(100));
         cancel.store(true, Ordering::SeqCst);
-        // Generous receive window: the abort is polled on the interruptible
-        // tick, so even under load it lands well inside this budget.
         let res = rx.recv_timeout(Duration::from_secs(10)).unwrap();
         assert!(matches!(res, Err(BackendError::TaskCancelled)));
+        arbiter.stop();
+    }
+
+    /// 25 ms contract: start times of consecutive wire writes are at least
+    /// 25 ms apart, including retries.
+    #[test]
+    fn wire_pacing_enforces_25ms_between_sends() {
+        let t = FakeTransport::new();
+        t.set_delay(Duration::from_millis(1));
+        let arbiter = AtArbiter::new(t.clone());
+        std::thread::sleep(Duration::from_millis(50));
+        t.reset_starts();
+        let mut rxs = Vec::new();
+        for i in 0..4 {
+            rxs.push(arbiter.submit(spec_fast(&format!("AT+TEST{}", i))));
+        }
+        for rx in rxs {
+            rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        }
+        let log = t.start_log();
+        assert_eq!(log.len(), 4);
+        for pair in log.windows(2) {
+            let gap = pair[1].1.duration_since(pair[0].1);
+            assert!(
+                gap >= pacer::MIN_SEND_GAP - Duration::from_millis(1),
+                "wire gap {:?} < 25ms between {} and {}",
+                gap,
+                pair[0].0,
+                pair[1].0
+            );
+        }
+        arbiter.stop();
+    }
+
+    /// While an SMS transaction is open, a queued P1 control request must not
+    /// start; dropping the guard releases it. The in-flight SMS request is
+    /// never interrupted.
+    #[test]
+    fn sms_transaction_pauses_non_sms_until_release() {
+        let t = FakeTransport::new();
+        t.set_delay(Duration::from_millis(10));
+        let arbiter = AtArbiter::new(t.clone());
+        let guard = arbiter.sms_transaction();
+
+        // Issued from the guard's thread: upgraded to P0/SMS.
+        let sms = arbiter.submit(AtRequestSpec::ui_query("AT+CMGL=4"));
+        sms.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+
+        // A P1 control request from another thread queues while the guard
+        // is open and must not reach the wire.
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let a2 = arbiter.clone();
+        let control = std::thread::spawn(move || {
+            let rx = a2.submit(AtRequestSpec::interactive("AT+CFUN=1"));
+            started_tx.send(()).unwrap();
+            rx.recv_timeout(Duration::from_secs(5))
+        });
+        // Give the dispatcher time to (incorrectly) start it if it would.
+        std::thread::sleep(Duration::from_millis(120));
+        assert!(
+            !t.start_log().iter().any(|(c, _)| c == "AT+CFUN=1"),
+            "non-SMS request started inside the SMS transaction"
+        );
+
+        drop(guard);
+        let res = control.join().unwrap().unwrap();
+        assert!(res.is_ok());
+        assert!(t.start_log().iter().any(|(c, _)| c == "AT+CFUN=1"));
+        arbiter.stop();
+        let _ = started_rx.try_recv();
+    }
+
+    #[test]
+    fn sms_requests_are_audited_as_p0() {
+        let t = FakeTransport::new();
+        t.set_delay(Duration::from_millis(2));
+        let arbiter = AtArbiter::new(t.clone());
+        {
+            let _guard = arbiter.sms_transaction();
+            let rx = arbiter.submit(AtRequestSpec::ui_query("AT+CMGS=42"));
+            rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+        }
+        let audit = arbiter.audit_json(50);
+        let dump = audit.dump();
+        assert!(dump.contains("\"priority\":\"P0\""));
+        assert!(dump.contains("\"sms\":true"));
+        assert!(dump.contains("\"sent_at\""));
+        assert!(dump.contains("\"finished_at\""));
+        assert!(dump.contains("\"result\":\"ok\""));
+        arbiter.stop();
+    }
+
+    #[test]
+    fn audit_records_priority_enqueue_send_finish() {
+        let t = FakeTransport::new();
+        t.set_delay(Duration::from_millis(2));
+        let arbiter = AtArbiter::new(t.clone());
+        let rx = arbiter.submit(AtRequestSpec::background("AT+CGMR"));
+        rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+        let dump = arbiter.audit_json(10).dump();
+        assert!(dump.contains("\"priority\":\"P3\""));
+        assert!(dump.contains("\"enqueued_at\""));
+        assert!(dump.contains("\"wait_ms\""));
+        assert!(dump.contains("\"duration_ms\""));
+        assert!(dump.contains("\"task_id\""));
+        arbiter.stop();
+    }
+
+    #[test]
+    fn sms_transaction_release_on_drop_clears_hold() {
+        let t = FakeTransport::new();
+        let arbiter = AtArbiter::new(t.clone());
+        {
+            let _guard = arbiter.sms_transaction();
+            assert!(arbiter.sms_hold_active());
+        }
+        assert!(!arbiter.sms_hold_active());
+        // A normal request still runs after the release.
+        let rx = arbiter.submit(spec_fast("AT+CSQ"));
+        assert!(rx.recv_timeout(Duration::from_secs(2)).unwrap().is_ok());
+        arbiter.stop();
+    }
+
+    #[test]
+    fn nested_sms_guard_is_owned_by_outer() {
+        let t = FakeTransport::new();
+        let arbiter = AtArbiter::new(t.clone());
+        {
+            let _outer = arbiter.sms_transaction();
+            {
+                let _inner = arbiter.sms_transaction();
+                assert!(arbiter.sms_hold_active());
+            }
+            assert!(
+                arbiter.sms_hold_active(),
+                "inner guard must not release the outer transaction"
+            );
+        }
+        assert!(!arbiter.sms_hold_active());
+        arbiter.stop();
+    }
+
+    #[test]
+    fn long_exclusive_rejected_while_sms_pending() {
+        let t = FakeTransport::new();
+        t.set_delay(Duration::from_millis(5));
+        let arbiter = AtArbiter::new(t.clone());
+        let _guard = arbiter.sms_transaction();
+        let rx = arbiter.submit(AtRequestSpec::long_exclusive(
+            "AT^CELLSCAN",
+            Duration::from_secs(1),
+            b"abcd\r",
+        ));
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Err(BackendError::Busy)
+        ));
         arbiter.stop();
     }
 }

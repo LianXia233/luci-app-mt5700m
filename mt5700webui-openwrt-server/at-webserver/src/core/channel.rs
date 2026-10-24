@@ -34,6 +34,40 @@ pub struct SmsPart {
     pub hex: String,
 }
 
+/// RAII guard for an SMS transaction.
+///
+/// Opening one (via `AtChannel::begin_sms_transaction`) tells the scheduler
+/// that every AT step of the operation belongs to SMS: commands issued by the
+/// owning thread are upgraded to P0 and non-SMS requests are not started until
+/// the guard is dropped. `Drop` is the single release path, so success,
+/// failure, timeout and cancellation all resume ordinary traffic — there is
+/// no flag a caller can forget to clear.
+pub struct SmsTransaction {
+    release: Option<Box<dyn FnOnce() + Send + 'static>>,
+}
+
+impl SmsTransaction {
+    /// A guard that owns no scheduler state (non-daemon channels, tests).
+    pub fn inactive() -> Self {
+        SmsTransaction { release: None }
+    }
+
+    /// Wrap a scheduler release callback.
+    pub fn new(release: impl FnOnce() + Send + 'static) -> Self {
+        SmsTransaction {
+            release: Some(Box::new(release)),
+        }
+    }
+}
+
+impl Drop for SmsTransaction {
+    fn drop(&mut self) {
+        if let Some(release) = self.release.take() {
+            release();
+        }
+    }
+}
+
 /// Read/write access to the modem, already serialized by the AT scheduler.
 pub trait AtChannel: Send + Sync {
     /// Read-only AT command. Implementations are expected to serve the cached
@@ -64,7 +98,7 @@ pub trait AtChannel: Send + Sync {
         at_timeout: Duration,
         queued_timeout: Duration,
     ) -> Result<String, BackendError> {
-        self.query_prio(command, at_timeout, queued_timeout, Priority::Low)
+        self.query_prio(command, at_timeout, queued_timeout, Priority::Maintenance)
     }
 
     /// Write/action AT command. Bypasses the read cache entirely — a write
@@ -87,6 +121,27 @@ pub trait AtChannel: Send + Sync {
     /// its answer — an out-of-process client has to go through the daemon's
     /// `sms.send` route instead of pretending it can write the tty.
     fn send_sms_pdu(&self, parts: &[SmsPart]) -> Result<String, BackendError>;
+
+    /// Open an SMS transaction. Default: no scheduler state (out-of-process
+    /// client / test channel). The in-daemon channels override it.
+    fn begin_sms_transaction(&self) -> SmsTransaction {
+        SmsTransaction::inactive()
+    }
+
+    /// Scheduler audit trail (`scheduler.audit` route). Default: absent.
+    fn scheduler_audit(&self) -> crate::core::json::Value {
+        crate::core::json::Value::Null
+    }
+
+    /// Scheduler state (`scheduler.status` route). Default: absent.
+    fn scheduler_status(&self) -> crate::core::json::Value {
+        crate::core::json::Value::Null
+    }
+
+    /// Bounded scheduler audit trail (newest first).
+    fn scheduler_audit_with_limit(&self, _limit: usize) -> crate::core::json::Value {
+        self.scheduler_audit()
+    }
 }
 
 /// Normalise a transport result for parsers: a timeout/busy channel means

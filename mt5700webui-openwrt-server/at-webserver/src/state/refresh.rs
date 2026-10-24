@@ -82,9 +82,9 @@ pub struct RefreshCtx<'a> {
     pub bus: &'a Arc<EventBus>,
     /// Cache provenance tag (`snapshot` for collectors, `api` for on-demand).
     pub source: &'static str,
-    /// Priority for `slow()` queries. Periodic collectors set this from their
-    /// task priority (`run_in_task`), so a UI-critical refresh is served first;
-    /// on-demand API reads keep the default `Low`.
+    /// Priority for `slow()` queries. API-originated reads default to P2
+    /// (user query); periodic collectors override it from their task
+    /// priority, so a UI-critical refresh is served first.
     pub priority: Priority,
 }
 
@@ -99,7 +99,7 @@ impl<'a> RefreshCtx<'a> {
             cache,
             bus,
             source: "snapshot",
-            priority: Priority::Low,
+            priority: Priority::UserQuery,
         }
     }
 
@@ -121,14 +121,22 @@ impl<'a> RefreshCtx<'a> {
         self.bus.publish(topic, event, value.clone());
     }
 
-    /// On failure, fall back to the cached value: refresh its TTL and
-    /// re-publish the event so a page never drops to a placeholder because one
-    /// collector tick lost the modem race. Returns Null when the cache is
+    /// On failure, fall back to the cached value: re-publish the last good
+    /// object so a page does not drop to a placeholder because one collector
+    /// tick lost the modem race.
+    ///
+    /// The cache timestamp is deliberately **not** refreshed: re-stamping old
+    /// data would make the SWR layer claim it was just collected. The entry is
+    /// marked `failed` instead, so frontends can render "stale/failed" while
+    /// still showing the last known value. Returns Null when the cache is
     /// empty.
     pub fn stale(&self, topic: &str, event: &str) -> Value {
         match self.cache.get(topic) {
             (Some(Value::Obj(old)), _) => {
-                self.store(topic, event, &Value::Obj(old.clone()));
+                self.cache
+                    .mark_failed(topic, "refresh failed; showing the last known value");
+                self.bus
+                    .publish(topic, event, Value::Obj(old.clone()));
                 Value::Obj(old)
             }
             _ => Value::Null,

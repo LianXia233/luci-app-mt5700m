@@ -429,6 +429,7 @@ return view.extend({
 			return data;
 		}, function(err) {
 			holder.replaceChildren(E('div', { 'class': 'mt-page' }, [
+				c.navTabs('network'),
 				E('div', { 'class': 'alert-message error' }, String(err && err.message || err))
 			]));
 		});
@@ -606,6 +607,7 @@ return view.extend({
 
 		return E('div', { 'class': 'mt-page' }, [
 			c.cssLink(),
+			c.navTabs('network'),
 			// 页面顶部原有的 `alert-message warning`（报 CLI 帧的 stderr）随两处
 			// 文本帧一起删除：本页已无 CLI 调用，取不到数据就是对应控件留空/
 			// 回落默认档，与其它路由消费方一致（见 migration.md 的失败路径说明）。

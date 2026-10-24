@@ -83,7 +83,7 @@ pub fn spawn(tasks: &TaskManager) {
     tasks.add_periodic(
         "cell.refresh",
         PERIOD,
-        Priority::Low,
+        Priority::Maintenance,
         Some(Duration::from_secs(20)),
         Box::new(|ctx| run_in_task(ctx, |r| refresh(r).map(|st| st.to_json()))),
     );

@@ -82,6 +82,23 @@ src/modules/<name>/
 | `traffic` | `traffic`, `netrate` | `traffic.get`, `traffic.cached`, `traffic.netrate`, `traffic.clear`, `traffic.pdcp_report_set` | `^PDCPDATAINFO?`（读 + 写开关）, `^DSFLOWCLR`, interface counters, accounting report |
 | `system` | `temperature` | `system.temperature`, `system.temperature.cached`, `system.device_control`, `system.nic_rate_set`, `system.power_control_set`, `system.factory_reset`, `system.service_mode`, `system.version`, `system.led`, `system.led_set`, `system.network_time`, `system.thermal`, `system.thermal_set`, `system.thermal_thresholds_set`, `system.thermal_log_set`, `system.fota_mode`, `system.fota`, `system.fota_start`, `system.fota_abort` | `^CHIPTEMP?`, `^TDPCIELANCFG`, `^TDPMCFG`, `AT&F`, `^VERSION?`, `^NWTIME?`, `^LEDSWITCH?`, `^THERMAUTOFUN`/`^THERMLDLOGSW`/`^THERMLDAUTOPARA`/`^THERMLDAUTOSTATUS`, `^FOTAMODE?` + FOTA 流程集（`^FOTASTATE?`/`^FOTADLQ`/`^FOTAMODE`/`^FOTAOEMDL`/`^FOTADL`/`^FWUP`，见 `fota.rs`） |
 | `sms` | `sms` | `sms.status`, `sms.storage`, `sms.list`, `sms.send`, `sms.delete`, `sms.clear_all`, `sms.storage_set`, `sms.center_set`, `sms.ims_set`, `sms.analyze`, `sms.ussd_send`, `sms.ussd_cancel` | `+CMGF`/`+CMGL`/`+CMGD`/`+CPMS`/`+CSCA`/`^IMSSWITCH`/`+CUSD` (plus the IMS profile sequence's `+CGDCONT`/`+CEUS`/`+CFUN`) — SMS-SUBMIT PDU encoder and SMS-DELIVER decoder, multipart split/merge, send transaction, USSD codec (`ussd.rs`: GSM 7-bit pack/unpack, `<m>` copy) and the `sms.ussd` push the URC path publishes |
+| `timesync` | `time` | `time.status`, `time.now`, `time.config_get`, `time.config_set`, `time.reset`, `time.apply`, `time.sync` | system NTP provider detection (`chronyd` / `sysntpd` / external `ntpd` / none), `mt5700m.ntp` config, bounded manual sync and last-sync state. Never starts a second clock controller and never touches the AT scheduler |
+| `dns` | `dns` | `dns.status`, `dns.config_get`, `dns.config_set`, `dns.reset`, `dns.apply` | `mt5700m.dns` config and the single apply path `/usr/share/mt5700m/dns.sh` for `network.MT5700M` / `MT5700Mv6` only; saved / applied / verified are separate states |
+
+### 3.1 时间与 DNS
+
+时间与 DNS 都不经过 AT 通道，因此不会占用调度器、不会阻塞 SMS/拨号/按键：
+
+* 时间只通过 `core/time.rs` 读取（`unix` / `unixMs` / 设备时区 / `local`）。
+  `modules/timesync` 只配置和观测系统已有的时钟控制器（`sysntpd` 或
+  `chronyd`），没有系统服务时明确报错而不是另起一个守护进程；未同步状态
+  永远标为不可信。
+* DNS 只有一个写入口 `root/usr/share/mt5700m/dns.sh`，只写
+  `network.MT5700M` / `MT5700Mv6`，不碰全局 DNS、LAN/WAN、DHCP 或路由。
+  init、reload、monitor、connect/redial、USB 热插拔与 procd `ifup` 热插拔
+  都调用同一函数，并在每次调用时重新读取 UCI。
+
+完整状态机、启动入口表和验收点见 [time-dns.md](time-dns.md)。
 
 ## 4. 前端
 

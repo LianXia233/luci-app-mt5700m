@@ -827,6 +827,7 @@ return view.extend({
 			self.refreshDetail(holder, state);
 		}, function(err) {
 			holder.replaceChildren(E('div', { 'class': 'mt-page' }, [
+				c.navTabs('status'),
 				E('div', { 'class': 'alert-message error' }, String(err && err.message || err))
 			]));
 		});
@@ -847,6 +848,7 @@ return view.extend({
 		]);
 		return E('div', { 'class': 'mt-page' }, [
 			c.cssLink(),
+			c.navTabs('status'),
 			this.createRegion(res, viewData, 'alerts'),
 			this.createRegion(res, viewData, 'hero'),
 			this.createRegion(res, viewData, 'facts'),

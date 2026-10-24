@@ -42,7 +42,72 @@ pub fn routes() -> Vec<Route> {
         Route::display("system.fota", fota_state),
         Route::on_demand("system.fota_start", fota_start),
         Route::on_demand("system.fota_abort", fota_abort),
+        // Unified async task observation for all long operations (scan,
+        // FOTA, NTP/DNS apply). Frontends poll/observe by task id instead of
+        // blocking a request thread.
+        Route::display("task.list", task_list),
+        Route::display("task.get", task_get),
+        Route::on_demand("task.cancel", task_cancel),
+        Route::display("scheduler.status", scheduler_status),
+        Route::display("scheduler.audit", scheduler_audit),
     ]
+}
+
+/// `{tasks: [...]}` — newest-first task records.
+fn task_list(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    let tasks = ctx.require_tasks()?;
+    let mut m = std::collections::BTreeMap::new();
+    m.insert(
+        "tasks".to_string(),
+        Value::Arr(tasks.list().iter().map(|r| r.to_json()).collect()),
+    );
+    Ok(Value::Obj(m))
+}
+
+/// `{task: {...}}` — one task record by id.
+fn task_get(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+    let tasks = ctx.require_tasks()?;
+    let id = required_num(params, "task_id")?;
+    if id <= 0 {
+        return Err(BackendError::InvalidParameter("task_id 必须为正整数".into()));
+    }
+    let rec = tasks
+        .get(id as u64)
+        .ok_or_else(|| BackendError::NotFound(format!("task {}", id)))?;
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("task".to_string(), rec.to_json());
+    Ok(Value::Obj(m))
+}
+
+/// `{cancelled: true}` — cooperative cancellation of one task.
+fn task_cancel(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+    let tasks = ctx.require_tasks()?;
+    let id = required_num(params, "task_id")?;
+    if id <= 0 {
+        return Err(BackendError::InvalidParameter("task_id 必须为正整数".into()));
+    }
+    if !tasks.cancel(id as u64) {
+        return Err(BackendError::NotFound(format!("task {}", id)));
+    }
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("cancelled".to_string(), Value::Bool(true));
+    Ok(Value::Obj(m))
+}
+
+/// Scheduler queue/pacer/SMS-hold state (no AT traffic).
+fn scheduler_status(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
+    Ok(ctx.channel.scheduler_status())
+}
+
+/// Newest-first scheduler audit rows: id, priority, enqueue/send/finish,
+/// result, attempts. The 25 ms/priority acceptance tests read this.
+fn scheduler_audit(ctx: &ApiCtx, params: &Value) -> Result<Value, BackendError> {
+    let limit = crate::api::params::num(params, "limit")
+        .unwrap_or(50)
+        .clamp(1, 500) as usize;
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("events".to_string(), ctx.channel.scheduler_audit_with_limit(limit));
+    Ok(Value::Obj(m))
 }
 
 /// Thermal protection settings (`^THERMAUTOFUN?` + the three reports).
@@ -287,8 +352,11 @@ mod tests {
     #[test]
     fn routes_are_named_after_the_module() {
         for route in routes() {
+            // Task/scheduler observation is daemon-wide, not a system-page
+            // feature; everything else must belong to this module.
+            let global = route.name.starts_with("task.") || route.name.starts_with("scheduler.");
             assert!(
-                route.name.starts_with("system."),
+                route.name.starts_with("system.") || global,
                 "unexpected route name: {}",
                 route.name
             );

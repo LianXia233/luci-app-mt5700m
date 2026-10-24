@@ -68,6 +68,7 @@ function makeSandbox() {
   };
   return {
     view: { extend: (o) => o },
+    baseclass: { extend: (o) => o },
     E: E, controls: controls,
     fs: { exec: () => Promise.resolve({ stdout: '', stderr: '' }) },
     dom: { content() {} },
@@ -75,25 +76,47 @@ function makeSandbox() {
     rpc: { declare: () => (() => Promise.resolve({})) },
     _: (s) => s,
     window: { setTimeout: () => 0, location: { reload() {} } },
-    document: {},
+    document: { getElementById: () => null, head: { appendChild() {} } },
     Event: function () {},
     HTMLElement: function () {},
     encodeURIComponent: encodeURIComponent,
-    L: { url: () => '' },
+    L: { url: () => '', resource: (p) => '/luci-static/resources/' + p },
     console: console
   };
 }
 
-function loadView(file) {
-  let src = fs.readFileSync(file, 'utf8').replace(/return view\.extend\(/, 'var __V = view.extend(');
+function loadModule(file, extras, retName) {
+  let src = fs.readFileSync(file, 'utf8');
+  const aliases = [];
+  src = src.replace(/^'require\s+([^']+?)\s+as\s+([A-Za-z_$][\w$]*)';\s*$/gm,
+    (m, mod, name) => { aliases.push(name); return ''; });
+  src = src.replace(/^'require\s+[^']+';\s*$/gm, '');
+  src = src.replace(new RegExp('return\\s+' + retName + '\\.extend\\('), 'var __V = ' + retName + '.extend(');
   const sandbox = makeSandbox();
+  Object.assign(sandbox, extras || {});
+  for (const name of aliases) {
+    if (!(name in sandbox)) throw new Error('missing alias ' + name + ' for ' + file);
+  }
   vm.createContext(sandbox);
   vm.runInContext("String.prototype.format=function(){var a=[this].concat([].slice.call(arguments));var i=0;return (''+a[0]).replace(/%[sd]/g,function(){i++;return i<a.length?a[i]:''});};", sandbox);
   vm.runInContext(src, sandbox, { filename: file });
   return sandbox.__V;
 }
 
-const base = 'htdocs/luci-static/resources/view/mt5700m';
+const resBase = 'htdocs/luci-static/resources';
+const base = resBase + '/view/mt5700m';
+const parser = loadModule(resBase + '/mt5700m/parser.js', {}, 'baseclass');
+const components = loadModule(resBase + '/mt5700m/components.js', {
+  api: { at: () => Promise.resolve({ stdout: '' }), route: () => Promise.resolve(null) },
+  parser: parser
+}, 'baseclass');
+function loadView(file) {
+  return loadModule(file, {
+    parser: parser,
+    c: components,
+    api: { at: () => Promise.resolve({ stdout: '' }), route: () => Promise.resolve(null) }
+  }, 'view');
+}
 const V = loadView(base + '/network.js');
 
 let pass = 0, fail = 0;
@@ -125,11 +148,11 @@ const cases = [
   ['46003', '中国电信'], ['China Mobile', '中国移动'], ['CMCC', '中国移动']
 ];
 cases.forEach(([inp, expect]) => {
-  const r = V.operatorInfo(inp);
+  const r = parser.operatorInfo(inp);
   check('operatorInfo("' + inp + '") -> ' + expect, r.name === expect && !!r.logo,
     'got name=' + r.name + ' logo=' + (r.logo ? 'yes' : 'no'));
 });
-const unk = V.operatorInfo('SomeForeign');
+const unk = parser.operatorInfo('SomeForeign');
 check('operatorInfo unknown -> no logo', unk.logo === null);
 
 // 4) full radioDiagnostics render (SBB + neighbours) must not emit [object HTMLElement]
@@ -153,27 +176,26 @@ check('radioDiagnostics no [object HTMLElement] text',
 check('radioDiagnostics no NON-NODE object to E', !issues.some(i => i.indexOf('NON-NODE') === 0),
   issues.filter(i => i.indexOf('NON-NODE') === 0).join(' | '));
 
-// 5) status.js infoRow passes nodes through and operatorInfo resolves same cases
-const VS = loadView(base + '/status.js');
+// 5) shared stateRow passes nodes through (status page renders through it)
 const sNode = E('strong', {}, 'QCI 9');
-const sRowRes = VS.infoRow('QCI', sNode);
+const sRowRes = components.stateRow('QCI', sNode);
 const sRowTexts = findText(sRowRes);
-check('status.infoRow passes node through (no [object HTMLElement])',
+check('stateRow passes node through (no [object HTMLElement])',
   !sRowTexts.some(t => t.indexOf('[object') === 0),
   'texts=' + JSON.stringify(sRowTexts));
 const sRowNodes = findNodes(sRowRes);
-check('status.infoRow contains original node', sRowNodes.indexOf(sNode) !== -1);
-const sScalar = VS.infoRow('ICCID', '8986001234567890');
-check('status.infoRow scalar shown as text', findText(sScalar).indexOf('8986001234567890') !== -1);
+check('stateRow contains original node', sRowNodes.indexOf(sNode) !== -1);
+const sScalar = components.stateRow('ICCID', '8986001234567890');
+check('stateRow scalar shown as text', findText(sScalar).indexOf('8986001234567890') !== -1);
 [
   ['46000', '中国移动'], ['0,2,,46000,7', '中国移动'], ['46001', '中国联通'],
   ['46003', '中国电信'], ['China Mobile', '中国移动'], ['CMCC', '中国移动']
 ].forEach(([inp, expect]) => {
-  const r = VS.operatorInfo(inp);
-  check('status.operatorInfo("' + inp + '") -> ' + expect, r.name === expect && !!r.logo,
+  const r = parser.operatorInfo(inp);
+  check('parser.operatorInfo("' + inp + '") -> ' + expect, r.name === expect && !!r.logo,
     'got name=' + r.name + ' logo=' + (r.logo ? 'yes' : 'no'));
 });
-check('status.operatorInfo unknown -> no logo', VS.operatorInfo('OtherX').logo === null);
+check('parser.operatorInfo unknown -> no logo', parser.operatorInfo('OtherX').logo === null);
 
 console.log('\nissues array (' + issues.length + '):');
 issues.forEach(i => console.log('  ' + i));

@@ -250,7 +250,7 @@ pub fn spawn(tasks: &TaskManager) {
     tasks.add_periodic(
         "sim.refresh",
         PERIOD,
-        Priority::Background,
+        Priority::Polling,
         Some(Duration::from_secs(15)),
         Box::new(|ctx| run_in_task(ctx, |r| refresh(r).map(|st| st.to_json()))),
     );

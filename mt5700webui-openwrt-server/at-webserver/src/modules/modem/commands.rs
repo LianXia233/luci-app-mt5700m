@@ -19,6 +19,10 @@ pub fn cfun(state: u8) -> String {
 }
 
 /// IMEI write (vendor `^PHYNUM`; the CLI's `set-imei` verb uses the same form).
+///
+/// Not documented in the supplied MT5700M AT manual. Retained only for the
+/// explicitly-labelled identity-restore path; a modem that rejects it returns
+/// `ERROR`, which is surfaced to the caller.
 pub fn phynum_imei(imei: &str) -> String {
     format!("AT^PHYNUM=IMEI,{}", imei)
 }

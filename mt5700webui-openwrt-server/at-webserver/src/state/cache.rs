@@ -22,6 +22,7 @@ pub enum Freshness {
     Fresh,
     Stale,
     Updating,
+    Failed,
     Unavailable,
 }
 
@@ -31,6 +32,7 @@ impl Freshness {
             Freshness::Fresh => "fresh",
             Freshness::Stale => "stale",
             Freshness::Updating => "updating",
+            Freshness::Failed => "failed",
             Freshness::Unavailable => "unavailable",
         }
     }
@@ -41,7 +43,13 @@ pub struct CacheEntry {
     pub value: Value,
     pub source: String,
     pub timestamp: Instant,
+    /// Unix ms at which the value was written (stable across snapshots).
+    pub updated_at_ms: u64,
     pub ttl: Duration,
+    /// Last collection failed. The value (if any) is the previous good one;
+    /// it must not be presented as real-time data.
+    pub failed: bool,
+    pub last_error: Option<String>,
 }
 
 impl CacheEntry {
@@ -50,7 +58,10 @@ impl CacheEntry {
             value,
             source: source.to_string(),
             timestamp: Instant::now(),
+            updated_at_ms: crate::core::runtime::now_ms(),
             ttl,
+            failed: false,
+            last_error: None,
         }
     }
 }
@@ -110,6 +121,7 @@ impl StateCache {
         let entries = self.entries.read().unwrap();
         match entries.get(topic) {
             None => (None, Freshness::Unavailable),
+            Some(e) if e.failed => (Some(e.value.clone()), Freshness::Failed),
             Some(e) if e.timestamp.elapsed() <= e.ttl => (Some(e.value.clone()), Freshness::Fresh),
             Some(e) => (Some(e.value.clone()), Freshness::Stale),
         }
@@ -137,7 +149,10 @@ impl StateCache {
                 value,
                 source: source.to_string(),
                 timestamp: Instant::now(),
+                updated_at_ms: crate::core::runtime::now_ms(),
                 ttl,
+                failed: false,
+                last_error: None,
             },
         );
     }
@@ -150,6 +165,34 @@ impl StateCache {
         if let Some(mut e) = prev {
             e.ttl = Duration::from_millis(50); // very short: refresh lands soon
             entries.insert(topic.to_string(), e);
+        }
+    }
+
+    /// Record a failed collection. The previous value is preserved for SWR
+    /// display, but the entry reports `failed` so no frontend can mistake it
+    /// for current data. With no previous value the topic is still known to
+    /// have failed (never-collected is a different state).
+    pub fn mark_failed(&self, topic: &str, error: &str) {
+        let mut entries = self.entries.write().unwrap();
+        match entries.get_mut(topic) {
+            Some(e) => {
+                e.failed = true;
+                e.last_error = Some(error.to_string());
+            }
+            None => {
+                entries.insert(
+                    topic.to_string(),
+                    CacheEntry {
+                        value: Value::Null,
+                        source: "error".to_string(),
+                        timestamp: Instant::now(),
+                        updated_at_ms: crate::core::runtime::now_ms(),
+                        ttl: Duration::ZERO,
+                        failed: true,
+                        last_error: Some(error.to_string()),
+                    },
+                );
+            }
         }
     }
 
@@ -183,12 +226,36 @@ impl StateCache {
         let entries = self.entries.read().unwrap();
         let mut map = std::collections::BTreeMap::new();
         for (topic, e) in entries.iter() {
-            let fresh = e.timestamp.elapsed() <= e.ttl;
+            let freshness = if e.failed {
+                Freshness::Failed
+            } else if e.timestamp.elapsed() <= e.ttl {
+                Freshness::Fresh
+            } else {
+                Freshness::Stale
+            };
             let mut m = std::collections::BTreeMap::new();
             m.insert("value".to_string(), e.value.clone());
-            m.insert("fresh".to_string(), Value::Bool(fresh));
-            m.insert("age_ms".to_string(), crate::core::json::num_val(e.timestamp.elapsed().as_millis() as u64));
+            m.insert("fresh".to_string(), Value::Bool(freshness == Freshness::Fresh));
+            m.insert(
+                "state".to_string(),
+                crate::core::json::str_val(freshness.name()),
+            );
+            m.insert(
+                "age_ms".to_string(),
+                crate::core::json::num_val(e.timestamp.elapsed().as_millis() as u64),
+            );
+            m.insert(
+                "updated_at".to_string(),
+                crate::core::json::num_val(e.updated_at_ms),
+            );
+            m.insert(
+                "ttl_ms".to_string(),
+                crate::core::json::num_val(e.ttl.as_millis() as u64),
+            );
             m.insert("source".to_string(), crate::core::json::str_val(&e.source));
+            if let Some(err) = &e.last_error {
+                m.insert("error".to_string(), crate::core::json::str_val(err));
+            }
             map.insert(topic.clone(), Value::Obj(m));
         }
         Value::Obj(map)
@@ -246,6 +313,31 @@ mod tests {
         c.set("signal", num(1), "t");
         c.invalidate_all();
         assert_eq!(c.get("signal").1, Freshness::Unavailable);
+    }
+
+    #[test]
+    fn failed_is_distinct_from_never_collected() {
+        let c = StateCache::new();
+        assert_eq!(c.get("signal").1, Freshness::Unavailable);
+        c.mark_failed("signal", "AT timeout");
+        let (v, f) = c.get("signal");
+        assert_eq!(f, Freshness::Failed);
+        assert!(v.is_some());
+        let dump = c.snapshot().dump();
+        assert!(dump.contains("\"state\":\"failed\""));
+        assert!(dump.contains("\"error\":\"AT timeout\""));
+        // A later good write clears the failure.
+        c.set("signal", num(-80), "collector");
+        assert_eq!(c.get("signal").1, Freshness::Fresh);
+    }
+
+    #[test]
+    fn snapshot_has_update_time_and_ttl() {
+        let c = StateCache::new();
+        c.set_ttl("signal", num(1), "test", Duration::from_secs(9));
+        let dump = c.snapshot().dump();
+        assert!(dump.contains("\"updated_at\""));
+        assert!(dump.contains("\"ttl_ms\":9000"));
     }
 
     #[test]

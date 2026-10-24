@@ -405,6 +405,10 @@ pub const CGACT_QUERY: &str = "AT+CGACT?";
 pub const PDP_CID_RANGE: std::ops::Range<u32> = 1..21;
 
 /// Direct-IP passthrough (`^SETDIRECTIP?` / `^SETDIRECTIP=<0|1>`).
+///
+/// Not documented in the supplied MT5700M AT manual; kept as a legacy
+/// vendor command. Callers must treat `ERROR`/no reply as "unsupported" and
+/// disable the control instead of assuming a value.
 pub const SETDIRECTIP_QUERY: &str = "AT^SETDIRECTIP?";
 /// Inbound filter toggle forced off when PostRoute is enabled
 /// (`postroute` CLI verb appends it to the TDCFG write).

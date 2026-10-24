@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Minimal UCI test double for the DNS apply script tests.
+
+State is a JSON object in FAKE_UCI_STATE. Values are strings; list options are
+JSON arrays. It implements exactly the subset the script uses and the output
+shapes real UCI produces (scalars unquoted in `get`, lists space separated).
+"""
+
+import json
+import os
+import sys
+
+PATH = os.environ.get("FAKE_UCI_STATE")
+if not PATH:
+    sys.stderr.write("FAKE_UCI_STATE is not set\n")
+    sys.exit(2)
+
+
+def load():
+    try:
+        with open(PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save(data):
+    tmp = PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=1, sort_keys=True)
+    os.replace(tmp, PATH)
+
+
+def parent(key):
+    return key.rsplit(".", 1)[0] if "." in key else ""
+
+
+def main(argv):
+    args = [a for a in argv[1:] if a != "-q"]
+    if not args:
+        return 1
+    cmd = args[0]
+    data = load()
+
+    if cmd == "get":
+        key = args[1]
+        if key not in data:
+            return 1
+        value = data[key]
+        if isinstance(value, list):
+            print(" ".join(str(v) for v in value))
+        elif isinstance(value, dict):
+            print(" ".join(sorted(value.keys())))
+        else:
+            print(value)
+        return 0
+
+    if cmd == "set":
+        key, value = args[1].split("=", 1)
+        if "." in key:
+            p = parent(key)
+            if p in data and data[p] == "interface":
+                data.setdefault(p, {})
+            data[key] = value
+        else:
+            data[key] = value
+        save(data)
+        return 0
+
+    if cmd == "add_list":
+        key, value = args[1].split("=", 1)
+        current = data.get(key)
+        if not isinstance(current, list):
+            current = [] if current is None else [current]
+        current.append(value)
+        data[key] = current
+        save(data)
+        return 0
+
+    if cmd == "del_list":
+        key, value = args[1].split("=", 1)
+        current = data.get(key)
+        if isinstance(current, list):
+            data[key] = [v for v in current if v != value]
+            save(data)
+        return 0
+
+    if cmd == "delete":
+        key = args[1]
+        for k in [k for k in data if k == key or k.startswith(key + ".")]:
+            del data[k]
+        save(data)
+        return 0
+
+    if cmd == "show":
+        prefix = args[1]
+        found = False
+        for key in sorted(data):
+            if key == prefix or key.startswith(prefix + "."):
+                found = True
+                value = data[key]
+                name = prefix if key == prefix else key
+                if isinstance(value, list):
+                    rendered = " ".join("'%s'" % v for v in value)
+                elif isinstance(value, dict):
+                    rendered = "'%s'" % " ".join(sorted(value.keys()))
+                elif value == "":
+                    rendered = "''"
+                else:
+                    rendered = "'%s'" % value
+                print("%s=%s" % (name, rendered))
+        return 0 if found else 1
+
+    if cmd == "commit":
+        return 0
+
+    sys.stderr.write("fake uci: unsupported command %s\n" % cmd)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

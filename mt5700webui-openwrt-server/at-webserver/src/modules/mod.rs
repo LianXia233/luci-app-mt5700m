@@ -18,6 +18,7 @@ use std::time::Duration;
 pub mod beam;
 pub mod ca;
 pub mod cell;
+pub mod dns;
 pub mod modem;
 pub mod network;
 pub mod qos;
@@ -25,6 +26,7 @@ pub mod signal;
 pub mod sim;
 pub mod sms;
 pub mod system;
+pub mod timesync;
 pub mod traffic;
 
 /// Slow heartbeat cadence for the collectors that must keep running even when
@@ -48,4 +50,7 @@ pub fn spawn_all(tasks: &TaskManager) {
     modem::service::spawn(tasks);
     traffic::service::spawn(tasks);
     system::service::spawn(tasks);
+    // NTP is a system service, not a page feature: this monitor keeps
+    // observing/provider-repairing even while no LuCI page is open.
+    timesync::service::spawn(tasks);
 }

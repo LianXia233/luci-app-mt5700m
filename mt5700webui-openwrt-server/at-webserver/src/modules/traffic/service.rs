@@ -72,14 +72,14 @@ pub fn spawn(tasks: &TaskManager) {
     tasks.add_periodic(
         "traffic.refresh",
         PERIOD,
-        Priority::Low,
+        Priority::Maintenance,
         Some(Duration::from_secs(15)),
         Box::new(|ctx| run_in_task(ctx, |r| refresh(r).map(|st| st.to_json()))),
     );
     tasks.add_periodic(
         "traffic.netrate",
         NETRATE_PERIOD,
-        Priority::Background,
+        Priority::Polling,
         Some(Duration::from_secs(5)),
         Box::new(|ctx| run_in_task(ctx, |r| refresh_netrate(r).map(|st| st.to_json()))),
     );

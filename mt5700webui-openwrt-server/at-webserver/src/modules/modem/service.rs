@@ -88,7 +88,7 @@ pub fn refresh_endc(ctx: &RefreshCtx) -> Result<EndcState, BackendError> {
 /// A page-load diagnostic read: no topic, no polling, no cache — the reply is
 /// only meaningful at the moment the user looks at it.
 pub fn refresh_mcs(ctx: &RefreshCtx, command: &str) -> Result<McsState, BackendError> {
-    let text = ctx.read(command, DIAG_AT_TIMEOUT, DIAG_QUEUED_TIMEOUT, Priority::Normal)?;
+    let text = ctx.read(command, DIAG_AT_TIMEOUT, DIAG_QUEUED_TIMEOUT, Priority::Polling)?;
     Ok(parser::parse_mcs(&text))
 }
 
@@ -146,7 +146,7 @@ pub fn read_nr_capability(ctx: &RefreshCtx) -> Result<NrCapabilityState, Backend
         &commands::nrrccapqry(NRRCCAP_CA),
         DIAG_AT_TIMEOUT,
         DIAG_QUEUED_TIMEOUT,
-        Priority::Normal,
+        Priority::Polling,
     ));
     if let Some(values) = ca.as_deref().and_then(|t| parser::parse_nrrccap(t, NRRCCAP_CA)) {
         st.ca = Some(values.first() == Some(&1));
@@ -155,7 +155,7 @@ pub fn read_nr_capability(ctx: &RefreshCtx) -> Result<NrCapabilityState, Backend
         &commands::nrrccapqry(NRRCCAP_VONR),
         DIAG_AT_TIMEOUT,
         DIAG_QUEUED_TIMEOUT,
-        Priority::Normal,
+        Priority::Polling,
     ));
     if let Some(values) = vonr
         .as_deref()
@@ -167,7 +167,7 @@ pub fn read_nr_capability(ctx: &RefreshCtx) -> Result<NrCapabilityState, Backend
         &commands::nrrccapqry(NRRCCAP_DSS),
         DIAG_AT_TIMEOUT,
         DIAG_QUEUED_TIMEOUT,
-        Priority::Normal,
+        Priority::Polling,
     ));
     if let Some(values) = dss.as_deref().and_then(|t| parser::parse_nrrccap(t, NRRCCAP_DSS)) {
         if values.len() >= 2 {
@@ -234,28 +234,28 @@ pub fn spawn(tasks: &TaskManager) {
     tasks.add_periodic(
         "modem.info",
         Duration::from_secs(60),
-        Priority::Background,
+        Priority::Polling,
         Some(Duration::from_secs(15)),
         Box::new(|ctx| run_in_task(ctx, |r| refresh_info(r).map(|st| st.to_json()))),
     );
     tasks.add_periodic(
         "modem.txpower",
         Duration::from_secs(300),
-        Priority::Low,
+        Priority::Maintenance,
         Some(Duration::from_secs(20)),
         Box::new(|ctx| run_in_task(ctx, |r| refresh_txpower(r).map(|st| st.to_json()))),
     );
     tasks.add_periodic(
         "modem.nr_txpower",
         Duration::from_secs(180),
-        Priority::Low,
+        Priority::Maintenance,
         Some(Duration::from_secs(20)),
         Box::new(|ctx| run_in_task(ctx, |r| refresh_nr_txpower(r).map(|st| st.to_json()))),
     );
     tasks.add_periodic(
         "modem.endc",
         Duration::from_secs(300),
-        Priority::Low,
+        Priority::Maintenance,
         Some(Duration::from_secs(20)),
         Box::new(|ctx| run_in_task(ctx, |r| refresh_endc(r).map(|st| st.to_json()))),
     );

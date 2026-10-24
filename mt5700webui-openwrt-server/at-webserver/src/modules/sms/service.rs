@@ -47,6 +47,9 @@ const DELETE_SETTLE: Duration = Duration::from_millis(1000);
 /// Never fails: a missing or busy modem yields `{enabled: false}`, which the
 /// pages render as "短信未开启" — the same branch their failed raw read took.
 pub fn read_status(ctx: &RefreshCtx) -> SmsSettings {
+    // The whole status snapshot is one SMS transaction: nothing else may
+    // interleave between CMGF/IMSSWITCH/CSCA/CPMS.
+    let _sms = ctx.channel.begin_sms_transaction();
     let mut st = SmsSettings::default();
     if let Ok(text) = ctx.query(CMGF_QUERY) {
         st.enabled = parse_cmgf(&text).is_some();
@@ -65,6 +68,7 @@ pub fn read_status(ctx: &RefreshCtx) -> SmsSettings {
 
 /// `+CPMS?` — the three storage planes.
 pub fn read_storage(ctx: &RefreshCtx) -> Result<SmsStorage, BackendError> {
+    let _sms = ctx.channel.begin_sms_transaction();
     let text = ctx.query(CPMS_QUERY)?;
     Ok(parse_cpms(&text))
 }
@@ -74,6 +78,7 @@ pub fn read_storage(ctx: &RefreshCtx) -> Result<SmsStorage, BackendError> {
 /// Shared by list and send so neither can leave the modem in a mode that
 /// generates invalid PDUs.
 pub fn ensure_pdu_mode(ctx: &RefreshCtx) -> Result<(), BackendError> {
+    let _sms = ctx.channel.begin_sms_transaction();
     let format = ctx.query(CMGF_QUERY).ok().and_then(|t| parse_cmgf(&t));
     if format != Some(0) {
         ctx.action(CMGF_PDU)?;
@@ -87,6 +92,7 @@ pub fn ensure_pdu_mode(ctx: &RefreshCtx) -> Result<(), BackendError> {
 /// read gate cannot answer with an older list. `+CMGL` replies with `OK` and no
 /// headers when the store is empty, which is an empty list, not an error.
 pub fn list(ctx: &RefreshCtx) -> Result<Vec<SmsMessage>, BackendError> {
+    let _sms = ctx.channel.begin_sms_transaction();
     ensure_pdu_mode(ctx)?;
     let raw = ctx.action(CMGL_ALL)?;
     Ok(parse_cmgl(&raw))
@@ -116,6 +122,7 @@ pub fn normalize_destination(target: &str) -> Option<String> {
 /// failure carries the transport's message (which already names the failing
 /// part when the message was split).
 pub fn send(ctx: &RefreshCtx, number: &str, text: &str) -> Result<usize, BackendError> {
+    let _sms = ctx.channel.begin_sms_transaction();
     let destination = normalize_destination(number).ok_or_else(|| {
         BackendError::InvalidParameter(format!("短信目标号码无效: {}", number))
     })?;
@@ -140,6 +147,7 @@ pub fn send(ctx: &RefreshCtx, number: &str, text: &str) -> Result<usize, Backend
 
 /// `+CMGD=<index>` — delete one stored message.
 pub fn delete(ctx: &RefreshCtx, index: i64) -> Result<(), BackendError> {
+    let _sms = ctx.channel.begin_sms_transaction();
     if index < 0 {
         return Err(BackendError::InvalidParameter(format!(
             "短信索引无效: {}",
@@ -158,6 +166,7 @@ pub fn delete(ctx: &RefreshCtx, index: i64) -> Result<(), BackendError> {
 /// firmware ignores a delete that arrives while the storage switch is still in
 /// flight. Returns the planes that were cleared.
 pub fn clear_all(ctx: &RefreshCtx) -> Result<Vec<String>, BackendError> {
+    let _sms = ctx.channel.begin_sms_transaction();
     let storage = read_storage(ctx)?;
     let names = storage.names();
     if names.is_empty() {
@@ -186,6 +195,7 @@ pub fn set_storage(
     write: &str,
     receive: &str,
 ) -> Result<(), BackendError> {
+    let _sms = ctx.channel.begin_sms_transaction();
     for name in [read, write, receive] {
         if !commands::valid_storage(name) {
             return Err(BackendError::InvalidParameter(format!(
@@ -202,6 +212,7 @@ pub fn set_storage(
 /// `+CSCA="<number>"` — set the service centre the modem uses when the PDU
 /// carries no SMSC prefix.
 pub fn set_center(ctx: &RefreshCtx, number: &str) -> Result<(), BackendError> {
+    let _sms = ctx.channel.begin_sms_transaction();
     let number = number.trim();
     if number.is_empty() {
         return Err(BackendError::InvalidParameter("短信中心号码不能为空".into()));
@@ -226,6 +237,9 @@ pub fn set_center(ctx: &RefreshCtx, number: &str) -> Result<(), BackendError> {
 /// Synchronous on purpose: the pages show one progress line per step while
 /// they wait, and the whole sequence is ~7 s on the MT5700M.
 pub fn set_ims(ctx: &RefreshCtx, enable: bool) -> Result<(), BackendError> {
+    // CFUN=0 is a modem-wide state: the entire five-step sequence must be one
+    // uninterrupted transaction or the modem can be left with no radio.
+    let _sms = ctx.channel.begin_sms_transaction();
     for step in commands::ims_sequence(enable) {
         ctx.action(&step.command)?;
         if step.delay_ms > 0 {
@@ -243,6 +257,7 @@ pub fn set_ims(ctx: &RefreshCtx, enable: bool) -> Result<(), BackendError> {
 /// the dispatcher already publishes those raw, so the page decodes nothing and
 /// this returns `None` for the caller to fall back to the URC.
 pub fn ussd_send(ctx: &RefreshCtx, code: &str) -> Result<Option<ussd::Reply>, BackendError> {
+    let _sms = ctx.channel.begin_sms_transaction();
     let command = ussd::build_command(code).map_err(BackendError::InvalidParameter)?;
     let raw = ctx.action(&command)?;
     Ok(ussd::parse_reply(&raw))
@@ -250,6 +265,7 @@ pub fn ussd_send(ctx: &RefreshCtx, code: &str) -> Result<Option<ussd::Reply>, Ba
 
 /// `AT+CUSD=2` — release the USSD session (manual 5.21.3, n=2).
 pub fn ussd_cancel(ctx: &RefreshCtx) -> Result<(), BackendError> {
+    let _sms = ctx.channel.begin_sms_transaction();
     ctx.action(ussd::CANCEL)?;
     Ok(())
 }

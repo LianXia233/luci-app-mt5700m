@@ -185,6 +185,7 @@ return view.extend({
 			return data;
 		}, function(err) {
 			holder.replaceChildren(E('div', { 'class': 'mt-page' }, [
+				c.navTabs('sms'),
 				E('div', { 'class': 'alert-message error' }, String(err && err.message || err))
 			]));
 		});
@@ -324,6 +325,7 @@ return view.extend({
 
 		return E('div', { 'class': 'mt-page' }, [
 			c.cssLink(),
+			c.navTabs('sms'),
 			listResult.error ? E('div', { 'class': 'alert-message warning' }, listResult.error) : null,
 			status.error ? E('div', { 'class': 'alert-message warning' }, _('SMS storage information is temporarily unavailable. ') + status.error) : null,
 			c.hero(_('MESSAGING'), _('Messages'), _('Conversations using the SIM installed in the MT5700M.'), [

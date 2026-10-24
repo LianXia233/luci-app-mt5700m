@@ -132,6 +132,14 @@ pub struct AtClient {
     /// thread; drained by command responses and the idle URC monitor.
     rx: Arc<Mutex<VecDeque<u8>>>,
     in_flight: Arc<AtomicBool>,
+    /// Serialises "who owns the reply right now" between a command and the
+    /// idle URC monitor. Held for the whole command so the monitor cannot
+    /// steal a response byte between two of its polls.
+    io_lock: Mutex<()>,
+    /// Sink for unsolicited lines seen *during* a command (the idle monitor
+    /// covers the gaps between commands). Installed by `run` once the event
+    /// bus exists.
+    urc_sink: Mutex<Option<Arc<dyn Fn(&str) + Send + Sync>>>,
     /// Serial device this daemon actually owns, reported back to the CLI so
     /// `status` shows the port in use rather than whatever a fresh scan would
     /// pick. Those can differ: the option driver renumbers ttyUSB* on every
@@ -187,6 +195,8 @@ impl AtClient {
             lock: Mutex::new(stream),
             rx: Arc::new(Mutex::new(VecDeque::new())),
             in_flight: Arc::new(AtomicBool::new(false)),
+            io_lock: Mutex::new(()),
+            urc_sink: Mutex::new(None),
             attached_port,
         });
         client.spawn_reader();
@@ -232,62 +242,153 @@ impl AtClient {
     }
 
 
-    /// Send one SMS-SUBMIT PDU through the persistent stream (two-phase
-    /// `AT+CMGS`). Used by the SMS module's send service through the arbiter, so
-    /// the exclusive serial owner performs the whole transaction.
-    fn send_pdu(&self, length: usize, hex: &str, timeout: u64) -> Result<String, String> {
-        self.in_flight.store(true, Ordering::SeqCst);
-        let mut guard = self.lock.lock().map_err(|_| "client lock poisoned")?;
-        {
-            // 1) PDU mode.
-            if let Err(e) = self.write_locked(&mut guard, b"AT+CMGF=0\r") {
-                self.in_flight.store(false, Ordering::SeqCst);
-                return Err(e);
-            }
-            let step = self.wait_for(&mut guard, timeout, |t| {
-                t.lines().any(|l| l.trim() == "OK")
-            })?;
-            if !self.step_ok(&step) {
-                self.in_flight.store(false, Ordering::SeqCst);
-                return Err(self.text(&step));
-            }
-        }
-        {
-            // 2) CMGS length; wait for the '>' prompt (or an error).
-            let cmd = format!("AT+CMGS={}\r", length);
-            if let Err(e) = self.write_locked(&mut guard, cmd.as_bytes()) {
-                self.in_flight.store(false, Ordering::SeqCst);
-                return Err(e);
-            }
-            let step = self.wait_for(&mut guard, timeout, |t| {
-                t.lines().any(|l| l.trim() == ">")
-                    || has_result(&t)
-            })?;
-            if !self.step_has_prompt(&step) && !self.step_ok(&step) {
-                self.in_flight.store(false, Ordering::SeqCst);
-                return Err(self.text(&step));
-            }
-        }
-        {
-            // 3) Payload + CTRL-Z; expect +CMGS/<mr> then OK.
-            let payload = format!("{}\u{1a}", hex);
-            if let Err(e) = self.write_locked(&mut guard, payload.as_bytes()) {
-                self.in_flight.store(false, Ordering::SeqCst);
-                return Err(e);
-            }
-            let step = self.wait_for(&mut guard, timeout + 10, has_result)?;
-            self.in_flight.store(false, Ordering::SeqCst);
-            if !self.step_ok(&step) {
-                return Err(self.text(&step));
-            }
-            Ok(step)
+    /// Install the sink used for unsolicited lines seen while a command is
+    /// in flight. The idle monitor calls the same sink between commands.
+    fn set_urc_sink(&self, sink: Arc<dyn Fn(&str) + Send + Sync>) {
+        *self.urc_sink.lock().unwrap_or_else(|p| p.into_inner()) = Some(sink);
+    }
+
+    fn publish_urc(&self, line: &str) {
+        let sink = self
+            .urc_sink
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        if let Some(sink) = sink {
+            sink(line);
         }
     }
 
+    /// Split a drained chunk into complete lines. Definite asynchronous URCs
+    /// (`+CMTI`, `RING`, `+CGEV`, ...) are published and removed from the
+    /// command's response so they cannot be mistaken for payload; everything
+    /// else is returned for response classification.
+    ///
+    /// A trailing partial line is kept verbatim: a chunk can end in the
+    /// middle of `+CMTI: "SM",3`, and classifying that half-line as a URC
+    /// would lose data.
+    fn filter_urcs(&self, text: &str) -> String {
+        let mut kept = String::new();
+        let mut rest = text;
+        while let Some(pos) = rest.find('\n') {
+            let (line, tail) = rest.split_at(pos + 1);
+            let t = line.trim();
+            if !t.is_empty() && crate::transport::urc::is_async_urc(t) {
+                self.publish_urc(t);
+            } else {
+                kept.push_str(line);
+            }
+            rest = tail;
+        }
+        kept.push_str(rest);
+        kept
+    }
 
+    /// Drain the reader queue once, publishing URCs and returning the
+    /// remaining (response) text.
+    fn drain_rx(&self) -> String {
+        let raw: Vec<u8> = {
+            let mut rx = self.rx.lock().unwrap_or_else(|p| p.into_inner());
+            rx.drain(..).collect()
+        };
+        let text = String::from_utf8_lossy(&raw).replace('\r', "");
+        self.filter_urcs(&text)
+    }
+
+    /// Send one SMS-SUBMIT PDU through the persistent stream.
+    ///
+    /// The whole three-phase `CMGF`/`CMGS`/PDU exchange is one request on the
+    /// single arbiter thread. If the modem is left in the `>` input prompt by
+    /// a failed write, ESC is sent and the resulting ERROR is drained before
+    /// the channel is returned to the scheduler — otherwise the next normal
+    /// AT command would be typed into the SMS prompt.
+    fn send_pdu(&self, length: usize, hex: &str, timeout: u64) -> Result<String, String> {
+        let _io = self
+            .io_lock
+            .lock()
+            .map_err(|_| "client io lock poisoned")?;
+        self.in_flight.store(true, Ordering::SeqCst);
+        let result = self.send_pdu_locked(length, hex, timeout);
+        self.in_flight.store(false, Ordering::SeqCst);
+        result
+    }
+
+    fn send_pdu_locked(&self, length: usize, hex: &str, timeout: u64) -> Result<String, String> {
+        let _ = self.drain_rx();
+        // 1) PDU mode.
+        self.write_wire(b"AT+CMGF=0\r")?;
+        let step = self.wait_for(timeout, |t| t.lines().any(|l| l.trim() == "OK"))?;
+        if !self.step_ok(&step) {
+            return Err(self.text(&step));
+        }
+
+        // 2) CMGS length; the modem must answer with the '>' prompt.
+        let mut needs_cleanup = false;
+        self.write_wire(format!("AT+CMGS={}\r", length).as_bytes())?;
+        needs_cleanup = true;
+        let step = self.wait_for(timeout, |t| {
+            t.lines().any(|l| l.trim() == ">") || has_result(t)
+        })?;
+        if !self.step_has_prompt(&step) {
+            let err = self.text(&step);
+            if has_result(&step) {
+                needs_cleanup = false;
+            }
+            if needs_cleanup {
+                self.cancel_sms_prompt();
+            }
+            return Err(err);
+        }
+
+        // 3) Payload + CTRL-Z; expect +CMGS/<mr> then OK.
+        let payload = format!("{}\u{1a}", hex);
+        if let Err(e) = self.write_wire(payload.as_bytes()) {
+            self.cancel_sms_prompt();
+            return Err(e);
+        }
+        let step = self.wait_for(timeout + 10, has_result)?;
+        if has_result(&step) {
+            needs_cleanup = false;
+        }
+        if needs_cleanup {
+            self.cancel_sms_prompt();
+        }
+        if !self.step_ok(&step) {
+            return Err(self.text(&step));
+        }
+        Ok(step)
+    }
+
+    /// Leave the SMS input prompt with ESC and drain the modem's reply.
+    fn cancel_sms_prompt(&self) {
+        if let Ok(mut guard) = self.lock.lock() {
+            let _ = self.write_locked(&mut guard, b"\x1b");
+        }
+        let deadline = std::time::Instant::now() + Duration::from_millis(800);
+        while std::time::Instant::now() < deadline {
+            let text = self.drain_rx();
+            if text.lines().any(|l| {
+                let t = l.trim();
+                t == "OK" || t == "ERROR" || t.starts_with("+CMS ERROR:")
+            }) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(40));
+        }
+    }
+
+    fn write_wire(&self, wire: &[u8]) -> Result<(), String> {
+        let mut guard = self.lock.lock().map_err(|_| "client lock poisoned")?;
+        self.write_locked(&mut guard, wire)
+    }
+
+    /// Every physical write goes through the process-wide 25 ms pacer. The
+    /// arbiter paces whole requests; this second check covers the multiple
+    /// writes inside one SMS transaction, and any abort token.
     fn write_locked(&self, guard: &mut std::sync::MutexGuard<'_, Stream>, wire: &[u8]) -> Result<(), String> {
+        crate::scheduler::pacer::wait_turn();
         match &mut **guard {
-            Stream::Serial(f) => f.write_all(wire).map_err(|e| e.to_string()),
+            Stream::Serial(f) => f.write_all(wire).and_then(|_| f.flush()).map_err(|e| e.to_string()),
             Stream::Tcp(s) => s.write_all(wire).and_then(|_| s.flush()).map_err(|e| e.to_string()),
             Stream::None => Err("transport not connected".into()),
         }
@@ -310,22 +411,12 @@ impl AtClient {
     }
 
     /// Poll the shared rx queue until `pred` holds / a result line arrives /
-    /// timeout. Returns the accumulated text.
-    fn wait_for(
-        &self,
-        _guard: &mut std::sync::MutexGuard<'_, Stream>,
-        timeout: u64,
-        pred: impl Fn(&str) -> bool,
-    ) -> Result<String, String> {
+    /// timeout. Returns the accumulated text (URCs already published).
+    fn wait_for(&self, timeout: u64, pred: impl Fn(&str) -> bool) -> Result<String, String> {
         let deadline = std::time::Instant::now() + Duration::from_secs(timeout.max(2));
         let mut acc = String::new();
         loop {
-            let drained: String = {
-                let mut rx = self.rx.lock().unwrap();
-                let out: Vec<u8> = rx.drain(..).collect();
-                String::from_utf8_lossy(&out).replace('\r', "")
-            };
-            acc.push_str(&drained);
+            acc.push_str(&self.drain_rx());
             if pred(&acc) || has_result(&acc) || std::time::Instant::now() >= deadline {
                 break;
             }
@@ -335,26 +426,25 @@ impl AtClient {
     }
 
     fn stream_command(&self, command: &str, timeout: u64) -> Result<String, String> {
+        let _io = self
+            .io_lock
+            .lock()
+            .map_err(|_| "client io lock poisoned")?;
         self.in_flight.store(true, Ordering::SeqCst);
-        // Drain pending input first so stale bytes do not pollute the reply.
-        self.rx.lock().unwrap().clear();
-        {
-            let mut guard = self.lock.lock().map_err(|_| "client lock poisoned")?;
-            let wire = format!("{}\r", command);
-            if let Err(e) = self.write_locked(&mut guard, wire.as_bytes()) {
-                self.in_flight.store(false, Ordering::SeqCst);
-                return Err(e);
-            }
-        }
+        let result = self.stream_command_locked(command, timeout);
+        self.in_flight.store(false, Ordering::SeqCst);
+        result
+    }
+
+    fn stream_command_locked(&self, command: &str, timeout: u64) -> Result<String, String> {
+        // Discard stale response fragments, but publish any URC that arrived
+        // while nobody owned the channel.
+        let _ = self.drain_rx();
+        self.write_wire(format!("{}\r", command).as_bytes())?;
         let deadline = std::time::Instant::now() + Duration::from_secs(timeout.max(2));
         let mut acc = String::new();
         loop {
-            let drained: String = {
-                let mut rx = self.rx.lock().unwrap();
-                let out: Vec<u8> = rx.drain(..).collect();
-                String::from_utf8_lossy(&out).replace('\r', "")
-            };
-            acc.push_str(&drained);
+            acc.push_str(&self.drain_rx());
             let done = acc.lines().any(|l| {
                 let t = l.trim();
                 t == "OK" || t == "ERROR" || t.starts_with("+CME ERROR:") || t.starts_with("+CMS ERROR:")
@@ -364,8 +454,43 @@ impl AtClient {
             }
             thread::sleep(Duration::from_millis(50));
         }
-        self.in_flight.store(false, Ordering::SeqCst);
         Ok(acc)
+    }
+
+    fn send_interruptible_locked(
+        &self,
+        command: &str,
+        timeout: Duration,
+        cancel: &AtomicBool,
+        abort_wire: Option<&[u8]>,
+    ) -> AtResult {
+        let _ = self.drain_rx();
+        self.write_wire(format!("{}\r", command).as_bytes())
+            .map_err(BackendError::TransportError)?;
+        let deadline = std::time::Instant::now() + timeout.max(Duration::from_secs(2));
+        let mut acc = String::new();
+        let mut aborted = false;
+        loop {
+            // Cooperative cancellation: inject the abort token once, then keep
+            // draining until the modem settles (or the deadline expires).
+            if cancel.load(Ordering::SeqCst) && !aborted {
+                aborted = true;
+                if let Some(wire) = abort_wire {
+                    let _ = self.write_wire(&[wire, b"\r"].concat());
+                }
+            }
+            acc.push_str(&self.drain_rx());
+            let done = has_result(&acc);
+            let timed_out = std::time::Instant::now() >= deadline;
+            if done || timed_out {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        if aborted {
+            return Err(BackendError::TaskCancelled);
+        }
+        classify_response(&acc)
     }
 }
 
@@ -396,52 +521,14 @@ impl AtTransport for AtClient {
         cancel: &AtomicBool,
         abort_wire: Option<&[u8]>,
     ) -> AtResult {
+        let _io = self
+            .io_lock
+            .lock()
+            .map_err(|_| BackendError::TransportError("client io lock poisoned".into()))?;
         self.in_flight.store(true, Ordering::SeqCst);
-        // Drain pending input first so stale bytes do not pollute the reply.
-        self.rx.lock().unwrap().clear();
-        {
-            let mut guard = self
-                .lock
-                .lock()
-                .map_err(|_| BackendError::TransportError("client lock poisoned".into()))?;
-            let wire = format!("{}\r", command);
-            if let Err(e) = self.write_locked(&mut guard, wire.as_bytes()) {
-                self.in_flight.store(false, Ordering::SeqCst);
-                return Err(BackendError::TransportError(e));
-            }
-        }
-        let deadline = std::time::Instant::now() + timeout.max(Duration::from_secs(2));
-        let mut acc = String::new();
-        let mut aborted = false;
-        loop {
-            // Cooperative cancellation: inject the abort token once, then keep
-            // draining until the modem settles (or the deadline expires).
-            if cancel.load(Ordering::SeqCst) && !aborted {
-                aborted = true;
-                if let Some(wire) = abort_wire {
-                    if let Ok(mut guard) = self.lock.lock() {
-                        let _ = self.write_locked(&mut guard, &[wire, b"\r"].concat());
-                    }
-                }
-            }
-            let drained: String = {
-                let mut rx = self.rx.lock().unwrap();
-                let out: Vec<u8> = rx.drain(..).collect();
-                String::from_utf8_lossy(&out).replace('\r', "")
-            };
-            acc.push_str(&drained);
-            let done = has_result(&acc);
-            let timed_out = std::time::Instant::now() >= deadline;
-            if done || timed_out {
-                break;
-            }
-            thread::sleep(Duration::from_millis(50));
-        }
+        let result = self.send_interruptible_locked(command, timeout, cancel, abort_wire);
         self.in_flight.store(false, Ordering::SeqCst);
-        if aborted {
-            return Err(BackendError::TaskCancelled);
-        }
-        classify_response(&acc)
+        result
     }
 
     fn connected(&self) -> bool {
@@ -1116,22 +1203,55 @@ impl ClientConn {
 // the event bus; every WebSocket subscriber receives them as `{type,data}`
 // frames — no per-connection polling, no shared broadcast list.
 
-fn spawn_urc_monitor(client: Arc<AtClient>, bus: Arc<EventBus>) {
+/// Map a dispatcher event type to the cache/bus topic it belongs to.
+fn urc_topic(msg_type: &str) -> &'static str {
+    match msg_type {
+        "new_sms" | "memory_full" | "sms.ussd" => crate::state::bus::TOPIC_SMS,
+        "qos.ambr" => crate::state::bus::TOPIC_QOS,
+        "sim.changed" => crate::state::bus::TOPIC_SIM,
+        "network.reject" => crate::state::bus::TOPIC_NETWORK,
+        "signal" => crate::state::bus::TOPIC_SIGNAL,
+        "pdcp_data" => crate::state::bus::TOPIC_TRAFFIC,
+        _ => crate::state::bus::TOPIC_MODEM,
+    }
+}
+
+/// Build the shared URC sink. It is called both by the idle monitor and by
+/// the transport when I definite URC line arrives during a command, so one
+/// dispatcher instance sees every line exactly once and dedup windows work.
+fn urc_sink(
+    bus: Arc<EventBus>,
+) -> Arc<dyn Fn(&str) + Send + Sync> {
+    let dispatcher = Arc::new(Mutex::new(Dispatcher::new()));
+    Arc::new(move |line: &str| {
+        let events = {
+            let mut d = dispatcher.lock().unwrap_or_else(|p| p.into_inner());
+            d.handle_line(line)
+        };
+        for (msg_type, data) in events {
+            bus.publish_now(urc_topic(msg_type), msg_type, data);
+        }
+    })
+}
+
+fn spawn_urc_monitor(client: Arc<AtClient>, sink: Arc<dyn Fn(&str) + Send + Sync>) {
     thread::spawn(move || {
-        let mut dispatcher = Dispatcher::new();
         let mut leftover = String::new();
         loop {
-            if client.in_flight.load(Ordering::SeqCst) {
-                thread::sleep(Duration::from_millis(200));
-                continue;
-            }
+            // `io_lock` is held for the whole of a command, so this thread
+            // can never steal a response byte between two of its own polls.
             let drained: String = {
-                let mut rx = client.rx.lock().unwrap();
-                let out: Vec<u8> = rx.drain(..).collect();
-                String::from_utf8_lossy(&out).replace('\r', "")
+                let _io = client.io_lock.lock().unwrap_or_else(|p| p.into_inner());
+                if client.in_flight.load(Ordering::SeqCst) {
+                    String::new()
+                } else {
+                    let mut rx = client.rx.lock().unwrap_or_else(|p| p.into_inner());
+                    let out: Vec<u8> = rx.drain(..).collect();
+                    String::from_utf8_lossy(&out).replace('\r', "")
+                }
             };
             if drained.is_empty() {
-                thread::sleep(Duration::from_millis(300));
+                thread::sleep(Duration::from_millis(200));
                 continue;
             }
             leftover.push_str(&drained);
@@ -1141,18 +1261,7 @@ fn spawn_urc_monitor(client: Arc<AtClient>, bus: Arc<EventBus>) {
                 if line.trim().is_empty() {
                     continue;
                 }
-                for (msg_type, data) in dispatcher.handle_line(&line) {
-                    let topic = match msg_type {
-                        "new_sms" | "memory_full" | "sms.ussd" => crate::state::bus::TOPIC_SMS,
-                        "qos.ambr" => crate::state::bus::TOPIC_QOS,
-                        "sim.changed" => crate::state::bus::TOPIC_SIM,
-                        "network.reject" => crate::state::bus::TOPIC_NETWORK,
-                        "signal" => crate::state::bus::TOPIC_SIGNAL,
-                        "pdcp_data" => crate::state::bus::TOPIC_TRAFFIC,
-                        _ => crate::state::bus::TOPIC_MODEM,
-                    };
-                    bus.publish_now(topic, msg_type, data);
-                }
+                sink(&line);
             }
         }
     });
@@ -1211,7 +1320,11 @@ pub fn run(args: &[String]) -> i32 {
     monitor.start();
 
     // URCs from the serial stream -> event bus (fanned out to subscribers).
-    spawn_urc_monitor(client.clone(), bus.clone());
+    // The sink is shared by the idle monitor and by the transport's in-flight
+    // path so a +CMTI/RING/+CGEV arriving mid-command is not swallowed.
+    let sink = urc_sink(bus.clone());
+    client.set_urc_sink(sink.clone());
+    spawn_urc_monitor(client.clone(), sink);
 
     // LuCI CLI control socket -> arbiter (request -> result semantics).
     spawn_control_socket(arbiter.clone(), cache.clone(), tasks.clone());
@@ -1481,7 +1594,7 @@ fn run_command(
         Ok(text) => {
             if client::response_ok(&text) {
                 // 写操作改变了模组状态，之前采集的 raw 读缓存已经过期
-                // （例如改 APN 后 AT^CGPADDR/AT^DHCP? 的旧地址必须丢掉）。
+                // （例如改 APN 后 AT+CGPADDR/AT^DHCP? 的旧地址必须丢掉）。
                 // 保守作废全部 raw：条目数 < 100，且写是低频用户行为，
                 // 代价（下次读重新采一次）远小于漏作废导致页面显示旧值。
                 if is_write {
@@ -1524,6 +1637,8 @@ mod tests {
             lock: Mutex::new(Stream::None),
             rx: Arc::new(Mutex::new(VecDeque::new())),
             in_flight: Arc::new(AtomicBool::new(false)),
+            io_lock: Mutex::new(()),
+            urc_sink: Mutex::new(None),
             attached_port: None,
         }))
     }
@@ -1642,6 +1757,8 @@ mod tests {
             lock: Mutex::new(Stream::None),
             rx: Arc::new(Mutex::new(VecDeque::new())),
             in_flight: Arc::new(AtomicBool::new(false)),
+            io_lock: Mutex::new(()),
+            urc_sink: Mutex::new(None),
             attached_port: None,
         });
         let resp = handle_rpc_request(
@@ -1671,6 +1788,8 @@ mod tests {
             lock: Mutex::new(Stream::None),
             rx: Arc::new(Mutex::new(VecDeque::new())),
             in_flight: Arc::new(AtomicBool::new(false)),
+            io_lock: Mutex::new(()),
+            urc_sink: Mutex::new(None),
             attached_port: None,
         });
         let resp = handle_rpc_request(
@@ -1697,6 +1816,8 @@ mod tests {
             lock: Mutex::new(Stream::None),
             rx: Arc::new(Mutex::new(VecDeque::new())),
             in_flight: Arc::new(AtomicBool::new(false)),
+            io_lock: Mutex::new(()),
+            urc_sink: Mutex::new(None),
             attached_port: None,
         });
         cache.set("signal", json::str_val("warm"), "test");
@@ -1725,6 +1846,8 @@ mod tests {
             lock: Mutex::new(Stream::None),
             rx: Arc::new(Mutex::new(VecDeque::new())),
             in_flight: Arc::new(AtomicBool::new(false)),
+            io_lock: Mutex::new(()),
+            urc_sink: Mutex::new(None),
             attached_port: None,
         });
         bus.publish_now("signal", "signal.updated", json::num_val(-86));
@@ -1775,6 +1898,8 @@ mod tests {
             lock: Mutex::new(Stream::None),
             rx: Arc::new(Mutex::new(VecDeque::new())),
             in_flight: Arc::new(AtomicBool::new(false)),
+            io_lock: Mutex::new(()),
+            urc_sink: Mutex::new(None),
             attached_port: None,
         });
         // 无 auth_key -> 拒绝

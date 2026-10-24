@@ -9,7 +9,7 @@
 //! Both keep every module on one path: module -> channel -> arbiter -> serial.
 //! Nothing here or below opens a serial port directly.
 
-use crate::core::channel::{AtChannel, SmsPart};
+use crate::core::channel::{AtChannel, SmsPart, SmsTransaction};
 use crate::core::error::BackendError;
 use crate::core::task::Priority;
 use crate::scheduler::arbiter::{
@@ -56,6 +56,7 @@ pub fn background_spec(
         abort_wire: None,
         payload: AtPayload::None,
         label: format!("refresh {}", command),
+        sms: false,
     }
 }
 
@@ -72,7 +73,7 @@ impl<'a> TaskChannel<'a> {
     fn spec(&self, command: &str, timeout: Duration) -> AtRequestSpec {
         let mut spec = AtRequestSpec::ui_query(command);
         spec.timeout = timeout;
-        spec.priority = Priority::High;
+        spec.priority = Priority::UserQuery;
         spec
     }
 }
@@ -104,6 +105,22 @@ impl AtChannel for TaskChannel<'_> {
     fn send_sms_pdu(&self, parts: &[SmsPart]) -> Result<String, BackendError> {
         self.ctx
             .at_request(AtRequestSpec::sms_send(parts.to_vec()))
+    }
+
+    fn begin_sms_transaction(&self) -> SmsTransaction {
+        self.ctx.arbiter.sms_transaction()
+    }
+
+    fn scheduler_audit(&self) -> crate::core::json::Value {
+        self.ctx.arbiter.audit_json(200)
+    }
+
+    fn scheduler_audit_with_limit(&self, limit: usize) -> crate::core::json::Value {
+        self.ctx.arbiter.audit_json(limit)
+    }
+
+    fn scheduler_status(&self) -> crate::core::json::Value {
+        self.ctx.arbiter.status_json()
     }
 
     fn duty_gate(&self) -> bool {
@@ -146,7 +163,7 @@ impl AtChannel for DirectChannel<'_> {
     fn query_timeout(&self, command: &str, timeout: Duration) -> Result<String, BackendError> {
         let mut spec = AtRequestSpec::ui_query(command);
         spec.timeout = timeout;
-        spec.priority = Priority::High;
+        spec.priority = Priority::UserQuery;
         await_spec(self.arbiter, spec)
     }
 
@@ -169,6 +186,22 @@ impl AtChannel for DirectChannel<'_> {
 
     fn send_sms_pdu(&self, parts: &[SmsPart]) -> Result<String, BackendError> {
         await_spec(self.arbiter, AtRequestSpec::sms_send(parts.to_vec()))
+    }
+
+    fn begin_sms_transaction(&self) -> SmsTransaction {
+        self.arbiter.sms_transaction()
+    }
+
+    fn scheduler_audit(&self) -> crate::core::json::Value {
+        self.arbiter.audit_json(200)
+    }
+
+    fn scheduler_audit_with_limit(&self, limit: usize) -> crate::core::json::Value {
+        self.arbiter.audit_json(limit)
+    }
+
+    fn scheduler_status(&self) -> crate::core::json::Value {
+        self.arbiter.status_json()
     }
 
     fn duty_gate(&self) -> bool {
@@ -222,9 +255,9 @@ mod tests {
             "AT^NTXPOWER?",
             Duration::from_secs(12),
             Duration::from_secs(20),
-            Priority::Low,
+            Priority::Maintenance,
         );
-        assert_eq!(spec.priority, Priority::Low);
+        assert_eq!(spec.priority, Priority::Maintenance);
         assert_eq!(spec.retry.max_retries, 0);
         assert_eq!(spec.dedup_key.as_deref(), Some("AT^NTXPOWER?"));
     }

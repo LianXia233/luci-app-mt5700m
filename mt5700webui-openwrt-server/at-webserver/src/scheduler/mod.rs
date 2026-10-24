@@ -8,4 +8,5 @@ pub mod arbiter;
 pub mod channel;
 pub mod gate;
 pub mod jobs;
+pub mod pacer;
 pub mod plan;

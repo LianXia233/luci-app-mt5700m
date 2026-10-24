@@ -141,6 +141,7 @@ return view.extend({
 			return data;
 		}, function(err) {
 			holder.replaceChildren(E('div', { 'class': 'mt-page' }, [
+				c.navTabs('system'),
 				E('div', { 'class': 'alert-message error' }, String(err && err.message || err))
 			]));
 		});
@@ -219,6 +220,7 @@ return view.extend({
 		}).join('\n' + '\n');
 		return E('div', { 'class': 'mt-page' }, [
 			c.cssLink(),
+			c.navTabs('system'),
 			// 旧版这里还有一行 `res.stderr` 告警条。路由世界里没有 stderr：
 			// 任一路由失败会让 load() 的 Promise.all 整体 reject，由 render()
 			// 的失败分支画整页 alert-message error。

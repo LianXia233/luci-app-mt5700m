@@ -21,6 +21,11 @@ LUCI_MINIFY_JS:=0
 LUCI_MINIFY_CSS:=0
 
 PKG_NAME:=luci-app-mt5700m
+# v3.3.0 — 时间与 DNS：新增 timesync/dns 后端模块与「时间与 DNS」页面，
+# NTP 只接管系统已有控制器（sysntpd/chrony），DNS 经单一 dns.sh 在所有
+# 启动/up 入口注入；同时统一 LuCI Tab/弹窗/按钮/表单组件并完成 AT 指令
+# 手册审计。时间/DNS 均不经过 AT 通道，不影响 SMS、拨号与按键优先级。
+#
 # v3.2.0 — 架构 v2 收官（PR #7/#8/#9）：全页面读写路由化、双前端死代码清零、
 # CI 前端证明链（cargo test 292）。发布构建默认关闭 LuCI 前端 JS 压缩
 # （build-release.sh 不再调用 minify-luci-frontend.sh，安装包内 JS 保持源码
@@ -40,7 +45,7 @@ PKG_NAME:=luci-app-mt5700m
 # ioctl；串口打开一律 O_NONBLOCK + VMIN=1/VTIME=0。旧版二进制在不修正
 # termios 的情况下会把 TTY 留在 cooked 模式，AT 读取全部超时。
 # 写命令、拨号、短信路径不变。
-PKG_VERSION:=3.2.0
+PKG_VERSION:=3.3.0
 PKG_RELEASE:=1
 PKG_LICENSE:=Apache-2.0
 
@@ -66,9 +71,15 @@ LUCI_TITLE:=MT5700M module management
 # Only luci-base is required.
 LUCI_DEPENDS:=+luci-base
 LUCI_EXTRA_DEPENDS:=kmod-usb2 (>=0), kmod-usb3 (>=0), kmod-usb-serial (>=0), kmod-usb-serial-option (>=0), kmod-usb-net (>=0), kmod-usb-net-cdc-ether (>=0), kmod-usb-net-cdc-ncm (>=0)
-LUCI_PKGARCH:=all
+# The package ships a prebuilt aarch64-musl `at-webserver`, so it is NOT
+# architecture-independent.  Marking it `all` would let opkg/apk install the
+# aarch64 ELF on mips/x86 and fail at exec time.  The release script builds
+# for mediatek/filogic (`aarch64_cortex-a53`); builds for another target must
+# rebuild the Rust binary and adjust this value.
+LUCI_PKGARCH:=aarch64_cortex-a53
 
 define Package/luci-app-mt5700m/conffiles
+/etc/config/mt5700m
 /etc/mt5700m/traffic-history
 endef
 

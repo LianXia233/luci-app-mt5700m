@@ -362,7 +362,7 @@ fn run(ctx: &TaskCtx, url_command: String) -> Result<Value, BackendError> {
 fn step_spec(command: &str) -> AtRequestSpec {
     AtRequestSpec {
         command: command.to_string(),
-        priority: Priority::Interactive,
+        priority: Priority::Control,
         timeout: step_timeout(command),
         queued_timeout: QUEUED_TIMEOUT,
         exclusive: false,
@@ -372,6 +372,7 @@ fn step_spec(command: &str) -> AtRequestSpec {
         abort_wire: None,
         payload: crate::scheduler::arbiter::AtPayload::None,
         label: format!("fota {}", command),
+        sms: false,
     }
 }
 
@@ -387,7 +388,7 @@ fn submit(tasks: &Arc<TaskManager>, url_command: String) {
     tasks.submit(
         TASK_NAME,
         TaskKind::LongRunning,
-        Priority::Interactive,
+        Priority::Control,
         Some(FLOW_TIMEOUT),
         Box::new(move |ctx: &TaskCtx| run(ctx, url_command)),
     );

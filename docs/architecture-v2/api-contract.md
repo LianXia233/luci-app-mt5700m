@@ -195,3 +195,24 @@ CLI capture hard cap 25 s (exit 124)
 
 任何路由都必须在冷缓存、未接调制解调器的情况下作出应答：
 registry 测试对每一条已注册路由都确切地断言了这一点。
+
+### 1.1 时间同步与 DNS
+
+| 路由 | 返回（领域 JSON） |
+| ----- | --------------------- |
+| `time.now` | `{unix, unixMs, local, timezone, plausible, synced, trusted, lastSuccessAt}` — 全后端统一的时钟读取接口。`unix` 是权威值；`local`/`timezone` 只用于显示，来自设备时区，不做二次偏移。不探测 NTP、不发 AT、不阻塞 |
+| `time.status` | `{saved, defaults, state, provider, time, applying, syncing, pending, verified, trusted, effectiveServers, warnings}` — 页面快照。`saved` 是 UCI，`state` 是运行时证据；`trusted=true` 只在系统守护进程明确报告已同步且观测未过期时出现。绝不因为“配置存在”而报告已同步 |
+| `time.config_get` | `{config, defaults, provider, applying, syncing}` — 只读配置与提供方，不探测 |
+| `time.config_set` | `{saved: true}` — 仅持久化并校验（服务器非空、≤16 条、主机名/IP、至少一条启用）；不重启系统服务 |
+| `time.reset` | `{config, defaults}` — 恢复三台文档默认服务器，仅保存，不应用 |
+| `time.apply` | `{started: true, task_id}` — 把已保存配置写入检测到的系统服务（sysntpd/chrony），异步任务；`apply` 只改插件拥有的配置块，不常驻第二个时钟控制器 |
+| `time.sync` | `{started: true, task_id}` — 手动同步异步任务。有系统服务时只触发该控制器（chrony `chronyc burst`/`makestep`，sysntpd 重启系统实例并轮询状态），外部 ntpd 拒绝且绝不并行启动第二个 `ntpd`；没有系统服务时只使用一次 one-shot `ntpd -nq`。结果写入运行时状态，`synced` 只在有正面证据时为 true；无可读证据返回 `unverified`，不会伪造成功 |
+| `dns.status` | `{saved, defaults, state, applying, runtime, verified, pending, interfaces, warnings}` — 保存 / 已应用 / 运行时校验三种状态分开；`runtime` 读取 `network.interface.MT5700M` / `MT5700Mv6` 的实际解析器 |
+| `dns.config_get` | `{config, defaults, applying}` |
+| `dns.config_set` | `{saved: true}` — 校验 IPv4/IPv6 字面量、启用族必须有主地址；仅保存 |
+| `dns.reset` | `{config, defaults}` — 恢复文档默认值（IPv4 `119.29.29.29`/`223.5.5.5`，IPv6 `2402:4e00::`/`2400:3200::1`），仅保存 |
+| `dns.apply` | `{started: true, task_id}` — 调用唯一的 `/usr/share/mt5700m/dns.sh apply`，只改两个插件接口，返回任务；任务结果含 `verified` 与逐族原因 |
+| `task.get` / `task.list` | 任务记录 `{id, name, status, priority, created_at, started_at, finished_at, error?, result?, detail?}`；`waitTask()` 轮询这里，长操作从不阻塞页面 |
+| `task.cancel` | `{cancelled}` — 协作式取消；SMS 事务在完成/失败/取消后才释放通道 |
+
+`network.direct_ip`/`network.direct_ip_set` 使用 `AT^SETDIRECTIP`。该命令**不在本次提供的 MT5700M AT 手册中**，属于原项目沿用的厂商命令：查询失败时页面隐藏写入入口，绝不假设一个值。`modem.imei_set` 的 `AT^PHYNUM=IMEI,<imei>` 同样未在手册中记载，只保留给带显式警告的“恢复标签身份”路径，模组拒绝时原样返回错误。

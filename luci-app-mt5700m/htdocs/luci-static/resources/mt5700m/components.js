@@ -23,7 +23,7 @@ function isNode(v) {
 // ubus/AT 数据请求并行下载。原实现把 <link> 放在 render() 返回的 DOM 里，
 // CSS 要等数据全部返回后才开始下载，首屏必然先无样式再整体重排。
 // ?v= 须与 Makefile 的 PKG_VERSION 保持一致，升级后立即失效旧样式缓存。
-var STYLE_VERSION = '2.8.1';
+var STYLE_VERSION = '3.3.0';
 
 function injectStyle() {
 	if (!document.getElementById('mt5700m-style'))
@@ -352,15 +352,32 @@ function facts(cells) {
 
 function btn(label, handler, opts) {
 	opts = opts || {};
-	var cls = opts.cls || 'mt-session-action';
-	if (opts.primary) cls += ' mt-diag-action--primary';
-	if (opts.danger) cls += ' mt-session-action--danger';
-	return E('button', {
+	var cls = 'mt-btn ' + (opts.cls || 'mt-session-action');
+	if (opts.primary)
+		cls += ' mt-diag-action--primary mt-btn--primary';
+	if (opts.danger)
+		cls += ' mt-session-action--danger mt-btn--danger';
+	if (opts.small)
+		cls += ' mt-btn--sm';
+	var children = [];
+	if (opts.icon)
+		children.push(E('span', { 'class': 'mt-btn-icon' }, svgIcon(opts.icon, 15)));
+	children.push(E('span', { 'class': 'mt-btn-label' }, label));
+	var node = E('button', {
 		'type': 'button',
 		'class': cls,
 		'click': handler,
 		'disabled': opts.disabled ? 'disabled' : null
-	}, label);
+	}, children);
+	// Every button created here can show a real in-flight state; callers must
+	// still disable it themselves when the operation must not repeat.
+	node.setBusy = function(busy) {
+		node.disabled = !!busy;
+		node.classList.toggle('is-loading', !!busy);
+		if (busy) node.setAttribute('aria-busy', 'true');
+		else node.removeAttribute('aria-busy');
+	};
+	return node;
 }
 
 function btnLink(label, href, opts) {
@@ -388,6 +405,188 @@ function select(options, value) {
 	return node;
 }
 
+
+/* ---------- 导航选项卡（统一 Tab 系统） ---------- */
+
+/*
+ * 顶级导航的唯一实现。每个页面都渲染同一组链接；选中项由**当前 LuCI 路由**
+ * 决定（调用方传入 key，URL 刷新/后退/前进天然恢复），不存页面内状态，因此
+ * RPC 返回、后台轮询、数据重绘都不可能把选中的 Tab 弹回第一项。
+ */
+var NAV_TABS = [
+	{ key: 'status', label: _('Overview'), icon: 'grid' },
+	{ key: 'connection', label: _('Mobile Data'), icon: 'signal' },
+	{ key: 'network', label: _('Radio and Cells'), icon: 'tower' },
+	{ key: 'sms', label: _('Messages'), icon: 'message' },
+	{ key: 'system', label: _('Module and SIM'), icon: 'chip' },
+	{ key: 'time', label: _('Time & DNS'), icon: 'clock' },
+	{ key: 'advanced', label: _('Advanced'), icon: 'sliders' },
+	{ key: 'terminal', label: _('Terminal'), icon: 'terminal' },
+	{ key: 'settings', label: _('Settings'), icon: 'cog' }
+];
+
+var TAB_ICONS = {
+	grid: '<path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/>',
+	signal: '<path d="M4 20v-6M9 20V9M14 20V5M19 20V2"/>',
+	tower: '<path d="M12 21V10M8 21l4-11 4 11M5 8a10 10 0 0 1 14 0M8 11a6 6 0 0 1 8 0"/><circle cx="12" cy="7" r="1.4"/>',
+	message: '<path d="M21 15a3 3 0 0 1-3 3H8l-5 3V6a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3z"/>',
+	chip: '<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/>',
+	clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/>',
+	sliders: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
+	terminal: '<path d="M4 17l6-6-6-6M12 19h8"/>',
+	cog: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
+	plus: '<path d="M12 5v14M5 12h14"/>',
+	refresh: '<path d="M21 12a9 9 0 1 1-3-6.7M21 3v6h-6"/>',
+	play: '<polygon points="6 3 20 12 6 21 6 3"/>',
+	trash: '<path d="M3 6h18M8 6V4h8v2M6 6l1 15h10l1-15M10 11v6M14 11v6"/>',
+	up: '<path d="M12 19V5M5 12l7-7 7 7"/>',
+	down: '<path d="M12 5v14M19 12l-7 7-7-7"/>',
+	check: '<path d="M20 6L9 17l-5-5"/>',
+	warn: '<path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"/>'
+};
+
+function svgIcon(name, size) {
+	var body = TAB_ICONS[name] || TAB_ICONS.grid;
+	size = size || 18;
+	return createSvg('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="' + size + '" height="' + size
+		+ '" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+		+ body + '</svg>');
+}
+
+// 只滚动选项卡条本身，绝不改变选中项，也绝不滚动整页。
+function revealTab(strip) {
+	if (!strip || typeof strip.querySelector !== 'function')
+		return;
+	var active = strip.querySelector('.mt-tab.is-active');
+	if (!active)
+		return;
+	strip.scrollLeft = Math.max(0, active.offsetLeft - (strip.clientWidth - active.offsetWidth) / 2);
+}
+
+function navTabs(activeKey) {
+	var strip = E('div', { 'class': 'mt-tabs-strip' });
+	NAV_TABS.forEach(function(item) {
+		var active = item.key === activeKey;
+		strip.appendChild(E('a', {
+			'class': 'mt-tab' + (active ? ' is-active' : ''),
+			'role': 'tab',
+			'href': L.url('admin/modem/mt5700m/' + item.key),
+			'aria-selected': active ? 'true' : 'false',
+			'aria-current': active ? 'page' : null,
+			'data-tab': item.key
+		}, [
+			E('span', { 'class': 'mt-tab-icon' }, svgIcon(item.icon, 17)),
+			E('span', { 'class': 'mt-tab-label' }, item.label)
+		]));
+	});
+	var nav = E('nav', { 'class': 'mt-tabs', 'role': 'tablist', 'aria-label': _('MT5700M sections') }, strip);
+	window.setTimeout(function() { revealTab(strip); }, 0);
+	return nav;
+}
+
+/*
+ * 页内 Tab：状态保存在 URL 查询参数里（真实可刷新/可后退），并且只切换
+ * 已经构建好的面板显示，不重建 DOM —— 未保存的输入不会因切 Tab 丢失。
+ */
+function tabParam(param, fallback, allowed) {
+	var value = null;
+	try {
+		value = new URLSearchParams(window.location.search).get(param);
+	} catch (e) { value = null; }
+	if (value && (!allowed || allowed.indexOf(value) >= 0))
+		return value;
+	return fallback;
+}
+
+function pushTabParam(param, value) {
+	try {
+		var url = new URL(window.location.href);
+		url.searchParams.set(param, value);
+		window.history.pushState({ mtTab: value }, '', url.toString());
+	} catch (e) { /* older browser: state still switches visually */ }
+}
+
+function panelTabs(items, activeKey, onSelect, opts) {
+	opts = opts || {};
+	var param = opts.param || 'tab';
+	var allowed = items.map(function(item) { return item.key; });
+	var current = allowed.indexOf(activeKey) >= 0 ? activeKey : items[0].key;
+	var strip = E('div', { 'class': 'mt-tabs-strip mt-tabs-strip--inset' });
+	var buttons = {};
+
+	items.forEach(function(item) {
+		var active = item.key === current;
+		var button = E('button', {
+			'type': 'button',
+			'class': 'mt-tab' + (active ? ' is-active' : ''),
+			'role': 'tab',
+			'aria-selected': active ? 'true' : 'false',
+			'data-tab': item.key
+		}, [
+			item.icon ? E('span', { 'class': 'mt-tab-icon' }, svgIcon(item.icon, 16)) : null,
+			E('span', { 'class': 'mt-tab-label' }, item.label)
+		]);
+		button.addEventListener('click', function() {
+			select(item.key, true);
+		});
+		buttons[item.key] = button;
+		strip.appendChild(button);
+	});
+
+	function paint(key) {
+		Object.keys(buttons).forEach(function(name) {
+			var on = name === key;
+			buttons[name].classList.toggle('is-active', on);
+			buttons[name].setAttribute('aria-selected', on ? 'true' : 'false');
+		});
+	}
+	function select(key, persist) {
+		if (allowed.indexOf(key) < 0)
+			key = items[0].key;
+		if (key === current)
+			return;
+		current = key;
+		paint(key);
+		if (persist)
+			pushTabParam(param, key);
+		revealTab(strip);
+		if (onSelect)
+			onSelect(key);
+	}
+	var nav = E('nav', { 'class': 'mt-tabs mt-tabs--inset', 'role': 'tablist' }, strip);
+	window.setTimeout(function() { revealTab(strip); }, 0);
+
+	// Back/forward must restore the tab, not just the route. The listener
+	// removes itself when the page has been replaced.
+	if (typeof window.addEventListener === 'function') {
+		var onPop = function() {
+			if (!nav.isConnected) {
+				window.removeEventListener('popstate', onPop);
+				return;
+			}
+			select(tabParam(param, current, allowed), false);
+		};
+		window.addEventListener('popstate', onPop);
+	}
+	return nav;
+}
+
+/* ---------- 统一状态标签 ---------- */
+
+var STATUS_LABELS = {
+	ok: _('OK'), warn: _('Attention'), bad: _('Error'),
+	unknown: _('Unknown'), busy: _('In progress')
+};
+
+// 状态同时用文字 + 形状/颜色表达，不单靠颜色传意。
+function statusTag(kind, label) {
+	var safe = STATUS_LABELS[kind] ? kind : 'unknown';
+	return E('span', { 'class': 'mt-status-tag mt-status-tag--' + safe }, [
+		E('span', { 'class': 'mt-status-dot', 'aria-hidden': 'true' }),
+		E('span', {}, label || STATUS_LABELS[safe])
+	]);
+}
+
 /* ---------- 模态确认（写入类命令） ---------- */
 
 /*
@@ -399,27 +598,101 @@ function select(options, value) {
  *   - `confirmRoute(title, message, name, params, restart)` —— 统一路由（已迁完的
  *     页面，见 docs/architecture-v2/migration.md 的 item 9）。
  */
+function confirmDialog(opts) {
+	opts = opts || {};
+	var busy = false;
+	var confirmButton = null;
+
+	function fail(err) {
+		var message = (err && err.message) || String(err);
+		if (opts.onError)
+			opts.onError(err);
+		else
+			ui.addNotification(null, E('p', {}, message), 'danger');
+	}
+
+	function body() {
+		var children = [ E('p', {}, opts.message) ];
+		if (opts.warning)
+			children.push(E('div', { 'class': 'alert-message warning' }, opts.warning));
+		if (opts.content)
+			children.push(opts.content);
+		return children;
+	}
+
+	confirmButton = E('button', {
+		'type': 'button',
+		'class': 'btn mt-btn ' + (opts.danger ? 'cbi-button-negative mt-btn--danger' : 'cbi-button-apply mt-btn--primary'),
+		'click': function() {
+			if (busy)
+				return;
+			var valid = opts.validate ? opts.validate() : true;
+			if (valid === false)
+				return;
+			if (!opts.run) {
+				ui.hideModal();
+				if (opts.onConfirm)
+					opts.onConfirm();
+				return;
+			}
+			busy = true;
+			confirmButton.disabled = true;
+			confirmButton.classList.add('is-loading');
+			confirmButton.setAttribute('aria-busy', 'true');
+			Promise.resolve().then(opts.run).then(function(result) {
+				ui.hideModal();
+				if (opts.onSuccess)
+					opts.onSuccess(result);
+				else
+					ui.addNotification(null, E('p', {}, _('Settings applied.')));
+			}, function(err) {
+				busy = false;
+				confirmButton.disabled = false;
+				confirmButton.classList.remove('is-loading');
+				confirmButton.removeAttribute('aria-busy');
+				fail(err);
+			});
+		}
+	}, opts.confirmLabel || _('Apply'));
+
+	var cancelButton = E('button', {
+		'type': 'button',
+		'class': 'btn mt-btn',
+		'click': function() {
+			if (!busy)
+				ui.hideModal();
+		}
+	}, opts.cancelLabel || _('Cancel'));
+
+	var modal = ui.showModal(opts.title, body().concat([
+		E('div', { 'class': 'right mt-modal-actions' }, [ cancelButton, ' ', confirmButton ])
+	]));
+
+	// Danger/in-progress dialogs must not be dismissed by Escape. The run
+	// keeps going either way, but a vanished dialog would hide its real result.
+	if (modal && typeof modal.addEventListener === 'function')
+		modal.addEventListener('keydown', function(ev) {
+			if (busy && (ev.key === 'Escape' || ev.key === 'Esc')) {
+				ev.preventDefault();
+				ev.stopPropagation();
+			}
+		}, true);
+
+	return modal;
+}
+
 function confirmAction(title, message, run, restartRequired) {
-	return ui.showModal(title, [
-		E('p', {}, message),
-		restartRequired ? E('div', { 'class': 'alert-message warning' }, _('A module restart or airplane-mode cycle is required before this change takes effect.')) : null,
-		E('div', { 'class': 'right' }, [
-			E('button', { 'type': 'button', 'class': 'btn', 'click': ui.hideModal }, _('Cancel')), ' ',
-			E('button', {
-				'type': 'button',
-				'class': 'btn cbi-button-negative',
-				'click': function() {
-					ui.hideModal();
-					run().then(function() {
-						ui.addNotification(null, E('p', {}, _('Settings applied.')));
-						window.setTimeout(function() { window.location.reload(); }, 900);
-					}, function(err) {
-						ui.addNotification(null, E('p', {}, err.message || String(err)), 'danger');
-					});
-				}
-			}, _('Apply'))
-		])
-	]);
+	return confirmDialog({
+		title: title,
+		message: message,
+		warning: restartRequired ? _('A module restart or airplane-mode cycle is required before this change takes effect.') : null,
+		confirmLabel: _('Apply'),
+		run: run,
+		onSuccess: function() {
+			ui.addNotification(null, E('p', {}, _('Settings applied.')));
+			window.setTimeout(function() { window.location.reload(); }, 900);
+		}
+	});
 }
 
 function confirmRun(title, message, args, restartRequired) {
@@ -431,25 +704,23 @@ function confirmRoute(title, message, name, params, restartRequired) {
 }
 
 /*
- * 通用确认执行（system 页）的唯一实现：支持 danger 样式与自定义恢复延迟。
- *
- * 与 `confirmAction` 同理，DOM / 文案 / 按钮顺序只有这一份，两条写路径
- * （CLI 动词、统一路由）不可能把弹窗渲染出分叉。
+ * 通用确认执行（system 页）：与 confirmAction 共用同一个 confirmDialog，
+ * 区别只在 danger 样式与成功后的恢复延迟。
  */
 function runConfirmedAction(title, message, run, danger, recoveryDelay) {
-	return ui.showModal(title, [
-		E('p', {}, message),
-		E('div', { 'class': 'right' }, [
-			E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')), ' ',
-			E('button', { 'class': 'btn ' + (danger ? 'cbi-button-negative' : 'cbi-button-apply'), 'click': function() {
-				ui.hideModal();
-				run().then(function() {
-					ui.addNotification(null, E('p', {}, recoveryDelay ? _('Restart accepted. The USB interface normally returns in about 22 seconds.') : _('Command accepted by the modem.')));
-					window.setTimeout(function() { window.location.reload(); }, recoveryDelay || 1500);
-				}, function(err) { ui.addNotification(null, E('p', {}, err.message || String(err)), 'danger'); });
-			} }, _('Continue'))
-		])
-	]);
+	return confirmDialog({
+		title: title,
+		message: message,
+		danger: !!danger,
+		confirmLabel: _('Continue'),
+		run: run,
+		onSuccess: function() {
+			ui.addNotification(null, E('p', {}, recoveryDelay
+				? _('Restart accepted. The USB interface normally returns in about 22 seconds.')
+				: _('Command accepted by the modem.')));
+			window.setTimeout(function() { window.location.reload(); }, recoveryDelay || 1500);
+		}
+	});
 }
 
 // CLI 动词（还没迁到路由的路径：LED / SIM 激活 / 温控表 / FOTA 三步）
@@ -950,6 +1221,12 @@ return baseclass.extend({
 	facts: facts,
 	btn: btn,
 	btnLink: btnLink,
+	svgIcon: svgIcon,
+	navTabs: navTabs,
+	panelTabs: panelTabs,
+	tabParam: tabParam,
+	statusTag: statusTag,
+	confirmDialog: confirmDialog,
 	actionBar: actionBar,
 	select: select,
 	confirmRun: confirmRun,

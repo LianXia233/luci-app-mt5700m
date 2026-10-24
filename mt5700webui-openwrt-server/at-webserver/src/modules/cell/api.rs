@@ -116,7 +116,7 @@ fn neighbors(ctx: &ApiCtx, _params: &Value) -> Result<Value, BackendError> {
         crate::modules::cell::commands::MONNC,
         Duration::from_secs(20),
         Duration::from_secs(10),
-        Priority::Normal,
+        Priority::Polling,
     )?;
     let cells: Vec<Value> = parser::parse_monnc(&text).iter().map(|c| c.to_json()).collect();
     let mut m = std::collections::BTreeMap::new();

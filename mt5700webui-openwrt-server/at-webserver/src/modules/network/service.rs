@@ -42,7 +42,7 @@ const SYSINFO_BACKOFF_KEY: &str = "network_sysinfo";
 pub fn refresh_registration(ctx: &RefreshCtx) -> RegistrationState {
     let mut reg = RegistrationState::default();
     for cmd in commands::REG_QUERIES {
-        if let Ok(text) = ctx.read(cmd, REG_AT_TIMEOUT, REG_QUEUED_TIMEOUT, Priority::Normal) {
+        if let Ok(text) = ctx.read(cmd, REG_AT_TIMEOUT, REG_QUEUED_TIMEOUT, Priority::Polling) {
             let t = text.trim();
             if !t.is_empty() && commands::has_registration_line(t) {
                 reg = parser::parse_registration(t);
@@ -101,7 +101,7 @@ pub fn read_ims(ctx: &RefreshCtx) -> Result<ImsState, BackendError> {
         commands::CIREG,
         REG_AT_TIMEOUT,
         REG_QUEUED_TIMEOUT,
-        Priority::Interactive,
+        Priority::Control,
     )?;
     Ok(parser::parse_cireg(&text))
 }
@@ -114,7 +114,7 @@ pub fn read_syscfg(ctx: &RefreshCtx) -> Result<SysCfgState, BackendError> {
         SYSCFGEX_QUERY,
         Duration::from_secs(8),
         Duration::from_secs(6),
-        Priority::Normal,
+        Priority::Polling,
     )?;
     parser::parse_syscfgex(&text).ok_or_else(|| {
         BackendError::AtRejected(format!("^SYSCFGEX? answered an unknown shape: {}", text.trim()))
@@ -249,7 +249,7 @@ pub fn read_lock(channel: &dyn AtChannel, kind: LockKind) -> Result<LockState, B
         commands::lock_query(kind),
         Duration::from_secs(8),
         Duration::from_secs(10),
-        Priority::Normal,
+        Priority::Polling,
     )?;
     Ok(parser::parse_freq_lock(&text, kind).unwrap_or_default())
 }
@@ -347,7 +347,7 @@ pub fn read_c5goption(channel: &dyn AtChannel) -> Result<C5gOptionState, Backend
         commands::C5GOPTION_QUERY,
         Duration::from_secs(8),
         Duration::from_secs(10),
-        Priority::Normal,
+        Priority::Polling,
     )?;
     Ok(parser::parse_c5goption(&text))
 }
@@ -362,7 +362,7 @@ pub fn read_rrc(channel: &dyn AtChannel) -> Result<RrcState, BackendError> {
         commands::RRCSTAT_QUERY,
         Duration::from_secs(8),
         Duration::from_secs(10),
-        Priority::Normal,
+        Priority::Polling,
     )?;
     Ok(parser::parse_rrcstat(&text))
 }
@@ -421,7 +421,7 @@ pub fn spawn(tasks: &TaskManager) {
         "network.registration",
         REG_PERIOD,
         crate::modules::IDLE_KEEPALIVE,
-        Priority::High,
+        Priority::UserQuery,
         Some(REG_PERIOD),
         Box::new(|ctx| {
             run_in_task(ctx, |r| {
@@ -433,7 +433,7 @@ pub fn spawn(tasks: &TaskManager) {
     tasks.add_periodic(
         "network.refresh",
         PERIOD,
-        Priority::Normal,
+        Priority::Polling,
         Some(PERIOD),
         Box::new(|ctx| run_in_task(ctx, |r| refresh(r).map(|st| st.to_json()))),
     );
@@ -453,7 +453,7 @@ pub fn read_autodial(ctx: &RefreshCtx) -> Result<AutodialState, BackendError> {
         commands::SETAUTODIAL_QUERY,
         Duration::from_secs(8),
         Duration::from_secs(6),
-        Priority::Normal,
+        Priority::Polling,
     )?;
     let mut st = parser::parse_autodial(&text);
     if st.is_empty() {
@@ -469,7 +469,7 @@ pub fn read_autodial(ctx: &RefreshCtx) -> Result<AutodialState, BackendError> {
             commands::NDISSTATQRY,
             Duration::from_secs(6),
             Duration::from_secs(5),
-            Priority::Normal,
+            Priority::Polling,
         ) {
             st.ndis_active = commands::ndis_is_active(&ndis);
         }
@@ -483,7 +483,7 @@ pub fn read_usb_mode(ctx: &RefreshCtx) -> Result<UsbModeState, BackendError> {
         commands::SETMODE_QUERY,
         Duration::from_secs(8),
         Duration::from_secs(6),
-        Priority::Normal,
+        Priority::Polling,
     )?;
     let mode = parser::parse_usb_mode(&text).ok_or_else(|| {
         BackendError::AtRejected(format!("^SETMODE? answered an unknown shape: {}", text.trim()))
@@ -497,7 +497,7 @@ pub fn read_interface_cfg(ctx: &RefreshCtx) -> Result<InterfaceCfgState, Backend
         commands::TDCFG_QUERY,
         Duration::from_secs(8),
         Duration::from_secs(6),
-        Priority::Normal,
+        Priority::Polling,
     )?;
     let st = parser::parse_interface_cfg(&text);
     if st.mode.is_none() && st.post_route.is_none() && !st.dmz_enabled {
@@ -523,14 +523,14 @@ pub fn read_session(ctx: &RefreshCtx) -> Result<SessionState, BackendError> {
     let queued = Duration::from_secs(6);
     let mut errors = crate::state::refresh::ReadErrors::new();
 
-    let ndis = errors.note(ctx.read(commands::NDISSTATQRY, at, queued, Priority::Normal));
-    let dhcp4 = errors.note(ctx.read(commands::DHCP_V4, at, queued, Priority::Normal));
-    let dhcp6 = errors.note(ctx.read(commands::DHCP_V6, at, queued, Priority::Normal));
-    let cap = errors.note(ctx.read(commands::IPV6CAP, at, queued, Priority::Normal));
-    let pdp = errors.note(ctx.read(commands::CGPADDR, at, queued, Priority::Normal));
-    let flow = errors.note(ctx.read(commands::DSFLOWQRY, at, queued, Priority::Normal));
-    let mtu = errors.note(ctx.read(commands::CGMTU_QUERY, at, queued, Priority::Normal));
-    let detailed = errors.note(ctx.read(commands::DCONNSTAT, at, queued, Priority::Normal));
+    let ndis = errors.note(ctx.read(commands::NDISSTATQRY, at, queued, Priority::Polling));
+    let dhcp4 = errors.note(ctx.read(commands::DHCP_V4, at, queued, Priority::Polling));
+    let dhcp6 = errors.note(ctx.read(commands::DHCP_V6, at, queued, Priority::Polling));
+    let cap = errors.note(ctx.read(commands::IPV6CAP, at, queued, Priority::Polling));
+    let pdp = errors.note(ctx.read(commands::CGPADDR, at, queued, Priority::Polling));
+    let flow = errors.note(ctx.read(commands::DSFLOWQRY, at, queued, Priority::Polling));
+    let mtu = errors.note(ctx.read(commands::CGMTU_QUERY, at, queued, Priority::Polling));
+    let detailed = errors.note(ctx.read(commands::DCONNSTAT, at, queued, Priority::Polling));
 
     let lease4 = dhcp4.as_deref().and_then(parser::parse_dhcp_v4);
     let lease6 = dhcp6.as_deref().and_then(parser::parse_dhcp_v6);
@@ -630,14 +630,14 @@ pub fn read_pdp_contexts(ctx: &RefreshCtx) -> Result<Vec<PdpContext>, BackendErr
         commands::CGDCONT_QUERY,
         Duration::from_secs(8),
         Duration::from_secs(6),
-        Priority::Normal,
+        Priority::Polling,
     )?;
     let actives = ctx
         .read(
             commands::CGACT_QUERY,
             Duration::from_secs(8),
             Duration::from_secs(6),
-            Priority::Normal,
+            Priority::Polling,
         )
         .unwrap_or_default();
     Ok(parser::parse_pdp_contexts(&defs, &actives))

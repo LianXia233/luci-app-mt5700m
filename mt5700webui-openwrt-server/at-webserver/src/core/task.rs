@@ -34,45 +34,73 @@ pub enum TaskKind {
     Periodic,
 }
 
-/// Scheduling priority. Higher urgency is processed first by the AT arbiter.
+/// Scheduling priority — the five contract levels, highest first.
+///
+/// P0 is reserved for SMS. It is not merely "a bit higher": while an SMS
+/// transaction is open the arbiter pauses every not-yet-started non-SMS
+/// request (see `scheduler::arbiter`). The other four levels are ordinary
+/// ordering and are never allowed to starve each other indefinitely because
+/// every request also carries a queue deadline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Priority {
-    /// Lowest: temperature, traffic, low-value telemetry.
-    Low,
-    /// Background state refresh that nobody is waiting on.
-    Background,
-    /// Normal work (cached query refresh).
-    Normal,
-    /// Page-level status queries the UI is waiting for.
-    High,
-    /// Interactive user actions (APN, PDP, SMS, manual AT).
-    Interactive,
-    /// Critical: network recovery, manual AT, exclusive ops.
-    Critical,
+    /// P0 — SMS (list/read/send/delete/USSD and every command inside the
+    /// transaction). Highest, and the only class allowed while an SMS
+    /// transaction holds the channel.
+    Sms,
+    /// P1 — key control: dial/disconnect/recovery, radio/USB operations and
+    /// the status transitions they depend on.
+    Control,
+    /// P2 — user-visible queries (page reads, explicit on-demand reads).
+    UserQuery,
+    /// P3 — routine background polling (signal/network/cell collectors).
+    Polling,
+    /// P4 — low-value maintenance (telemetry, optional diagnostics).
+    Maintenance,
 }
 
 impl Priority {
     /// Numeric rank used by the AT arbiter heap (larger = more urgent).
     pub fn rank(&self) -> i64 {
         match self {
-            Priority::Low => 10,
-            Priority::Background => 20,
-            Priority::Normal => 40,
-            Priority::High => 60,
-            Priority::Interactive => 80,
-            Priority::Critical => 100,
+            Priority::Sms => 100,
+            Priority::Control => 80,
+            Priority::UserQuery => 60,
+            Priority::Polling => 30,
+            Priority::Maintenance => 10,
         }
     }
 
+    /// Contract-level name (P0..P4), used by audit logs and the task API.
     pub fn name(&self) -> &'static str {
         match self {
-            Priority::Low => "low",
-            Priority::Background => "background",
-            Priority::Normal => "normal",
-            Priority::High => "high",
-            Priority::Interactive => "interactive",
-            Priority::Critical => "critical",
+            Priority::Sms => "P0",
+            Priority::Control => "P1",
+            Priority::UserQuery => "P2",
+            Priority::Polling => "P3",
+            Priority::Maintenance => "P4",
         }
+    }
+
+    /// Human-readable class name for diagnostics.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Priority::Sms => "sms",
+            Priority::Control => "control",
+            Priority::UserQuery => "user_query",
+            Priority::Polling => "polling",
+            Priority::Maintenance => "maintenance",
+        }
+    }
+
+    /// True for the SMS class (the arbiter's exclusive-dispatch level).
+    pub fn is_sms(&self) -> bool {
+        *self == Priority::Sms
+    }
+
+    /// True for work a frontend/user is directly waiting on (P0..P2). Used
+    /// for the background-collector starvation signal.
+    pub fn is_user_visible(&self) -> bool {
+        self.rank() >= Priority::UserQuery.rank()
     }
 }
 
@@ -257,9 +285,22 @@ mod tests {
 
     #[test]
     fn priority_rank_ordering() {
-        assert!(Priority::Critical.rank() > Priority::Interactive.rank());
-        assert!(Priority::High.rank() > Priority::Background.rank());
-        assert!(Priority::Low.rank() < Priority::Normal.rank());
+        assert!(Priority::Sms.rank() > Priority::Control.rank());
+        assert!(Priority::Control.rank() > Priority::UserQuery.rank());
+        assert!(Priority::UserQuery.rank() > Priority::Polling.rank());
+        assert!(Priority::Polling.rank() > Priority::Maintenance.rank());
+        assert_eq!(Priority::Sms.name(), "P0");
+        assert!(Priority::Sms.is_sms());
+        assert!(!Priority::Control.is_sms());
+        assert!(Priority::UserQuery.is_user_visible());
+        assert!(!Priority::Polling.is_user_visible());
+    }
+
+    #[test]
+    fn priority_records_use_contract_names() {
+        assert_eq!(Priority::Maintenance.name(), "P4");
+        assert_eq!(Priority::Maintenance.label(), "maintenance");
+        assert_eq!(Priority::Polling.name(), "P3");
     }
 
     #[test]
@@ -272,7 +313,7 @@ mod tests {
 
     #[test]
     fn record_json_shape() {
-        let mut r = TaskRecord::new(7, "scan.cell", TaskKind::Exclusive, Priority::Critical);
+        let mut r = TaskRecord::new(7, "scan.cell", TaskKind::Exclusive, Priority::Control);
         r.status = TaskStatus::Progress;
         r.progress = 42;
         let v = r.to_json();
@@ -283,7 +324,7 @@ mod tests {
 
     #[test]
     fn periodic_job_due_behavior() {
-        let j = PeriodicJob::new("signal", std::time::Duration::from_millis(10), Priority::Normal);
+        let j = PeriodicJob::new("signal", std::time::Duration::from_millis(10), Priority::Polling);
         let now = Instant::now();
         assert!(j.due(now)); // first run is immediately due
         j.mark_started(now);

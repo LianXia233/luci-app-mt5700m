@@ -30,7 +30,7 @@
 //!
 //! # 采集器不与前端抢通道
 //!
-//! 这里的采集任务用 `Priority::Low` + 长 `queued_timeout`，且**永远不阻塞
+//! 这里的采集任务用 `Priority::Maintenance` + 长 `queued_timeout`，且**永远不阻塞
 //! 调用方**：闸门在提交后立即返回，采集在后台worker 线程上跑完再写缓存。
 
 use crate::scheduler::arbiter::AtRequestSpec;
@@ -69,7 +69,6 @@ pub fn raw_ttl(command: &str) -> Duration {
         "AT^TDSIMHP?",
         "AT^NRRCCAPQRY",
         "AT^THERMLDAUTOPARA?",
-        "AT^THERM",
     ];
     if SLOW.iter().any(|s| c.starts_with(s)) {
         return Duration::from_secs(300);
@@ -160,7 +159,7 @@ fn has_single_numeric_arg(c: &str) -> bool {
 /// 读 = 纯查询，不改变模组状态：
 ///   * `AT^X?` / `AT+X?`：标准查询后缀
 ///   * `AT^X` / `AT+X` / `ATI` / `AT+CGSN`：无参查询
-///   * `AT^MONNC` / `AT+CGPADDR` / `AT^CGEQOSRDP`：厂商无参查询
+///   * `AT^MONNC` / `AT+CGPADDR` / `AT+CGEQOSRDP`：厂商无参查询
 ///   * `QUERY_WITH_PARAM` 表内命令：带 cid/index 选择参数的查询
 ///
 /// 写 = 任何其它带 `=` 或 `>` 的赋值、以及动作类命令（拨号/挂断/复位）。
@@ -229,7 +228,6 @@ pub fn is_read_command(command: &str) -> bool {
         "AT+CSCA?",
         "AT+CLCC",
         "AT^SIMSQ?",
-        "AT^CPIN?",
         "AT+CLCK?",
     ];
     READONLY_VERB.iter().any(|v| c.starts_with(v))
@@ -321,7 +319,7 @@ pub fn gate(
     tasks.submit(
         &format!("raw.gate{}", key_for_task),
         TaskKind::BackgroundQuery,
-        Priority::Low,
+        Priority::Maintenance,
         Some(raw_timeout(&cmd_for_task) + Duration::from_secs(4)),
         Box::new(move |ctx: &TaskCtx| {
             let out = collect_raw(ctx, &cmd_for_task);
@@ -357,7 +355,7 @@ pub fn raw_topic(command: &str) -> String {
 /// 拨号，采集器也不会插队。这保证「前端刷新再快也不可能拖慢用户操作」。
 fn collect_raw(ctx: &TaskCtx, command: &str) -> Option<String> {
     let mut spec = AtRequestSpec::ui_query(command);
-    spec.priority = Priority::Low;
+    spec.priority = Priority::Maintenance;
     spec.label = format!("raw gate {}", command);
     spec.dedup_key = Some(format!("raw:{}", command.trim().to_ascii_uppercase()));
     match ctx

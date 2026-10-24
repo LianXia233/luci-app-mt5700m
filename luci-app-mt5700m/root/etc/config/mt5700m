@@ -30,3 +30,23 @@ config connection 'connection'
 	option username ''
 	option password ''
 	option metric '50'
+
+# DNS injected into the two interfaces this package owns.  The manager and
+# /usr/share/mt5700m/dns.sh read these values on every start/up; they are
+# never written to the global resolver or to another interface.
+config dns 'dns'
+	option ipv4_enabled '1'
+	option ipv4_primary '119.29.29.29'
+	option ipv4_secondary '223.5.5.5'
+	option ipv6_enabled '1'
+	option ipv6_primary '2402:4e00::'
+	option ipv6_secondary '2400:3200::1'
+
+# NTP is delegated to the system daemon (sysntpd or chrony); the plugin only
+# writes this ordered server list and reads the daemon's status back.  An
+# empty list is valid only while NTP management is disabled.
+config ntp 'ntp'
+	option enabled '1'
+	list server 'ntp.tencent.com'
+	list server 'time.cloudflare.com'
+	list server 'ntp.aliyun.com'

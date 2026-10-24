@@ -18,6 +18,6 @@ const QUEUED_TIMEOUT: Duration = Duration::from_secs(10);
 /// Read the SSB report. An answer without a `^NRSSBID:` line is reported as a
 /// modem rejection, so the caller keeps whatever it displayed before.
 pub fn refresh(ctx: &RefreshCtx) -> Result<SsbState, BackendError> {
-    let text = ctx.read(NRSSBID, AT_TIMEOUT, QUEUED_TIMEOUT, Priority::Normal)?;
+    let text = ctx.read(NRSSBID, AT_TIMEOUT, QUEUED_TIMEOUT, Priority::Polling)?;
     parser::parse_ssbid(&text).ok_or_else(|| BackendError::AtRejected(text.trim().to_string()))
 }

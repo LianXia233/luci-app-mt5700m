@@ -367,6 +367,7 @@ return view.extend({
 
 		m.render().then(function(formNode) {
 			dom.content(slot, [
+				c.navTabs('connection'),
 				managerError ? E('div', { 'class': 'alert-message warning' }, _('Dial manager status is temporarily unavailable. ') + managerError) : null,
 				device._rpcError ? E('div', { 'class': 'alert-message warning' }, _('Network interface status is temporarily unavailable. ') + device._rpcError) : null,
 				manager.usb_state && manager.usb_state !== 'normal' ? E('div', { 'class': 'alert-message warning' }, _('The MT5700M is not in normal USB mode. Connection settings remain available, but dialing cannot start.')) : null,
@@ -406,8 +407,11 @@ return view.extend({
 		}).catch(function(err) {
 			if (skeleton && skeleton.parentNode)
 				skeleton.parentNode.removeChild(skeleton);
-			dom.content(slot, E('div', { 'class': 'alert-message danger' },
-				[ _('Failed to render the connection form.'), E('br'), String(err && err.message || err) ]));
+				dom.content(slot, [
+					c.navTabs('connection'),
+					E('div', { 'class': 'alert-message danger' },
+					[ _('Failed to render the connection form.'), E('br'), String(err && err.message || err) ])
+				]);
 		});
 
 		// 同步返回容器，满足 view 契约

@@ -2712,3 +2712,542 @@ msgstr "已发送"
 msgid "WebUI"
 msgstr "模块 WebUI"
 
+msgid "Add at least one NTP server."
+msgstr "请至少添加一台 NTP 服务器。"
+
+msgid "Add server"
+msgstr "添加服务器"
+
+msgid "A maximum of %s NTP servers is allowed."
+msgstr "最多允许 %s 台 NTP 服务器。"
+
+msgid "Another DNS operation is already running."
+msgstr "另一个 DNS 操作正在进行中。"
+
+msgid "Another NTP operation is already running."
+msgstr "另一个 NTP 操作正在进行中。"
+
+msgid "Applied"
+msgstr "已应用"
+
+msgid "Applied at"
+msgstr "应用时间"
+
+msgid "Applied servers"
+msgstr "已应用的服务器"
+
+msgid "Applying configuration…"
+msgstr "正在应用配置…"
+
+msgid "Applying DNS configuration…"
+msgstr "正在应用 DNS 配置…"
+
+msgid "Applying NTP configuration…"
+msgstr "正在应用 NTP 配置…"
+
+msgid "Apply NTP configuration"
+msgstr "应用 NTP 配置"
+
+msgid "Apply to system"
+msgstr "应用到系统"
+
+msgid "A primary DNS server is required when this family is enabled."
+msgstr "启用该地址族时必须填写主 DNS 服务器。"
+
+msgid "Automatic retry"
+msgstr "自动重试"
+
+msgid "Backend unavailable"
+msgstr "后端不可用"
+
+msgid "Both families are disabled; applying removes the plugin DNS entries."
+msgstr "IPv4 与 IPv6 均未启用；应用后会移除插件写入的 DNS 配置。"
+
+msgid "Check that the at-webserver service is running. Polling will retry automatically."
+msgstr "请确认 at-webserver 服务正在运行。页面会自动轮询重试。"
+
+msgid "chrony"
+msgstr "chrony"
+
+msgid "Clock and synchronization"
+msgstr "时钟与同步"
+
+msgid "Clock calibration failed"
+msgstr "时钟校准失败"
+
+msgid "Clock plausible"
+msgstr "时钟合理"
+
+msgid "Clock synchronized successfully."
+msgstr "时钟同步成功。"
+
+msgid "Configuration error"
+msgstr "配置错误"
+
+msgid "Configuration has never been applied."
+msgstr "配置从未应用过。"
+
+msgid "Configuration saved. Applying to interfaces…"
+msgstr "配置已保存，正在应用到接口…"
+
+msgid "configured"
+msgstr "已配置"
+
+msgid "Configured / up"
+msgstr "已配置 / 接口已启动"
+
+msgid "Contacting NTP servers…"
+msgstr "正在联系 NTP 服务器…"
+
+msgid "Current / last server"
+msgstr "当前 / 上次服务器"
+
+msgid "Default DNS servers restored (not applied)."
+msgstr "默认 DNS 服务器已恢复（尚未应用）。"
+
+msgid "Default NTP servers restored (not applied)."
+msgstr "默认 NTP 服务器已恢复（尚未应用）。"
+
+msgid "Device local time"
+msgstr "设备本地时间"
+
+msgid "DNS configuration applied and verified."
+msgstr "DNS 配置已应用并验证。"
+
+msgid "DNS configuration applied with warnings: "
+msgstr "DNS 配置已应用，但有警告："
+
+msgid "DNS configuration is not loaded."
+msgstr "DNS 配置未加载。"
+
+msgid "DNS configuration saved. Apply it to update the interfaces."
+msgstr "DNS 配置已保存。应用后才会更新接口。"
+
+msgid "DNS resolution failed"
+msgstr "DNS 解析失败"
+
+msgid "DNS servers"
+msgstr "DNS 服务器"
+
+msgid "DNS status is unavailable. The background service may be starting."
+msgstr "无法获取 DNS 状态，后台服务可能正在启动。"
+
+msgid "DNS verification: IPv4 %s, IPv6 %s"
+msgstr "DNS 验证：IPv4 %s，IPv6 %s"
+
+msgid "down"
+msgstr "未启动"
+
+msgid "Duplicate NTP server: %s"
+msgstr "NTP 服务器重复：%s"
+
+msgid "Effective DNS on the plugin interfaces"
+msgstr "插件接口上的实际 DNS"
+
+msgid "Effective servers"
+msgstr "实际生效服务器"
+
+msgid "e.g. ntp.example.com"
+msgstr "例如 ntp.example.com"
+
+msgid "Enable at least one NTP server, or turn NTP management off."
+msgstr "请至少启用一台 NTP 服务器，或关闭 NTP 管理。"
+
+msgid "External ntpd"
+msgstr "外部 ntpd"
+
+msgid "Failed"
+msgstr "失败"
+
+msgid "Failed %s time(s), next retry %s"
+msgstr "已失败 %s 次，下次重试 %s"
+
+msgid "Failed to apply DNS configuration: "
+msgstr "应用 DNS 配置失败："
+
+msgid "Failed to apply NTP configuration: "
+msgstr "应用 NTP 配置失败："
+
+msgid "Failed to restore defaults: "
+msgstr "恢复默认值失败："
+
+msgid "In sync"
+msgstr "已同步"
+
+msgid "Interface"
+msgstr "接口"
+
+msgid "Internal error"
+msgstr "内部错误"
+
+msgid "Invalid %s address: %s"
+msgstr "%s 地址无效：%s"
+
+msgid "IPv6 was unavailable at last apply"
+msgstr "上次应用时 IPv6 不可用"
+
+msgid "L3 device"
+msgstr "三层设备"
+
+msgid "Last applied: %s"
+msgstr "上次应用：%s"
+
+msgid "Last apply"
+msgstr "上次应用"
+
+msgid "Last apply error: "
+msgstr "上次应用错误："
+
+msgid "Last attempt"
+msgstr "上次尝试"
+
+msgid "Last error"
+msgstr "上次错误"
+
+msgid "Last successful sync"
+msgstr "上次成功同步"
+
+msgid "Loading…"
+msgstr "加载中…"
+
+msgid "Matches saved"
+msgstr "与已保存配置一致"
+
+msgid "Measured offset"
+msgstr "实测偏差"
+
+msgid "mismatch"
+msgstr "不一致"
+
+msgid "Move down"
+msgstr "下移"
+
+msgid "Move up"
+msgstr "上移"
+
+msgid "Network unreachable"
+msgstr "网络不可达"
+
+msgid "Never applied"
+msgstr "从未应用"
+
+msgid "New NTP server"
+msgstr "新的 NTP 服务器"
+
+msgid "No"
+msgstr "否"
+
+msgid "none"
+msgstr "无"
+
+msgid "No NTP servers configured. Add at least one server before saving."
+msgstr "尚未配置 NTP 服务器。保存前请至少添加一台。"
+
+msgid "No status was returned by the backend."
+msgstr "后端没有返回状态。"
+
+msgid "not configured"
+msgstr "未配置"
+
+msgid "Not running"
+msgstr "未运行"
+
+msgid "Not synchronized"
+msgstr "未同步"
+
+msgid "not verifiable"
+msgstr "无法验证"
+
+msgid "Not verifiable"
+msgstr "无法验证"
+
+msgid "NTP configuration applied."
+msgstr "NTP 配置已应用。"
+
+msgid "NTP configuration is not loaded."
+msgstr "NTP 配置未加载。"
+
+msgid "NTP configuration saved. It has not been applied to the system service yet."
+msgstr "NTP 配置已保存，尚未应用到系统服务。"
+
+msgid "NTP management"
+msgstr "NTP 管理"
+
+msgid "NTP management is disabled. Existing system servers are restored when applied."
+msgstr "NTP 管理已关闭。应用后会恢复系统原有服务器。"
+
+msgid "NTP provider"
+msgstr "NTP 提供方"
+
+msgid "NTP server cannot be empty."
+msgstr "NTP 服务器不能为空。"
+
+msgid "NTP server did not respond"
+msgstr "NTP 服务器无响应"
+
+msgid "NTP server name is invalid."
+msgstr "NTP 服务器名称无效。"
+
+msgid "NTP server name is too long."
+msgstr "NTP 服务器名称过长。"
+
+msgid "NTP server rejected the request"
+msgstr "NTP 服务器拒绝了请求"
+
+msgid "NTP server %s"
+msgstr "NTP 服务器 %s"
+
+msgid "NTP servers"
+msgstr "NTP 服务器"
+
+msgid "NTP status is unavailable. The background service may be starting."
+msgstr "无法获取 NTP 状态，后台服务可能正在启动。"
+
+msgid "NTP synchronization and DNS servers for the plugin-managed cellular interfaces. Timezone always follows the device configuration."
+msgstr "为插件管理的蜂窝接口配置 NTP 时间同步与 DNS 服务器。时区始终跟随设备配置。"
+
+msgid "NTP time sync"
+msgstr "NTP 时间同步"
+
+msgid "Offset: %s ms"
+msgstr "偏差：%s 毫秒"
+
+msgid "Only the plugin-managed interfaces (MT5700M / MT5700Mv6) are changed. Global DNS, LAN, WAN and DHCP settings are not touched."
+msgstr "只修改插件管理的接口（MT5700M / MT5700Mv6），不会改动全局 DNS、LAN、WAN 和 DHCP 设置。"
+
+msgid "Optional fallback."
+msgstr "可选的备用地址。"
+
+msgid "Partially applied"
+msgstr "部分应用"
+
+msgid "Pending apply"
+msgstr "待应用"
+
+msgid "Preparing manual synchronization…"
+msgstr "正在准备手动同步…"
+
+msgid "Primary"
+msgstr "主"
+
+msgid "Primary DNS"
+msgstr "主 DNS"
+
+msgid "Priority %s"
+msgstr "优先级 %s"
+
+msgid "Read-only"
+msgstr "只读"
+
+msgid "Required when this family is enabled."
+msgstr "启用该地址族时必填。"
+
+msgid "Restore default DNS servers"
+msgstr "恢复默认 DNS 服务器"
+
+msgid "Restore default NTP servers"
+msgstr "恢复默认 NTP 服务器"
+
+msgid "Restore defaults"
+msgstr "恢复默认值"
+
+msgid "Retry now"
+msgstr "立即重试"
+
+msgid "Runtime DNS"
+msgstr "运行时 DNS"
+
+msgid "Runtime DNS state is unavailable."
+msgstr "无法获取运行时 DNS 状态。"
+
+msgid "Runtime mismatch"
+msgstr "运行时不一致"
+
+msgid "Runtime verification is not possible while this family is disabled or its interface is absent."
+msgstr "该地址族已禁用或其接口不存在时，无法进行运行时验证。"
+
+msgid "Save and apply DNS configuration"
+msgstr "保存并应用 DNS 配置"
+
+msgid "Save & apply"
+msgstr "保存并应用"
+
+msgid "Saved, applied and runtime-verified are separate states. Runtime values are read from the live interfaces."
+msgstr "已保存、已应用和运行时已验证是三种独立状态。运行时数值直接读取当前接口。"
+
+msgid "Saved vs applied"
+msgstr "已保存与已应用"
+
+msgid "“Save” only persists the configuration. “Save & apply” also updates the interfaces and verifies the runtime resolvers."
+msgstr "“保存”只持久化配置；“保存并应用”还会更新接口并验证运行时 DNS。"
+
+msgid "Saving and applying the DNS configuration…"
+msgstr "正在保存并应用 DNS 配置…"
+
+msgid "Saving only persists the configuration. “Apply to system” restarts the detected NTP service."
+msgstr "保存只持久化配置。“应用到系统”会重启检测到的 NTP 服务。"
+
+msgid "Scheduled"
+msgstr "已计划"
+
+msgid "Secondary"
+msgstr "备用"
+
+msgid "Secondary DNS"
+msgstr "备用 DNS"
+
+msgid "%s enabled server(s); the first one is preferred."
+msgstr "已启用 %s 台服务器；优先使用第一台。"
+
+msgid "Server: %s"
+msgstr "服务器：%s"
+
+msgid "Servers are tried in order. Disabled entries stay in the list but are not applied to the system NTP service."
+msgstr "服务器按顺序尝试。已禁用的条目保留在列表中，但不会写入系统 NTP 服务。"
+
+msgid "Server %s: %s"
+msgstr "服务器 %s：%s"
+
+msgid "Stopped after repeated failures"
+msgstr "连续失败后已停止"
+
+msgid "Synchronization failed: "
+msgstr "同步失败："
+
+msgid "Synchronized and trusted"
+msgstr "已同步且可信"
+
+msgid "Synchronized, evidence is stale"
+msgstr "已同步，但证据已过期"
+
+msgid "Synchronize now"
+msgstr "立即同步"
+
+msgid "Synchronizing now…"
+msgstr "正在同步…"
+
+msgid "Sync now"
+msgstr "立即同步"
+
+msgid "Sync status unknown"
+msgstr "同步状态未知"
+
+msgid "sysntpd"
+msgstr "sysntpd"
+
+msgid "The backend did not return a task id."
+msgstr "后端没有返回任务 ID。"
+
+msgid "The backend will trigger the detected system NTP service to synchronize immediately and report the verified result. If no system service exists, it runs one one-shot query."
+msgstr "后端将触发检测到的系统 NTP 服务立即校时，并报告经过验证的结果。系统没有 NTP 服务时，只执行一次单次查询。"
+
+msgid "The background service is unavailable. This page only reads cached configuration and will recover automatically."
+msgstr "后台服务不可用。本页只读取缓存配置，服务恢复后会自动更新。"
+
+msgid "The clock is read through the backend time service. This card never sends NTP packets; use manual sync in the NTP panel."
+msgstr "时钟通过后端时间服务读取。此卡片不会发送 NTP 报文；如需同步请使用 NTP 面板中的手动同步。"
+
+msgid "The documented IPv4 and IPv6 defaults will replace the saved values. Nothing is applied until you press “Save & apply”."
+msgstr "将用文档中的 IPv4 和 IPv6 默认值替换已保存值。在按下“保存并应用”之前不会生效。"
+
+msgid "The live interface differs from the saved configuration. Apply again and check the interface."
+msgstr "当前接口与已保存配置不一致。请重新应用并检查接口。"
+
+msgid "The live interface uses exactly the saved %s resolvers."
+msgstr "当前接口使用的正是已保存的 %s 解析器。"
+
+msgid "The plugin interfaces will be updated and their runtime resolvers verified. IPv4 is never blocked by an unavailable IPv6 interface."
+msgstr "将更新插件接口并验证其运行时 DNS。IPv6 接口不可用不会影响 IPv4。"
+
+msgid "The saved DNS configuration is unavailable."
+msgstr "无法获取已保存的 DNS 配置。"
+
+msgid "The saved NTP configuration is unavailable."
+msgstr "无法获取已保存的 NTP 配置。"
+
+msgid "The saved NTP configuration will be written to the detected system service and the service may be restarted."
+msgstr "已保存的 NTP 配置将写入检测到的系统服务，该服务可能会重启。"
+
+msgid "The sync command completed, but the result could not be verified. The clock remains untrusted."
+msgstr "同步命令已完成，但无法验证结果。时钟仍被视为不可信。"
+
+msgid "The system clock is before 2020 and cannot be trusted"
+msgstr "系统时钟早于 2020 年，不可信任"
+
+msgid "The three documented servers will replace the saved list. Nothing is applied until you press “Apply to system”."
+msgstr "将用三台文档默认服务器替换已保存列表。在按下“应用到系统”之前不会生效。"
+
+msgid "This server is already in the list."
+msgstr "该服务器已在列表中。"
+
+msgid "Time & DNS"
+msgstr "时间与 DNS"
+
+msgid "TIME & DNS"
+msgstr "时间与 DNS"
+
+msgid "Timezone"
+msgstr "时区"
+
+msgid "Unable to read status: "
+msgstr "读取状态失败："
+
+msgid "Unix timestamp"
+msgstr "Unix 时间戳"
+
+msgid "Untrusted clock"
+msgstr "时钟不可信"
+
+msgid "up"
+msgstr "已启动"
+
+msgid "Used by the MT5700M IPv4 interface."
+msgstr "用于 MT5700M IPv4 接口。"
+
+msgid "Used by the MT5700M IPv6 interface when it is available. An unavailable IPv6 interface does not affect IPv4."
+msgstr "MT5700M IPv6 接口可用时使用。IPv6 接口不可用不会影响 IPv4。"
+
+msgid "UTC, independent of timezone"
+msgstr "UTC，与时区无关"
+
+msgid "verified"
+msgstr "已验证"
+
+msgid "Verified"
+msgstr "已验证"
+
+msgid "Waiting for the backend…"
+msgstr "等待后端响应…"
+
+msgid "When disabled, the plugin restores the system NTP configuration it backed up before first use."
+msgstr "关闭后，插件会恢复首次使用前备份的系统 NTP 配置。"
+
+msgid "Will apply: %s"
+msgstr "将应用：%s"
+
+msgid "Yes"
+msgstr "是"
+
+msgid "Attention"
+msgstr "注意"
+
+msgid "Error"
+msgstr "错误"
+
+msgid "In progress"
+msgstr "进行中"
+
+msgid "Lock panel not found. Scroll down to \"Frequency and cell selection\"."
+msgstr "未找到锁定面板。请向下滚动到“频段与小区选择”。"
+
+msgid "MT5700M sections"
+msgstr "MT5700M 页面导航"
+
+msgid "OK"
+msgstr "正常"
+
+msgid "%s cell data filled into %s lock panel. Review and click \"Review and apply\"."
+msgstr "已将 %s 小区数据填入 %s 锁定面板。请检查后点击“检查并应用”。"
+
+msgid "Terminal"
+msgstr "终端"

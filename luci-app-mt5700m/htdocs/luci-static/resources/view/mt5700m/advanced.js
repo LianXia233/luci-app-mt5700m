@@ -39,6 +39,7 @@ return view.extend({
 			return data;
 		}, function(err) {
 			holder.replaceChildren(E('div', { 'class': 'mt-page' }, [
+				c.navTabs('advanced'),
 				E('div', { 'class': 'alert-message error' }, String(err && err.message || err))
 			]));
 		});
@@ -93,6 +94,7 @@ return view.extend({
 		}).join('\n' + '\n');
 		return E('div', { 'class': 'mt-page' }, [
 			c.cssLink(),
+			c.navTabs('advanced'),
 			c.hero(_('ADVANCED'), _('Advanced Settings'), _('Hardware interfaces, safeguards and diagnostic tools for experienced users. Normal operation does not require changes on this page.'), [
 				E('div', { 'class': 'mt-conn-state' }, [
 					c.svgStatusPulse('ok', 14),

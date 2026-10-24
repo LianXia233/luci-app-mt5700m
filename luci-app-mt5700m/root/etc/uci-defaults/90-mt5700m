@@ -50,6 +50,51 @@ if ! uci -q get mt5700m.connection >/dev/null 2>&1; then
 		break
 	done
 fi
+
+# DNS settings (IPv4 + IPv6, applied only to MT5700M/MT5700Mv6).
+# A fresh install gets the documented defaults.  An upgrade from the old
+# connection.dns_list option imports those addresses once as the initial
+# values; an existing mt5700m.dns section is never modified.
+if ! uci -q get mt5700m.dns >/dev/null 2>&1; then
+	uci -q set mt5700m.dns='dns'
+	uci -q set mt5700m.dns.ipv4_enabled='1'
+	uci -q set mt5700m.dns.ipv4_primary='119.29.29.29'
+	uci -q set mt5700m.dns.ipv4_secondary='223.5.5.5'
+	uci -q set mt5700m.dns.ipv6_enabled='1'
+	uci -q set mt5700m.dns.ipv6_primary='2402:4e00::'
+	uci -q set mt5700m.dns.ipv6_secondary='2400:3200::1'
+
+	legacy="$(uci -q get mt5700m.connection.dns_list 2>/dev/null || true)"
+	if [ -n "${legacy}" ]; then
+		v4p=''; v4s=''; v6p=''; v6s=''
+		for value in ${legacy}; do
+			case "${value}" in
+				*:*)
+					if [ -z "${v6p}" ]; then v6p="${value}";
+					elif [ -z "${v6s}" ]; then v6s="${value}"; fi
+					;;
+				*)
+					if [ -z "${v4p}" ]; then v4p="${value}";
+					elif [ -z "${v4s}" ]; then v4s="${value}"; fi
+					;;
+			esac
+		done
+		[ -z "${v4p}" ] || uci -q set "mt5700m.dns.ipv4_primary=${v4p}"
+		[ -z "${v4p}" ] || uci -q set "mt5700m.dns.ipv4_secondary=${v4s}"
+		[ -z "${v6p}" ] || uci -q set "mt5700m.dns.ipv6_primary=${v6p}"
+		[ -z "${v6p}" ] || uci -q set "mt5700m.dns.ipv6_secondary=${v6s}"
+	fi
+	unset legacy v4p v4s v6p v6s value
+fi
+# NTP server configuration.  Existing sections (including an explicit empty
+# list saved by the page) are never touched on upgrade.
+if ! uci -q get mt5700m.ntp >/dev/null 2>&1; then
+	uci -q set mt5700m.ntp='ntp'
+	uci -q set mt5700m.ntp.enabled='1'
+	uci -q add_list mt5700m.ntp.server='ntp.tencent.com'
+	uci -q add_list mt5700m.ntp.server='time.cloudflare.com'
+	uci -q add_list mt5700m.ntp.server='ntp.aliyun.com'
+fi
 uci -q commit mt5700m
 
 if [ -z "${IPKG_INSTROOT:-}" ]; then

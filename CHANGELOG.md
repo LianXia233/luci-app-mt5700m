@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [3.3.0] - 2026-10-24
 
 ### Added
 
@@ -20,7 +20,93 @@
     重新接入时，`last_run` 早于 interval 的积压任务立即触发，信号/注册
     （`High`）先于低价值遥测被服务，首帧更快成形。
 
+- **时间服务（NTP）与统一时间接口**（新增 `core/time.rs`、`modules/timesync/`，
+  路由 `time.now` / `time.status` / `time.config_get` / `time.config_set` /
+  `time.reset` / `time.apply` / `time.sync`）：
+  - 只配置和观测系统已有的时钟控制器：按 `chronyd` 运行中 → `sysntpd` →
+    外部 `ntpd` → chrony 配置/初始化脚本 → none 的顺序检测，绝不另起第二个
+    时钟守护进程。chrony 只替换带 `# BEGIN/END mt5700m-managed` 标记的块。
+  - 默认服务器 `ntp.tencent.com`、`time.cloudflare.com`、`ntp.aliyun.com`；
+    支持增删、启停、排序，UCI `mt5700m.ntp` 持久化，升级不覆盖已有配置。
+  - 手动对时有界执行，区分 DNS / 网络不可达 / 服务器无响应 / 时钟校准失败；
+    有系统服务时只触发该控制器（chrony 用 `chronyc`，sysntpd 重启 procd
+    实例并轮询 `ntpq`/`adjtimex`），外部 `ntpd` 只读，绝不并行启动第二个
+    `ntpd`；仅“完全没有系统服务”时才使用单次 `ntpd -nq`。保存未应用时
+    拒绝同步并提示先应用；无可读证据时明确记为 `unverified`。
+    自动重试有退避与日志去重；NTP 失败不影响插件启动、拨号或 AT 通道。
+  - `core/time.rs` 是后端唯一时间来源：Unix 秒/毫秒、设备时区、本地显示；
+    时区只影响显示，未同步时钟明确标为不可信，绝不伪造成功。
+
+- **DNS 注入模块与所有启动/up 入口统一应用**（新增 `modules/dns/`、
+  `root/usr/share/mt5700m/dns.sh`、`root/etc/hotplug.d/iface/95-mt5700m-dns`，
+  路由 `dns.status` / `dns.config_get` / `dns.config_set` / `dns.reset` /
+  `dns.apply`）：
+  - 默认 IPv4 `119.29.29.29` / `223.5.5.5`，IPv6 `2402:4e00::` /
+    `2400:3200::1`；两族独立开关，启用族必须有至少一个合法地址。
+  - 只写 `network.MT5700M` / `network.MT5700Mv6` 的 `dns` 与 `peerdns`，
+    不修改全局 DNS、LAN/WAN、DHCP、dnsmasq 或路由。
+  - init、reload、monitor、connect/redial、USB 热插拔、procd `ifup` 全部
+    调用同一个 `dns.sh apply`，每次重新读取 UCI；写前比较，变化才 commit +
+    reload；运行时状态落盘并区分保存 / 已应用 / 已验证。
+
+- **LuCI「时间与 DNS」页面**（`view/mt5700m/time.js`，菜单
+  `admin/modem/mt5700m/time`）：NTP 总开关、服务器列表增删改/启停/排序、
+  立即对时与真实任务状态、设备时区与本地时间、DNS 双栈表单、恢复默认、
+  保存并应用、实际生效值与上次应用结果。页面沿用统一 Tab / 弹窗 / 按钮 /
+  表单组件；Tab 写入 URL，刷新/轮询/重渲染不跳页，未保存输入在切换页签、
+  轮询与重渲染后保留；离开页面只停止本页轮询与任务观察，不影响拨号、
+  后台采集或短信事务。
+
+- **LuCI 组件统一**：`components.js` 提供统一的 `NAV_TABS` / `panelTabs` /
+  `confirmDialog` / `statusTag`、按钮与表单控件状态，所有主页面接入同一套
+  设计令牌、响应式布局、语义 SVG 图标与状态标签；弹窗统一遮罩、焦点、
+  Escape/取消/确认与异步禁用，危险操作二次确认。
+
+- **AT 指令审计**：新增 `docs/at-command-audit.md`，逐条对照随附
+  MT5700M AT 手册核对命令、参数、响应、超时与错误码；修正
+  `AT^SIMSQ?` 超时分组、`AT^CPIN?` 只读白名单、`AT^THERM` 慢命令 TTL
+  等偏差。手册未收录的 `AT^SETDIRECTIP` 与 `AT^PHYNUM=IMEI` 保留为
+  legacy 命令并在代码/文档中显式标注，失败时按“不支持”降级。
+
+### Changed
+
+- **发布版本 3.2.0 → 3.3.0**（`PKG_VERSION`、README 徽章、
+  `components.js` 的 `STYLE_VERSION` 同步），随包 `at-webserver` 重新交叉
+  编译为 aarch64-musl，包含新增 `time.*` / `dns.*` 路由。
+- **DNS 运行入口补齐**：在原有 init/reload/monitor/connect/redial/USB 热插拔
+  之外新增 `ifup` 热插拔脚本，接口每次 up 后立即应用当前 DNS 配置。
+- **包架构修正**：`LUCI_PKGARCH` 从 `all` 改为 `aarch64_cortex-a53`。包内是
+  aarch64-musl 静态 ELF，标成 `all` 会让 opkg/apk 在 mips/x86 上安装后在
+  exec 阶段失败；其它目标需重编 Rust 二进制并同步该值。
+
+### Fixed
+
+- **`time.js` DNS 表单错误映射**：主/备 DNS 的错误节点绑定到各自的字段
+  容器，修复切换页签或校验失败后错误提示错位；新增 DNS 状态说明行。
+- **`components.js` 样式版本漂移**：`STYLE_VERSION` 从遗留的 `2.8.1`
+  对齐到包版本，避免浏览器继续使用旧 CSS 缓存。
+- **清理失效前端测试脚本**：删除引用已不存在 `controls.js` 的
+  `_test_render.js` 与无断言的 `_test_full.js`；`_test_v2313.js` 改为按
+  `'require ... as alias'` 协议加载真实 `parser.js` / `components.js`。
+
+### Tests
+
+- Rust：`cargo test` **368 passed**，覆盖调度器 25 ms 实际发包间隔、
+  SMS P0 事务暂停/恢复、超时/取消/URC/串口错误、缓存 SWR 与合并、
+  DNS 配置校验与三态、NTP 提供方检测与解析。
+- LuCI：`tests/ui-time.js` **24 passed**（Tab 持久化、DNS 校验、未保存
+  输入保留、轮询清理）、`_test_v2313.js` **24 passed**。
+- 脚本：全部 `scripts/*.sh` 与 `node --check` 通过；aarch64-musl release
+  交叉编译通过，`strings` 确认二进制包含 `time.status` / `dns.apply` /
+  `ntp.sync` / `task.get`。
+
 ### Docs
+
+- 新增 `docs/architecture-v2/time-dns.md`（统一时间接口、NTP 提供方与状态机、
+  DNS 单入口与启动/up 入口表、保存/应用/验证三态）与
+  `docs/at-command-audit.md`（逐条命令审计、修正表、未收录命令、未验证项）。
+- `api-contract.md` 增补 `time.*` / `dns.*` / `task.*` 路由；架构与异步架构
+  文档补 `core/time.rs`、`modules/timesync`、`modules/dns` 模块表与说明。
 
 - **补充前端活动闸门文档**：在 `docs/architecture-v2/data-flow.md` §4 任务
   生命周期补三种周期任务注册与闸门时序，`architecture.md` §5 并发模型补

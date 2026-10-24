@@ -316,7 +316,7 @@ pub fn register(tasks: &TaskManager) {
     tasks.add_periodic_always(
         "sched.bandlock",
         Duration::from_secs(15),
-        Priority::Background,
+        Priority::Polling,
         Some(Duration::from_secs(120)),
         Box::new({
             let st = Arc::new(Mutex::new(SchedulerState {

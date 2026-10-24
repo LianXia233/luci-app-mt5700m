@@ -66,6 +66,7 @@
 | `core/runtime.rs` | 轻量线程运行时工具（`spawn_thread` / `next_id` / `now_ms`），std-only 低依赖，保持静态链接与 OpenWrt 交叉编译稳定 |
 | `core/error.rs` | 统一错误模型 `BackendError`：机器可读 `code` + 人类可读 `message` + `retryable`；禁止打印 IMEI/IMSI/短信内容等敏感数据 |
 | `core/task.rs` | 任务模型：生命周期、`Priority` 档次、超时/重试策略、JSON 序列化 |
+| `core/time.rs` | 全后端唯一时间接口：Unix 秒/毫秒、设备时区、本地显示；时区只影响显示，未同步时钟标记为不可信 |
 | `core/radio.rs` | 全后端唯一的 ARFCN → 频段表 |
 | `scheduler/jobs.rs` | 任务调度中心（`TaskManager`）：注册/跟踪/取消/超时/周期任务（周期抓取快照写入 StateCache、开机预热），发布 `task.*` 生命周期事件 |
 | `scheduler/arbiter.rs` | **AtArbiter**：单执行线程串行化全部 AT，优先级/去重/超时/重试/独占/协作取消/背压 |
@@ -75,6 +76,8 @@
 | `state/bus.rs` | **EventBus**：主题订阅/发布，高频遥测 100ms 合并（coalescing），task/usb/modem/sms/scan 即时直推 |
 | `state/refresh.rs` | **RefreshCtx**：模块 service 共用的刷新上下文（AT + 缓存 + 总线），退避/陈旧回退/占空比让行策略只此一份 |
 | `serial/presence.rs` | **设备监视器**：USB 热插拔监督（在位 / 模式变化 → 缓存失效、取消无效任务、重连传输层、推事件） |
+| `modules/timesync/` | **NTP 时间服务**：检测并配置系统唯一的时钟控制器（`sysntpd` / `chronyd` / 外部 `ntpd` / none），保存服务器顺序与开关，提供有界手动对时和最近一次结果。不实现第二套 NTP，不占用 AT |
+| `modules/dns/` | **DNS 注入**：只读写 `network.MT5700M` / `MT5700Mv6` 的解析器，统一经 `/usr/share/mt5700m/dns.sh` 应用；保存 / 已应用 / 运行时验证三态分离，不碰全局 DNS 与 DHCP |
 | `daemon.rs` | 接线层：HTTP/控制套接字/WebSocket→「读缓存 / 下发任务」，WebSocket 事件推送 |
 
 ## 4. Task Scheduler 设计

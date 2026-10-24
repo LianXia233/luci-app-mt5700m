@@ -474,7 +474,7 @@ fn submit(tasks: &Arc<TaskManager>, command: String) {
     tasks.submit(
         TASK_NAME,
         TaskKind::Exclusive,
-        Priority::Critical,
+        Priority::Control,
         Some(TASK_TIMEOUT),
         Box::new(move |ctx: &TaskCtx| match ctx.at_request(spec) {
             Ok(text) => {

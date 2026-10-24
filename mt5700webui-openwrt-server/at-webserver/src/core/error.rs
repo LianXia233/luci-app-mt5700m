@@ -29,6 +29,12 @@ pub enum BackendError {
     PermissionDenied,
     /// The USB device vanished mid-operation.
     UsbDisconnected,
+    /// A task id or named resource does not exist.
+    NotFound(String),
+    /// A platform capability this route needs is absent (UCI, ubus, a
+    /// management script). Distinct from `Internal`: nothing is broken in the
+    /// daemon, the host simply cannot perform the operation.
+    Unavailable(String),
     /// Anything else (bug, unexpected shape).
     Internal(String),
 }
@@ -59,6 +65,8 @@ impl BackendError {
             BackendError::InvalidParameter(_) => "INVALID_PARAMETER",
             BackendError::PermissionDenied => "PERMISSION_DENIED",
             BackendError::UsbDisconnected => "USB_DISCONNECTED",
+            BackendError::NotFound(_) => "NOT_FOUND",
+            BackendError::Unavailable(_) => "UNAVAILABLE",
             BackendError::Internal(_) => "INTERNAL_ERROR",
         }
     }
@@ -75,6 +83,8 @@ impl BackendError {
             BackendError::InvalidParameter(p) => format!("参数无效: {}", p),
             BackendError::PermissionDenied => "权限不足".into(),
             BackendError::UsbDisconnected => "USB 设备已断开".into(),
+            BackendError::NotFound(what) => format!("未找到: {}", what),
+            BackendError::Unavailable(what) => format!("当前系统不支持: {}", what),
             BackendError::Internal(e) => format!("内部错误: {}", e),
         }
     }

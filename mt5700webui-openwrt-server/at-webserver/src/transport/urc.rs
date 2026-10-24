@@ -52,6 +52,30 @@ pub fn passthrough(line: &str) -> bool {
     t.starts_with("+CUSD:") && t.contains(',')
 }
 
+/// Lines that are *always* unsolicited and can safely be removed from a
+/// command's response while it is in flight.
+///
+/// Deliberately conservative: `^HCSQ:`/`+C5GREG:` and `+CUSD:` are also
+/// produced by direct queries, so they stay in the response here and are
+/// dispatched by the idle monitor only. Losing the rare URC that arrives in
+/// the middle of another command is worse than a slightly wider filter, but
+/// corrupting a query reply is worse still.
+pub fn is_async_urc(line: &str) -> bool {
+    let t = line.trim();
+    t == "RING"
+        || t == "IRING"
+        || t == "^IRING"
+        || t == "NO CARRIER"
+        || t.starts_with("+CLIP:")
+        || t.starts_with("+CMTI:")
+        || t.starts_with("+CMT:")
+        || t.starts_with("^SMMEMFULL")
+        || t.contains("MEMORY FULL")
+        || t.starts_with("^REJINFO")
+        || t.starts_with("+CGEV:")
+        || t.contains("^CEND:")
+}
+
 impl Dispatcher {
     pub fn new() -> Self {
         Dispatcher {

@@ -127,6 +127,8 @@ pub fn routes() -> Vec<Route> {
     v.extend(crate::modules::qos::api::routes());
     v.extend(crate::modules::system::api::routes());
     v.extend(crate::modules::sms::api::routes());
+    v.extend(crate::modules::dns::api::routes());
+    v.extend(crate::modules::timesync::api::routes());
     v
 }
 
@@ -321,6 +323,8 @@ mod tests {
             "sms.ims_set" => pairs(&[("enabled", Value::Bool(true))]),
             "sms.analyze" => pairs(&[("text", json::str_val("hello"))]),
             "system.fota_start" => pairs(&[("url", json::str_val("http://fota.example.com/"))]),
+            "task.get" => pairs(&[("task_id", json::num_val(1))]),
+            "task.cancel" => pairs(&[("task_id", json::num_val(1))]),
             "cell.scan_start" => pairs(&[
                 ("rat", json::str_val("2")),
                 ("plmn", json::str_val("46000")),
@@ -343,7 +347,14 @@ mod tests {
             match (route.requires_modem, out) {
                 // A cold cache with no modem must still answer with a domain
                 // object (the frontends render placeholders), never panic.
-                (false, Err(e)) => broken.push(format!("{}: {} ({})", route.name, e.message(), e.code())),
+                // `task.get`/`task.cancel` are the deliberate exception: an
+                // unknown id is a client error even with no modem.
+                (false, Err(e)) => {
+                    let missing_task = route.name.starts_with("task.") && e.code() == "NOT_FOUND";
+                    if !missing_task {
+                        broken.push(format!("{}: {} ({})", route.name, e.message(), e.code()));
+                    }
+                }
                 // On-demand reads may fail, but only with a modem error the UI
                 // can explain — never a routing/parameter bug.
                 (true, Err(e)) => {

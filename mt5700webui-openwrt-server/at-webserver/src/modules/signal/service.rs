@@ -82,7 +82,7 @@ pub fn spawn(tasks: &TaskManager) {
     tasks.add_periodic(
         "signal.refresh",
         PERIOD,
-        Priority::High,
+        Priority::UserQuery,
         Some(WATCHDOG_TIMEOUT),
         Box::new(|ctx| {
             let channel = TaskChannel::new(ctx);

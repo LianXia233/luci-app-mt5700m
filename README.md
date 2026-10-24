@@ -4,7 +4,7 @@
 
 **面向移远 Quectel MT5700M-CN 5G 模组的高性能 OpenWrt LuCI 管理器与 Web 控制中心**
 
-[![Version](https://img.shields.io/badge/Version-v3.2.0-blue.svg?style=flat-square)](https://github.com/LianXia233/luci-app-mt5700m/releases)
+[![Version](https://img.shields.io/badge/Version-v3.3.0-blue.svg?style=flat-square)](https://github.com/LianXia233/luci-app-mt5700m/releases)
 [![OpenWrt](https://img.shields.io/badge/OpenWrt-Filogic%20%7C%20ImmortalWrt-00C49F.svg?style=flat-square&logo=openwrt)](https://openwrt.org/)
 [![Backend](https://img.shields.io/badge/Backend-Rust%20(std--only)-DEA584.svg?style=flat-square&logo=rust)](mt5700webui-openwrt-server/at-webserver/)
 [![WebUI](https://img.shields.io/badge/WebUI-React%20%2B%20Semi%20Design-61DAFB.svg?style=flat-square&logo=react)](mt5700webui-openwrt-server/semi-tcpweb/)
@@ -26,6 +26,8 @@
 | **数据面拨号** | NCM 协议（基于 `kmod-usb-net-cdc-ncm`） |
 | **控制面通讯** | Rust 后端独占 AT 串口（`TIOCEXCL`），LuCI 走本地控制套接字、WebUI 走 WebSocket |
 | **访问入口** | LuCI：`调制解调器` → `MT5700M 管理` · WebUI：`http://<路由器IP>/5700/` |
+| **时间同步** | 复用系统已有 `sysntpd` / `chrony` / 外部 `ntpd`，插件只做配置、状态与手动对时，不启动第二个时钟守护 |
+| **DNS 注入** | 仅写 `MT5700M` / `MT5700Mv6` 两个插件接口；init、reload、monitor、connect/redial、USB 与 `ifup` 热插拔全部走同一个 `dns.sh apply` |
 
 ---
 

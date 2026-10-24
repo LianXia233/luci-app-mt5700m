@@ -167,6 +167,102 @@ function routeCall(name, params) {
 }
 
 /*
+ * waitTask —— 统一异步任务观察器（长操作：扫描 / FOTA / NTP·DNS 应用）。
+ *
+ * 后端的长操作都返回 task_id，页面不应阻塞等结果。轮询 `task.get`：
+ *   - completed → resolve 任务记录（result 在 rec.result）；
+ *   - failed / cancelled / timeout → reject（带后端错误文本）；
+ *   - 轮询超过 opts.timeout（默认 120s）→ reject；
+ *   - 后端短暂不可达（route 返回 null）先重试 10s，不会把「查不到状态」
+ *     误报为「任务失败」；超过后才明确报错。
+ *
+ * opts.signal（AbortSignal）用于页面卸载时释放定时器；onProgress 收到每次
+ * 原始记录，调用方可据此更新进度，但这里的 Promise 只 settle 一次。
+ */
+function waitTask(taskId, opts) {
+	opts = opts || {};
+	var interval = Math.max(200, opts.interval || 500);
+	var timeout = opts.timeout || 120000;
+	var unavailableGrace = opts.unavailableGrace || 10000;
+	var started = Date.now();
+	var missingSince = null;
+
+	return new Promise(function(resolve, reject) {
+		var timer = null;
+		var settled = false;
+
+		function finish(err, value) {
+			if (settled) return;
+			settled = true;
+			if (timer) { clearTimeout(timer); timer = null; }
+			if (opts.signal && opts.signal.removeEventListener)
+				opts.signal.removeEventListener('abort', onAbort);
+			if (err) reject(err); else resolve(value);
+		}
+
+		function onAbort() {
+			var err = new Error(_('Task observation was cancelled.'));
+			err.cancelled = true;
+			finish(err);
+		}
+
+		if (opts.signal) {
+			if (opts.signal.aborted) { onAbort(); return; }
+			if (opts.signal.addEventListener)
+				opts.signal.addEventListener('abort', onAbort);
+		}
+
+		function schedule() {
+			if (!settled) timer = setTimeout(poll, interval);
+		}
+
+		function poll() {
+			if (settled) return;
+			if (Date.now() - started > timeout) {
+				finish(new Error(_('Task timed out while waiting for a result.')));
+				return;
+			}
+			route('task.get', { task_id: Number(taskId) }).then(function(res) {
+				if (settled) return;
+				var rec = res && res.task;
+				if (!rec || typeof rec !== 'object') {
+					var now = Date.now();
+					if (missingSince == null) missingSince = now;
+					if (now - missingSince > unavailableGrace) {
+						finish(new Error(_('Task status is unavailable. The background service may have restarted.')));
+						return;
+					}
+					schedule();
+					return;
+				}
+				missingSince = null;
+				if (opts.onProgress) {
+					try { opts.onProgress(rec); } catch (e) { /* 进度 UI 不得中断任务观察 */ }
+				}
+				switch (rec.status) {
+				case 'completed':
+					finish(null, rec);
+					break;
+				case 'failed':
+					finish(new Error(rec.error || _('The task failed.')));
+					break;
+				case 'cancelled':
+					finish(new Error(_('The task was cancelled.')));
+					break;
+				case 'timeout':
+					finish(new Error(rec.error || _('The task timed out.')));
+					break;
+				default:
+					schedule();
+				}
+			});
+		}
+
+		poll();
+	});
+}
+
+/*
  * cachedSnapshot —— Async Architecture 缓存优先（SWR）快照。
  * 走 ucode mt5700.cached（nc → daemon StateCache）：零 AT 流量、毫秒级返回，
  * 即使模组离线 / AT 卡住也能立即拿到最近一次后台采集器写入的状态。
@@ -269,5 +365,6 @@ return baseclass.extend({
 	cachedSnapshot: cachedSnapshot,
 	route: route,
 	routeCall: routeCall,
+	waitTask: waitTask,
 	atCommand: atCommand,
 });

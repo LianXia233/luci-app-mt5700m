@@ -6,6 +6,8 @@
 //! disabled, 64 usage/argument validation, 127 missing tooling.
 //!
 //! HARD CONSTRAINT: the `set-imei` path (`AT^PHYNUM=IMEI`) is ported as-is.
+//! The command is not present in the supplied MT5700M AT manual, so the CLI
+//! reports modem rejections verbatim and never claims success without `OK`.
 //! No behaviour change is permitted around IMEI handling.
 
 use crate::transport::client::{self, AtError, AtOutcome, Mode, Settings};

@@ -1,0 +1,18 @@
+#!/bin/sh
+# Re-apply the plugin DNS resolvers the moment one of its interfaces comes up.
+#
+# The manager's monitor loop already calls the same script every 15 s, but an
+# ifup caused by reconnection or DHCP renewal must not wait for that tick.
+# Only the two interfaces owned by this plugin are handled; global DNS, LAN,
+# WAN and other interfaces are never touched. The script re-reads UCI itself.
+
+[ "${ACTION:-}" = 'ifup' ] || exit 0
+
+case "${INTERFACE:-}" in
+	MT5700M|MT5700Mv6) ;;
+	*) exit 0 ;;
+esac
+
+[ -x /usr/share/mt5700m/dns.sh ] || exit 0
+/usr/share/mt5700m/dns.sh apply >/dev/null 2>&1 || true
+exit 0

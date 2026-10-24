@@ -375,7 +375,7 @@ impl TaskManager {
     ) {
         let cancel = self.inner.lock().unwrap().cancels.get(&id).cloned();
         let Some(cancel) = cancel else { return };
-        let mut task_priority = Priority::Normal;
+        let mut task_priority = Priority::Polling;
         {
             let mut inner = self.inner.lock().unwrap();
             if let Some(r) = inner.records.get_mut(&id) {
@@ -641,7 +641,7 @@ mod tests {
         let id = m.submit(
             "test",
             TaskKind::BackgroundQuery,
-            Priority::Background,
+            Priority::Polling,
             None,
             Box::new(|_ctx| Ok(json::num_val(42))),
         );
@@ -657,7 +657,7 @@ mod tests {
         let id = m.submit(
             "test",
             TaskKind::LongRunning,
-            Priority::Normal,
+            Priority::Polling,
             None,
             Box::new(|ctx| {
                 for _ in 0..50 {
@@ -681,7 +681,7 @@ mod tests {
         let id = m.submit(
             "stuck",
             TaskKind::LongRunning,
-            Priority::Normal,
+            Priority::Polling,
             Some(Duration::from_millis(200)),
             Box::new(|_ctx| {
                 std::thread::sleep(Duration::from_secs(5));
@@ -698,7 +698,7 @@ mod tests {
         let id = m.submit(
             "fail",
             TaskKind::Interactive,
-            Priority::Interactive,
+            Priority::Control,
             None,
             Box::new(|_ctx| Err(BackendError::AtTimeout)),
         );
@@ -716,7 +716,7 @@ mod tests {
         m.add_periodic(
             "tick",
             Duration::from_millis(80),
-            Priority::Background,
+            Priority::Polling,
             None,
             Box::new(move |_ctx| {
                 c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
