@@ -20,6 +20,35 @@
  * `window.setTimeout(fn, 0)` 立即执行，其它延时记进 `window.pending`。
  */
 
+class ClassList {
+	constructor(node) { this.node = node; }
+	_tokens() {
+		return String((this.node.attrs && this.node.attrs['class']) || '')
+			.split(/\s+/).filter(Boolean);
+	}
+	_write(tokens) {
+		this.node.attrs['class'] = tokens.join(' ');
+	}
+	add(...names) {
+		const tokens = this._tokens();
+		for (const name of names)
+			if (tokens.indexOf(name) === -1)
+				tokens.push(name);
+		this._write(tokens);
+	}
+	remove(...names) {
+		this._write(this._tokens().filter(token => names.indexOf(token) === -1));
+	}
+	contains(name) { return this._tokens().indexOf(name) !== -1; }
+	toggle(name, force) {
+		const has = this.contains(name);
+		const want = force === undefined ? !has : !!force;
+		if (want) this.add(name);
+		else this.remove(name);
+		return want;
+	}
+}
+
 class El {
 	constructor(tag, attrs, children) {
 		this.nodeType = 1;
@@ -27,6 +56,7 @@ class El {
 		this.attrs = attrs || {};
 		this.children = [];
 		this.style = {};
+		this.classList = new ClassList(this);
 		this.value = undefined;
 		this._listeners = {};
 		const list = children === undefined || children === null ? []
@@ -96,6 +126,7 @@ class El {
 		if (k === 'checked') this.checked = !!v;
 		if (k === 'value') this.value = v;
 	}
+	removeAttribute(k) { delete this.attrs[k]; }
 	getAttribute(k) { return this.attrs[k]; }
 	closest() { return null; }
 	scrollIntoView() {}
@@ -277,13 +308,29 @@ function textOf(node) {
 	if (typeof node === 'string' || typeof node === 'number') return String(node);
 	if (Array.isArray(node)) return node.map(textOf).join('');
 	if (typeof node !== 'object' || !node.tagName) return String(node);
+	const cls = String((node.attrs && node.attrs['class']) || '');
+	if (cls.split(/\s+/).indexOf('mt-tabs') !== -1) return '';
 	return node.children.map(textOf).join('');
 }
 
-function attrText(node, skip) {
+const UI_PRESENTATION_CLASSES = ['mt-btn', 'mt-btn-label'];
+
+function normalizeClassList(value, normalize) {
+	const tokens = String(value || '').split(/\s+/).filter(Boolean);
+	const drop = normalize === undefined ? UI_PRESENTATION_CLASSES : normalize;
+	return tokens.filter((token) => drop.indexOf(token) === -1 && !/^mt-btn--/.test(token))
+		.join(' ');
+}
+
+function attrText(node, skip, normalizeClasses) {
 	const keys = Object.keys(node.attrs || {}).filter(k => typeof node.attrs[k] !== 'function' && (skip || []).indexOf(k) === -1);
 	if (!keys.length) return '';
-	return '[' + keys.sort().map(k => k + '=' + String(node.attrs[k]).replace(/\d+/g, '#')).join(',') + ']';
+	return '[' + keys.sort().map((k) => {
+		const raw = k === 'class'
+			? normalizeClassList(node.attrs[k], normalizeClasses)
+			: String(node.attrs[k]);
+		return k + '=' + raw.replace(/\d+/g, '#');
+	}).join(',') + ']';
 }
 
 function walk(node, out, path, opts) {
@@ -297,10 +344,18 @@ function walk(node, out, path, opts) {
 		out.push(path + ' text=' + String(node).replace(/\d+/g, '#'));
 		return out;
 	}
-	const cls = node.attrs && node.attrs['class'] ? String(node.attrs['class']) : '';
+	const rawCls = String((node.attrs && node.attrs['class']) || '');
+	const rawTokens = rawCls.split(/\s+/).filter(Boolean);
+	const cls = normalizeClassList(rawCls, opts.normalizeClasses);
+	if (opts.skipClasses && opts.skipClasses.some((skip) => rawTokens.indexOf(skip) !== -1))
+		return out;
+	if (opts.unwrapClasses && opts.unwrapClasses.some((name) => rawTokens.indexOf(name) !== -1)) {
+		node.children.forEach((ch) => walk(ch, out, path, opts));
+		return out;
+	}
 	const here = path + '/' + node.tagName.toLowerCase()
 		+ (cls ? '.' + cls.split(' ').join('.') : '')
-		+ (opts.attrs ? attrText(node, opts.skipAttrs) : '');
+		+ (opts.attrs ? attrText(node, opts.skipAttrs, opts.normalizeClasses) : '');
 	if (!opts.keepValues && opts.valueClass && opts.valueClass.test(cls)) {
 		out.push(here + ' value=' + (textOf(node) === '' ? 'empty' : 'set'));
 		return out;
@@ -316,16 +371,36 @@ function walk(node, out, path, opts) {
  *   valueClass  取值槽的正则（结构比较时只比「有无」）
  *   attrs       true = 把属性也写进比较（skipAttrs 里的除外，如 input 的 value）
  */
+/*
+ * 结构证明只比较页面语义和可操作状态，不比较纯样式挂名。默认：
+ * - 跳过统一 Tab 外壳（旧基线没有 `nav.mt-tabs`）；
+ * - 从 class 中剔除统一按钮/表单样式标记（当前为 `mt-btn`）；
+ * - 展平统一按钮的纯标签 `<span class="mt-btn-label">`，保留其文案。
+ * 显式传 `skipClasses: []` / `normalizeClasses: []` / `unwrapClasses: []`
+ * 可恢复逐字比较。
+ */
 function serialize(node, opts) {
 	opts = opts || {};
 	return walk(node, [], '', {
 		keepValues: !!opts.keepValues,
 		valueClass: opts.valueClass || null,
 		attrs: !!opts.attrs,
-		skipAttrs: opts.skipAttrs || []
+		skipAttrs: opts.skipAttrs || [],
+		skipClasses: opts.skipClasses === undefined ? [ 'mt-tabs' ] : opts.skipClasses,
+		unwrapClasses: opts.unwrapClasses === undefined ? [ 'mt-btn-label' ] : opts.unwrapClasses
 	}).join('\n');
 }
-function lines(node) { return walk(node, [], '', { keepValues: true }).join('\n'); }
+function lines(node, opts) {
+	opts = opts || {};
+	return walk(node, [], '', {
+		keepValues: true,
+		valueClass: null,
+		attrs: false,
+		skipAttrs: [],
+		skipClasses: opts.skipClasses === undefined ? [ 'mt-tabs' ] : opts.skipClasses,
+		unwrapClasses: opts.unwrapClasses === undefined ? [ 'mt-btn-label' ] : opts.unwrapClasses
+	}).join('\n');
+}
 function countTag(shape, tagClass) {
 	return shape.split('\n').filter(l => l === tagClass || l.endsWith(tagClass)).length;
 }
@@ -357,6 +432,12 @@ function collect(node, pred, out) {
 	return out;
 }
 function buttons(node) { return collect(node, n => n.tagName === 'BUTTON'); }
+function hasAncestorClass(node, cls) {
+	for (let parent = node && node.parentNode; parent; parent = parent.parentNode)
+		if (String((parent.attrs && parent.attrs['class']) || '').split(/\s+/).indexOf(cls) !== -1)
+			return true;
+	return false;
+}
 /* modal.children 是数组；collect 已支持数组入参，这里只补语义名 */
 function selectsIn(nodes) { return collect(nodes, n => n.tagName === 'SELECT'); }
 function inputsIn(nodes) { return collect(nodes, n => n.tagName === 'INPUT'); }
@@ -397,7 +478,7 @@ module.exports = {
 	El, StubEvent, makeApi, makeScope, loadModule, loadSide,
 	serialize, lines, countTag, textOf,
 	slotEntries, slotValues, slotsOf,
-	collect, buttons, findButton, pressButton,
+	collect, buttons, hasAncestorClass, findButton, pressButton,
 	selectsIn, inputsIn, lastModal,
 	modalButton, modalTitle, tick
 };

@@ -2616,12 +2616,6 @@ msgstr "频段锁已应用。"
 msgid "Lock failed."
 msgstr "锁定失败。"
 
-msgid "Lock panel not found. Scroll down to \"Frequency and cell selection\"."
-msgstr "未找到锁定面板，请向下滚动到「频段与小区选择」。"
-
-msgid "%s cell data filled into %s lock panel. Review and click \"Review and apply\"."
-msgstr "%s 小区数据已填入 %s 锁定面板。请检查后点击「检查并应用」。"
-
 msgid "Access technology"
 msgstr "接入技术"
 

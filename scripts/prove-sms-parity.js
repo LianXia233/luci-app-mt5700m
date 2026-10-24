@@ -57,7 +57,9 @@ const sameJson = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const NUM_PLUS = (t) => String(t).replace(/\+[\d#]/g, m => m.slice(1));
 /* 工具栏按钮是 c.btnLink 生成的 <a>，lib.pressButton 只找 <button> */
 function pressLink(holder, text) {
-	const link = lib.collect(holder, x => x.tagName === 'A' && lib.textOf(x) === text)[0];
+	const link = lib.collect(holder, x =>
+		x.tagName === 'A' && lib.textOf(x) === text && !lib.hasAncestorClass(x, 'mt-tabs')
+	)[0];
 	if (!link) throw new Error('link not found: ' + text);
 	link.click();
 }
