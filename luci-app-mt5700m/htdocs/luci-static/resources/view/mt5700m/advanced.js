@@ -169,7 +169,7 @@ return view.extend({
 					E('a', { 'class': 'btn cbi-button-action', 'href': L.url('admin/modem/mt5700m/terminal') }, _('AT Console'))
 				])
 			]),
-			c.details(_('Technical details'), null, E('pre', { 'class': 'mt-raw' }, technical || _('No response.')))
+			c.details(_('Technical details'), null, c.raw(technical))
 		]);
 	},
 

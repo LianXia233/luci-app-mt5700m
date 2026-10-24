@@ -713,7 +713,7 @@ return view.extend({
 					]);
 				} }, _('Cell Scan'))
 			]),
-			c.details(_('Technical details'), null, E('pre', { 'class': 'mt-raw' }, technical || _('No response.'))),
+			c.details(_('Technical details'), null, c.raw(technical)),
 			radioControls,
 			E('section', { 'class': 'mt-card', 'style': 'margin-top:20px' }, [
 				E('div', { 'class': 'mt-card-head' }, [

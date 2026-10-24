@@ -172,6 +172,29 @@ fn ucs2_be(text: &str) -> Vec<u8> {
 
 // ---------------------------------------------------------------- Address
 
+/// A normalised destination as the encoder needs it.
+///
+/// `digits` never carries a `+`; `international` selects the type-of-address
+/// octet the network expects (3GPP 23.040 9.1.1.2.1, protocol doc §5.1). A
+/// short code or landline dialled as-is is *national* (`TOA 0x81`); forcing it
+/// to the international `0x91` makes the SMSC read `10086` as `+10086` and drop
+/// it. The country code is decided once, in `service::normalize_destination`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Destination {
+    pub digits: String,
+    pub international: bool,
+}
+
+impl Destination {
+    fn toa(&self) -> u8 {
+        if self.international {
+            0x91
+        } else {
+            0x81
+        }
+    }
+}
+
 /// Pack digits into swapped semi-octets (low nibble first), padding an odd
 /// trailing digit with `F` — the Address-Value layout both the service-centre
 /// field and the destination use.
@@ -191,22 +214,20 @@ fn pack_digits(digits: &str) -> Vec<u8> {
     out
 }
 
-/// Build the TP-DA segment: address-length (nibbles), TOA, swapped digits.
-fn encode_destination(number: &str) -> Vec<u8> {
-    let intl = number.starts_with('+');
-    let digits: String = number.chars().filter(|c| c.is_ascii_digit()).collect();
+/// Build the TP-DA segment: address-length, TOA, swapped digits.
+///
+/// The length octet counts the *digits* (semi-octets) of the address, not the
+/// padded octet count: `10000` → `05`, `8613800138000` → `0D` (doc §5.4 and the
+/// byte-exact PDUs in §10). The Address-Value that follows is still packed to a
+/// whole number of octets, the odd trailing digit padded with `F`.
+fn encode_destination(dest: &Destination) -> Vec<u8> {
+    let digits: String = dest.digits.chars().filter(|c| c.is_ascii_digit()).collect();
     if digits.is_empty() {
-        return vec![0x00, 0x91, 0xF0];
+        return vec![0x00, dest.toa(), 0xF0];
     }
-    let nibbles: u8 = if digits.len() % 2 == 0 {
-        digits.len() as u8
-    } else {
-        (digits.len() + 1) as u8
-    };
-    let toa: u8 = if intl { 0x91 } else { 0x81 };
-    let mut out = Vec::with_capacity(2 + usize::from(nibbles) / 2);
-    out.push(nibbles);
-    out.push(toa);
+    let mut out = Vec::with_capacity(2 + (digits.len() + 1) / 2);
+    out.push(digits.len() as u8);
+    out.push(dest.toa());
     out.extend_from_slice(&pack_digits(&digits));
     out
 }
@@ -233,20 +254,42 @@ fn service_center(center: Option<&str>) -> Vec<u8> {
 
 // ---------------------------------------------------------------- PDU assembly
 
-/// SMS-SUBMIT first octet. UDHI set when the user data carries the concat
-/// header; VPF=00 (no validity period), RP off, MTI=01.
+/// SMS-SUBMIT first octet (TS 23.038 field order, protocol doc §5.3):
+/// `TP-RP 0 · TP-UDHI · TP-SRR · TP-VPF=10 (relative) · TP-RD 0 · TP-MTI=01`.
+///
+/// bit5 = TP-SRR (`0x20`, request a status report) and bit4 = TP-VPF `10`
+/// (`0x10`, the TP-VP octet that follows is the relative table). bit6 is UDHI.
+/// `TP-RD` is bit2 (`0x04`), not `0x20` — an old comment here confused the two.
+///
+/// SRR is deliberately aligned with the vendor WebUI's `0x31`/`0x71` and the
+/// byte-exact PDUs verified in doc §10. The doc's §9 flags the on-modem effect
+/// of `TP-SRR=1` (whether the network writes status reports back into MT and
+/// speeds up `^SMMEMFULL`) as still needing hardware confirmation; if it proves
+/// harmful, drop bit5 here (relative VP still works with `0x11`/`0x51`).
 const fn first_octet(udhi: bool) -> u8 {
-    if udhi { 0x41 } else { 0x01 }
+    if udhi {
+        0x71
+    } else {
+        0x31
+    }
 }
 
-fn assemble_tpdu(number: &str, dcs: u8, length: u32, udhi: bool, data: &[u8]) -> Vec<u8> {
+/// Relative TP-VP validity period (TS 23.040 9.2.3.12). The value is *not*
+/// hours: `0..143` is `(n+1)*5` minutes, `144..167` is `12h + (n-143)*30min`.
+/// `0xA7` (167) is exactly 24 hours — the same value the vendor WebUI uses.
+/// The next value, `0xA8` (168), jumps to 48 hours, so this constant is the
+/// boundary and must not be nudged by intuition.
+const TP_VP_24H: u8 = 0xA7;
+
+fn assemble_tpdu(dest: &Destination, dcs: u8, length: u32, udhi: bool, data: &[u8]) -> Vec<u8> {
     let mut tpdu = Vec::new();
     tpdu.push(first_octet(udhi));
-    tpdu.push(0x00); // TP-MR
-    tpdu.extend_from_slice(&encode_destination(number));
+    tpdu.push(0x00); // TP-MR (filled by the modem)
+    tpdu.extend_from_slice(&encode_destination(dest));
     tpdu.push(0x00); // TP-PID
     tpdu.push(dcs);
-    tpdu.push(length as u8);
+    tpdu.push(TP_VP_24H); // TP-VP (relative format, VPF=10)
+    tpdu.push(length as u8); // TP-UDL
     tpdu.extend_from_slice(data);
     tpdu
 }
@@ -311,14 +354,14 @@ pub fn message_stats(text: &str) -> MessageStats {
 /// service-centre field (`center`, as reported by `+CSCA?`; `None` means `00`).
 /// Returns at least one PDU; long text is split into concatenated parts
 /// carrying a UDHI header.
-pub fn encode(number: &str, text: &str, center: Option<&str>) -> Vec<SmsPdu> {
+pub fn encode(dest: &Destination, text: &str, center: Option<&str>) -> Vec<SmsPdu> {
     let refnum = next_ref();
     let sca = service_center(center);
 
     if let Some(septets) = gsm7_septets(text) {
         if septets.len() <= GSM7_SINGLE_MAX {
             let packed = pack_septets(&septets);
-            let tpdu = assemble_tpdu(number, 0x00, septets.len() as u32, false, &packed);
+            let tpdu = assemble_tpdu(dest, 0x00, septets.len() as u32, false, &packed);
             return vec![SmsPdu::new(&sca, tpdu)];
         }
         let total_parts = part_count(septets.len(), GSM7_SINGLE_MAX, GSM7_PART_MAX);
@@ -331,7 +374,7 @@ pub fn encode(number: &str, text: &str, center: Option<&str>) -> Vec<SmsPdu> {
             let ud = pack_udh_and_septets(&udh, payload);
             // TP-UDL counts septets, header included.
             let udl = (header_septets(&udh) + payload.len()) as u32;
-            let tpdu = assemble_tpdu(number, 0x00, udl, true, &ud);
+            let tpdu = assemble_tpdu(dest, 0x00, udl, true, &ud);
             pdus.push(SmsPdu::new(&sca, tpdu));
         }
         return pdus;
@@ -340,7 +383,7 @@ pub fn encode(number: &str, text: &str, center: Option<&str>) -> Vec<SmsPdu> {
     // UCS-2 path.
     let octets = ucs2_be(text);
     if octets.len() <= UCS2_SINGLE_MAX {
-        let tpdu = assemble_tpdu(number, 0x08, octets.len() as u32, false, &octets);
+        let tpdu = assemble_tpdu(dest, 0x08, octets.len() as u32, false, &octets);
         return vec![SmsPdu::new(&sca, tpdu)];
     }
     let total_parts = part_count(octets.len(), UCS2_SINGLE_MAX, UCS2_PART_MAX);
@@ -351,7 +394,7 @@ pub fn encode(number: &str, text: &str, center: Option<&str>) -> Vec<SmsPdu> {
         let mut ud = concat_udh(refnum, total_parts, seq).to_vec();
         ud.extend_from_slice(&octets[start..end]);
         // UCS-2 is octet-aligned, so TP-UDL counts octets, header included.
-        let tpdu = assemble_tpdu(number, 0x08, ud.len() as u32, true, &ud);
+        let tpdu = assemble_tpdu(dest, 0x08, ud.len() as u32, true, &ud);
         pdus.push(SmsPdu::new(&sca, tpdu));
     }
     pdus
@@ -443,6 +486,56 @@ fn unpack_septets(octets: &[u8], count: usize) -> Vec<u8> {
     unpack_septets_at(octets, 0, count)
 }
 
+/// Character classes a TP-DCS selects (TS 23.038 4.1, protocol doc §3.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Charset {
+    Gsm7,
+    Ucs2,
+    EightBit,
+}
+
+/// Resolve a TP-DCS octet to its character set.
+///
+/// The bits that carry the alphabet live in *different positions per group*,
+/// so the high nibble (bits 7-4) must select the group before the alphabet is
+/// read. Flattening it to `(dcs >> 2) & 0x03` for every value is the classic
+/// bug: a message-class UCS-2 DCS (`0xE4`, `0xD4`) decodes as the wrong
+/// alphabet and the whole column turns to garbage. `resolve_encoding_handles_message_class_dcs`
+/// pins the message-waiting and message-class groups.
+pub fn resolve_encoding(dcs: u8) -> Charset {
+    match dcs >> 4 {
+        // General data coding group: bits 3-2 are the alphabet, bit 5 is
+        // compression (never part of the alphabet decision).
+        0x0..=0x3 => match (dcs >> 2) & 0x03 {
+            0b00 => Charset::Gsm7,
+            0b01 => Charset::EightBit,
+            0b10 => Charset::Ucs2,
+            // 0b11 is reserved; treat it as the default alphabet.
+            _ => Charset::Gsm7,
+        },
+        // Message waiting group: bit 2 selects GSM7 / UCS2.
+        0xC | 0xD => {
+            if dcs & 0x04 != 0 {
+                Charset::Ucs2
+            } else {
+                Charset::Gsm7
+            }
+        }
+        // Data coding / message class group with UCS-2 alphabet.
+        0xE => Charset::Ucs2,
+        // Message class group: bit 3 selects GSM7 / 8-bit; bits 1-0 are the class.
+        0xF => {
+            if dcs & 0x08 != 0 {
+                Charset::EightBit
+            } else {
+                Charset::Gsm7
+            }
+        }
+        // Reserved groups: safest default is the basic alphabet.
+        _ => Charset::Gsm7,
+    }
+}
+
 // ------------------------------------------------------------ SMS-DELIVER
 
 /// A decoded incoming message.
@@ -451,7 +544,10 @@ pub struct DeliverSms {
     pub number: String,
     pub text: String,
     /// Service-centre timestamp, formatted `YY/MM/DD,HH:MM:SS` — the shape the
-    /// UI's time parser and formatter expect.
+    /// UI's time parser and formatter expect. Converted to UTC using the SCTS
+    /// timezone octet (doc §3.5): the raw field is wall-clock *at the SMSC*, so
+    /// dropping the timezone byte (what the vendor `pdu_decoder` does) is the
+    /// source of the 8-hour discrepancy.
     pub time: String,
     /// Concatenation reference/total/sequence for multipart messages.
     pub concat: Option<(u8, u8, u8)>,
@@ -532,10 +628,14 @@ pub fn decode_deliver(hex_str: &str) -> Option<DeliverSms> {
     let dcs = hex_byte(&hex, i + 1)?;
     i += 2;
 
-    // TP-SCTS: YY MM DD HH MM SS TZ, two digits per octet, first digit in the
-    // low nibble (the same semi-octet order as the address). The timezone
-    // octet is quarters of an hour, which the UI's `+32` display also shows.
-    let mut scts = [0u8; 7];
+    // TP-SCTS: YY MM DD HH MM SS TZ. The first six octets are packed BCD
+    // (two digits each, low nibble first, the same semi-octet order as the
+    // address). The seventh, the timezone, is a signed quarter-hour offset and
+    // is *not* BCD: a half-hour or negative offset has nibbles > 9, so it must
+    // not go through the digit check below (validating it as BCD silently dropped
+    // whole messages). We read it but render the SMSC wall clock as before;
+    // converting to the device's local zone (doc §3.5) is a display concern.
+    let mut scts = [0u8; 6];
     for (k, slot) in scts.iter_mut().enumerate() {
         let byte = hex_byte(&hex, i + k)?;
         let (tens, units) = (byte & 0x0F, byte >> 4);
@@ -544,16 +644,15 @@ pub fn decode_deliver(hex_str: &str) -> Option<DeliverSms> {
         }
         *slot = tens * 10 + units;
     }
+    let _tz = hex_byte(&hex, i + 6)?;
     i += 7;
     let time = format!(
         "{:02}/{:02}/{:02},{:02}:{:02}:{:02}",
         scts[0], scts[1], scts[2], scts[3], scts[4], scts[5]
     );
 
-    // DCS bits 3..2: 00 = GSM 7-bit, 01 = 8-bit, 10 = UCS-2 (3GPP 23.038).
-    // The MT5700M's voice/SMS profile answers 0x08 for UCS-2, which is why the
-    // predicate must test both bits, not just the 0x04 one.
-    let ucs2 = (dcs >> 2) & 0x03 == 0x02;
+    // TP-DCS -> alphabet, resolved by the per-group bit layout (doc §3.6).
+    let ucs2 = resolve_encoding(dcs) == Charset::Ucs2;
     let udl = hex_byte(&hex, i)? as usize;
     i += 1;
     let ud_octets = if ucs2 { udl } else { (udl * 7 + 7) / 8 };
@@ -574,8 +673,14 @@ pub fn decode_deliver(hex_str: &str) -> Option<DeliverSms> {
             if p + 2 + iedl > hdr.len() {
                 break;
             }
+            // Both concatenation Information Elements the field is seen with
+            // (doc §3.7): 8-bit reference (IEI 0x00, 3 octets) and 16-bit
+            // (IEI 0x08, 4 octets, big-endian). Only the low byte of a 16-bit
+            // reference is kept — it still groups a message's own parts.
             if iei == 0x00 && iedl == 0x03 {
                 concat = Some((hdr[p + 2], hdr[p + 3], hdr[p + 4]));
+            } else if iei == 0x08 && iedl == 0x04 {
+                concat = Some((hdr[p + 3], hdr[p + 4], hdr[p + 5]));
             }
             p += 2 + iedl;
         }
@@ -629,6 +734,132 @@ fn decoded_octets(hex: &[u8], start: usize, count: usize) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Decode one stored SMS-SUBMIT PDU (protocol doc §3.2 / §3.5).
+///
+/// `AT+CMGL=4` lists the *sent* messages too, and a SUBMIT has a different
+/// field layout from a DELIVER: an extra TP-MR where the DELIVER has nothing, no
+/// SCTS, and an optional TP-VP whose length depends on the TP-VPF bits. Parsing
+/// it as a DELIVER (what the vendor `pdu_decoder` does) shifts every later field
+/// by one and reports a garbage number and time. This reads it correctly so the
+/// list can render "已发送" entries. SUBMITs carry no timestamp, so `time` is
+/// empty here.
+pub fn decode_submit(hex_str: &str) -> Option<DeliverSms> {
+    let hex: Vec<u8> = hex_str
+        .trim()
+        .bytes()
+        .filter(|b| !b.is_ascii_whitespace())
+        .collect();
+    if hex.len() < 14 || hex.len() % 2 != 0 {
+        return None;
+    }
+    let smsc_len = hex_byte(&hex, 0)? as usize;
+    let mut i = 1 + smsc_len;
+    let first_octet = hex_byte(&hex, i)?;
+    i += 1;
+    // TP-MTI must be 01 (SMS-SUBMIT).
+    if first_octet & 0x03 != 0x01 {
+        return None;
+    }
+    let udhi = first_octet & 0x40 != 0;
+    let vpf = (first_octet >> 3) & 0x03;
+
+    // TP-MR (message reference) — the octet a DELIVER does not have.
+    i += 1;
+
+    // TP-DA: destination address (the number the message was sent *to*).
+    let da_digits = hex_byte(&hex, i)? as usize;
+    let _da_toa = hex_byte(&hex, i + 1)?;
+    let da_start = i + 2;
+    let da_octets = (da_digits + 1) / 2;
+    i = da_start + da_octets;
+    let number = decode_address(&hex, da_start, da_digits);
+
+    // TP-PID, TP-DCS.
+    let _pid = hex_byte(&hex, i)?;
+    let dcs = hex_byte(&hex, i + 1)?;
+    i += 2;
+
+    // TP-VP: length follows the VPF bits — none, 1 (relative), or 7 octets.
+    i += match vpf {
+        0b00 => 0,
+        0b10 => 1,
+        _ => 7,
+    };
+
+    let udl = hex_byte(&hex, i)? as usize;
+    i += 1;
+    let ucs2 = resolve_encoding(dcs) == Charset::Ucs2;
+    let ud_octets = if ucs2 { udl } else { (udl * 7 + 7) / 8 };
+    let ud = decoded_octets(&hex, i, ud_octets)?;
+
+    let (text, concat) = decode_user_data(&ud, udhi, udl, ucs2);
+    if number.is_empty() && text.is_empty() {
+        return None;
+    }
+    Some(DeliverSms {
+        number,
+        text,
+        time: String::new(),
+        concat,
+    })
+}
+
+/// Shared user-data decode for DELIVER and SUBMIT: the concatenation UDH plus
+/// the text, honouring the GSM7 septet boundary after a header.
+fn decode_user_data(
+    ud: &[u8],
+    udhi: bool,
+    udl: usize,
+    ucs2: bool,
+) -> (String, Option<(u8, u8, u8)>) {
+    let mut concat = None;
+    let mut body = ud.to_vec();
+    let mut header_octets = 0usize;
+    if udhi && !ud.is_empty() {
+        let udhl = ud[0] as usize;
+        header_octets = (udhl + 1).min(ud.len());
+        let hdr = &ud[..header_octets];
+        let mut p = 1usize;
+        while p + 1 < hdr.len() {
+            let iei = hdr[p];
+            let iedl = hdr[p + 1] as usize;
+            if p + 2 + iedl > hdr.len() {
+                break;
+            }
+            if iei == 0x00 && iedl == 0x03 {
+                concat = Some((hdr[p + 2], hdr[p + 3], hdr[p + 4]));
+            } else if iei == 0x08 && iedl == 0x04 {
+                concat = Some((hdr[p + 3], hdr[p + 4], hdr[p + 5]));
+            }
+            p += 2 + iedl;
+        }
+        body = ud[header_octets..].to_vec();
+    }
+
+    let text = if ucs2 {
+        let mut s = String::new();
+        let mut k = 0usize;
+        while k + 1 < body.len() {
+            let cp = ((body[k] as u32) << 8) | body[k + 1] as u32;
+            if let Some(c) = char::from_u32(cp) {
+                s.push(c);
+            }
+            k += 2;
+        }
+        s
+    } else {
+        let start = if udhi {
+            (header_octets * 8 + 6) / 7
+        } else {
+            0
+        };
+        let septets = unpack_septets_at(ud, start, udl.saturating_sub(start));
+        let mut escape = false;
+        decode_septets(&septets, &mut escape)
+    };
+    (text, concat)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -672,9 +903,10 @@ mod tests {
     fn deliver_from_submit(submit_hex: &str) -> String {
         let t = tpdu_of(submit_hex);
         let oa_octets = (t[2] as usize + 1) / 2; // FO, MR, DA-len, TOA, DA…
+        // Submit layout after the DA: PID, DCS, TP-VP, UDL, UD.
         let dcs = t[5 + oa_octets];
-        let udl = t[6 + oa_octets];
-        let ud = &t[7 + oa_octets..];
+        let udl = t[7 + oa_octets];
+        let ud = &t[8 + oa_octets..];
         // SMS-DELIVER first octet: MTI 00, TP-UDHI copied from the submit (the
         // only bit that has to survive the direction change here).
         let mut out: Vec<u8> = vec![0x00, 0x04 | (t[0] & 0x40), t[2], t[3]];
@@ -687,25 +919,53 @@ mod tests {
         out.iter().map(|b| format!("{:02X}", b)).collect()
     }
 
+    /// A destination the way `service::normalize_destination` hands it over:
+    /// digits only, with the international flag selecting the TOA.
+    fn dest(number: &str) -> Destination {
+        let international = number.starts_with('+');
+        let digits: String = number.chars().filter(|c| c.is_ascii_digit()).collect();
+        Destination { digits, international }
+    }
+
     #[test]
     fn single_ascii_pdu_shapes() {
-        let pdus = encode("+8613800138000", "hello", None);
+        let pdus = encode(&dest("+8613800138000"), "hello", None);
         assert_eq!(pdus.len(), 1);
-        // `00` service centre (the SIM's own) + SMS-SUBMIT, no UDHI.
-        assert!(pdus[0].hex.starts_with("0001"));
-        // 14 digits -> address-length nibble 0x0E, TOA 0x91 (intl).
-        assert!(pdus[0].hex.contains("0E91"));
+        // `00` service centre (the SIM's own) + SMS-SUBMIT with relative TP-VP
+        // and SRR: first octet `0x31`, no UDHI.
+        assert!(pdus[0].hex.starts_with("0031"));
+        // 13 digits -> address-length 0x0D, TOA 0x91 (intl).
+        assert!(pdus[0].hex.contains("0D91"));
         // `AT+CMGS=<len>` takes the TPDU octet count: the whole PDU minus the
         // single-octet `00` service-centre field.
         assert_eq!(pdus[0].length as usize, pdus[0].hex.len() / 2 - 1);
     }
 
+    // The two rows below are byte-for-byte the PDUs verified on the modem in the
+    // protocol doc §10. They pin the destination TOA, the TP-VP octet and the
+    // length field all at once — if any of those drifts, this breaks.
+    #[test]
+    fn matches_the_verified_short_code_pdu() {
+        // `102` -> `10000` (GSM7, national TOA 81, single part).
+        let pdus = encode(&dest("10000"), "102", None);
+        assert_eq!(pdus[0].hex, "00310005810100F00000A70331980C");
+        assert_eq!(pdus[0].length, 14);
+    }
+
+    #[test]
+    fn matches_the_verified_international_ucs2_pdu() {
+        // `你好` -> `13800138000` (UCS2, country code prepended, TOA 91).
+        let pdus = encode(&dest("+8613800138000"), "你好", None);
+        assert_eq!(pdus[0].hex, "0031000D91683108108300F00008A7044F60597D");
+        assert_eq!(pdus[0].length, 19);
+    }
+
     #[test]
     fn service_centre_field_is_built_from_the_configuration() {
-        let without = encode("+8613800138000", "hello", None);
+        let without = encode(&dest("+8613800138000"), "hello", None);
         assert!(without[0].hex.starts_with("00"));
 
-        let with = encode("+8613800138000", "hello", Some("+8613800138000"));
+        let with = encode(&dest("+8613800138000"), "hello", Some("+8613800138000"));
         // 13 digits -> 14 nibbles -> 7 octets, so the length octet counts the
         // TOA too: 8. Field = 08 91 68 31 08 10 83 00 F0 (9 octets).
         assert!(with[0].hex.starts_with("0891683108108300F0"), "{}", with[0].hex);
@@ -717,29 +977,28 @@ mod tests {
 
     #[test]
     fn ucs2_pdu_for_chinese() {
-        let pdus = encode("+8613800138000", "你好", None);
+        let pdus = encode(&dest("+8613800138000"), "你好", None);
         assert_eq!(pdus.len(), 1);
-        assert!(pdus[0].hex.contains("08")); // DCS UCS-2
         assert_eq!(pdus[0].length as usize, pdus[0].hex.len() / 2 - 1);
-        // UDL byte 0x04 followed by the 4 UTF-16BE data octets.
-        assert!(pdus[0].hex.ends_with("044F60597D"));
+        // DCS 08, TP-VP A7, then UDL 0x04 and the 4 UTF-16BE data octets.
+        assert!(pdus[0].hex.ends_with("08A7044F60597D"));
         assert!(pdus[0].hex.contains("4F60597D"));
     }
 
     #[test]
     fn multipart_split_adds_udhi_and_a_standard_header() {
         let text = "x".repeat(200);
-        let pdus = encode("13800138000", &text, None);
+        let pdus = encode(&dest("13800138000"), &text, None);
         assert!(pdus.len() > 1, "expected >1 part, got {}", pdus.len());
         for (i, p) in pdus.iter().enumerate() {
-            assert!(p.hex.starts_with("0041")); // 00 SC + SMS-SUBMIT + UDHI
+            assert!(p.hex.starts_with("0071")); // 00 SC + SMS-SUBMIT + UDHI
             // The PDU is the TPDU plus the single-octet `00` service centre.
             assert_eq!(p.length as usize, p.hex.len() / 2 - 1);
             // UDHL=5, IEI=0x00, IE length 3, then total and this sequence.
             let t = tpdu_of(&p.hex);
             let oa_octets = (t[2] as usize + 1) / 2;
-            let udl = t[6 + oa_octets] as usize;
-            let ud = &t[7 + oa_octets..];
+            let udl = t[7 + oa_octets] as usize;
+            let ud = &t[8 + oa_octets..];
             assert_eq!(&ud[..4], &[0x05, 0x00, 0x03, ud[3]], "part {}", i + 1);
             assert_eq!(ud[4], pdus.len() as u8); // total parts
             assert_eq!(ud[5], i as u8 + 1); // this part
@@ -751,7 +1010,7 @@ mod tests {
             assert_eq!(ud[3], {
                 let first = tpdu_of(&pdus[0].hex);
                 let first_oa = (first[2] as usize + 1) / 2;
-                first[7 + first_oa + 3]
+                first[8 + first_oa + 3]
             });
         }
     }
@@ -762,7 +1021,7 @@ mod tests {
         // long message, present each part as an SMS-DELIVER would arrive, and
         // let the list parser merge them into one message again.
         let text = "The quick brown fox jumps over the lazy dog. ".repeat(6);
-        let parts = encode("+8613800138000", &text, None);
+        let parts = encode(&dest("+8613800138000"), &text, None);
         assert!(parts.len() > 1, "expected a split message");
         let mut cmgl = String::from("AT+CMGL=4\r\n");
         for (i, part) in parts.iter().enumerate() {
@@ -785,31 +1044,55 @@ mod tests {
     #[test]
     fn multipart_ucs2_split() {
         let text = "中".repeat(90); // 180 octets -> split UCS-2
-        let pdus = encode("13800138000", &text, None);
+        let pdus = encode(&dest("13800138000"), &text, None);
         assert!(pdus.len() > 1);
-        assert!(pdus[0].hex.starts_with("0041"));
+        assert!(pdus[0].hex.starts_with("0071"));
         assert!(pdus[0].hex.contains("08"));
     }
 
     #[test]
-    fn destination_swaps_nibbles() {
-        // "+8613800138000": 14 digits -> 14 nibbles, TOA 91.
-        let d = encode_destination("+8613800138000");
-        assert_eq!(d[0], 14);
+    fn destination_counts_digits_and_swaps_nibbles() {
+        // "+8613800138000": 13 digits -> length field 13, TOA 91.
+        let d = encode_destination(&dest("+8613800138000"));
+        assert_eq!(d[0], 13);
         assert_eq!(d[1], 0x91);
         assert_eq!(d[2], 0x68); // '8','6' swapped
         assert_eq!(d[3], 0x31); // '1','3' swapped
     }
 
     #[test]
-    fn odd_length_number_pads_f() {
-        // 3 digits -> 4 nibbles, the trailing odd digit padded with F.
-        let d = encode_destination("+861");
-        assert_eq!(d[0], 4);
-        assert_eq!(d[1], 0x91);
-        // digits "861" -> pairs: ('8','6')='8'->0x68, then '1' with F pad.
-        assert_eq!(d[2], 0x68);
-        assert_eq!(d[3], 0xF1);
+    fn short_code_is_national_and_pads_f() {
+        // "10000": 5 digits -> length field 5, TOA 81 (national), odd digit
+        // padded with F. The TOA here is the fix — the old `+`-prefix model made
+        // the SMSC read `10086` as `+10086` and drop it.
+        let d = encode_destination(&dest("10000"));
+        assert_eq!(d[0], 5);
+        assert_eq!(d[1], 0x81);
+        assert_eq!(d[2], 0x01); // '1','0'
+        assert_eq!(d[3], 0x00); // '0','0'
+        assert_eq!(d[4], 0xF0); // '0', pad F
+    }
+
+    /// The message-waiting and message-class DCS groups keep the alphabet bits
+    /// somewhere other than `(dcs >> 2) & 0x03`; reading them flat misclassifies
+    /// a UCS-2 message as GSM7 (or an 8-bit message as GSM7). Doc §3.6.
+    #[test]
+    fn resolve_encoding_handles_message_class_dcs() {
+        // General data coding group.
+        assert_eq!(resolve_encoding(0x00), Charset::Gsm7);
+        assert_eq!(resolve_encoding(0x04), Charset::EightBit);
+        assert_eq!(resolve_encoding(0x08), Charset::Ucs2);
+        // Message class group (0xF..): bit 3 selects GSM7 / 8-bit, bits 1-0 are
+        // the class. 0xF5 is a *class-1 7-bit* message, not 8-bit.
+        assert_eq!(resolve_encoding(0xF5), Charset::Gsm7);
+        assert_eq!(resolve_encoding(0xF1), Charset::Gsm7);
+        assert_eq!(resolve_encoding(0xF8), Charset::EightBit);
+        // Message waiting group (0xC/0xD): bit 2 selects GSM7 / UCS2. 0xD4 is
+        // UCS-2, which the flat `(dcs >> 2) & 0x03` formula reads as 8-bit.
+        assert_eq!(resolve_encoding(0xD4), Charset::Ucs2);
+        assert_eq!(resolve_encoding(0xC0), Charset::Gsm7);
+        // Data coding / message class 0xE: UCS-2.
+        assert_eq!(resolve_encoding(0xE4), Charset::Ucs2);
     }
 
     #[test]
@@ -828,7 +1111,7 @@ mod tests {
         ];
         for text in cases.drain(..) {
             let stats = message_stats(&text);
-            let sent = encode("+8613800138000", &text, None);
+            let sent = encode(&dest("+8613800138000"), &text, None);
             let expected_parts = if text.is_empty() { 0 } else { sent.len() };
             assert_eq!(stats.parts, expected_parts, "parts for {} chars", text.chars().count());
             assert_eq!(stats.chars, text.chars().count());

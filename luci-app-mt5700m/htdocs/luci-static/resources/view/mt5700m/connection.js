@@ -130,9 +130,12 @@ return view.extend({
 			return;
 
 		details.setAttribute('data-loaded', '1');
+		output.classList.remove('mt-empty');
 		output.textContent = _('Loading dialing log…');
 		api.dialLog().then(function(result) {
-			output.textContent = result.log || _('No dialing log is available.');
+			var log = result.log || '';
+			output.textContent = log || _('No dialing log is available.');
+			output.classList.toggle('mt-empty', !log);
 		}).catch(function(err) {
 			details.setAttribute('data-loaded', '0');
 			output.textContent = err.message || String(err);
@@ -195,7 +198,7 @@ return view.extend({
 		var configuredProtocol = { ip:'IPv4', ipv6:'IPv6', ipv4v6:'IPv4 / IPv6' }[uci.get('mt5700m', 'connection', 'pdp_type')] || 'IPv4 / IPv6';
 		var m = new form.Map('mt5700m');
 		var s, o;
-		var logOutput = E('pre', { 'class': 'mt-raw' }, _('Expand to load the dialing log.'));
+		var logOutput = E('pre', { 'class': 'mt-raw mt-empty' }, _('Expand to load the dialing log.'));
 		var logDetails = E('details', {
 			'class': 'mt-details',
 			'toggle': function(ev) { self.loadLog(ev.currentTarget, logOutput); }

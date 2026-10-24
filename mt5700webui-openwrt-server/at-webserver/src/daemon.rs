@@ -125,6 +125,21 @@ enum Stream {
     Tcp(TcpStream),
 }
 
+/// Outcome of an `AT+CMGS` submit attempt, mapping the modem's reply onto the
+/// retry policy the protocol doc §5.5 prescribes:
+///  * `Accepted` — `+CMGS: <mr>` + `OK`.
+///  * `LocalError` — bare `ERROR` / `+CME ERROR`: the PDU never reached the
+///    network, so a *different submit form* may be retried once.
+///  * `NetworkReject` — `+CMS ERROR`: the network refused it; a retry sends a
+///    second copy, so it is terminal.
+///  * `Unknown` — silent timeout; the message may already have been sent.
+enum Cmgs {
+    Accepted(String),
+    LocalError,
+    NetworkReject(String),
+    Unknown(String),
+}
+
 pub struct AtClient {
     config: DaemonConfig,
     lock: Mutex<Stream>,
@@ -315,45 +330,94 @@ impl AtClient {
 
     fn send_pdu_locked(&self, length: usize, hex: &str, timeout: u64) -> Result<String, String> {
         let _ = self.drain_rx();
-        // 1) PDU mode.
+        // 1) PDU mode. Idempotent; `service::ensure_pdu_mode` has already set it
+        //    for this transaction, but the wire never trusts the caller.
         self.write_wire(b"AT+CMGF=0\r")?;
-        let step = self.wait_for(timeout, |t| t.lines().any(|l| l.trim() == "OK"))?;
+        let step = self.wait_for(timeout, has_result)?;
         if !self.step_ok(&step) {
             return Err(self.text(&step));
         }
 
-        // 2) CMGS length; the modem must answer with the '>' prompt.
-        let mut needs_cleanup = false;
+        // 2) Submit. The MT5700M-CN does **not** implement the `>` two-stage
+        //    handshake (protocol doc §5.5): the only accepted form writes the
+        //    length and the PDU on one line separated by a *literal* backslash-r
+        //    (`AT+CMGS=14\r0031…`), which manual 9.14.5 demonstrates. The modem
+        //    answers it directly with `+CMGS: <mr>` + `OK`.
+        match self.cmgs_one_line(length, hex, timeout) {
+            // Success, or a clear network-side refusal (+CMS ERROR) — neither
+            // may be re-sent, because a re-send is a second delivery (§5.5 table).
+            Cmgs::Accepted(text) => Ok(text),
+            Cmgs::NetworkReject(text) => {
+                self.cancel_sms_prompt();
+                Err(text)
+            }
+            // A silent timeout: the PDU may already have gone out. Report the
+            // failure but never retry (§5.7 `Unknown`).
+            Cmgs::Unknown(text) => {
+                self.cancel_sms_prompt();
+                Err(self.text(&text))
+            }
+            // A *local* refusal (bare `ERROR` / `+CME ERROR`) means the PDU never
+            // reached the network, so the standard TS 27.005 two-stage form is a
+            // legitimate one-shot fallback — tried only here, once.
+            Cmgs::LocalError => {
+                self.cancel_sms_prompt();
+                self.cmgs_two_stage(length, hex, timeout)
+            }
+        }
+    }
+
+    /// Primary submit form: one line, literal `\r` between length and PDU.
+    fn cmgs_one_line(&self, length: usize, hex: &str, timeout: u64) -> Cmgs {
+        // `\\r` is a backslash + 'r' (two bytes on the wire); the trailing `\r`
+        // is the real carriage return that ends the line.
+        let line = format!("AT+CMGS={}\\r{}\r", length, hex);
+        if self.write_wire(line.as_bytes()).is_err() {
+            return Cmgs::LocalError;
+        }
+        let step = self
+            .wait_for(timeout, has_result)
+            .unwrap_or_default();
+        if step.contains("+CMS ERROR") {
+            return Cmgs::NetworkReject(self.text(&step));
+        }
+        if self.step_ok(&step) && step.contains("+CMGS") {
+            return Cmgs::Accepted(step);
+        }
+        let local_reject = step.lines().any(|l| {
+            let t = l.trim();
+            t == "ERROR" || t.starts_with("+CME ERROR:")
+        });
+        if local_reject {
+            return Cmgs::LocalError;
+        }
+        // No result line at all — the modem went silent, outcome unknown.
+        Cmgs::Unknown(step)
+    }
+
+    /// Fallback submit form: `AT+CMGS=<len>` → wait `>` → PDU + Ctrl-Z. Reached
+    /// only after a local `ERROR`/`+CME ERROR`, never after `+CMS ERROR`/timeout.
+    fn cmgs_two_stage(&self, length: usize, hex: &str, timeout: u64) -> Result<String, String> {
+        let _ = self.drain_rx();
         self.write_wire(format!("AT+CMGS={}\r", length).as_bytes())?;
-        needs_cleanup = true;
         let step = self.wait_for(timeout, |t| {
             t.lines().any(|l| l.trim() == ">") || has_result(t)
         })?;
         if !self.step_has_prompt(&step) {
+            // No `>` prompt: writing the PDU now would be read as a fresh AT
+            // command (doc §5.5). Report the reply we did get and clean up.
             let err = self.text(&step);
-            if has_result(&step) {
-                needs_cleanup = false;
-            }
-            if needs_cleanup {
-                self.cancel_sms_prompt();
-            }
+            self.cancel_sms_prompt();
             return Err(err);
         }
-
-        // 3) Payload + CTRL-Z; expect +CMGS/<mr> then OK.
         let payload = format!("{}\u{1a}", hex);
         if let Err(e) = self.write_wire(payload.as_bytes()) {
             self.cancel_sms_prompt();
             return Err(e);
         }
         let step = self.wait_for(timeout + 10, has_result)?;
-        if has_result(&step) {
-            needs_cleanup = false;
-        }
-        if needs_cleanup {
-            self.cancel_sms_prompt();
-        }
         if !self.step_ok(&step) {
+            self.cancel_sms_prompt();
             return Err(self.text(&step));
         }
         Ok(step)

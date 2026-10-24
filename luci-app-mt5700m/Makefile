@@ -45,7 +45,7 @@ PKG_NAME:=luci-app-mt5700m
 # ioctl；串口打开一律 O_NONBLOCK + VMIN=1/VTIME=0。旧版二进制在不修正
 # termios 的情况下会把 TTY 留在 cooked 模式，AT 读取全部超时。
 # 写命令、拨号、短信路径不变。
-PKG_VERSION:=3.3.0
+PKG_VERSION:=3.3.1
 PKG_RELEASE:=1
 PKG_LICENSE:=Apache-2.0
 

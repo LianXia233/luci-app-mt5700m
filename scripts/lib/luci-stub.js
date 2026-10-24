@@ -313,7 +313,14 @@ function textOf(node) {
 	return node.children.map(textOf).join('');
 }
 
-const UI_PRESENTATION_CLASSES = ['mt-btn', 'mt-btn-label'];
+/*
+ * 纯样式挂名：只驱动 CSS，不承载语义/数据/可操作状态。结构证明比较的是页面语义，
+ * 因此这些 token 会从 class 中剔除后再比对（新旧两侧同样剔除，保证「加了装饰类」
+ * 不会伪装成「行为变了」）。
+ * - mt-btn / mt-btn-label：统一按钮 / 表单样式标记；
+ * - mt-empty：空白区域的吉祥物水印开关（纯背景装饰，文案与结构都不受影响）。
+ */
+const UI_PRESENTATION_CLASSES = ['mt-btn', 'mt-btn-label', 'mt-empty'];
 
 function normalizeClassList(value, normalize) {
 	const tokens = String(value || '').split(/\s+/).filter(Boolean);

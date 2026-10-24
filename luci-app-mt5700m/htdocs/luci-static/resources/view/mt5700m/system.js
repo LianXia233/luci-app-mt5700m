@@ -283,7 +283,7 @@ return view.extend({
 					E('button', { 'class': 'btn cbi-button-negative', 'click': function() { c.runConfirmedRoute(_('Restart Module'), _('This will restart the MT5700M module and temporarily interrupt 5G connectivity.'), 'modem.reset', null, true, 24000); } }, _('Restart Module'))
 				])
 			]),
-			c.details(_('Technical details'), null, E('pre', { 'class': 'mt-raw' }, technical || _('No response.')))
+			c.details(_('Technical details'), null, c.raw(technical))
 		]);
 	},
 

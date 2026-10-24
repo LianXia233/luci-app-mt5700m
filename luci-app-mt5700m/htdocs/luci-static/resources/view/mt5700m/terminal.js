@@ -15,6 +15,7 @@ return view.extend({
 	appendOutput: function(node, text, prefix) {
 		var timestamp = new Date().toLocaleTimeString();
 		node.textContent += '[%s] %s %s\n'.format(timestamp, prefix, text || '');
+		node.classList.remove('mt-empty');
 		node.scrollTop = node.scrollHeight;
 	},
 
@@ -89,7 +90,7 @@ return view.extend({
 			'class': 'cbi-input-text mt-terminal-input-field',
 			'placeholder': _('Enter AT command, for example AT^HCSQ?')
 		});
-		var output = E('pre', { 'class': 'mt-terminal-output' }, _('Ready.'));
+		var output = E('pre', { 'class': 'mt-terminal-output mt-empty' }, _('Ready.'));
 		var saved = E('div', { 'class': 'mt-terminal-quick' });
 		var self = this;
 
@@ -127,7 +128,7 @@ return view.extend({
 					E('div', { 'class': 'mt-terminal-input-field', 'style': 'flex:1' }, input),
 					E('div', { 'class': 'mt-terminal-input-actions' }, [
 						E('button', { 'class': 'btn cbi-button-apply', 'style': 'display:inline-flex;align-items:center;gap:6px', 'click': function() { self.sendCommand(output, input); } }, [ c.svgSendIcon(), document.createTextNode(_('Send')) ]),
-						E('button', { 'class': 'btn', 'click': function() { output.textContent = ''; } }, _('Clear')),
+						E('button', { 'class': 'btn', 'click': function() { output.textContent = _('Ready.'); output.classList.add('mt-empty'); } }, _('Clear')),
 						E('button', { 'class': 'btn', 'click': function() { self.saveCommand(input, saved, output); } }, _('Save command'))
 					])
 				]),

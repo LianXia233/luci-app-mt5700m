@@ -23,7 +23,7 @@ function isNode(v) {
 // ubus/AT 数据请求并行下载。原实现把 <link> 放在 render() 返回的 DOM 里，
 // CSS 要等数据全部返回后才开始下载，首屏必然先无样式再整体重排。
 // ?v= 须与 Makefile 的 PKG_VERSION 保持一致，升级后立即失效旧样式缓存。
-var STYLE_VERSION = '3.3.0';
+var STYLE_VERSION = '3.3.1';
 
 function injectStyle() {
 	if (!document.getElementById('mt5700m-style'))
@@ -749,7 +749,8 @@ function details(title, desc, body) {
 }
 
 function raw(text) {
-	return E('pre', { 'class': 'mt-raw' }, text || _('No response.'));
+	// An empty panel gets the `.mt-empty` watermark; a populated one stays plain.
+	return E('pre', { 'class': text ? 'mt-raw' : 'mt-raw mt-empty' }, text || _('No response.'));
 }
 
 /* ---------- 信号 / 仪表 ---------- */

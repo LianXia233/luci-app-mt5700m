@@ -246,6 +246,10 @@ return view.extend({
 			groups[0].messages.forEach(function(msg) { chatBody.appendChild(chatItem(msg)); });
 			navEmpty.style.display = 'none';
 			chatShell.style.display = '';
+		} else {
+			/* 没有会话时聊天区是整页最大的空白区域：只叠上吉祥物水印（占位文案仍由
+			 * 侧栏 navEmpty 给出，避免重复文字）。水印是纯装饰类，不改变渲染文本。 */
+			chatBody.classList.add('mt-empty');
 		}
 		var composeInput = E('input', { 'class': 'mt-sms-compose-input', 'type': 'tel', 'placeholder': _('Phone number…') });
 		var composeText = E('input', { 'class': 'mt-sms-compose-input', 'type': 'text', 'placeholder': _('Write a message…') });

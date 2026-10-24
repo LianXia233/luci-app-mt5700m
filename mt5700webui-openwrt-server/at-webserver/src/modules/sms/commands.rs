@@ -18,6 +18,21 @@ pub const CSCA_QUERY: &str = "AT+CSCA?";
 /// IMS switch query (`^IMSSWITCH: <on>,<a>,<b>`).
 pub const IMSSWITCH_QUERY: &str = "AT^IMSSWITCH?";
 
+/// Verbose error reporting (`+CME ERROR: <text>` instead of a bare `ERROR`).
+/// Manual 8.3.x / 27.005: 0=off, 1=numeric, 2=text. Set once per connection so
+/// a failure is diagnosable (protocol doc §2.1).
+pub const CMEE_SET: &str = "AT+CMEE=2";
+/// New-message routing query / set. Manual 8.3.4: **not saved across power-off**
+/// — an MT restart drops it to `0,0,0,0,0` and no `+CMTI` ever arrives, so it
+/// must be re-applied on every connect. `mode=2, mt=1, bm=0, ds=2, bfr=0`:
+/// store in MT and signal `+CMTI`, no CBS, status reports via `+CDSI`, flush the
+/// buffer left over from `mode=0` (protocol doc §2.1 / §4.1).
+pub const CNMI_QUERY: &str = "AT+CNMI?";
+pub const CNMI_SET: &str = "AT+CNMI=2,1,0,2,0";
+/// The exact `<mt>,<bm>,<ds>,<bfr>` tail the target `CNMI` configuration ends
+/// with (mode is the first field and is what the manual resets).
+pub const CNMI_WANTED: &str = "2,1,0,2,0";
+
 /// `AT+CMGD=<index>`.
 pub fn cmgd(index: i64) -> String {
     format!("AT+CMGD={}", index)

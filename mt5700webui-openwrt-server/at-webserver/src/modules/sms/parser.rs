@@ -74,11 +74,14 @@ pub fn parse_cpms(raw: &str) -> SmsStorage {
 
 /// `+CMGL: <index>,<status>,,<length>` followed by the PDU line, repeated.
 ///
-/// Every PDU is decoded by `pdu::decode_deliver`; a line that does not decode
-/// (concatenation references the modem stored oddly, or a submit) is skipped
-/// rather than rendered as an empty message. Multipart messages are merged into
-/// one message here — the domain model is "a message", not "a part" — so the
-/// frontends never reassemble PDUs.
+/// `=4` lists received (SMS-DELIVER) *and* stored sent (SMS-SUBMIT) messages,
+/// so each PDU is dispatched by its TP-MTI, not blindly decoded as a DELIVER.
+/// A line that decodes as neither (a status report, a odd concatenation the
+/// modem stored strangely) is skipped rather than rendered as an empty message.
+/// An unparseable `<index>` is kept as `-1`: doc §3.5 forbids treating "could
+/// not read the slot" as slot 0, which is another message's address. Multipart
+/// messages are merged into one message here — the domain model is "a message",
+/// not "a part" — so the frontends never reassemble PDUs.
 pub fn parse_cmgl(raw: &str) -> Vec<SmsMessage> {
     let mut out: Vec<SmsMessage> = Vec::new();
     let mut pending_index: Option<i64> = None;
@@ -93,21 +96,27 @@ pub fn parse_cmgl(raw: &str) -> Vec<SmsMessage> {
                 .trim()
                 .split(',')
                 .next()
-                .and_then(|v| v.trim().parse::<i64>().ok());
-            pending_index = index;
+                .and_then(|v| v.trim().parse::<i64>().ok())
+                .unwrap_or(-1);
+            pending_index = Some(index);
             continue;
         }
         let Some(index) = pending_index.take() else {
             continue;
         };
-        let Some(deliver) = pdu::decode_deliver(line) else {
-            continue;
+        let (decoded, kind) = match pdu::decode_deliver(line) {
+            Some(d) => (d, "received"),
+            None => match pdu::decode_submit(line) {
+                Some(s) => (s, "sent"),
+                None => continue,
+            },
         };
         let mut msg = SmsMessage::received(index);
-        msg.content = deliver.text;
-        msg.number = deliver.number;
-        msg.time = deliver.time;
-        if let Some((reference, total, seq)) = deliver.concat {
+        msg.kind = kind.to_string();
+        msg.content = decoded.text;
+        msg.number = decoded.number;
+        msg.time = decoded.time;
+        if let Some((reference, total, seq)) = decoded.concat {
             msg.is_concatenated = true;
             msg.concatenated_ref = Some(reference);
             msg.concatenated_total = Some(total);
@@ -254,6 +263,42 @@ mod tests {
         assert_eq!(twice.len(), 2);
         assert_eq!(twice[1].content, "yo");
         assert_eq!(twice[1].number, "8613900139000");
+    }
+
+    #[test]
+    fn cmgl_dispatches_submit_and_deliver() {
+        // `=4` returns both kinds. The sent one is the verified SUBMIT PDU from
+        // doc §10 (102 -> 10000); the received one is a DELIVER. A SUBMIT decoded
+        // as a DELIVER would mis-report its number and time, so each is checked.
+        let raw = "AT+CMGL=4\r\n\
+            +CMGL: 3,3,,28\r\n\
+            00040D91683108108300F000006280624182632305E8329BFD06\r\n\
+            +CMGL: 9,2,,15\r\n\
+            00310005810100F00000A70331980C\r\n\
+            OK";
+        let list = parse_cmgl(raw);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].kind, "received");
+        assert_eq!(list[0].index, 3);
+        assert_eq!(list[0].content, "hello");
+        assert_eq!(list[1].kind, "sent");
+        assert_eq!(list[1].index, 9);
+        assert_eq!(list[1].number, "10000");
+        assert_eq!(list[1].content, "102");
+        // A SUBMIT has no service-centre timestamp.
+        assert!(list[1].time.is_empty());
+    }
+
+    #[test]
+    fn unparseable_index_is_kept_as_minus_one_not_slot_zero() {
+        // Doc §3.5: reading the slot number is separate from the message being
+        // there. Dropping the entry hides a real SMS; using 0 deletes someone
+        // else's. So it is kept with the -1 "not addressable" marker.
+        let raw = "+CMGL: ,,,\r\n00310005810100F00000A70331980C\r\nOK";
+        let list = parse_cmgl(raw);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].index, -1);
+        assert_eq!(list[0].content, "102");
     }
 
     #[test]

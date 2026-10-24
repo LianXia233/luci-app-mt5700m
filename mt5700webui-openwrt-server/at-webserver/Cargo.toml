@@ -3,7 +3,11 @@ name = "at-webserver"
 # 4.1.0 — 读命令缓存闸门（read_gate）。渲染/轮询路径上的读命令不再直压
 # AT 通道：命中 raw 缓存零 AT 零阻塞，未命中提交单飞后台采集并立刻返回
 # pending 占位。AT 流量与前端刷新率彻底解耦。写命令路径完全不变。
-version = "4.1.0"
+# 4.1.1 — 短信与 FOTA 的正确性收口（对照随附 AT 手册与短信协议文档）：
+# AT+CMGS 单行字面量 `\r` 主形态、目的地址 TOA/TP-VP/首字节、SUBMIT 解码、
+# TP-DCS 高位分组、SCTS 时区不再误判、长短信 16-bit 参考号、CMEE/CNMI 会话
+# 引导、clear_all 还原原 CPMS 存储面；FOTA 增加 IDLE 前置校验与 ^FOTADL=0 复位。
+version = "4.1.1"
 edition = "2021"
 description = "MT5700M AT WebSocket daemon + LuCLI backend (single binary, dual frontend)"
 license = "MIT"

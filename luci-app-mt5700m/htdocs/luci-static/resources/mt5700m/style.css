@@ -510,6 +510,46 @@
 .mt-raw .mt-raw-warn { color: #f0b64a; }
 .mt-raw .mt-raw-bad { color: #f07c74; }
 
+/* ============ 空白态背景 ============ */
+/* An empty region (no response yet, an idle terminal, an empty inbox, a
+ * collapsed log) shows the mascot as a faint watermark instead of a flat void.
+ * Applied as a class by the JS only to the *empty* state, so a populated
+ * `.mt-raw` / `.mt-terminal-output` keeps its plain surface. The SVG is a
+ * self-contained file in this same directory; the LuCI minifier only rewrites
+ * `.js`/`.css`, so it ships verbatim and the relative URL resolves next to
+ * style.css. `isolation: isolate` gives the panel its own stacking context so
+ * the `z-index: -1` pseudo layer sits above the panel background but below the
+ * placeholder text, which stays legible. */
+.mt-empty { position: relative; isolation: isolate; }
+.mt-empty::before {
+	content: "";
+	position: absolute;
+	inset: 0;
+	background: url('empty-state.svg') center bottom / contain no-repeat;
+	opacity: 0.13;
+	pointer-events: none;
+	z-index: -1;
+}
+/* Raw panels keep their dark surface (from `.mt-raw`) and centre the one
+ * placeholder line; the idle terminal only needs vertical room for the art. */
+.mt-raw.mt-empty {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	text-align: center;
+	color: var(--mt-raw-muted);
+	min-height: 168px;
+}
+.mt-terminal-output.mt-empty { min-height: 132px; }
+/* The chat list already lays out as a flex column; just centre the empty
+ * placeholder and give the watermark height to sit in (card background). */
+.mt-sms-chat-list.mt-empty {
+	align-items: center;
+	justify-content: center;
+	min-height: 240px;
+	color: var(--mt-muted);
+}
+
 /* ============ 无线与小区 ============ */
 .mt-radio-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .mt-radio-row { border-bottom: 1px solid var(--mt-border-soft); }

@@ -1,5 +1,78 @@
 # Changelog
 
+## [3.3.1] - 2026-10-24
+
+### Fixed
+
+- **短信收发按随附 `sms-at-protocol.md` 与 AT 手册逐字收口**
+  （`modules/sms/{pdu,parser,service,commands}.rs`、`daemon.rs`）：
+  - 发送主形态为单行 `AT+CMGS=<len>\r<PDU>`（`\r` 是字面「反斜杠+r」两字节），
+    该模组**不实现 `>` 两段式提示**；两段式仅作本地 `ERROR`/`+CME ERROR` 后的
+    一次性回退，`+CMS ERROR`（网络拒收）与静默超时**绝不重发**（重发＝二次投递），
+    任何失败一律 ESC(0x1B) 清理。`daemon.rs` 把应答归为 Accepted / LocalError /
+    NetworkReject / Unknown 四类分派。
+  - 目的地址 TOA 国际 `0x91` / 国内短号 `0x81`；地址长度字段填**位数**而非补齐后
+    的 nibble 数；SUBMIT 首字节 SRR=1（`0x31`/`0x71`）、补相对有效期 TP-VP=`0xA7`
+    （24h，边界 167→24h / 168→48h 与手册一致）。
+  - 读取：`+CMGL` 按 TP-MTI 分派 DELIVER（收）/ SUBMIT（发）；TP-DCS 按**高半字节
+    分组**判编码（修正扁平 `(dcs>>2)&3` 对 message-class DCS 的误判）；SCTS 仅前 6
+    字节按 BCD 校验、时区字节单独取，不再把带合法时区的消息整条丢弃；长短信 UDH
+    接受 8-bit（IEI `0x00`）与 16-bit（IEI `0x08`）参考号。
+  - 会话引导 `ensure_session`：进程内一次性设 `AT+CMEE=2` 与
+    `AT+CNMI=2,1,0,2,0`（`+CNMI` 掉电不保存，故每次连接重设）。
+  - `clear_all` 删除全部后**还原原 `+CPMS` 三面**，不再把 mem1 留在 `SM`——否则
+    后续 list / delete / CMGR 会落到错误的存储面。
+
+- **FOTA 升级前置校验**（`modules/system/{fota,commands}.rs`）：`^FOTAOEMDL` 要求
+  模组处于 IDLE（`^FOTASTATE:10`）。`run()` 先 `wait_for_idle`：非 IDLE 时，卡在
+  30/31/40 用 `AT^FOTADL=0` 复位回 IDLE 再判一次，其余非空闲态直接拒绝并提示，
+  避免在错误状态下盲下发下载触发；下载 URL 仅 HTTP（HTTPS 暂未支持）。
+
+### Added
+
+- **空白区域吉祥物水印**：把随附 SVG 作为空态背景，覆盖空闲 AT 终端（`Ready.` /
+  Clear 之后）、无应答的原始输出面板、折叠的拨号日志、空收件箱的聊天区。实现为
+  纯装饰类 `.mt-empty`（`isolation: isolate` + `z-index:-1` 伪元素，文案与结构
+  不受影响），仅由 JS 在**空态**挂上；`components.js` 的 `raw()` 与 network /
+  advanced / system 三处内联 `technical` 面板统一走它，拨号日志与终端在填充/清空
+  时增删该类。SVG 随 CSS 相对路径原样穿过 minifier（minifier 只改写 `.js`/`.css`）。
+
+### Changed
+
+- **版本 `3.3.0 → 3.3.1`**（`PKG_VERSION`、README 徽章、`STYLE_VERSION` 同步），
+  后端 `at-webserver` `4.1.0 → 4.1.1`（`Cargo.toml` + `Cargo.lock`），使新增的
+  `.mt-empty` CSS 触发浏览器样式缓存失效。
+
+### Tests
+
+- Rust：`cargo test --locked` **374 passed / 0 failed**（较 3.3.0 的 368 增 6：
+  单行 CMGS 四类分派、SUBMIT/DELIVER 分派、DCS 高半字节分组、TOA/TP-VP/PDU
+  逐字节向量、clear_all 三面还原）。本轮改动的 `daemon.rs` 与 `modules/sms/*`
+  零新增编译告警。
+- LuCI：`scripts/lib/luci-stub.js` 把 `.mt-empty` 并入 `UI_PRESENTATION_CLASSES`
+  （与既有 `mt-btn`/`mt-btn-label` 同一「纯样式挂名」机制，结构证明比较前剔除），
+  10 个 `prove-*-parity.js` 与 `smoke-minified-luci.js` 全绿——结构 / 文案 /
+  收发与设置路径逐字不变，仅允许该装饰类差异。
+- 静态：`rs-static-check` / `rs-field-lint` / `rs-scope-lint` / `rs-syntax-check`、
+  `node --check`（源树与压缩树）、minify + `require` 指令保留、`jq`、
+  `msgfmt --check`、全部 `sh -n` 与可执行位检查均通过。
+
+### Docs
+
+- `docs/at-command-audit.md` 重写短信 / FOTA / 授时三行，记录单行 CMGS、
+  TOA / TP-VP / DCS 分组 / SCTS 时区 / 16-bit 参考号、CMEE/CNMI、clear_all 还原、
+  FOTA IDLE 前置；并把高精度授时 `AT^HPTCFG`（手册 §11.14 的 2 参 vs 验证指导的
+  3 参、须重启生效、与自有 NTP 模块解耦）登记为**硬件边界内、有意暂不接线**的
+  待验证项（§1 授时行与 §5）。
+
+### Note
+
+- 本轮为**文档驱动**修正：一切以随附手册 / 协议文档为准绳，以单元测试与前端
+  证明链为验收。**未构建 IPK、未连接 MT5700M 硬件**；SCTS→本地时区换算与
+  `AT^HPTCFG` 因需真机复验而明确不做，不伪造硬件验证结果。
+
+---
+
 ## [3.3.0] - 2026-10-24
 
 ### Added

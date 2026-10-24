@@ -50,6 +50,11 @@ pub const FOTA_ECHO_OFF: &str = "ATE0";
 pub const FOTA_MODE_INIT: &str = "AT^FOTAMODE=0,1,0,1";
 /// Resume a paused download.
 pub const FOTA_DOWNLOAD_RESUME: &str = "AT^FOTADL=1";
+/// Reset the FOTA state machine back to IDLE from a stale 30/31/40 (guide §5:
+/// "status：30,31,40 可以设置 AT^FOTADL=0，使 FOTA 状态恢复到 IDLE 状态"). The
+/// IDLE state is the documented precondition for `^FOTAOEMDL`, so this is how
+/// an interrupted earlier attempt is cleared before a new one.
+pub const FOTA_DOWNLOAD_RESET: &str = "AT^FOTADL=0";
 /// Flash the downloaded image; the modem reboots.
 pub const FOTA_UPGRADE: &str = "AT^FWUP";
 

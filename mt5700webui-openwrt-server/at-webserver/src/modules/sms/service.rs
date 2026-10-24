@@ -23,23 +23,52 @@ use crate::core::channel::SmsPart;
 use crate::core::error::BackendError;
 use crate::core::json::{self, Value};
 use crate::modules::sms::commands::{
-    self, CMGD_ALL, CMGF_PDU, CMGF_QUERY, CMGL_ALL, CPMS_QUERY, CSCA_QUERY, IMSSWITCH_QUERY,
-    STORAGES,
+    self, CMEE_SET, CMGD_ALL, CMGF_PDU, CMGF_QUERY, CMGL_ALL, CNMI_QUERY, CNMI_SET, CNMI_WANTED,
+    CPMS_QUERY, CSCA_QUERY, IMSSWITCH_QUERY, STORAGES,
 };
 use crate::modules::sms::parser::{parse_cmgf, parse_cpms, parse_csca, parse_cmgl, parse_imsswitch};
-use crate::modules::sms::pdu;
+use crate::modules::sms::pdu::{self, Destination};
 use crate::modules::sms::ussd;
 use crate::modules::sms::state::{SmsMessage, SmsSettings, SmsStorage};
 use crate::state::refresh::RefreshCtx;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-/// Query budget (the modem is slow to answer while a PDP context wakes up).
-const AT_TIMEOUT: Duration = Duration::from_secs(12);
-const QUEUED_TIMEOUT: Duration = Duration::from_secs(8);
 /// Settle time around a storage switch / delete-all (measured on the MT5700M:
 /// `+CMGD` right after `+CPMS` is dropped otherwise).
 const STORAGE_SETTLE: Duration = Duration::from_millis(500);
 const DELETE_SETTLE: Duration = Duration::from_millis(1000);
+
+/// Whether the connection-scoped SMS parameters (CMEE, CNMI) have been applied
+/// in this process. Best-effort once; see `ensure_session`.
+static SESSION_READY: AtomicBool = AtomicBool::new(false);
+
+/// Apply the parameters the SMS link depends on but that the modem does not
+/// keep on its own (protocol doc §2.1):
+///
+/// * `AT+CMEE=2` so a failure reports `+CME ERROR: <text>` rather than a bare
+///   `ERROR` (otherwise the cause is unobservable);
+/// * `AT+CNMI=2,1,0,2,0`, re-applied because manual 8.3.4 says it is **not
+///   saved across power-off** — after a restart it is `0,0,0,0,0` and no `+CMTI`
+///   ever arrives. Only written when the query does not already carry `2,1,0,2,0`.
+///
+/// Each command is checked for `OK` through `ctx.action`/`ctx.query`; a modem
+/// that refuses them is not silently ignored. Runs at most once per process to
+/// keep it off the polling hot path; a mid-life power cycle is re-detected because
+/// a dropped link fails the next `action`, which is surfaced to the user.
+pub fn ensure_session(ctx: &RefreshCtx) {
+    if SESSION_READY.load(Ordering::Relaxed) {
+        return;
+    }
+    let _sms = ctx.channel.begin_sms_transaction();
+    // Both are idempotent writes; a modem that is not an MT5700M simply NAKs.
+    let _ = ctx.action(CMEE_SET);
+    let current = ctx.query(CNMI_QUERY).unwrap_or_default();
+    if !current.contains(CNMI_WANTED) {
+        let _ = ctx.action(CNMI_SET);
+    }
+    SESSION_READY.store(true, Ordering::Relaxed);
+}
 
 /// Read `^IMSSWITCH?`, `+CSCA?` (only when IMS is on, as the page always did)
 /// and `+CMGF?`, plus the storage planes.
@@ -93,27 +122,62 @@ pub fn ensure_pdu_mode(ctx: &RefreshCtx) -> Result<(), BackendError> {
 /// headers when the store is empty, which is an empty list, not an error.
 pub fn list(ctx: &RefreshCtx) -> Result<Vec<SmsMessage>, BackendError> {
     let _sms = ctx.channel.begin_sms_transaction();
+    ensure_session(ctx);
     ensure_pdu_mode(ctx)?;
     let raw = ctx.action(CMGL_ALL)?;
     Ok(parse_cmgl(&raw))
 }
 
-/// Destination as the PDU encoder needs it: digits with a leading `+`.
+/// Destination as the PDU encoder needs it: the dialled digits plus the
+/// type-of-address the network expects (protocol doc §5.1).
 ///
-/// The send page has always promoted an 11-digit local number to country code
-/// 86; keeping that here means the CLI and both frontends format identically.
-pub fn normalize_destination(target: &str) -> Option<String> {
-    let mut digits: String = target.chars().filter(|c| c.is_ascii_digit()).collect();
-    if digits.is_empty() {
+/// The send page has always promoted an 11-digit `1`-prefixed mobile number to
+/// country code 86; keeping that here means the CLI and both frontends format
+/// identically. The crucial part the old code got wrong: a short code or
+/// landline (`10000`, `10086`, a desk number) is dialled **as-is** with the
+/// national TOA `0x81`. Always prefixing `+` made the SMSC read `10086` as
+/// `+10086` and drop it, so those messages could never be sent.
+pub fn normalize_destination(target: &str) -> Option<Destination> {
+    let cleaned: String = target
+        .chars()
+        .filter(|c| !(c.is_whitespace() || *c == '-' || *c == '(' || *c == ')'))
+        .collect();
+    if cleaned.is_empty() {
         return None;
     }
-    if !digits.starts_with("86") && digits.len() == 11 {
-        digits = format!("86{}", digits);
-    }
-    if !(5..=20).contains(&digits.len()) {
+    // An explicit `+` or a long-enough leading `00` is international; the prefix
+    // itself is not part of the PDU (the TOA octet carries that fact).
+    let (international, body) = if let Some(rest) = cleaned.strip_prefix('+') {
+        (true, rest.to_string())
+    } else if cleaned.starts_with("00") && cleaned.chars().count() > 8 {
+        (true, cleaned[2..].to_string())
+    } else {
+        (false, cleaned.clone())
+    };
+    if body.is_empty() || !body.chars().all(|c| c.is_ascii_digit()) {
         return None;
     }
-    Some(format!("+{}", digits))
+    if international {
+        return if (2..=20).contains(&body.len()) {
+            Some(Destination { digits: body, international: true })
+        } else {
+            None
+        };
+    }
+    // National input. A `1`-prefixed 11-digit mobile number becomes international
+    // with the country code; a number already carrying `86` (>=12 digits) stays
+    // international; anything shorter is a short code or landline and is dialled
+    // verbatim as a national address.
+    if body.len() == 11 && body.starts_with('1') {
+        return Some(Destination { digits: format!("86{}", body), international: true });
+    }
+    if body.len() >= 12 && body.starts_with("86") {
+        return Some(Destination { digits: body, international: true });
+    }
+    if (2..=20).contains(&body.len()) {
+        return Some(Destination { digits: body, international: false });
+    }
+    None
 }
 
 /// Encode `text` for `number` and send it, one `AT+CMGS` transaction per part.
@@ -123,6 +187,8 @@ pub fn normalize_destination(target: &str) -> Option<String> {
 /// part when the message was split).
 pub fn send(ctx: &RefreshCtx, number: &str, text: &str) -> Result<usize, BackendError> {
     let _sms = ctx.channel.begin_sms_transaction();
+    ensure_session(ctx);
+    ensure_pdu_mode(ctx)?;
     let destination = normalize_destination(number).ok_or_else(|| {
         BackendError::InvalidParameter(format!("短信目标号码无效: {}", number))
     })?;
@@ -174,12 +240,30 @@ pub fn clear_all(ctx: &RefreshCtx) -> Result<Vec<String>, BackendError> {
             "+CPMS? 未返回存储配置".to_string(),
         ));
     }
+    // The planes the modem reported before we touched anything: mem1 decides
+    // where every *later* list/delete/CMGR lands (manual 8.1.1), so "clear my
+    // SMS" must not permanently retarget the user's default medium (doc §6.3).
+    let restore = (
+        storage.read.name.clone(),
+        storage.write.name.clone(),
+        storage.receive.name.clone(),
+    );
     for name in &names {
         std::thread::sleep(STORAGE_SETTLE);
         ctx.action(&commands::cpms(name, name, name))?;
         std::thread::sleep(STORAGE_SETTLE);
         ctx.action(CMGD_ALL)?;
         std::thread::sleep(DELETE_SETTLE);
+    }
+    // Hand the original planes back. A firmware that answered only one plane
+    // still has a valid mem1, so reuse it for the unset slots rather than
+    // leaving the modem on the last storage we cleared.
+    if !restore.0.is_empty() {
+        let read = &restore.0;
+        let write = if restore.1.is_empty() { read } else { &restore.1 };
+        let receive = if restore.2.is_empty() { read } else { &restore.2 };
+        std::thread::sleep(STORAGE_SETTLE);
+        ctx.action(&commands::cpms(read, write, receive))?;
     }
     Ok(names)
 }
@@ -289,20 +373,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn destinations_are_promoted_the_way_the_page_did() {
-        assert_eq!(
-            normalize_destination("13800138000").as_deref(),
-            Some("+8613800138000")
-        );
-        assert_eq!(
-            normalize_destination("+86 138 0013 8000").as_deref(),
-            Some("+8613800138000")
-        );
-        assert_eq!(normalize_destination("+123456").as_deref(), Some("+123456"));
-        // Too short / nothing usable.
-        assert_eq!(normalize_destination("12"), None);
-        assert_eq!(normalize_destination("abc"), None);
-        assert_eq!(normalize_destination(""), None);
+    fn destinations_keep_the_country_code_decision() {
+        let d = normalize_destination("13800138000").unwrap();
+        assert_eq!((d.digits.as_str(), d.international), ("8613800138000", true));
+        let d = normalize_destination("+86 138 0013 8000").unwrap();
+        assert_eq!((d.digits.as_str(), d.international), ("8613800138000", true));
+        let d = normalize_destination("+123456").unwrap();
+        assert_eq!((d.digits.as_str(), d.international), ("123456", true));
+        // The doc §5.1 case the old always-`+` code broke: a short code is a
+        // *national* address, dialled as-is, so the SMSC does not read `+10086`.
+        let d = normalize_destination("10000").unwrap();
+        assert_eq!((d.digits.as_str(), d.international), ("10000", false));
+        let d = normalize_destination("10086").unwrap();
+        assert_eq!((d.digits.as_str(), d.international), ("10086", false));
+        // `00` international prefix is stripped, not carried into the PDU.
+        let d = normalize_destination("008613800138000").unwrap();
+        assert_eq!((d.digits.as_str(), d.international), ("8613800138000", true));
+        // Nothing usable / not a number.
+        assert!(normalize_destination("1").is_none());
+        assert!(normalize_destination("abc").is_none());
+        assert!(normalize_destination("").is_none());
     }
 
     #[test]

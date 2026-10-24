@@ -18,8 +18,8 @@ use crate::core::error::BackendError;
 use crate::core::json::{self, Value};
 use crate::core::task::{Priority, TaskKind};
 use crate::modules::system::commands::{
-    fota_state_name, fota_url_set, FOTA_DOWNLOAD_RESUME, FOTA_ECHO_OFF, FOTA_MODE_INIT,
-    FOTA_PROGRESS_QUERY, FOTA_STATE_QUERY, FOTA_UPGRADE,
+    fota_state_name, fota_url_set, FOTA_DOWNLOAD_RESET, FOTA_DOWNLOAD_RESUME, FOTA_ECHO_OFF,
+    FOTA_MODE_INIT, FOTA_PROGRESS_QUERY, FOTA_STATE_QUERY, FOTA_UPGRADE,
 };
 use crate::modules::system::parser::{parse_fota_progress, parse_fota_state};
 use crate::scheduler::arbiter::AtRequestSpec;
@@ -33,6 +33,7 @@ use std::time::Duration;
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// Terminal states that end the flow: 13 check failed, 14 no update,
 /// 20 download failed.
+const STATE_IDLE: i64 = 10;
 const STATE_CHECK_FAILED: i64 = 13;
 const STATE_NO_UPDATE: i64 = 14;
 const STATE_DOWNLOAD_FAILED: i64 = 20;
@@ -246,17 +247,33 @@ fn run(ctx: &TaskCtx, url_command: String) -> Result<Value, BackendError> {
     };
     publish(ctx, &snap, true);
 
-    // 1) Prepare: no echo, HTTP update mode, the server address. A failure here
-    //    is reported as such and the flow stops — exactly what the page did.
+    // 1) Prepare: no echo, HTTP update mode. Guide §5 makes the IDLE state a
+    //    hard precondition for `^FOTAOEMDL` (`^FOTASTATE: 10`), so the state is
+    //    checked *before* the address is ever written — `^FOTAOEMDL` in a
+    //    non-IDLE state is the "upgrade silently does nothing" failure.
     let prep = [
         (FOTA_ECHO_OFF, "初始化 FOTA 失败"),
         (FOTA_MODE_INIT, "初始化 FOTA 失败"),
-        (url_command.as_str(), "设置 FOTA 地址失败"),
     ];
     for (command, message) in prep {
         if ctx.at_request(step_spec(command)).is_err() {
             return fail(ctx, &mut snap, message);
         }
+    }
+    snap.step = 2;
+    publish(ctx, &snap, true);
+
+    // The guide (§5, `AT^FOTADL=0`) resets a stuck 30/31/40 back to IDLE. One
+    // reset attempt, then re-check; a state that still is not IDLE means an
+    // upgrade is genuinely in progress and starting another would corrupt it.
+    if !wait_for_idle(ctx, &mut snap) {
+        return fail(ctx, &mut snap, "模组未处于空闲状态，无法开始升级");
+    }
+
+    // Now that the modem is IDLE, point it at the server. This is the step that
+    // actually kicks off the version query.
+    if ctx.at_request(step_spec(url_command.as_str())).is_err() {
+        return fail(ctx, &mut snap, "设置 FOTA 地址失败");
     }
     snap.step = 2;
     publish(ctx, &snap, true);
@@ -352,6 +369,37 @@ fn run(ctx: &TaskCtx, url_command: String) -> Result<Value, BackendError> {
             }
         }
         std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// The IDLE (`^FOTASTATE: 10`) precondition for `^FOTAOEMDL` (guide §5).
+///
+/// Reads the state once; a stuck 30/31/40 is reset with `AT^FOTADL=0` and read
+/// again. `true` only when the modem reports IDLE, so the caller never writes an
+/// address while an upgrade is genuinely mid-flight. A state that cannot be read
+/// at all is treated as *not ready* (an unreachable modem must not be started on).
+fn wait_for_idle(ctx: &TaskCtx, snap: &mut Snapshot) -> bool {
+    let initial = ctx
+        .at_request(step_spec(FOTA_STATE_QUERY))
+        .ok()
+        .and_then(|t| parse_fota_state(&t));
+    snap.state = initial;
+    match initial {
+        Some(STATE_IDLE) => return true,
+        // Resettable leftovers from an interrupted attempt (guide §5).
+        Some(STATE_DOWNLOADING) | Some(STATE_PAUSED) | Some(STATE_DOWNLOADED) => {
+            let _ = ctx.at_request(step_spec(FOTA_DOWNLOAD_RESET));
+            std::thread::sleep(Duration::from_millis(1500));
+            let after = ctx
+                .at_request(step_spec(FOTA_STATE_QUERY))
+                .ok()
+                .and_then(|t| parse_fota_state(&t));
+            snap.state = after;
+            return after == Some(STATE_IDLE);
+        }
+        // 11/12 are an in-progress version query, 50 is flashing, 13/14/20 are
+        // terminal: none is a safe moment to write a fresh address.
+        _ => return false,
     }
 }
 
