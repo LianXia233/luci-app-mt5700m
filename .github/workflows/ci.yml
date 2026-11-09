@@ -93,8 +93,9 @@ jobs:
           python3 scripts/rs-syntax-check.py mt5700webui-openwrt-server/at-webserver/src
       - name: Check Rust backend
         run: |
-          # v2.4.0: the Python backend was replaced by the std-only Rust
-          # rewrite (at-webserver 4.0). Compile it and run its unit tests.
+          # v2.4.0: the Python backend was replaced by the Rust rewrite
+          # (at-webserver 4.x). v4.2 adds Tokio for the traffic accountant and
+          # the connection manager, so the crate is no longer std-only.
           #
           # The diagnostics are also re-emitted as annotations: they are
           # readable through the check-run API even when the job log is not,
@@ -106,6 +107,10 @@ jobs:
             python3 scripts/ci-annotate-cargo.py /tmp/cargo.log
             exit "$status"
           fi
+          # CLI smoke: the temperature test now drives the Rust binary.
+          cargo build --locked --manifest-path mt5700webui-openwrt-server/at-webserver/Cargo.toml
+          AT_WEBSERVER_BIN="$PWD/mt5700webui-openwrt-server/at-webserver/target/debug/at-webserver" \
+            sh luci-app-mt5700m/tests/test-temperature-cache.sh
       - name: Validate JSON metadata
         run: |
           jq empty luci-app-mt5700m/root/usr/share/luci/menu.d/luci-app-mt5700m.json

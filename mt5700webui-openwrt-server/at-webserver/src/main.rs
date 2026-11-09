@@ -25,6 +25,7 @@
 mod api;
 mod core;
 mod daemon;
+mod manager;
 mod modules;
 mod scheduler;
 mod serial;
@@ -52,10 +53,12 @@ fn main() {
         // entry point stays as a thin wrapper so init.d / rpcd paths never
         // change during the migration.
         "mt5700m-traffic" => traffic::run(&args),
+        "mt5700m-manager" => manager::run(&args),
         _ => match args.first().map(|s| s.as_str()) {
             Some("cli") => api::cli::run(&args[1..]),
             Some("daemon") => daemon::run(&args[1..]),
             Some("traffic") => traffic::run(&args[1..]),
+            Some("manager") => manager::run(&args[1..]),
             // Field diagnostic: drive the AT port directly, bypassing the
             // daemon, the arbiter and the snapshot collectors. Used to tell
             // "the modem is not answering" apart from "our channel is

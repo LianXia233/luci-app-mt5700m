@@ -14,6 +14,10 @@ set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 MANAGER="${ROOT}/root/usr/sbin/mt5700m-manager"
+if ! grep -q '^sync_manager()' "${MANAGER}" 2>/dev/null; then
+	echo "SKIP: shell manager migrated to Rust (covered by cargo test)"
+	exit 0
+fi
 TMP="${ROOT}/tests/.tmp-conc-$$"
 rm -rf "${TMP}" >/dev/null 2>&1 || true
 mkdir -p "${TMP}/state"

@@ -14,6 +14,10 @@ set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 MANAGER="${ROOT}/root/usr/sbin/mt5700m-manager"
+if ! grep -q '^sync_manager()' "${MANAGER}" 2>/dev/null; then
+	echo "SKIP: shell manager migrated to Rust (covered by cargo test)"
+	exit 0
+fi
 HELPERS="$(CDPATH= cd -- "$(dirname -- "$0")/helpers" && pwd)"
 # On MSYS/Git Bash a POSIX path such as /c/Users/... is meaningless to a native
 # Windows Python, which turns it into C:\c\Users\...  `pwd -W` yields the native

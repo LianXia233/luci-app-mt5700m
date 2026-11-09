@@ -2,7 +2,13 @@
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-MANAGER="${ROOT}/root/usr/sbin/mt5700m-manager"
+BIN="${AT_WEBSERVER_BIN:-}"
+
+if [ -z "${BIN}" ] || [ ! -x "${BIN}" ]; then
+	echo 'SKIP: set AT_WEBSERVER_BIN to the built at-webserver binary (cargo build)'
+	exit 0
+fi
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT INT TERM
 
@@ -18,7 +24,7 @@ chmod 0755 "${FAKE_AT}"
 
 MT5700M_MANAGER_STATE="${TMP}/state" \
 MT5700M_AT_HELPER="${FAKE_AT}" \
-	sh "${MANAGER}" refresh-temperature
+	"${BIN}" manager refresh-temperature
 
 CACHE="${TMP}/state/temperature"
 grep -qx 'temperature=43.6' "${CACHE}"
@@ -30,7 +36,7 @@ cp "${CACHE}" "${TMP}/before"
 printf '%s\n' '#!/bin/sh' 'echo temperature=invalid' > "${FAKE_AT}"
 chmod 0755 "${FAKE_AT}"
 if MT5700M_MANAGER_STATE="${TMP}/state" MT5700M_AT_HELPER="${FAKE_AT}" \
-	sh "${MANAGER}" refresh-temperature; then
+	"${BIN}" manager refresh-temperature; then
 	exit 1
 fi
 cmp "${TMP}/before" "${CACHE}"
