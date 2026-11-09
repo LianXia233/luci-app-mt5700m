@@ -1,6 +1,5 @@
 //! netifd / firewall reconciliation and interface queries.
 
-use std::path::Path;
 use std::time::Duration;
 
 use crate::core::json::{self, Value};
@@ -313,12 +312,8 @@ pub fn ensure_network(cfg: &Config, netdev: &str) -> bool {
 /// rate-limited to one log line per five minutes so a broken resolv.conf cannot
 /// flood the 2000-line log.
 pub fn apply_dns(cfg: &Config) -> bool {
-    let script = Path::new(&cfg.dns_script);
-    if !script.exists() {
-        return true;
-    }
-    let out = sys::run(&cfg.dns_script, &["apply"], Duration::from_secs(30));
-    if out.ok {
+    let ok = crate::manager::dns::apply(cfg);
+    if ok {
         let _ = std::fs::remove_file(cfg.state_path("dns_error_logged"));
         return true;
     }

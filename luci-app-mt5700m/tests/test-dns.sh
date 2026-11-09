@@ -11,7 +11,12 @@
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-DNS="${ROOT}/root/usr/share/mt5700m/dns.sh"
+BIN="${AT_WEBSERVER_BIN:-}"
+if [ -z "${BIN}" ] || [ ! -x "${BIN}" ]; then
+	echo 'SKIP: set AT_WEBSERVER_BIN to the built at-webserver binary (cargo build)'
+	exit 0
+fi
+DNS="${BIN}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT INT TERM
 
@@ -50,7 +55,7 @@ EOF
 }
 
 apply() {
-	MT5700M_DNS_STATE_DIR="${TMP}/state" sh "${DNS}" apply
+	MT5700M_DNS_STATE_DIR="${TMP}/state" "${DNS}" dns apply
 }
 
 get() {

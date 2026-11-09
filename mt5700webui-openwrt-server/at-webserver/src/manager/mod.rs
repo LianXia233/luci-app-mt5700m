@@ -11,6 +11,7 @@
 //! them with hand-written netlink/UCI code would add risk without changing
 //! behaviour. The *logic* — ordering, retries, backoff, budgets — is now Rust.
 
+pub mod dns;
 pub mod health;
 pub mod net;
 pub mod usb;
@@ -29,7 +30,6 @@ pub struct Config {
     pub lock_dir: PathBuf,
     pub log_file: PathBuf,
     pub at_helper: String,
-    pub dns_script: String,
     pub iface4: String,
     pub iface6: String,
     pub log_max_lines: usize,
@@ -52,7 +52,6 @@ impl Config {
             )),
             log_file: PathBuf::from(env_or("MT5700M_MANAGER_LOG", "/tmp/mt5700m-manager.log")),
             at_helper: env_or("MT5700M_AT_HELPER", "/usr/sbin/mt5700m-at"),
-            dns_script: env_or("MT5700M_DNS_SCRIPT", "/usr/share/mt5700m/dns.sh"),
             iface4: "MT5700M".to_string(),
             iface6: "MT5700Mv6".to_string(),
             log_max_lines: env_or("MT5700M_LOG_MAX_LINES", "2000")

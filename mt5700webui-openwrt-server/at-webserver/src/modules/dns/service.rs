@@ -22,7 +22,7 @@ use crate::modules::dns::config::{DnsConfig, DnsFamily};
 use crate::modules::dns::state::{
     interface_runtime, runtime_matches, ApplyState, InterfaceRuntime,
 };
-use crate::modules::dns::{APPLY_SCRIPT, IFACE4, IFACE6};
+use crate::modules::dns::{IFACE4, IFACE6};
 use crate::scheduler::jobs::TaskManager;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -295,12 +295,7 @@ pub fn start_apply(tasks: &Arc<TaskManager>) -> Result<TaskId, BackendError> {
     config
         .validate()
         .map_err(BackendError::InvalidParameter)?;
-    if !std::path::Path::new(APPLY_SCRIPT).exists() {
-        return Err(BackendError::Unavailable(format!(
-            "缺少 DNS 应用脚本 {}",
-            APPLY_SCRIPT
-        )));
-    }
+    // DNS apply is Rust now (manager::dns); no script to look for.
     if APPLYING.swap(true, Ordering::SeqCst) {
         return Err(BackendError::Busy);
     }
@@ -312,12 +307,11 @@ pub fn start_apply(tasks: &Arc<TaskManager>) -> Result<TaskId, BackendError> {
         Box::new(|ctx| {
             let _guard = ApplyGuard;
             ctx.progress(10, "正在应用 DNS 配置");
-            let out = sys::run(APPLY_SCRIPT, &["apply"], APPLY_TIMEOUT);
-            if !out.ok {
-                return Err(BackendError::Internal(format!(
-                    "DNS 应用失败: {}",
-                    out.error()
-                )));
+            let ok = crate::manager::dns::apply(&crate::manager::Config::from_env());
+            if !ok {
+                return Err(BackendError::Internal(
+                    "DNS 应用失败: 见 /var/run/mt5700m/dns.state".to_string(),
+                ));
             }
             ctx.progress(80, "正在校验接口运行时 DNS");
             // Give netifd a bounded moment to publish the new resolvers; this
