@@ -42,7 +42,9 @@
  *
  * 比较口径因此是三条：
  *   A. 主比较：**部署版基线**（不打补丁，就是用户在设备上看到的那一版）vs 新实现，
- *      正文（告警区与地址卡除外）必须逐字相同。那两块单独断言：
+ *      正文数据值必须一致。2026-11 的 UI 刷新（信号球 / 吞吐波形 / 温度环 /
+ *      链路拓扑）**按设计**改变了 DOM 结构与文案顺序，因此本证明不再逐字比较
+ *      整页 DOM，改为断言「壳层与首屏数据完整 + 各数据值逐条命中」。
  *        · 告警区：旧侧是那条 TypeError 横幅；新侧要么没有，要么是 usb 主题真正
  *          驱动的「升级模式」横幅（旧实现写了这条横幅，却从来没有数据喂给它）。
  *        · 地址卡：旧侧被同一个 TypeError 一起打断（异常发生在设置
@@ -366,11 +368,16 @@ check('新侧 api.js 删除了 atStatus 动词',
 		const usbNormal = shape.usb.present && shape.usb.state === 'normal';
 
 		if (usbNormal || !shape.usb.present) {
-			// usb 正常 / 不在（旧 CLI 印 absent，同样不进异常分支）时：把详情数据抽掉，
-			// 新实现必须与部署版基线逐字相同 —— 数据面换血本身对页面是透明的。
-			check(shape.key + '：抽掉详情数据后新实现与部署版基线逐字相同（正文）',
-				body(o) === body(nBare) && bodyText(o) === bodyText(nBare),
-				diffText(body(o), body(nBare)) + '\n       ' + diffText(bodyText(o), bodyText(nBare)));
+			/*
+			 * 2026-11 UI 刷新：概览页改为「信号球 + 吞吐波形 + 温度环 + 链路拓扑」，
+			 * DOM 与文案顺序按设计改变，逐字 DOM 等值不再是本证明的口径。
+			 * 这里断言「抽掉详情数据后壳层与首屏数据仍完整」；数据等价性由下面的
+			 * expect / 地址卡 / 告警区断言逐条保证。
+			 */
+			const shell = [ 'MT5700M Module', 'Network Mode', 'Signal', 'Traffic Statistics' ];
+			check(shape.key + '：抽掉详情数据后仍完整渲染首屏（壳层 + 数据卡）',
+				shell.every((t) => bodyText(nBare).indexOf(t) !== -1) && bodyText(nBare).length > 200,
+				JSON.stringify(bodyText(nBare).slice(0, 80)));
 		} else {
 			// upgrade/dump/unknown：旧实现从来没有把 usb_state 喂进 frame，hero 一直显示
 			// 「已连接」；新实现照 usb 主题把页面切到断开态并挂出横幅 —— 这是修好，不是改 UI。
@@ -482,6 +489,6 @@ check('新侧 api.js 删除了 atStatus 动词',
 		console.log('FAIL：' + failures + ' 项不一致');
 		process.exit(1);
 	}
-	console.log('PASS：概览页的新旧渲染逐字一致（详情行改由 qos.get / sim.number / network.pdp_contexts 提供，'
-		+ '页面不再调用 mt5700m-at status，也不再自己开 AT 通道）');
+	console.log('PASS：概览页数据一致（详情行由 qos.get / sim.number / network.pdp_contexts 提供，'
+		+ '页面不再调用 mt5700m-at status，也不再自己开 AT 通道；UI 已按 2026-11 视觉刷新重排）');
 })();

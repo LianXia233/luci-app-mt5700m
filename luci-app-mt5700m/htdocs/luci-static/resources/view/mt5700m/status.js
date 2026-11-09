@@ -3,6 +3,7 @@
 'require mt5700m.api as api';
 'require mt5700m.parser as parser';
 'require mt5700m.components as c';
+'require mt5700m.visuals as v';
 
 /*
  * MT5700M LuCI — 概览（status）
@@ -236,13 +237,13 @@ return view.extend({
 				var fields = change.fields || [];
 				var has = function(name) { return fields.indexOf('*') !== -1 || fields.indexOf(name) !== -1; };
 				if (change.topic === 'signal') {
-					if ([ 'rsrp', 'rsrq', 'sinr', 'rssi' ].some(has)) addRegions([ 'signal' ]);
-					if (has('sysmode')) addRegions([ 'hero', 'facts', 'carrier', 'sim' ]);
+					if ([ 'rsrp', 'rsrq', 'sinr', 'rssi' ].some(has)) addRegions([ 'signal', 'viz' ]);
+					if (has('sysmode')) addRegions([ 'hero', 'facts', 'carrier', 'sim', 'viz' ]);
 				} else if (change.topic === 'network') {
 					if ([ 'operator', 'sysmode', 'sysmode_detail' ].some(has)) addRegions([ 'facts', 'sim' ]);
 					if (has('sysmode') || has('sysmode_detail')) addRegions([ 'hero' ]);
 				} else if (change.topic === 'temperature' && has('average')) {
-					addRegions([ 'signal' ]);
+					addRegions([ 'signal', 'viz' ]);
 				} else if (change.topic === 'modem') {
 					addRegions([ 'module' ]);
 				} else if (change.topic === 'sim') {
@@ -251,7 +252,7 @@ return view.extend({
 					addRegions([ 'carrier' ]);
 				}
 			});
-			if (trafficChanged) regions.push('traffic');
+			if (trafficChanged) regions.push('traffic', 'viz');
 			if (beforeWarnings !== self.stateWarnings(state).join('\n')) regions.push('alerts');
 			if (regions.length)
 				self.updateRegions(holder, self.frameFromState(state), regions);
@@ -306,7 +307,7 @@ return view.extend({
 			if (!document.body.contains(holder)) return;
 			state.manager = manager || {};
 			state.managerError = '';
-			self.updateRegions(holder, self.frameFromState(state), [ 'hero', 'facts', 'module', 'traffic', 'alerts' ]);
+			self.updateRegions(holder, self.frameFromState(state), [ 'hero', 'facts', 'viz', 'module', 'traffic', 'alerts' ]);
 		}, function(err) {
 			if (!document.body.contains(holder)) return;
 			state.managerError = err && err.message || String(err);
@@ -499,17 +500,27 @@ return view.extend({
 
 	signalCard: function(data) {
 		var rsrp = parseFloat(data.rsrp), quality = parser.signalQuality('rsrp', rsrp);
+		var known = !isNaN(rsrp);
+
+		function metric(label, value, unit) {
+			return E('div', { 'class': 'mtv-metric' }, [
+				E('span', { 'class': 'mtv-metric-label' }, label),
+				E('strong', { 'class': 'mtv-metric-value' }, [ value, unit ? E('small', {}, unit) : null ])
+			]);
+		}
+
 		return c.card(_('Signal'), _('Current radio quality at a glance'), [
-			E('div', { 'class': 'mt-gauge-head' }, [
-				E('span', { 'class': 'mt-gauge-label' }, 'RSRP'),
-				c.signalBadge(quality)
-			]),
-			E('div', { 'class': 'mt-gauge-value', 'style': 'font-size:31px;margin:6px 0 10px' }, isNaN(rsrp) ? '--' : String(data.rsrp)),
-			c.signalBars(quality.percentage, quality.cls),
-			E('div', { 'class': 'mt-circular-gauges-grid' }, [
-				c.svgCircularGauge(data.rsrq, -25, -3, ' dB', 'RSRQ', quality.cls),
-				c.svgCircularGauge(data.sinr, -10, 30, ' dB', 'SINR', quality.cls),
-				c.svgCircularGauge(data.temperature, 20, 80, '°C', _('Temperature'), 'accent')
+			E('div', { 'class': 'mtv-signal' }, [
+				v.signalOrb({ percent: quality.percentage, cls: quality.cls, connected: known }),
+				E('div', { 'class': 'mtv-metrics' }, [
+					metric('RSRP', known ? String(data.rsrp) : '--', ' dBm'),
+					metric('RSRQ', data.rsrq ? String(data.rsrq) : '--', ' dB'),
+					metric('SINR', data.sinr ? String(data.sinr) : '--', ' dB'),
+					E('div', { 'class': 'mtv-metric' }, [
+						E('span', { 'class': 'mtv-metric-label' }, _('Quality')),
+						c.signalBadge(quality)
+					])
+				])
 			])
 		]);
 	},
@@ -671,6 +682,62 @@ return view.extend({
 		]);
 	},
 
+	/* ---------- 视觉条：吞吐 / 温度 / 链路 ---------- */
+
+	vizStrip: function(res, viewData) {
+		var data = viewData.data;
+		var ifaceName = data.network_interface || 'eth2';
+		var report = res.traffic || {};
+		var iface = (report.interfaces || []).filter(function(item) { return item.name === ifaceName; })[0] ||
+			(report.interfaces || []).filter(function(item) { return item.name === 'eth2'; })[0] || { traffic: {} };
+		var traffic = iface.traffic || {};
+		var days = parser.sortedTraffic(traffic.day, false).slice(-7);
+		var today = parser.currentTraffic(days, false) || { rx: 0, tx: 0 };
+		var temperature = parseFloat(data.temperature);
+		var tempPercent = isNaN(temperature) ? 0 : (temperature - 20) / 60 * 100;
+
+		return this.liveRegion(E('section', { 'class': 'mtv-strip' }, [
+			E('div', { 'class': 'mtv-tile' }, [
+				E('div', { 'class': 'mtv-tile-head' }, [
+					E('span', { 'class': 'mtv-tile-title' }, _('Throughput')),
+					E('span', { 'class': 'mtv-legend' }, [
+						E('span', {}, [ E('i', {}), _('Download') ]),
+						E('span', {}, [ E('i', { 'class': 'alt' }), _('Upload') ])
+					])
+				]),
+				E('div', { 'class': 'mtv-tile-body' }, v.throughputWave({ days: days })),
+				E('div', { 'class': 'mtv-tile-foot' }, [
+					E('span', {}, _('Today')),
+					E('strong', {}, parser.formatBytes(parser.trafficTotal(today)))
+				])
+			]),
+			E('div', { 'class': 'mtv-tile' }, [
+				E('div', { 'class': 'mtv-tile-head' }, [
+					E('span', { 'class': 'mtv-tile-title' }, _('Temperature')),
+					E('span', { 'class': 'mtv-tile-sub' }, viewData.connected ? _('Connected') : viewData.reachable ? _('Module online') : _('Unavailable'))
+				]),
+				E('div', { 'class': 'mtv-tile-body', 'style': 'display:flex;justify-content:center' },
+					v.ringGauge({ percent: tempPercent, cls: temperature >= 70 ? 'warn' : 'ok' })),
+				E('div', { 'class': 'mtv-tile-foot' }, [
+					E('span', {}, _('Module')),
+					E('strong', {}, isNaN(temperature) ? '--' : data.temperature + ' °C')
+				])
+			]),
+			E('div', { 'class': 'mtv-tile' }, [
+				E('div', { 'class': 'mtv-tile-head' }, [
+					E('span', { 'class': 'mtv-tile-title' }, _('Link path')),
+					E('span', { 'class': 'mtv-tile-sub' }, data.sysmode_detail || data.sysmode || '--')
+				]),
+				E('div', { 'class': 'mtv-tile-body' },
+					v.linkTopology({ connected: viewData.connected, reachable: viewData.reachable })),
+				E('div', { 'class': 'mtv-tile-foot' }, [
+					E('span', {}, _('Operator')),
+					E('strong', {}, viewData.operator || '--')
+				])
+			])
+		]), 'viz');
+	},
+
 	/* ---------- 状态视图与局部渲染 ---------- */
 
 	statusViewData: function(res) {
@@ -764,6 +831,7 @@ return view.extend({
 		if (name === 'alerts') return this.alertsRegion(res, viewData);
 		if (name === 'hero') return this.heroRegion(res, viewData);
 		if (name === 'facts') return this.factsRegion(viewData);
+		if (name === 'viz') return this.vizStrip(res, viewData);
 		if (name === 'signal') return this.liveRegion(this.signalCard(viewData.data), 'signal');
 		if (name === 'carrier') return this.liveRegion(this.carrierCard(viewData.carrierInfo), 'carrier');
 		if (name === 'address') return this.liveRegion(this.addressCard(viewData.session), 'address');
@@ -852,6 +920,7 @@ return view.extend({
 			this.createRegion(res, viewData, 'alerts'),
 			this.createRegion(res, viewData, 'hero'),
 			this.createRegion(res, viewData, 'facts'),
+			this.createRegion(res, viewData, 'viz'),
 			statusGrid,
 			moduleGrid,
 			this.createRegion(res, viewData, 'traffic'),

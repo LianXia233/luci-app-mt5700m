@@ -2010,3 +2010,126 @@
 	.mt-status-tag--busy .mt-status-dot,
 	.mt-btn.is-loading::after { animation-duration: 1.6s; }
 }
+
+/* ==========================================================================
+ * 自绘动态 SVG 视觉层（mt5700m/visuals.js）
+ * 仅使用 --mt-* 令牌；所有动效在 prefers-reduced-motion 下静止。
+ * ========================================================================== */
+
+.mtv-svg { display: block; overflow: visible; }
+.mtv-wave, .mtv-bars, .mtv-topo { width: 100%; height: auto; }
+.mtv-orb, .mtv-radar { margin: 0 auto; }
+
+/* ---- 视觉条：吞吐 / 温度 / 链路 ---- */
+
+.mtv-strip {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 14px;
+	margin: 0 0 16px;
+}
+
+.mtv-tile {
+	position: relative;
+	background: var(--mt-glass-bg);
+	border: 1px solid var(--mt-glass-border);
+	border-radius: var(--mt-radius-lg);
+	box-shadow: var(--mt-glass-shadow);
+	backdrop-filter: var(--mt-glass-blur);
+	-webkit-backdrop-filter: var(--mt-glass-blur);
+	padding: 14px 16px 12px;
+	overflow: hidden;
+}
+
+.mtv-tile::after {
+	content: "";
+	position: absolute;
+	inset: 0;
+	background: radial-gradient(120% 90% at 100% 0%, rgba(18, 100, 216, 0.10), transparent 60%);
+	pointer-events: none;
+}
+
+.mtv-tile-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.mtv-tile-title { font-size: 13px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--mt-muted); }
+.mtv-tile-sub { font-size: 12px; color: var(--mt-faint); }
+.mtv-tile-body { margin: 10px 0 6px; position: relative; z-index: 1; }
+.mtv-tile-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--mt-muted); }
+.mtv-tile-foot strong { color: var(--mt-text); font-size: 13px; }
+
+.mtv-legend { display: inline-flex; align-items: center; gap: 12px; font-size: 12px; color: var(--mt-muted); }
+.mtv-legend i { width: 8px; height: 8px; border-radius: 3px; display: inline-block; margin-right: 5px; background: var(--mt-accent); }
+.mtv-legend i.alt { background: var(--mt-accent-2); }
+
+/* ---- 信号卡：球 + 指标 ---- */
+
+.mtv-signal {
+	display: grid;
+	grid-template-columns: 168px minmax(0, 1fr);
+	gap: 14px;
+	align-items: center;
+}
+
+.mtv-metrics { display: grid; gap: 8px; }
+.mtv-metric {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 10px;
+	padding: 8px 10px;
+	border-radius: var(--mt-radius-sm);
+	background: var(--mt-surface-inset);
+	border: 1px solid var(--mt-border-soft);
+}
+.mtv-metric-label { font-size: 12px; color: var(--mt-muted); letter-spacing: .02em; }
+.mtv-metric-value { font-family: var(--mt-font-mono); font-size: 15px; color: var(--mt-text); }
+.mtv-metric-value small { font-size: 11px; color: var(--mt-faint); margin-left: 2px; }
+
+/* ---- 动效 ---- */
+
+@keyframes mtv-spin { to { transform: rotate(360deg); } }
+@keyframes mtv-core { 0%, 100% { transform: scale(1); opacity: .85; } 50% { transform: scale(1.18); opacity: 1; } }
+@keyframes mtv-core-ring { 0%, 100% { transform: scale(.9); opacity: .18; } 50% { transform: scale(1.25); opacity: .42; } }
+@keyframes mtv-draw { to { stroke-dashoffset: 0; } }
+@keyframes mtv-fade { to { opacity: 1; } }
+@keyframes mtv-rise { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+@keyframes mtv-dash { to { stroke-dashoffset: -24; } }
+@keyframes mtv-packet { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+@keyframes mtv-beam { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+
+.mtv-rotor { animation: mtv-spin 42s linear infinite; }
+.mtv-rotor--slow { animation-duration: 90s; animation-direction: reverse; }
+.mtv-arc { transition: stroke-dasharray .9s cubic-bezier(.22, 1, .36, 1); }
+.mtv-core { animation: mtv-core 2.8s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.mtv-core-ring { animation: mtv-core-ring 2.8s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.mtv-dot { animation: mtv-core 2.2s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+
+.mtv-wave-line { stroke-dasharray: 1; stroke-dashoffset: 1; animation: mtv-draw 1.5s cubic-bezier(.22, 1, .36, 1) forwards; }
+.mtv-wave-line--alt { animation-delay: .25s; animation-duration: 1.9s; }
+.mtv-wave-area { opacity: 0; animation: mtv-fade 1s ease .35s forwards; }
+
+.mtv-bar { transform-box: fill-box; transform-origin: bottom center; animation: mtv-rise .8s cubic-bezier(.22, 1, .36, 1) both; animation-delay: var(--mtv-delay, 0ms); }
+
+.mtv-sweep { animation: mtv-spin 7.5s linear infinite; }
+.mtv-dash { animation: mtv-dash 1.4s linear infinite; }
+.mtv-packet { animation: mtv-packet 2.6s ease-in-out infinite; animation-delay: var(--mtv-delay, 0ms); }
+.mtv-beam { animation: mtv-beam 3s ease-in-out infinite; animation-delay: var(--mtv-delay, 0ms); transform-box: fill-box; transform-origin: center; }
+
+@media (max-width: 900px) {
+	.mtv-strip { grid-template-columns: 1fr; }
+	.mtv-signal { grid-template-columns: 1fr; justify-items: center; }
+	.mtv-metrics { width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.mtv-rotor, .mtv-core, .mtv-core-ring, .mtv-dot, .mtv-sweep, .mtv-dash,
+	.mtv-packet, .mtv-beam, .mtv-bar, .mtv-wave-line, .mtv-wave-area {
+		animation: none !important;
+	}
+	.mtv-wave-line { stroke-dashoffset: 0 !important; }
+	.mtv-wave-area { opacity: 1 !important; }
+	.mtv-arc { transition: none !important; }
+}
+
+@media (prefers-color-scheme: dark) {
+	.mtv-tile::after { background: radial-gradient(120% 90% at 100% 0%, rgba(91, 155, 245, 0.16), transparent 60%); }
+}

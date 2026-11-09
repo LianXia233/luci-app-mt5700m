@@ -2629,3 +2629,43 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/* ==========================================================================
+ * 自绘动态 SVG 视觉层（src/ui/liveViz.tsx）
+ * ========================================================================== */
+
+.lv-svg { display: block; overflow: visible; }
+.lv-topo { width: 100%; height: auto; }
+.lv-wave { width: 100%; height: auto; }
+.lv-link-row {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--app-border-light);
+}
+
+@keyframes lv-spin { to { transform: rotate(360deg); } }
+@keyframes lv-core { 0%, 100% { transform: scale(1); opacity: .85; } 50% { transform: scale(1.18); opacity: 1; } }
+@keyframes lv-core-ring { 0%, 100% { transform: scale(.9); opacity: .18; } 50% { transform: scale(1.25); opacity: .42; } }
+@keyframes lv-dash { to { stroke-dashoffset: -24; } }
+@keyframes lv-packet { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+@keyframes lv-draw { to { stroke-dashoffset: 0; } }
+@keyframes lv-fade { to { opacity: 1; } }
+
+.lv-rotor { animation: lv-spin 42s linear infinite; }
+.lv-rotor--slow { animation-duration: 90s; animation-direction: reverse; }
+.lv-arc { transition: stroke-dasharray .9s cubic-bezier(.22, 1, .36, 1); }
+.lv-core { animation: lv-core 2.8s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.lv-core-ring { animation: lv-core-ring 2.8s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.lv-dash { animation: lv-dash 1.4s linear infinite; }
+.lv-packet { animation: lv-packet 2.6s ease-in-out infinite; }
+.lv-wave-line { stroke-dasharray: 1; stroke-dashoffset: 1; animation: lv-draw 1.5s cubic-bezier(.22, 1, .36, 1) forwards; }
+.lv-wave-area { opacity: 0; animation: lv-fade 1s ease .35s forwards; }
+
+@media (prefers-reduced-motion: reduce) {
+  .lv-rotor, .lv-core, .lv-core-ring, .lv-dash, .lv-packet, .lv-wave-line, .lv-wave-area {
+    animation: none !important;
+  }
+  .lv-wave-line { stroke-dashoffset: 0 !important; }
+  .lv-wave-area { opacity: 1 !important; }
+  .lv-arc { transition: none !important; }
+}

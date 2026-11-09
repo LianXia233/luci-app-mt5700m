@@ -1,5 +1,8 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
+
 /*
  * 迁移期一致性证明的公共桩（scripts/lib/luci-stub.js）
  *
@@ -297,6 +300,13 @@ function loadSide(read, api, viewRel, globals) {
 	const parser = loadModule(read(RES + '/mt5700m/parser.js'), scope);
 	scope.parser = parser;
 	scope.c = loadModule(read(RES + '/mt5700m/components.js'), scope);
+	// 自绘动态 SVG 视觉层（status 页的 orb / wave / ring / topology）。
+	// 直接从工作区读取：这是纯展示模块，新旧两侧共用同一份，不必去基线里找。
+	try {
+		scope.v = loadModule(fs.readFileSync(path.join(process.cwd(), RES, 'mt5700m/visuals.js'), 'utf8'), scope);
+	} catch (e) {
+		scope.v = {};
+	}
 	const view = loadModule(read(viewRel || RES + '/view/mt5700m/network.js'), scope);
 	return { parser, c: scope.c, view, scope, api: scope.api };
 }

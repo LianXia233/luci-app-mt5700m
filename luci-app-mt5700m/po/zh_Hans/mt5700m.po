@@ -3302,3 +3302,12 @@ msgstr "重试"
 
 msgid "Shared modem status is temporarily unavailable. Showing available data."
 msgstr "共享模组状态暂时不可用，正在显示可用数据。"
+
+msgid "Quality"
+msgstr "质量"
+
+msgid "Throughput"
+msgstr "吞吐"
+
+msgid "Link path"
+msgstr "链路"

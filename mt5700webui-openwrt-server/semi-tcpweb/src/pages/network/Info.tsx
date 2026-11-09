@@ -7,7 +7,8 @@ import { useATReady } from '@/hooks/useATReady';
 import type { QosPayload } from '@/modem/qos';
 import { QOS_AMBR_EVENT } from '@/services/events';
 import { useCommandQueue } from '@/hooks/useCommandQueue';
-import { SvgSignalTower, SvgDataStream } from '@/ui/svgVisuals';
+import { SvgDataStream } from '@/ui/svgVisuals';
+import { LinkTopology, SignalOrb } from '@/ui/liveViz';
 import {
   calculateSignalPercent,
   formatDuration,
@@ -588,9 +589,18 @@ const NetworkInfo: React.FC = () => {
               <div>
                 <div className="signal-overview">
                   <div className="signal-tower-wrapper">
-                    <SvgSignalTower
+                    <SignalOrb
                       percent={cell.signalPercent ? parseInt(cell.signalPercent, 10) : 0}
-                      is5G={nr}
+                      tone={
+                        !cell.signalPercent
+                          ? 'bad'
+                          : parseInt(cell.signalPercent, 10) >= 70
+                            ? 'ok'
+                            : parseInt(cell.signalPercent, 10) >= 40
+                              ? 'warn'
+                              : 'bad'
+                      }
+                      size={148}
                     />
                   </div>
                   <RingGauge
@@ -689,6 +699,9 @@ const NetworkInfo: React.FC = () => {
                 },
               ]}
             />
+            <div className="lv-link-row">
+              <LinkTopology connected={Boolean(cell.signalPercent)} height={92} />
+            </div>
           </div>
         </PageCard>
 
