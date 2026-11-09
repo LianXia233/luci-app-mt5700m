@@ -39,6 +39,24 @@
 | **📡 基站与小区信息 (`03-network-cell`)** | **📶 5G NR SSB 束波探测 (`04-ssb-beams`)** |
 | <img src="docs/preview/03-network-cell.png" alt="基站与小区" width="420" style="border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);" /> | <img src="docs/preview/04-ssb-beams.png" alt="SSB 束波" width="420" style="border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);" /> |
 
+### LuCI 原生概览（3.4.0 自绘动态 SVG）
+
+<p align="center">
+  <img src="docs/preview/05-luci-overview.png" alt="LuCI 原生概览" width="860" style="border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.12);" />
+</p>
+
+### 本地预览（无需模组）
+
+```sh
+node preview/serve.js
+# WebUI（Mock 数据）：http://127.0.0.1:8788/5700/?mock=1
+# LuCI 视觉预览      ：http://127.0.0.1:8788/preview/luci-status.html
+```
+
+在 OpenWrt 虚拟机里：安装 `luci-app-mt5700m` 后直接访问 `http://<VM_IP>/5700/?mock=1`；
+若只想看新版视觉层，把 `preview/luci-status.html` 复制到 `/www/preview/` 即可
+（CSS/JS 复用已安装的 `/luci-static`）。
+
 ---
 
 ## 🌟 核心特性与架构演进

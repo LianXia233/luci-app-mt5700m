@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MT5700M · LuCI 概览（3.4.0 预览）</title>
+<link rel="stylesheet" href="/luci-static/resources/mt5700m/style.css" />
+<style>
+  html, body { margin: 0; background: var(--mt-surface-soft); color: var(--mt-text);
+    font-family: var(--mt-font-sans, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif); }
+  .preview-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 10px 18px; font-size: 12px; letter-spacing: .04em; color: var(--mt-muted);
+    background: var(--mt-surface); border-bottom: 1px solid var(--mt-border-soft); }
+  .preview-bar b { color: var(--mt-text); font-weight: 700; }
+  .preview-bar span { color: var(--mt-faint); }
+  .preview-shell { max-width: 1180px; margin: 0 auto; padding: 22px 18px 64px; }
+  .preview-hint { margin: 0 0 14px; font-size: 12px; color: var(--mt-faint); }
+  .mt-card + .mt-card { margin-top: 0; }
+  .mt-hero .mt-badge { background: rgba(255, 255, 255, 0.18); color: #fff;
+    border-color: rgba(255, 255, 255, 0.42); }
+</style>
+</head>
+<body>
+<div class="preview-bar"><b>MT5700M · LuCI 概览</b><span>3.4.0 视觉预览 · 示例数据</span></div>
+<div class="preview-shell">
+  <p class="preview-hint">此页直接加载仓库里的 <code>style.css</code> 与 <code>visuals.js</code>，用于在没有模组的机器上检查信号球、吞吐波形、温度环与链路拓扑的排版与动效。</p>
+  <div class="mt-page" id="page"></div>
+</div>
+<script>
+(async () => {
+  const RES = '/luci-static/resources/mt5700m/';
+  const source = await (await fetch(RES + 'visuals.js')).text();
+  const v = new Function('baseclass', source)({ extend: (o) => o });
+
+  const make = (tag, cls, children) => {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    (children || []).forEach((child) => {
+      if (child === null || child === undefined || child === false) return;
+      node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
+    });
+    return node;
+  };
+
+  const metric = (label, value, unit) =>
+    make('div', 'mtv-metric', [
+      make('span', 'mtv-metric-label', [label]),
+      make('strong', 'mtv-metric-value', [value, unit ? make('small', null, [unit]) : null]),
+    ]);
+
+  const tile = (title, sub, body, left, right) =>
+    make('div', 'mtv-tile', [
+      make('div', 'mtv-tile-head', [make('span', 'mtv-tile-title', [title]), make('span', 'mtv-tile-sub', [sub])]),
+      make('div', 'mtv-tile-body', [body]),
+      make('div', 'mtv-tile-foot', [make('span', null, [left]), make('strong', null, [right])]),
+    ]);
+
+  const page = document.getElementById('page');
+
+  /* hero */
+  page.appendChild(
+    make('section', 'mt-hero', [
+      make('div', 'mt-hero-main', [
+        make('div', 'mt-hero-kicker', ['OVERVIEW']),
+        make('h2', 'mt-hero-title', ['MT5700M Module']),
+        make('p', 'mt-hero-desc', ['Mobile network is connected and ready.']),
+      ]),
+      make('div', 'mt-hero-side', [
+        make('span', 'mt-badge mt-badge--ok', ['Connected']),
+        make('span', 'mt-badge mt-badge--primary', ['5G SA']),
+      ]),
+    ]),
+  );
+
+  /* 视觉条：吞吐 / 温度 / 链路 */
+  const days = [
+    { rx: 420e6, tx: 38e6 }, { rx: 610e6, tx: 52e6 }, { rx: 380e6, tx: 30e6 },
+    { rx: 880e6, tx: 74e6 }, { rx: 760e6, tx: 61e6 }, { rx: 1020e6, tx: 88e6 },
+    { rx: 940e6, tx: 81e6 },
+  ];
+  page.appendChild(
+    make('section', 'mtv-strip', [
+      tile('Throughput', 'Download / Upload', v.throughputWave({ days }), 'Today', '1.2 GiB'),
+      tile('Temperature', 'Module', v.ringGauge({ percent: 42, cls: 'ok' }), 'Module', '45.1 °C'),
+      tile('Link path', '5G SA', v.linkTopology({ connected: true, reachable: true }), 'Operator', '中国联通'),
+    ]),
+  );
+
+  /* 信号卡 + 模块卡 */
+  const signalCard = make('section', 'mt-card', [
+    make('div', 'mt-card-head', [
+      make('h3', 'mt-card-title', ['Signal']),
+      make('p', 'mt-card-desc', ['Current radio quality at a glance']),
+    ]),
+    make('div', 'mtv-signal', [
+      v.signalOrb({ percent: 68, cls: 'warn', connected: true }),
+      make('div', 'mtv-metrics', [
+        metric('RSRP', '-83', ' dBm'),
+        metric('RSRQ', '-11', ' dB'),
+        metric('SINR', '14', ' dB'),
+        make('div', 'mtv-metric', [
+          make('span', 'mtv-metric-label', ['Quality']),
+          make('span', 'mt-badge mt-badge--warn', ['Good']),
+        ]),
+      ]),
+    ]),
+  ]);
+
+  const moduleCard = make('section', 'mt-card', [
+    make('div', 'mt-card-head', [
+      make('h3', 'mt-card-title', ['Module']),
+      make('p', 'mt-card-desc', ['Identity and firmware']),
+    ]),
+    make('div', 'mtv-metrics', [
+      metric('Manufacturer', 'Quectel'),
+      metric('Model', 'MT5700M'),
+      metric('Firmware', 'MT5700M-2.5.0'),
+      metric('AT port', '/dev/ttyUSB3'),
+    ]),
+  ]);
+
+  page.appendChild(make('div', 'mt-grid', [signalCard, moduleCard]));
+})();
+</script>
+</body>
+</html>
