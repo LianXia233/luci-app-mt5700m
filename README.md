@@ -2,7 +2,7 @@
 > **⚠️ 项目状态与工程边界提示**
 >
 > 🔧 本项目目前处于架构大版本演进与深度重构阶段（v2/v3 异步化架构落地完成，目前集中于协议规范严谨化与真机联调）：
-> - 自动化测试现已覆盖 374 项 `cargo test` 及 10 项 `prove-*-parity.js` 前端逐字等价比对；
+> - 自动化测试现已覆盖 387 项 `cargo test` 及 10 项 `prove-*-parity.js` 前端逐字等价比对；
 > - 真实硬件行为、极端边缘场景时序与各固件驱动兼容性仍在持续打磨测试中，建议在测试验证环境体验。
 
 ---
@@ -13,16 +13,16 @@
 
 **面向移远 Quectel MT5700M-CN 5G 模组的高性能 LuCI 管理器与独立 WebUI 控制台**
 
-[![Version](https://img.shields.io/badge/Version-v3.3.1-blue.svg?style=flat-square)](https://github.com/LianXia233/luci-app-mt5700m/releases)
+[![Version](https://img.shields.io/badge/Version-v3.4.0-blue.svg?style=flat-square)](https://github.com/LianXia233/luci-app-mt5700m/releases)
 [![OpenWrt](https://img.shields.io/badge/OpenWrt-Filogic%20%7C%20ImmortalWrt-00C49F.svg?style=flat-square&logo=openwrt)](https://openwrt.org/)
-[![Backend](https://img.shields.io/badge/Backend-Rust%20(std--only)-DEA584.svg?style=flat-square&logo=rust)](mt5700webui-openwrt-server/at-webserver/)
+[![Backend](https://img.shields.io/badge/Backend-Rust%20%2B%20Tokio-DEA584.svg?style=flat-square&logo=rust)](mt5700webui-openwrt-server/at-webserver/)
 [![WebUI](https://img.shields.io/badge/WebUI-React%2018%20%2B%20Semi%20Design-61DAFB.svg?style=flat-square&logo=react)](mt5700webui-openwrt-server/semi-tcpweb/)
 [![Protocol](https://img.shields.io/badge/Data-CDC--NCM%20Protocol-orange.svg?style=flat-square)](#-规范与工程标准)
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue.svg?style=flat-square)](LICENSE)
 
 <p align="center">
   <b>单包双前端全栈交付</b>：LuCI 原生视图 + 现代化 React WebUI + Rust 高性能异步后端<br>
-  纯内网运行 · 绝不上传隐私 · 零第三方 Rust 动态库依赖 · 毫秒级 SWR 读指令缓存闸门
+  纯内网运行 · 绝不上传隐私 · 静态编译（Tokio 异步运行时）· 毫秒级 SWR 读指令缓存闸门
 </p>
 
 </div>
@@ -46,6 +46,7 @@
 | 架构维度 | 实现机制与核心优势 |
 |:---|:---|
 | 🦀 **单后端双前端架构 (Arch v2)** | 确立 Rust 后端 `at-webserver` 为**唯一的 AT 串口持有者**（`TIOCEXCL` 硬件独占），LuCI 走本地控制套接字，独立 WebUI 走 WebSocket 接入，彻底杜绝串口死锁与数据截断。 |
+| ⚙️ **Rust/Tokio 全栈后端** | 拨号健康恢复、流量账本、DNS 注入、USB 绑定全部在 `at-webserver` 内以 `manager` / `traffic` / `dns` / `usb` 子命令实现；`mt5700m-manager` / `mt5700m-traffic` / `dns.sh` 仅作路径兼容包装。 |
 | ⚡ **SWR 读命令命令闸门 (v3.1+)** | 针对 MT5700 慢指令（如 `^NTXPOWER?` 单条耗时 11.6 秒）的痛点，在后端入口加设 **SWR 智能缓存闸门**：新鲜缓存秒级直回、过期缓存旧值即回并触发后台异步刷新，边际响应速度**提升 22.5 倍**。 |
 | 🌐 **NCM 高速数据承载** | 原生基于 Linux 标准 `kmod-usb-net-cdc-ncm` 高速网卡驱动进行数据面拨号与路由对账，兼顾吞吐与低 CPU 开销。 |
 | 🔒 **原生 Termios 无依赖控制** | 串口参数全量由 Rust 直接调用系统 `TCGETS` / `TCSETS` ioctl 初始化，**不再依赖 BusyBox `stty`**；规范处理 `VMIN=1`/`VTIME=0`，避免非阻塞空闲引发的 EOF 假死与 `EAGAIN` 误判。 |
@@ -64,7 +65,7 @@
 | **控制面通信** | Rust 后端独占 AT 串口，LuCI 走本地 Unix Domain Socket、WebUI 走 WebSocket |
 | **双入口访问** | ① **LuCI 入口**：`调制解调器` → `MT5700M 管理`<br>② **独立 WebUI**：`http://<路由器IP>/5700/` |
 | **时钟同步规范** | 复用系统 `sysntpd` / `chrony` 服务，插件仅读取状态与手动下发对时，不启动第二个常驻时钟守护 |
-| **DNS 注入防线** | 仅操作 `MT5700M` 与 `MT5700Mv6` 专用接口，统一由 `dns.sh apply` 原子生效 |
+| **DNS 注入防线** | 仅操作 `MT5700M` 与 `MT5700Mv6` 专用接口，统一由 `at-webserver dns apply` 原子生效 |
 
 ---
 
@@ -115,8 +116,10 @@ luci-app-mt5700m/
 │   ├── root/                    # 运行时配置文件与服务启动脚本
 │   └── Makefile                 # OpenWrt 编译规则
 ├── mt5700webui-openwrt-server/  # 独立服务与全功能 WebUI
-│   ├── at-webserver/src/        # 核心 Rust 后端（纯 std 零第三方依赖）
+│   ├── at-webserver/src/        # 核心 Rust 后端（std + Tokio）
 │   │   ├── daemon.rs            # JSON-RPC / Control Socket / WS 组合接入根
+│   │   ├── manager/             # 拨号/健康恢复/DNS/USB（原 shell 实现）
+│   │   ├── traffic.rs           # 流量账本（Tokio 定时采样）
 │   │   ├── scheduler/           # SWR 缓存闸门 (gate.rs) 与 AT 仲裁器 (arbiter.rs)
 │   │   ├── state/               # StateCache 状态缓存池与 EventBus 事件总线
 │   │   └── modules/             # 13 个业务领域模块（commands/parser/state）
@@ -148,12 +151,12 @@ apk add --allow-untrusted luci-app-mt5700m
 #### 现象 A：AT 命令全部超时 / 前端数据全空
 - **自检方案 1**：执行原生探测工具（绕开守护进程与仲裁器，直击物理端口）：
   ```sh
-  at-webserver probe
+  at-webserver atprobe
   ```
   *预期输出：5/5 项握手全部正常响应。*
 - **自检方案 2**：检查当前 termios 设置，确认 cooked 标记已清除且波特率为 115200：
   ```sh
-  AT_DEBUG_TERMIOS=1 at-webserver probe
+  AT_DEBUG_TERMIOS=1 at-webserver atprobe
   ```
 
 #### 现象 B：页面提示未连接（`connected=0`）

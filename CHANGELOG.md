@@ -3,9 +3,56 @@
 > **🚨 项目状态：待重构** — 属于典型的待整顿阶段，**代码质量与功能完整性均无法保证**，
 > 可能有不稳定、未发现的 Bug、遗留代码与兼容性问题，部分接口仍在调整；
 > **不保证任何功能正常运行，请勿用于生产环境或关键业务。** 自动化验收
-> （`cargo test` 374 + 10 个 parity 证明 + smoke + CI）**仅覆盖格式/路由/渲染一致性，
+> （`cargo test` 387 + 10 个 parity 证明 + smoke + CI）**仅覆盖格式/路由/渲染一致性，
 > 且尚未做 MT5700M 真机全量验证、未构建发布 IPK**。详见 README 顶部高危警告与
 > 「工程现状与验证边界」。
+
+## [3.4.0] - 2026-11-10
+
+### Added
+
+- **自绘动态 SVG 视觉层**（LuCI `mt5700m/visuals.js`）：信号球、吞吐波形、
+  环形仪表、频段柱、波束雷达、链路拓扑，纯 SVG + CSS 动效，零图表库；
+  概览页新增「吞吐 / 温度 / 链路」视觉条，信号卡改为信号球 + RSRP/RSRQ/SINR。
+  WebUI 同步新增 `src/ui/liveViz.tsx`（SignalOrb / LinkTopology /
+  ThroughputWave）并接入网络信息页，产物已重建。
+- **后端全面 Rust/Tokio 化**：新增 `src/manager/{mod,usb,net,health,dns}.rs`
+  与 `src/traffic.rs`，`at-webserver` 增加 `manager / traffic / dns / usb`
+  子命令；`mt5700m-manager`、`mt5700m-traffic`、`dns.sh` 退化为 7–8 行包装，
+  原路径与 CLI 不变。
+
+### Changed
+
+- crate 不再是 std-only：引入 `tokio`（`rt` + `time`，单线程 runtime）。
+  离线 buildroot 构建需先 `cargo vendor`；发布包仍为预编译二进制。
+- 版本 `3.3.1 → 3.4.0`（`PKG_VERSION`、README 徽章、`STYLE_VERSION`），
+  后端 `4.1.1 → 4.2.0`（`Cargo.toml` + `Cargo.lock`）。
+- `LUCI_PKGARCH` 改为由板级架构决定；`terminal` 菜单节点补 ACL 依赖；
+  ACL 移除未使用的 `ubus file exec` 授权。
+
+### Fixed
+
+- ucode `_rid` 白名单校验，修复经临时文件路径/shell 重定向的 root 命令注入。
+- LuCI 缓存清理改为 `/tmp/luci-indexcache.*` 与 `/tmp/luci-modulecache/` 目录。
+- `at-webserver` `START=99 → 80`，保证 `mt5700m-manager`(82) 同步前守护进程就绪。
+- USB hotplug `remove` 用 sysfs / `usb info` 复核，任意 USB 设备拔出不再触发 AT 侧 sync。
+- manager 锁在 pid 缺失时可自愈；高级配置下发加 25s 超时；USB mode 60s 缓存。
+- 流量/网卡名单一来源：优先读 `/var/run/mt5700m/netdev`。
+- 翻译补齐 19 条缺失 msgid；CGI 去掉 CORS 通配并校验端口；扫描弹窗关闭即停止轮询。
+- `tests/helpers/uci` 的 CRLF shebang 问题（`.gitattributes` 增加 `tests/** eol=lf`）。
+
+### Removed
+
+- `root/usr/share/mt5700m/usb.sh`、shell 版 manager/traffic/dns 实现、
+  `_test_v2313.js`、重复的 `keep.d`、无效的 `hotplug.d/net` 脚本。
+
+### Tests
+
+- `cargo test --locked` **387 passed / 0 failed**；`test-dns.sh`、
+  `test-temperature-cache.sh` 改为驱动 Rust 二进制并通过；
+  10 个 `prove-*-parity.js` 全绿（status 改为「数据等价 + 首屏完整」口径）。
+- 旧 shell 内部测试（dial-health / concurrency / usb-detection）在迁移后自动 SKIP，
+  逻辑由 Rust 单测覆盖；真机验证仍未完成。
 
 ## [3.3.1] - 2026-10-24
 

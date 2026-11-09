@@ -45,7 +45,11 @@ PKG_NAME:=luci-app-mt5700m
 # ioctl；串口打开一律 O_NONBLOCK + VMIN=1/VTIME=0。旧版二进制在不修正
 # termios 的情况下会把 TTY 留在 cooked 模式，AT 读取全部超时。
 # 写命令、拨号、短信路径不变。
-PKG_VERSION:=3.3.1
+#
+# v3.4.0 — 后端全面 Rust/Tokio 化：manager / traffic / dns / usb 四个 shell
+# 实现迁入 at-webserver 子命令（包装脚本保留原路径），并加入自绘动态 SVG
+# 视觉层（LuCI 概览页 + WebUI 网络信息页）。crate 不再是 std-only。
+PKG_VERSION:=3.4.0
 PKG_RELEASE:=1
 PKG_LICENSE:=Apache-2.0
 
