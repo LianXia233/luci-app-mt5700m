@@ -59,6 +59,7 @@ fn main() {
             Some("daemon") => daemon::run(&args[1..]),
             Some("traffic") => traffic::run(&args[1..]),
             Some("dns") => manager::dns::run(&args[1..]),
+            Some("usb") => manager::usb::run(&args[1..]),
             Some("manager") => manager::run(&args[1..]),
             // Field diagnostic: drive the AT port directly, bypassing the
             // daemon, the arbiter and the snapshot collectors. Used to tell

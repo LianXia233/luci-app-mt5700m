@@ -337,6 +337,70 @@ pub fn force_ncm_rebind() -> bool {
     true
 }
 
+/// CLI used by the USB hotplug script (and by hand during field debug).
+pub fn run(args: &[String]) -> i32 {
+    match args.first().map(|s| s.as_str()) {
+        Some("bind-network") => {
+            if bind_network_driver() {
+                0
+            } else {
+                1
+            }
+        }
+        Some("bind-serial") => {
+            if bind_serial_driver() {
+                0
+            } else {
+                1
+            }
+        }
+        Some("rebind") => {
+            if force_ncm_rebind() {
+                0
+            } else {
+                1
+            }
+        }
+        Some("info") => match usb_info() {
+            Some((state, product, slot)) => {
+                println!("{}|{}|{}", state, product, slot);
+                0
+            }
+            None => 1,
+        },
+        Some("netdev") => match netdev() {
+            Some(dev) => {
+                println!("{}", dev);
+                0
+            }
+            None => 1,
+        },
+        Some("pcui") => match pcui_port() {
+            Some(port) => {
+                println!("{}", port);
+                0
+            }
+            None => 1,
+        },
+        Some("wait") => {
+            let seconds = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(5);
+            match wait_netdev(seconds) {
+                Some(dev) => {
+                    println!("{}", dev);
+                    0
+                }
+                None => 1,
+            }
+        }
+        _ => {
+            eprintln!(
+                "Usage: at-webserver usb {{info|netdev|pcui|bind-network|bind-serial|rebind|wait SECONDS}}"
+            );
+            64
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

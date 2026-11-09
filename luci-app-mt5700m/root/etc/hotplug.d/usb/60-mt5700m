@@ -1,39 +1,34 @@
 #!/bin/sh
+# USB hotplug: discovery and driver binding live in the Rust backend now.
+# This script only decides *when* to call it, and keeps the log lines the
+# field notes refer to.
 
-[ -r /usr/share/mt5700m/usb.sh ] || exit 0
-. /usr/share/mt5700m/usb.sh
+PROG=/usr/bin/at-webserver
+[ -x "$PROG" ] || exit 0
 
 case "${ACTION:-}" in
 	add)
 		case "${PRODUCT:-}" in 3466/3301/*|3466/3301) ;; *) exit 0 ;; esac
-		if mt5700m_bind_network_driver; then
+		if "$PROG" usb bind-network >/dev/null 2>&1; then
 			logger -t mt5700m-hotplug 'registered MT5700M NCM network interface'
 		else
 			logger -t mt5700m-hotplug 'unable to register MT5700M NCM network interface'
 		fi
-		if mt5700m_bind_serial_driver; then
+		if "$PROG" usb bind-serial >/dev/null 2>&1; then
 			logger -t mt5700m-hotplug 'registered MT5700M normal-mode serial interfaces'
 		else
 			logger -t mt5700m-hotplug 'unable to register MT5700M option serial interfaces'
 		fi
 		;;
 	remove)
-		# remove 事件可能不再带 PRODUCT：用 sysfs 复核，只有模组确实消失才同步。
-		# 否则拔一个 U 盘/键盘也会触发一次 AT 侧 sync。
-		for _d in "${MT5700M_SYSFS_ROOT:-/sys}"/bus/usb/devices/*; do
-			[ -r "$_d/idVendor" ] || continue
-			if [ "$(cat "$_d/idVendor" 2>/dev/null)" = '3466' ] &&
-				[ "$(cat "$_d/idProduct" 2>/dev/null)" = '3301' ]; then
-				exit 0
-			fi
-		done
+		# A removal event may no longer expose PRODUCT. Only sync when the
+		# documented module is really gone; unplugging a U disk must not touch
+		# the AT side.
+		if "$PROG" usb info >/dev/null 2>&1; then
+			exit 0
+		fi
 		;;
 	*) exit 0 ;;
 esac
 
-if [ -x /etc/init.d/mt5700m-manager ]; then
-	(
-		sleep 1
-		/usr/sbin/mt5700m-manager sync >/dev/null 2>&1
-	) &
-fi
+( sleep 1; "$PROG" manager sync >/dev/null 2>&1 ) &

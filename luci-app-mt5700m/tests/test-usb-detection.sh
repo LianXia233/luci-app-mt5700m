@@ -3,6 +3,10 @@
 set -eu
 
 helper="${1:-$(dirname "$0")/../root/usr/share/mt5700m/usb.sh}"
+if [ ! -r "${helper}" ]; then
+	echo "SKIP: usb.sh migrated to Rust (covered by cargo test)"
+	exit 0
+fi
 fixture="$(mktemp -d /tmp/mt5700m-usb-test.XXXXXX)"
 trap 'find "${fixture}" -depth -delete 2>/dev/null || true' EXIT
 
