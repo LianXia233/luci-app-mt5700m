@@ -1,6 +1,6 @@
 #!/bin/sh /etc/rc.common
 
-START=99
+START=80
 STOP=10
 
 USE_PROCD=1
@@ -9,6 +9,23 @@ PROG_NAME="at-webserver"
 
 # 加载 UCI 函数库（必须在文件顶部）
 . /lib/functions.sh
+
+# 防火墙规则清单：setup_firewall 与 stop_service 共用，避免两处各写 5 段重复代码。
+# 历史实现对命名 section（firewall.cfgXXXXXX）取不到 @rule[n] 索引，删除失败并叠加规则。
+FW_RULE_NAMES="at_webserver_wan_block at_webserver_wan_allow \
+	at_module_restrict at_module_wan_block at_module_wan_allow"
+
+# 按 uci 路径删除，匿名 @rule[n] 与命名 section 都能命中
+fw_delete_rules() {
+	local name path
+	for name in ${FW_RULE_NAMES}; do
+		for path in $(uci -q show firewall 2>/dev/null |
+			sed -n "s/^\(firewall\.[^=]*\)\.name='${name}'\$/\1/p"); do
+			uci -q delete "${path}" 2>/dev/null
+		done
+	done
+	uci -q commit firewall
+}
 
 start_service() {
 	local enabled
@@ -104,42 +121,8 @@ start_service() {
 		config_get module_host config network_host '192.168.8.1'
 		config_get module_port config network_port '20249'
 		
-	# 删除旧的 WebSocket WAN 规则（阻止）
-	local rule_name="at_webserver_wan_block"
-	local rule_idx=$(uci show firewall | grep "\.name='$rule_name'" | cut -d'[' -f2 | cut -d']' -f1 | head -n1)
-	if [ -n "$rule_idx" ]; then
-		uci delete firewall.@rule[$rule_idx] 2>/dev/null
-	fi
-	
-	# 删除旧的 WebSocket WAN 规则（允许）
-	rule_name="at_webserver_wan_allow"
-	rule_idx=$(uci show firewall | grep "\.name='$rule_name'" | cut -d'[' -f2 | cut -d']' -f1 | head -n1)
-	if [ -n "$rule_idx" ]; then
-		uci delete firewall.@rule[$rule_idx] 2>/dev/null
-	fi
-		
-		# 删除旧的模块 LAN 访问限制规则
-		rule_name="at_module_restrict"
-		rule_idx=$(uci show firewall | grep "\.name='$rule_name'" | cut -d'[' -f2 | cut -d']' -f1 | head -n1)
-		if [ -n "$rule_idx" ]; then
-			uci delete firewall.@rule[$rule_idx] 2>/dev/null
-		fi
-		
-	# 删除旧的模块 WAN 访问限制规则（阻止）
-	rule_name="at_module_wan_block"
-	rule_idx=$(uci show firewall | grep "\.name='$rule_name'" | cut -d'[' -f2 | cut -d']' -f1 | head -n1)
-	if [ -n "$rule_idx" ]; then
-		uci delete firewall.@rule[$rule_idx] 2>/dev/null
-	fi
-	
-	# 删除旧的模块 WAN 访问规则（允许）
-	rule_name="at_module_wan_allow"
-	rule_idx=$(uci show firewall | grep "\.name='$rule_name'" | cut -d'[' -f2 | cut -d']' -f1 | head -n1)
-	if [ -n "$rule_idx" ]; then
-		uci delete firewall.@rule[$rule_idx] 2>/dev/null
-	fi
-	
-	uci commit firewall
+	# 先按清单删除旧规则（兼容匿名/命名 section），再按当前配置重建
+	fw_delete_rules
 	
 	# 模块外网访问控制
 	if [ "$module_allow_wan" -eq 1 ]; then
@@ -214,10 +197,6 @@ start_service() {
 	
 	setup_firewall
 	
-	# 清理可能残留的旧进程（1.x Python at-server.py 与 3.x Python
-	# at-webserver.py），用 TERM 让其正常退出
-	killall -q at-server.py 2>/dev/null
-	killall -q at-webserver.py 2>/dev/null
 	# Self-kill guard: while this init script runs, its own process name IS
 	# "$PROG_NAME", so busybox killall would TERM the script itself (rc=143,
 	# procd instance never registered). Kill only real daemon PIDs instead.
@@ -256,43 +235,8 @@ stop_service() {
 	# 清理 pidfile
 	rm -f /var/run/at-webserver.pid
 	
-	# 清理防火墙规则
-	# 清理 WebSocket WAN 阻止规则
-	local rule_name="at_webserver_wan_block"
-	local rule_idx=$(uci show firewall | grep "\.name='$rule_name'" | cut -d'[' -f2 | cut -d']' -f1 | head -n1)
-	if [ -n "$rule_idx" ]; then
-		uci delete firewall.@rule[$rule_idx] 2>/dev/null
-	fi
-	
-	# 清理 WebSocket WAN 允许规则
-	rule_name="at_webserver_wan_allow"
-	rule_idx=$(uci show firewall | grep "\.name='$rule_name'" | cut -d'[' -f2 | cut -d']' -f1 | head -n1)
-	if [ -n "$rule_idx" ]; then
-		uci delete firewall.@rule[$rule_idx] 2>/dev/null
-	fi
-	
-	# 清理模块 LAN 访问限制规则
-	rule_name="at_module_restrict"
-	rule_idx=$(uci show firewall | grep "\.name='$rule_name'" | cut -d'[' -f2 | cut -d']' -f1 | head -n1)
-	if [ -n "$rule_idx" ]; then
-		uci delete firewall.@rule[$rule_idx] 2>/dev/null
-	fi
-	
-	# 清理模块 WAN 阻止规则
-	rule_name="at_module_wan_block"
-	rule_idx=$(uci show firewall | grep "\.name='$rule_name'" | cut -d'[' -f2 | cut -d']' -f1 | head -n1)
-	if [ -n "$rule_idx" ]; then
-		uci delete firewall.@rule[$rule_idx] 2>/dev/null
-	fi
-	
-	# 清理模块 WAN 允许规则
-	rule_name="at_module_wan_allow"
-	rule_idx=$(uci show firewall | grep "\.name='$rule_name'" | cut -d'[' -f2 | cut -d']' -f1 | head -n1)
-	if [ -n "$rule_idx" ]; then
-		uci delete firewall.@rule[$rule_idx] 2>/dev/null
-	fi
-	
-	uci commit firewall
+	# 清理防火墙规则：与 setup_firewall 共用同一份清单与删除实现
+	fw_delete_rules
 	/etc/init.d/firewall reload >/dev/null 2>&1
 	logger -t at-webserver "已清理所有防火墙规则"
 	

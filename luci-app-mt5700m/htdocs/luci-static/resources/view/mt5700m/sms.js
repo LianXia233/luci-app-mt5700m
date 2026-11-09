@@ -331,7 +331,7 @@ return view.extend({
 			c.cssLink(),
 			c.navTabs('sms'),
 			listResult.error ? E('div', { 'class': 'alert-message warning' }, listResult.error) : null,
-			status.error ? E('div', { 'class': 'alert-message warning' }, _('SMS storage information is temporarily unavailable. ') + status.error) : null,
+			status.error ? E('div', { 'class': 'alert-message warning' }, _('SMS storage information is temporarily unavailable.') + ' ' + status.error) : null,
 			c.hero(_('MESSAGING'), _('Messages'), _('Conversations using the SIM installed in the MT5700M.'), [
 				E('div', { 'style': 'display:flex;align-items:center;gap:8px' }, [
 					c.svgStatusPulse('ok', 14),

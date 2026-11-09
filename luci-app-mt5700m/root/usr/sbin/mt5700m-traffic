@@ -1,6 +1,15 @@
 #!/bin/sh
 
-INTERFACES="${MT5700M_TRAFFIC_INTERFACES:-eth2}"
+# 网卡名单一来源：manager 在 ensure_network 里写入 /var/run/mt5700m/netdev；
+# 未写入时回落到旧默认 eth2（保持升级前行为）。
+traffic_interfaces() {
+	if [ -n "${MT5700M_TRAFFIC_INTERFACES:-}" ]; then
+		printf '%s\n' "${MT5700M_TRAFFIC_INTERFACES}"
+		return 0
+	fi
+	cat /var/run/mt5700m/netdev 2>/dev/null || printf '%s\n' eth2
+}
+INTERFACES="$(traffic_interfaces)"
 SYS_CLASS_NET="${MT5700M_TRAFFIC_SYS_CLASS_NET:-/sys/class/net}"
 RUNTIME_DIR="${MT5700M_TRAFFIC_RUNTIME_DIR:-/tmp/mt5700m-traffic}"
 HISTORY_FILE="${MT5700M_TRAFFIC_HISTORY_FILE:-/etc/mt5700m/traffic-history}"
@@ -132,6 +141,8 @@ collect_daemon() {
 	trap 'flush_history; exit 0' INT TERM
 
 	while :; do
+		# manager(START=82) 可能在本守护进程(61)之后才写入 netdev，每轮重读一次
+		INTERFACES="$(traffic_interfaces)"
 		for netdev in ${INTERFACES}; do
 			collect_interface "${netdev}"
 		done
@@ -152,10 +163,6 @@ case "${1:-}" in
 	daemon) collect_daemon ;;
 	json) export_json ;;
 	flush) flush_history ;;
-	update)
-		ensure_history
-		update_history "${2:-eth2}" "${3:-0}" "${4:-0}" "${5:-$(date +%Y-%m-%d)}" "${6:-$(date +%H:%M)}"
-		;;
 	*)
 		printf 'Usage: %s {daemon|json|flush}\n' "$0" >&2
 		exit 1

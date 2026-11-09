@@ -80,6 +80,17 @@ acquire_lock() {
 	fi
 	owner="$(cat "${LOCK_DIR}/pid" 2>/dev/null || true)"
 	case "${owner}" in ''|*[!0-9]*) owner='' ;; esac
+	if [ -z "${owner}" ]; then
+		# 进程在 mkdir 与写 pid 之间死亡：目录存在但无属主。
+		# 超过 1 分钟仍为空则回收，否则等持有者写完（避免误删刚创建的锁）。
+		if [ -n "$(find "${LOCK_DIR}" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+			rm -rf "${LOCK_DIR}" 2>/dev/null
+			mkdir "${LOCK_DIR}" 2>/dev/null || return 1
+			echo "$$" > "${LOCK_DIR}/pid"
+			return 0
+		fi
+		return 1
+	fi
 	if [ -n "${owner}" ] && ! kill -0 "${owner}" 2>/dev/null; then
 		# The recorded owner is dead.  Re-read once more: a concurrent
 		# reclaim may already have swapped in a live pid, and deleting the
@@ -340,6 +351,8 @@ ensure_network() {
 		/etc/init.d/network reload >/dev/null 2>&1 || true
 		log_message "network synchronized device=${netdev} protocol=${pdp_type} metric=${EFFECTIVE_METRIC}"
 	fi
+	# 单一事实来源：流量统计脚本与 Rust 采集器都读这个文件，不再各自猜网卡名
+	state_write "${STATE_DIR}/netdev" "${netdev}"
 	if [ "${FIREWALL_CHANGED}" = '1' ]; then
 		uci -q commit firewall
 		/etc/init.d/firewall reload >/dev/null 2>&1 || true
@@ -709,6 +722,22 @@ modem_usb_mode() {
 	printf '%s\n' "${mode}"
 }
 
+# 短缓存：USB 模式只在模组重启后才会变，但 status 会被页面高频轮询。
+# 不缓存时每次 status 都占一条 AT，与短信/拨号争通道。
+cached_usb_mode() {
+	local now last value
+	now="$(date +%s)"
+	last="$(state_read "${STATE_DIR}/usb_mode_at" 0)"
+	if [ "${now}" -lt "${last}" ] && [ -s "${STATE_DIR}/usb_mode" ]; then
+		cat "${STATE_DIR}/usb_mode" 2>/dev/null
+		return 0
+	fi
+	value="$(modem_usb_mode || true)"
+	state_write "${STATE_DIR}/usb_mode" "${value}"
+	state_write "${STATE_DIR}/usb_mode_at" "$((now + 60))"
+	printf '%s\n' "${value}"
+}
+
 # Ensure the module stays in NCM mode (SETMODE=4).  A wrong mode (e.g. 2) is
 # a root cause of "modem online but OpenWrt has no network interface": the USB
 # NCM device simply never enumerates.  The change only takes effect after a
@@ -1074,7 +1103,9 @@ apply_profile() {
 	password="$(config_value password '')"
 	auth="$(config_value auth none)"
 	case "${auth}" in pap) auth_code=1 ;; chap) auth_code=2 ;; *) auth_code=0 ;; esac
-	"${AT_HELPER}" advanced-set autodial 1 "${dial_mode}" "${protocol}" "${apn}" "${username}" "${password}" "${auth_code}" >/dev/null
+	# `timeout` 不能直接跑 shell 函数，但 advanced-set 是外部命令，必须加硬超时；
+	# 否则串口挂起时 connect/redial 会一直卡在这里。
+	run_with_timeout 25 "${AT_HELPER}" advanced-set autodial 1 "${dial_mode}" "${protocol}" "${apn}" "${username}" "${password}" "${auth_code}" >/dev/null
 }
 
 connect_manager() {
@@ -1154,7 +1185,7 @@ status_json() {
 	json_add_string usb_state "${state}"
 	json_add_string usb_pid "${product}"
 	json_add_string usb_slot "${slot}"
-	json_add_string usb_mode "$(modem_usb_mode || echo '')"
+	json_add_string usb_mode "$(cached_usb_mode || echo '')"
 	json_add_string at_port "${atport}"
 	json_add_string network "${netdev}"
 	json_add_string interface "${INTERFACE}"
@@ -1189,6 +1220,9 @@ monitor_manager() {
 			# A concurrent reader corrupts both responses.
 			refresh_temperature_cache >/dev/null 2>&1 || true
 			release_lock
+		else
+			# 锁被另一个实例持有（含回收锁的临界区）：本轮跳过，不刷屏。
+			log_message 'lock held by another instance; skipping this cycle'
 		fi
 		sleep "${interval}"
 	done

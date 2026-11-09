@@ -73,10 +73,11 @@ LUCI_DEPENDS:=+luci-base
 LUCI_EXTRA_DEPENDS:=kmod-usb2 (>=0), kmod-usb3 (>=0), kmod-usb-serial (>=0), kmod-usb-serial-option (>=0), kmod-usb-net (>=0), kmod-usb-net-cdc-ether (>=0), kmod-usb-net-cdc-ncm (>=0)
 # The package ships a prebuilt aarch64-musl `at-webserver`, so it is NOT
 # architecture-independent.  Marking it `all` would let opkg/apk install the
-# aarch64 ELF on mips/x86 and fail at exec time.  The release script builds
-# for mediatek/filogic (`aarch64_cortex-a53`); builds for another target must
-# rebuild the Rust binary and adjust this value.
-LUCI_PKGARCH:=aarch64_cortex-a53
+# aarch64 ELF on mips/x86 and fail at exec time.  Leave LUCI_PKGARCH empty so
+# package.mk uses the board architecture: on mediatek/filogic that resolves to
+# `aarch64_cortex-a53` (same package as before), while a build for another
+# target fails at exec time instead of being mislabelled at build time.
+LUCI_PKGARCH:=
 
 define Package/luci-app-mt5700m/conffiles
 /etc/config/mt5700m

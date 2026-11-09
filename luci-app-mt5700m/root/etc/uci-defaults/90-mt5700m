@@ -1,7 +1,9 @@
 #!/bin/sh
 
 uci -q get mt5700m.settings >/dev/null 2>&1 || uci -q set mt5700m.settings='mt5700m'
-uci -q set mt5700m.settings.enabled="${MT5700M_ENABLED:-$(uci -q get mt5700m.settings.enabled || echo 1)}"
+if ! uci -q get mt5700m.settings.enabled >/dev/null 2>&1; then
+	uci -q set mt5700m.settings.enabled="${MT5700M_ENABLED:-1}"
+fi
 uci -q set mt5700m.settings.mode="$(uci -q get mt5700m.settings.mode || echo auto)"
 uci -q set mt5700m.settings.at_port="$(uci -q get mt5700m.settings.at_port || echo '')"
 uci -q set mt5700m.settings.host="$(uci -q get mt5700m.settings.host || echo 192.168.8.1)"
@@ -98,8 +100,9 @@ fi
 uci -q commit mt5700m
 
 if [ -z "${IPKG_INSTROOT:-}" ]; then
-	rm -f /tmp/luci-indexcache /tmp/luci-modulecache/* 2>/dev/null || true
-	[ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd restart >/dev/null 2>&1 || true
+	rm -f /tmp/luci-indexcache.* 2>/dev/null || true
+	rm -rf /tmp/luci-modulecache/ 2>/dev/null || true
+	[ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd reload >/dev/null 2>&1 || true
 	# 刻意 **不** reload uhttpd。
 	#
 	# 本包没有改动 /etc/config/uhttpd 的任何字段（WebUI 静态资源直接落在

@@ -51,6 +51,9 @@
 		"action": { "type": "view", "path": "mt5700m/time" }
 	},
 	"admin/modem/mt5700m/terminal": {
+		"depends": {
+			"acl": [ "luci-app-mt5700m" ]
+		},
 		"action": { "type": "view", "path": "mt5700m/terminal" }
 	},
 	"admin/modem/mt5700m/advanced": {

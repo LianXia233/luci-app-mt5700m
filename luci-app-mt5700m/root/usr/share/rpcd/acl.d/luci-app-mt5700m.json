@@ -5,7 +5,6 @@
 			"uci": [ "mt5700m", "at-webserver" ],
 			"ubus": {
 				"mt5700m-traffic": [ "summary" ],
-				"file": [ "exec" ],
 				"mt5700m": [ "status", "log" ],
 				"mt5700": [ "at", "cached", "events", "netrate", "traffic", "usb", "logs" ],
 				"network.device": [ "status" ]
@@ -17,7 +16,6 @@
 		"write": {
 			"uci": [ "mt5700m", "at-webserver" ],
 			"ubus": {
-				"file": [ "exec" ],
 				"mt5700m": [ "connect", "disconnect", "redial", "sync" ],
 				"mt5700": [ "at" ]
 			},

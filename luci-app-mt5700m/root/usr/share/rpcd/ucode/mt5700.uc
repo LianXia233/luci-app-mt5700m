@@ -20,6 +20,29 @@ const uci = require('uci');
 /* 调用方没传 _rid 时的兜底自增号（同一秒内多次调用也能区分） */
 let rpcFallbackSeq = 0;
 
+/*
+ * 白名单校验客户端传入的 _rid。
+ *
+ * _rid 会被拼进临时文件路径与 nc 重定向命令（fs.popen -> /bin/sh，root 身份）：
+ *     tmp = '/tmp/mt5700-rpc-' + rid + '.json'
+ *     ncCmd = '... nc 127.0.0.1 < ' + tmp
+ * 未校验时，任何拥有本插件 ACL 的会话都可以用 _rid = 'x; touch /tmp/pwned; #'
+ * 以 root 执行任意命令。因此只接受 [A-Za-z0-9_-]{1,64}；其余一律视为未提供，
+ * 退回服务端生成的自增号，功能不受影响。
+ */
+function safeRid(v) {
+	if (v == null) {
+		return null;
+	}
+	if (length(v) == 0 || length(v) > 64) {
+		return null;
+	}
+	if (match(v, /^[A-Za-z0-9_-]+$/) == null) {
+		return null;
+	}
+	return v;
+}
+
 function readRpcConfig() {
 	const cursor = uci.cursor();
 	const port = int(cursor.get('at-webserver', 'config', 'websocket_port')) || 8765;
@@ -200,7 +223,7 @@ function usbCall(req) {
 		+ 'break; done';
 	let p;
 	try {
-		p = fs.popen('/bin/sh -c ' + script, 'r');
+		p = fs.popen(script, 'r');
 	} catch (e) {
 		return { success: false, error: '无法读取 USB 信息: ' + e.message };
 	}
@@ -384,7 +407,7 @@ function rpcCall(method, params, timeoutS) {
 	 * 唯一性由调用方传入的 _rid 提供；没传时退化为「时间戳 + 自增」，
 	 * 同一秒内的多次调用也能区分（ucode 的 time() 只有秒级）。
 	 */
-	let rid = getStr(params, '_rid');
+	let rid = safeRid(getStr(params, '_rid'));
 	if (rid == null || rid == '') {
 		rid = sprintf('%d-%d', time(), rpcFallbackSeq++);
 	}
@@ -413,9 +436,11 @@ function rpcCall(method, params, timeoutS) {
 	try {
 		p = fs.popen(ncCmd, 'r');
 	} catch (e) {
+		try { fs.unlink(tmp); } catch (e2) { }
 		return { success: false, error: '无法连接 Rust 后端: ' + e.message };
 	}
 	if (!p) {
+		try { fs.unlink(tmp); } catch (e2) { }
 		return { success: false, error: '无法连接 Rust 后端' };
 	}
 
@@ -681,11 +706,7 @@ return {
 		logs: {
 			args: { since: 0, limit: 300, _rid: '' },
 			call: function (req) {
-				let a = req.args;
-				let since = int(getStr(a, 'since')) || 0;
-				if (since < 0) {
-					since = 0;
-				}
+				// since 仅为兼容旧调用方保留，日志读取始终返回末尾 limit 行
 				return logsCall(req);
 			}
 		}

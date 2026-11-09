@@ -371,8 +371,8 @@ return view.extend({
 		m.render().then(function(formNode) {
 			dom.content(slot, [
 				c.navTabs('connection'),
-				managerError ? E('div', { 'class': 'alert-message warning' }, _('Dial manager status is temporarily unavailable. ') + managerError) : null,
-				device._rpcError ? E('div', { 'class': 'alert-message warning' }, _('Network interface status is temporarily unavailable. ') + device._rpcError) : null,
+				managerError ? E('div', { 'class': 'alert-message warning' }, _('Dial manager status is temporarily unavailable.') + ' ' + managerError) : null,
+				device._rpcError ? E('div', { 'class': 'alert-message warning' }, _('Network interface status is temporarily unavailable.') + ' ' + device._rpcError) : null,
 				manager.usb_state && manager.usb_state !== 'normal' ? E('div', { 'class': 'alert-message warning' }, _('The MT5700M is not in normal USB mode. Connection settings remain available, but dialing cannot start.')) : null,
 					c.hero(_('Mobile Data'), _('Mobile data'), _('Configure how the MT5700M connects to the mobile network.'), [
 					E('div', { 'class': 'mt-conn-state' }, [

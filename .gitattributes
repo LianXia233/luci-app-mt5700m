@@ -3,6 +3,9 @@
 *.sh text eol=lf
 *.py text eol=lf
 luci-app-mt5700m/root/** text eol=lf
+# htdocs 下的 CGI 脚本同样是 shell：CRLF 会让设备上的 /bin/sh 直接报
+# "word unexpected (expecting in)"，WebUI 拿不到 ws_url。
+luci-app-mt5700m/htdocs/** text eol=lf
 # Compiled daemon executable must not pass through text newline conversion.
 luci-app-mt5700m/root/usr/bin/at-webserver binary
 mt5700webui-openwrt-server/at-webserver/files-py/** text eol=lf

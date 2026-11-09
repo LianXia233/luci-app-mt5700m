@@ -18,8 +18,15 @@ case "${ACTION:-}" in
 		fi
 		;;
 	remove)
-		# A removal event may no longer expose PRODUCT. Reconciliation is cheap
-		# and will only tear down interfaces when the documented module vanished.
+		# remove 事件可能不再带 PRODUCT：用 sysfs 复核，只有模组确实消失才同步。
+		# 否则拔一个 U 盘/键盘也会触发一次 AT 侧 sync。
+		for _d in "${MT5700M_SYSFS_ROOT:-/sys}"/bus/usb/devices/*; do
+			[ -r "$_d/idVendor" ] || continue
+			if [ "$(cat "$_d/idVendor" 2>/dev/null)" = '3466' ] &&
+				[ "$(cat "$_d/idProduct" 2>/dev/null)" = '3301' ]; then
+				exit 0
+			fi
+		done
 		;;
 	*) exit 0 ;;
 esac

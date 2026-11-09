@@ -20,7 +20,6 @@ jobs:
           sh -n mt5700webui-openwrt-server/at-webserver/files/etc/init.d/at-webserver
           sh -n luci-app-mt5700m/root/etc/init.d/mt5700m-manager
           sh -n luci-app-mt5700m/root/etc/init.d/mt5700m-traffic
-          sh -n luci-app-mt5700m/root/etc/hotplug.d/net/95-mt5700m-traffic
           sh -n luci-app-mt5700m/root/etc/uci-defaults/90-mt5700m
           sh -n luci-app-mt5700m/root/etc/uci-defaults/92-mt5700m-traffic
           sh -n luci-app-mt5700m/root/etc/uci-defaults/93-mt5700m-webui
@@ -48,7 +47,6 @@ jobs:
           test -x luci-app-mt5700m/root/usr/sbin/mt5700m-traffic
           test -x luci-app-mt5700m/root/usr/libexec/rpcd/mt5700m
           test -x luci-app-mt5700m/root/usr/libexec/rpcd/mt5700m-traffic
-          test -x luci-app-mt5700m/root/etc/hotplug.d/net/95-mt5700m-traffic
           test -x luci-app-mt5700m/root/etc/hotplug.d/usb/60-mt5700m
           test -x luci-app-mt5700m/root/etc/uci-defaults/90-mt5700m
           test -x luci-app-mt5700m/root/etc/uci-defaults/92-mt5700m-traffic

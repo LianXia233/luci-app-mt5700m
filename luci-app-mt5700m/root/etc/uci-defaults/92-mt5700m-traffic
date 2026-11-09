@@ -14,5 +14,6 @@ if [ -z "${IPKG_INSTROOT:-}" ] && [ -x /etc/init.d/mt5700m-traffic ]; then
 	(sleep 2; /etc/init.d/mt5700m-traffic restart) >/dev/null 2>&1 &
 fi
 
-rm -f /tmp/luci-indexcache /tmp/luci-modulecache/* 2>/dev/null || true
+rm -f /tmp/luci-indexcache.* 2>/dev/null || true
+rm -rf /tmp/luci-modulecache/ 2>/dev/null || true
 exit 0

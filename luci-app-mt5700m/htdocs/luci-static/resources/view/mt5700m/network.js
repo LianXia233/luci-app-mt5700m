@@ -687,14 +687,24 @@ return view.extend({
 									ui.addNotification(null, E('p', {}, _('Cell scan failed.')), 'danger');
 									return;
 								}
+								var poll = null;
+								var stopPoll = function() {
+									if (poll) {
+										window.clearInterval(poll);
+										poll = null;
+									}
+								};
 								var showScan = function(cell, signal) {
-									ui.showModal(_('Cell Scan'), [ renderCellScan(cell, signal, neighbors), E('div', { 'class': 'right', 'style': 'margin-top:14px' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close'))) ]);
+									var modal = ui.showModal(_('Cell Scan'), [ renderCellScan(cell, signal, neighbors), E('div', { 'class': 'right', 'style': 'margin-top:14px' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close'))) ]);
+									// 用户关闭弹窗后立即停止轮询；showModal 未返回 Promise 时保持旧行为。
+									if (modal && typeof modal.then === 'function')
+										modal.then(stopPoll);
 								};
 								if (scan && !scan.running && !scan.raw)
 									api.route('cell.scan_start');
 								showScan(cell, signal);
 								var waited = 0;
-								var poll = window.setInterval(function() {
+								poll = window.setInterval(function() {
 									waited += 3000;
 									api.route('cell.scan_result').then(function(next) {
 										// 取不到结果说明后端不可达，别再空转。

@@ -3245,3 +3245,60 @@ msgstr "已将 %s 小区数据填入 %s 锁定面板。请检查后点击“检�
 
 msgid "Terminal"
 msgstr "终端"
+
+msgid "AT command timed out after %s ms"
+msgstr "AT 命令超时（%s 毫秒）"
+
+msgid "RPC request timed out after %s ms"
+msgstr "RPC 请求超时（%s 毫秒）"
+
+msgid "Task observation was cancelled."
+msgstr "任务观察已取消。"
+
+msgid "Task timed out while waiting for a result."
+msgstr "等待任务结果超时。"
+
+msgid "Task status is unavailable. The background service may have restarted."
+msgstr "任务状态不可用，后台服务可能已重启。"
+
+msgid "The task failed."
+msgstr "任务失败。"
+
+msgid "The task was cancelled."
+msgstr "任务已取消。"
+
+msgid "The task timed out."
+msgstr "任务超时。"
+
+msgid "Dial manager status is temporarily unavailable."
+msgstr "拨号管理状态暂时不可用。"
+
+msgid "Network interface status is temporarily unavailable."
+msgstr "网络接口状态暂时不可用。"
+
+msgid "Failed to render the connection form."
+msgstr "连接表单渲染失败。"
+
+msgid "Cell scan failed."
+msgstr "小区扫描失败。"
+
+msgid "SMS storage information is temporarily unavailable."
+msgstr "短信存储信息暂时不可用。"
+
+msgid "Dial manager status is temporarily unavailable; connection details may be incomplete."
+msgstr "拨号管理状态暂时不可用，连接详情可能不完整。"
+
+msgid "Shared modem status could not be refreshed; any available cached values are retained."
+msgstr "共享模组状态刷新失败，已保留可用的缓存值。"
+
+msgid "Traffic statistics could not be refreshed; any previously displayed values are retained."
+msgstr "流量统计刷新失败，已保留此前显示的值。"
+
+msgid "Some modem details could not be refreshed. Existing values are retained."
+msgstr "部分模组详情刷新失败，已保留现有值。"
+
+msgid "Retry"
+msgstr "重试"
+
+msgid "Shared modem status is temporarily unavailable. Showing available data."
+msgstr "共享模组状态暂时不可用，正在显示可用数据。"

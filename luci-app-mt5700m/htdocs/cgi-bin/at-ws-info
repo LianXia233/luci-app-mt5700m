@@ -2,12 +2,15 @@
 # AT WebServer WebSocket 信息 API
 
 echo "Content-Type: application/json"
-echo "Access-Control-Allow-Origin: *"
 echo ""
 
 # 读取配置
 WS_PORT=$(uci get at-webserver.config.websocket_port 2>/dev/null || echo "8765")
+# 只接受端口号，避免非法 UCI 值把下面的 JSON 写成非法负载（SPA 会回落到硬编码端口）。
+case "${WS_PORT}" in ''|*[!0-9]*) WS_PORT=8765 ;; esac
+[ "${WS_PORT}" -ge 1 ] && [ "${WS_PORT}" -le 65535 ] || WS_PORT=8765
 ALLOW_WAN=$(uci get at-webserver.config.websocket_allow_wan 2>/dev/null || echo "0")
+case "${ALLOW_WAN}" in 1) ALLOW_WAN=1 ;; *) ALLOW_WAN=0 ;; esac
 AUTH_KEY=$(uci get at-webserver.config.websocket_auth_key 2>/dev/null || echo "")
 
 # 判断是否需要密钥（但不返回密钥本身）
