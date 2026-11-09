@@ -89,7 +89,7 @@ impl ModemPresence {
     pub fn detect() -> ModemPresence {
         let ports = scan_serial_ports();
         let mut best: Option<ModemPresence> = None;
-        // Rank: PCUI+normal > answers-AT > any QUECTEL node (normal first,
+        // Rank: PCUI+normal > answers-AT > any TD Tech node (normal first,
         // then upgrade/dump so mode transitions are still observable).
         for p in &ports {
             if p.vendor != QUECTEL_VID {
@@ -252,7 +252,7 @@ mod tests {
         // not panic and must report absent.
         let p = ModemPresence::detect();
         assert!(!p.available());
-        // present may be true if a QUECTEL device happens to be plugged in,
+        // present may be true if a TD Tech device happens to be plugged in,
         // but the state machine must still produce a consistent value.
         assert_eq!(p.state.is_empty(), false);
     }

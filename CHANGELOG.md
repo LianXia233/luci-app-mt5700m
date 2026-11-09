@@ -40,6 +40,7 @@
 - 流量/网卡名单一来源：优先读 `/var/run/mt5700m/netdev`。
 - 翻译补齐 19 条缺失 msgid；CGI 去掉 CORS 通配并校验端口；扫描弹窗关闭即停止轮询。
 - `tests/helpers/uci` 的 CRLF shebang 问题（`.gitattributes` 增加 `tests/** eol=lf`）。
+- 文档厂商名称更正：MT5700M-CN 为**鼎桥（TD Tech）**模组，移除「移远 Quectel」的错误表述。
 
 ### Removed
 

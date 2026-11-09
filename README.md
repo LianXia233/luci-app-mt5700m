@@ -11,7 +11,7 @@
 
 # 🚀 MT5700M OpenWrt 控制中心
 
-**面向移远 Quectel MT5700M-CN 5G 模组的高性能 LuCI 管理器与独立 WebUI 控制台**
+**面向鼎桥 MT5700M-CN（TD Tech）5G 模组的高性能 LuCI 管理器与独立 WebUI 控制台**
 
 [![Version](https://img.shields.io/badge/Version-v3.4.0-blue.svg?style=flat-square)](https://github.com/LianXia233/luci-app-mt5700m/releases)
 [![OpenWrt](https://img.shields.io/badge/OpenWrt-Filogic%20%7C%20ImmortalWrt-00C49F.svg?style=flat-square&logo=openwrt)](https://openwrt.org/)
@@ -78,7 +78,7 @@ node preview/serve.js
 | 属性维度 | 技术选型与实现规范 |
 |:---|:---|
 | **软件包名** | `luci-app-mt5700m`（单包内嵌 LuCI 前端、独立 WebUI 与 Rust 后端） |
-| **适配硬件** | 移远 Quectel MT5700M-CN 5G 通信模组 |
+| **适配硬件** | 鼎桥 MT5700M-CN（TD Tech）5G 通信模组 |
 | **数据面协议** | NCM 协议（基于 Linux 原生 `kmod-usb-net-cdc-ncm` 驱动） |
 | **控制面通信** | Rust 后端独占 AT 串口，LuCI 走本地 Unix Domain Socket、WebUI 走 WebSocket |
 | **双入口访问** | ① **LuCI 入口**：`调制解调器` → `MT5700M 管理`<br>② **独立 WebUI**：`http://<路由器IP>/5700/` |

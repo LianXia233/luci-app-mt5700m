@@ -20,7 +20,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// VID of Quectel MT5700M USB devices.
+/// VID of TD Tech (鼎桥) MT5700M USB devices.
 pub const QUECTEL_VID: &str = "3466";
 /// PID of the MT5700M in normal (functioning) mode.
 pub const MT5700M_NORMAL_PID: &str = "3301";
