@@ -11,7 +11,7 @@ jobs:
   static-checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install validation tools
         run: sudo apt-get update && sudo apt-get install -y gettext
       - name: Check shell syntax and USB detection
@@ -126,7 +126,7 @@ jobs:
     # 快照），其余 8 个基线是远端原生历史提交。
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true

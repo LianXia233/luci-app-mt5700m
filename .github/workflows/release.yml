@@ -34,7 +34,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Resolve build version
         id: resolve_version
@@ -147,12 +147,12 @@ jobs:
             zstd
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
 
       - name: Cache OpenWrt SDK
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/openwrt-sdk
@@ -172,7 +172,7 @@ jobs:
           ls -lah dist-release || true
 
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: luci-app-mt5700m-${{ github.ref_name || 'manual' }}
           path: dist-release/*
